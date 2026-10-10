@@ -50,8 +50,11 @@ try {
     [390, 844, "narrow"],
   ]) {
     browser("set", "viewport", String(width), String(height), "2");
-    if (width < 760 && evaluate('return !!document.querySelector(".member-list-close");'))
+    if (width < 760 && evaluate('return !!document.querySelector(".member-list-close");')) {
       browser("click", ".member-list-close");
+      // The phone member list slides out before it is removed.
+      wait('!document.querySelector(".space-member-presence")');
+    }
     evaluate('document.querySelector("#chat-message").scrollIntoView({block:"nearest"});');
     const before = messages();
     browser("fill", "#chat-message", ":");

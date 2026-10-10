@@ -5521,31 +5521,59 @@ impl CaperApp {
                     )
                     .translate(egui::vec2(uncovered * (content.width() - peek), 0.0));
                     if uncovered > 0.0 {
-                        let shadow = egui::Shadow {
-                            offset: [-4, 0],
-                            blur: 16,
-                            spread: 0,
-                            color: egui::Color32::from_black_alpha(110),
-                        };
-                        ui.painter().add(shadow.as_shape(stage, 0));
+                        ui.painter().add(EDGE_SHADOW.as_shape(stage, 0));
                     }
                     ui.painter().rect_filled(stage, 0.0, SURFACE);
                     ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
                         self.conversation(ui, true);
-                        if self.selected_direct.is_none()
+                        // As on phones, the member list slides over the conversation below
+                        // its header from the trailing edge, with Browse's timing, and moves
+                        // with the conversation when Browse opens.
+                        let members_open = self.selected_direct.is_none()
                             && self.narrow_members_visible
-                            && !self.navigation_open
-                            && !self.no_accessible_channels()
-                        {
-                            let members_rect = egui::Rect::from_min_max(
-                                egui::pos2(
-                                    (stage.right() - 280.0).max(stage.left()),
-                                    stage.top() + 53.0,
-                                ),
+                            && !self.no_accessible_channels();
+                        let shown = context.animate_bool_with_time_and_easing(
+                            egui::Id::new("members-slide"),
+                            members_open,
+                            0.3,
+                            egui::emath::easing::cubic_out,
+                        );
+                        if shown > 0.0 {
+                            let body = egui::Rect::from_min_max(
+                                egui::pos2(stage.left(), stage.top() + 54.0),
                                 stage.max,
                             );
+                            ui.painter().rect_filled(
+                                body,
+                                0.0,
+                                egui::Color32::from_black_alpha((64.0 * shown) as u8),
+                            );
+                            if members_open
+                                && !self.navigation_open
+                                && ui
+                                    .interact(
+                                        body,
+                                        egui::Id::new("members-backdrop"),
+                                        egui::Sense::click(),
+                                    )
+                                    .clicked()
+                            {
+                                self.narrow_members_visible = false;
+                            }
+                            let width = 280.0_f32.min(stage.width() - 64.0).max(0.0);
+                            // Past the edge, so the panel's shadow leaves with it.
+                            let travel = width + 8.0 + 24.0;
+                            let members_rect = egui::Rect::from_min_max(
+                                egui::pos2(stage.right() - 8.0 - width, stage.top() + 62.0),
+                                egui::pos2(
+                                    stage.right() - 8.0,
+                                    (stage.bottom() - 8.0).max(stage.top() + 62.0),
+                                ),
+                            )
+                            .translate(egui::vec2((1.0 - shown) * travel, 0.0));
+                            ui.painter().add(EDGE_SHADOW.as_shape(members_rect, 16));
                             ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
-                                self.member_presence(ui)
+                                self.member_presence(ui, true)
                             });
                         }
                     });
@@ -5681,7 +5709,7 @@ impl CaperApp {
                     });
                     if let Some(members_rect) = members_rect {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
-                            self.member_presence(ui)
+                            self.member_presence(ui, false)
                         });
                     }
                 }
@@ -7980,18 +8008,27 @@ impl CaperApp {
         });
     }
 
-    fn member_presence(&mut self, ui: &mut egui::Ui) {
+    /// The member list: a column beside the conversation, or (`overlay`, in
+    /// narrow windows) a rounded panel over it, outlined on every side.
+    fn member_presence(&mut self, ui: &mut egui::Ui, overlay: bool) {
         let Some(detail) = &self.detail else { return };
         let member_count = detail.members.len();
         let members = detail.members.clone();
         let demo = detail.space.demo;
-        egui::Frame::new()
-            .fill(SIDEBAR)
+        let frame = egui::Frame::new().fill(SIDEBAR);
+        let frame = if overlay {
+            frame.corner_radius(16).stroke(Stroke::new(1.0, BORDER))
+        } else {
+            frame
+        };
+        frame
             .show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         ui.spacing_mut().item_spacing.y = 0.0;
         let bounds = ui.max_rect();
-        ui.painter().vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
+        if !overlay {
+            ui.painter().vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
+        }
         let (heading, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),54.0), egui::Sense::hover());
         ui.painter().text(egui::pos2(heading.left()+12.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
             if !demo {
@@ -8405,6 +8442,17 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    // Right to left: Members sits right of Pins, as on web.
+                                    if self.selected_direct.is_none()
+                                        && self
+                                            .detail
+                                            .as_ref()
+                                            .is_some_and(|detail| !detail.members.is_empty())
+                                        && users_button(ui, if narrow { self.narrow_members_visible } else { self.members_visible }).clicked()
+                                    {
+                                        if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
+                                        else { self.members_visible = !self.members_visible; }
+                                    }
                                     if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
                                     }
@@ -8415,15 +8463,6 @@ impl CaperApp {
                                             && ui.button("Join channel").clicked()
                                         {
                                             self.admin(AdminOperation::JoinChannel { space, channel });
-                                        }
-                                        if self
-                                            .detail
-                                            .as_ref()
-                                            .is_some_and(|detail| !detail.members.is_empty())
-                                            && users_button(ui, if narrow { self.narrow_members_visible } else { self.members_visible }).clicked()
-                                        {
-                                            if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
-                                            else { self.members_visible = !self.members_visible; }
                                         }
                                     } else if let Some(direct) = self.selected_direct_conversation().cloned()
                                         && self.account.as_ref().is_some_and(|account| account.id != direct.peer.id)
@@ -12389,6 +12428,15 @@ fn channel_button(
     }
     (response, opened)
 }
+
+/// The shadow a sliding layer (the conversation over Browse, the member list
+/// over the conversation) casts toward the leading edge.
+const EDGE_SHADOW: egui::Shadow = egui::Shadow {
+    offset: [-4, 0],
+    blur: 16,
+    spread: 0,
+    color: egui::Color32::from_black_alpha(110),
+};
 
 fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click());
@@ -17165,6 +17213,56 @@ mod tests {
             app.members_visible,
             "narrow toggle must preserve wide preference"
         );
+    }
+
+    #[test]
+    fn narrow_members_button_follows_pins_and_the_list_slides_in_and_out() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        let narrow = |app: &mut CaperApp, time: f64| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            )
+        };
+        let heading = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Members" => Some(text.pos.x),
+                _ => None,
+            })
+        };
+        narrow(&mut app, 0.0);
+        let closed = narrow(&mut app, 0.1);
+        assert!(heading(&closed).is_none());
+        assert!(
+            node_center(&closed, "Show member list").x > node_center(&closed, "Pins").x,
+            "Members sits right of Pins"
+        );
+        app.narrow_members_visible = true;
+        let sliding = heading(&narrow(&mut app, 0.2)).expect("the list starts sliding in");
+        let resting = heading(&narrow(&mut app, 1.0)).expect("the list rests in view");
+        assert!(
+            sliding > resting + 20.0,
+            "the list slides in from the trailing edge"
+        );
+        assert!(resting < 390.0 - 8.0 - 200.0, "the resting list is in view");
+        app.narrow_members_visible = false;
+        let leaving =
+            heading(&narrow(&mut app, 1.1)).expect("the list slides out before it is gone");
+        assert!(leaving > resting);
+        assert!(heading(&narrow(&mut app, 2.0)).is_none());
     }
 
     #[test]

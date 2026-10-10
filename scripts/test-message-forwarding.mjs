@@ -273,7 +273,11 @@ try {
   assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   browser("press", "Escape");
   wait('!document.querySelector(".chat-forward-dialog")');
-  if (evaluate('!!document.querySelector(".member-list-close")')) browser("click", ".member-list-close");
+  if (evaluate('!!document.querySelector(".member-list-close")')) {
+    browser("click", ".member-list-close");
+    // The phone member list slides out before it is removed.
+    wait('!document.querySelector(".space-member-presence")');
+  }
   browser("focus", `${wrapperRow} .chat-message-actions-trigger`);
   browser("press", "Enter");
   browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");

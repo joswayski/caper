@@ -325,11 +325,16 @@
   white-space: nowrap;
   transition:
     background-color 0.2s ease,
-    border-color 0.2s ease;
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 .app-downloads .download-button {
   color: var(--blackout);
   background: var(--text);
+}
+.app-downloads .download-button:focus-visible {
+  color: var(--text);
+  background: var(--terracotta);
 }
 .app-downloads .source-button {
   color: var(--text);
@@ -337,12 +342,11 @@
   background: var(--surface);
 }
 /* Hover only where a pointer hovers, so a tapped button doesn't stay lit on
-   touch. #fff on #f3f4f5 is invisible; dim instead so the hover reads like
-   its sibling's. */
+   touch; a press still shows the same terracotta. */
 @media (hover: hover) {
   .app-downloads .download-button:hover {
-    color: var(--blackout);
-    background: #d4d6d8;
+    color: var(--text);
+    background: var(--terracotta);
   }
   .app-downloads .source-button:hover {
     color: var(--text);
@@ -350,8 +354,8 @@
   }
 }
 .app-downloads .download-button:active {
-  color: var(--blackout);
-  background: #c2c5c7;
+  color: var(--text);
+  background: var(--terracotta);
 }
 .app-downloads .source-button:active {
   color: var(--text);
@@ -550,6 +554,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-downloads .download-button,
   .hero-copy,
   .hero[data-live-open] .hero-copy {
     transition: none;

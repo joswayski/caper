@@ -553,25 +553,40 @@ def main() -> None:
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
     back = find(narrow, description="Back to Browse")
-    channel = find(narrow, description="# general channel menu")
-    assert back is not None and channel is not None, "Narrow navigation shows a back arrow and the channel-name menu"
+    channel = find(narrow, text="# general")
+    assert back is not None and channel is not None, "Narrow navigation shows a back arrow and the channel name"
     assert center(back)[0] < center(channel)[0], "The back arrow must precede the channel name, as on the web"
+    assert find(narrow, description="# general channel menu") is None, "A phone channel title has no dropdown"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    # Phones keep Pins and Members in the channel-name menu, not header buttons.
-    tap(description="# general channel menu")
-    tap(text="Members")
+    # Phones show Pins and Members as header buttons, Members right of Pins.
+    pins = find(narrow, description="Pins")
+    members_button = find(narrow, description="Show member list")
+    assert pins is not None and members_button is not None, "Phone header shows Pins and Members"
+    assert center(pins)[0] < center(members_button)[0], "Members sits right of Pins"
+    tap(description="Show member list")
     members_open = capture("caper-android-narrow-members", "Members")
-    channel = find(members_open, description="# general channel menu")
     members_title = find(members_open, text="Members")
-    assert channel is not None and members_title is not None
-    assert center(channel)[1] < center(members_title)[1], "Member overlay must leave the channel menu exposed"
-    tap(description="# general channel menu")
-    tap(text="Hide member list")
-    deadline = time.monotonic() + 10
-    while find(hierarchy(), text="Members") is not None:
-        assert time.monotonic() < deadline, "Hide member list must close the member overlay"
-        time.sleep(0.5)
+    hide = find(members_open, description="Hide member list")
+    assert hide is not None and members_title is not None
+    assert center(hide)[1] < center(members_title)[1], "Member overlay must leave the header exposed"
+
+    def members_closed(message: str) -> None:
+        deadline = time.monotonic() + 10
+        while find(hierarchy(), text="Members") is not None:
+            assert time.monotonic() < deadline, message
+            time.sleep(0.5)
+
+    tap(description="Hide member list")
+    members_closed("Hide member list must close the member overlay")
+    # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
+    # The 390x844 viewport at DPR 2; mid-height is in the timeline and on the panel.
+    width, middle = 780, "844"
+    adb("shell", "input", "swipe", str(width * 9 // 10), middle, str(width // 5), middle, "150")
+    wait_for(text="Members")
+    assert find(hierarchy(), description="Back to Browse") is not None, "A left swipe opens Members, not Browse"
+    adb("shell", "input", "swipe", str(width * 3 // 5), middle, str(width - 10), middle, "150")
+    members_closed("A right swipe on the member panel must close it")
     tap(description="Back to Browse")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")

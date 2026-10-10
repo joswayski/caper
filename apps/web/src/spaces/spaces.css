@@ -1029,52 +1029,6 @@
 .navigation-toggle svg {
   width: 15px;
 }
-.chat-channel-menu {
-  position: relative;
-  min-width: 0;
-  flex: 1;
-}
-.chat-channel-menu > summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 0 6px;
-  border-radius: 8px;
-  cursor: pointer;
-  list-style: none;
-}
-.chat-channel-menu > summary::-webkit-details-marker {
-  display: none;
-}
-.chat-channel-menu[open] > summary {
-  background: var(--surface-composer);
-}
-@media (hover: hover) {
-  .chat-channel-menu > summary:hover {
-    background: var(--surface-composer);
-  }
-}
-.chat-channel-menu > summary > svg {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  color: var(--text-muted);
-  transition: transform 150ms ease;
-}
-.chat-channel-menu[open] > summary > svg {
-  transform: rotate(180deg);
-}
-.chat-channel-menu .space-actions {
-  width: 200px;
-  max-width: calc(100vw - 88px);
-}
-.chat-channel-menu .space-actions button {
-  min-height: 44px;
-  height: auto;
-}
-.chat-channel-menu > summary:focus-visible,
-.chat-channel-menu button:focus-visible,
 .navigation-toggle:focus-visible {
   outline: 2px solid var(--terracotta-bright);
   outline-offset: 2px;
@@ -2046,8 +2000,7 @@
   .space-actions .notification-chevron,
   .space-access-notice button,
   .space-menu summary > svg,
-  .channel-section-heading svg,
-  .chat-channel-menu > summary > svg {
+  .channel-section-heading svg {
     transition: none;
   }
 }
@@ -2096,13 +2049,23 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
   }
   /* Touch-action must reach the nearest scroll container, not just the room. */
   .spaces-room
-    :is(.chat-scroller, .chat-pins, .channel-navigation, .channel-navigation ul, .sidebar-channels, .space-rail) {
+    :is(
+      .chat-scroller,
+      .chat-pins,
+      .channel-navigation,
+      .channel-navigation ul,
+      .sidebar-channels,
+      .space-rail,
+      .space-member-presence
+    ) {
     touch-action: pan-y pinch-zoom;
   }
   .spaces-room > .space-rail,
   .spaces-room > .people-panel {
     display: none;
   }
+  /* A drawer over the conversation (membersDrawer.ts slides it), outlined on
+     every side and lifted by the shadow the conversation casts over Browse. */
   .spaces-room > .space-member-presence {
     position: absolute;
     z-index: 8;
@@ -2112,6 +2075,7 @@ html[data-browse-transition="close"]::view-transition-new(browse-room) {
     width: min(280px, calc(100% - 64px));
     border: 1px solid var(--border);
     border-radius: 16px;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.45);
   }
   .spaces-room > .member-list-backdrop {
     position: absolute;
