@@ -76,8 +76,8 @@
   transform-style: preserve-3d;
 }
 /* Arrival, once, when the window is first shown. It moves the whole scene
-   (translate composes with the pose transform), so the chassis slabs travel
-   with the window and never pass in front of it. */
+   (translate composes with the pose transform), so the solid chassis travels
+   with the window and never passes in front of it. */
 .live-stage[data-ready] {
   animation: live-fade 0.5s ease-out backwards;
 }
@@ -95,7 +95,7 @@
   }
 }
 
-/* Chassis: stacked slabs read as the window's thickness when it turns. */
+/* One solid chassis: continuous side faces join the front to its back. */
 .live-shadow {
   position: absolute;
   inset: 10% 6% -4%;
@@ -106,17 +106,58 @@
   transform: translate3d(0, 34px, -90px);
   pointer-events: none;
 }
-.live-slab {
+.live-chassis {
+  --thickness: calc(16px * var(--depth));
   position: absolute;
   inset: 0;
-  border: 1px solid #1d2326;
   border-radius: 6px;
-  background: #0d1012;
-  transform: translateZ(calc(var(--z) * var(--depth) * 1px));
+  transform-style: preserve-3d;
   pointer-events: none;
 }
-.live-slab:nth-child(3) {
-  background: #0a0c0d;
+.live-chassis::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--blackout);
+  transform: translateZ(calc(-1 * var(--thickness)));
+  content: "";
+}
+.live-chassis > span {
+  position: absolute;
+  border-radius: inherit;
+  background: #111416;
+}
+.live-chassis > :is([data-side="top"], [data-side="bottom"]) {
+  left: 0;
+  width: 100%;
+  height: var(--thickness);
+}
+.live-chassis > [data-side="top"] {
+  top: 0;
+  background: var(--surface);
+  transform-origin: top;
+  transform: rotateX(-90deg);
+}
+.live-chassis > [data-side="bottom"] {
+  bottom: 0;
+  transform-origin: bottom;
+  transform: rotateX(90deg);
+}
+.live-chassis > :is([data-side="left"], [data-side="right"]) {
+  top: 0;
+  width: var(--thickness);
+  height: 100%;
+}
+.live-chassis > [data-side="left"] {
+  left: 0;
+  transform-origin: left;
+  transform: rotateY(90deg);
+}
+.live-chassis > [data-side="right"] {
+  right: 0;
+  background: #0d1012;
+  transform-origin: right;
+  transform: rotateY(-90deg);
 }
 
 .live-window {
@@ -360,14 +401,14 @@
 
 /* Fully open, the window becomes plain 2D layout. Coplanar layers inside a 3D
    context make hit testing unreliable (clicks can land on a scroll container
-   instead of the control drawn on top). The edge plates are fully transparent
-   by now, so dropping the 3D structure causes no visible change. */
+   instead of the control drawn on top). The chassis has no thickness by now,
+   so dropping the 3D structure causes no visible change. */
 .live-scene[data-settled],
 .live-scene[data-settled] :is(.lz, .live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel) {
   transform: none;
   transform-style: flat;
 }
-.live-scene[data-settled] .live-slab,
+.live-scene[data-settled] .live-chassis,
 .live-scene[data-settled] .live-shadow {
   display: none;
 }
@@ -822,7 +863,7 @@ html.live-sheet-open {
     transform: translateY(24px) scale(0.97);
   }
 }
-.live-scene[data-mode="sheet"][data-active] :is(.live-slab, .live-shadow) {
+.live-scene[data-mode="sheet"][data-active] :is(.live-chassis, .live-shadow) {
   display: none;
 }
 .live-scene[data-mode="sheet"][data-active] .live-window {
