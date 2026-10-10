@@ -65,7 +65,6 @@ const MEMBER_PAGE_SIZE: usize = 25;
 #[derive(Clone, Copy)]
 enum NavIcon {
     Chevron,
-    ChevronRight,
     Close,
     More,
     Plus,
@@ -426,6 +425,10 @@ struct CaperApp {
     /// History height before older messages were prepended, to keep position.
     older_anchor: Option<f32>,
     history_height: f32,
+    /// The history viewport's height and whether it showed the newest
+    /// message, as of the last pass.
+    history_viewport: f32,
+    history_at_end: bool,
     history_offset: Option<f32>,
     has_more: bool,
     history_request: u64,
@@ -560,6 +563,11 @@ struct CaperApp {
     prepared_voice: BTreeMap<String, Instant>,
     expanded_rosters: BTreeSet<String>,
     sidebar_width: f32,
+    /// A dialog opened from the User Settings menu is showing.
+    settings_menu_dialog: bool,
+    /// One pass after such a dialog closes from the keyboard, focus returns
+    /// to the User Settings button, as on web.
+    focus_user_settings: bool,
     navigation_open: bool,
     navigation: u64,
     opening: bool,
@@ -617,6 +625,8 @@ impl CaperApp {
             older_armed: false,
             older_anchor: None,
             history_height: 0.0,
+            history_viewport: 0.0,
+            history_at_end: true,
             history_offset: None,
             has_more: false,
             history_request: 0,
@@ -724,6 +734,8 @@ impl CaperApp {
             prepared_voice: BTreeMap::new(),
             expanded_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
+            settings_menu_dialog: false,
+            focus_user_settings: false,
             navigation_open: false,
             navigation: 0,
             opening: false,
@@ -4677,19 +4689,39 @@ impl CaperApp {
         let Some(notice) = self.space_notice.clone() else {
             return;
         };
+        // Top center: at the bottom left it covered the account bar's audio
+        // controls (and the composer in narrow windows).
+        let text_width = (context.content_rect().width() - 32.0 - 28.0 - 16.0 - 28.0).max(1.0);
         egui::Area::new(egui::Id::new("space-notice"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(20.0, -20.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
                     .corner_radius(8)
                     .inner_margin(14)
+                    .shadow(egui::Shadow {
+                        offset: [0, 6],
+                        blur: 18,
+                        spread: 0,
+                        color: Color32::from_black_alpha(90),
+                    })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 16.0;
-                            ui.label(RichText::new(notice).size(13.0).color(TEXT));
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(text_width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(notice).size(13.0).color(TEXT),
+                                        )
+                                        .wrap(),
+                                    )
+                                },
+                            );
                             if drawn_icon_button(ui, NavIcon::Close, "Dismiss notice").clicked() {
                                 self.space_notice = None;
                             }
@@ -4813,6 +4845,19 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.page(context);
         self.update_notice(context);
+        // A mouse close leaves focus alone, as `:focus-visible` would.
+        let from_settings_menu = matches!(
+            self.dialog,
+            Some(Dialog::Settings | Dialog::Audio | Dialog::Connection | Dialog::Diagnostics)
+        );
+        self.focus_user_settings = self.settings_menu_dialog
+            && self.dialog.is_none()
+            && context.input(|input| {
+                [egui::Key::Escape, egui::Key::Enter, egui::Key::Space]
+                    .into_iter()
+                    .any(|key| input.key_pressed(key))
+            });
+        self.settings_menu_dialog = from_settings_menu;
         let messages = self
             .timeline
             .messages()
@@ -5089,9 +5134,10 @@ impl CaperApp {
                                 self.loading || !allowed || self.form_name.trim().is_empty();
                             let entered = field.lost_focus()
                                 && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                            let clicked = login_action(
+                            let clicked = compact_login_action(
                                 ui,
                                 if self.loading { "Creating…" } else { "Create space" },
+                                "Create space",
                                 blocked,
                             )
                             .clicked();
@@ -5193,9 +5239,10 @@ impl CaperApp {
                                 login_error_frame(ui, error);
                             }
                             ui.add_space(24.0);
-                            if login_action(
+                            if compact_login_action(
                                 ui,
                                 if self.loading { "Saving…" } else { "Finish account" },
+                                "Finish account",
                                 self.loading
                                     || self.username.len() < 3
                                     || self.display_name.trim().is_empty(),
@@ -5316,9 +5363,10 @@ impl CaperApp {
                                 // Counts as a resend; "Resend code" would repeat it. At the
                                 // limit it is hidden, as on web: the API would send nothing.
                                 if resends_left
-                                    && login_action(
+                                    && compact_login_action(
                                         ui,
                                         if self.loading { "Sending…" } else { "Email me a new code" },
+                                        "Email me a new code",
                                         self.loading,
                                     )
                                     .clicked()
@@ -5326,13 +5374,14 @@ impl CaperApp {
                                     self.code.clear();
                                     self.resend_code();
                                 }
-                            } else if login_action(
+                            } else if compact_login_action(
                                 ui,
                                 if self.loading && !self.resending {
                                     "Checking…"
                                 } else {
                                     "Continue"
                                 },
+                                "Continue",
                                 self.loading || self.code.len() != 6,
                             )
                             .clicked()
@@ -5721,169 +5770,205 @@ impl CaperApp {
     fn rail(&mut self, ui: &mut egui::Ui) {
         egui::Frame::new()
             .fill(BLACKOUT)
-            .inner_margin(egui::Margin::symmetric(9, 14))
+            .inner_margin(egui::Margin::symmetric(9, 0))
             .show(ui, |ui| {
                 ui.set_width(42.0);
                 ui.set_min_height(ui.available_height());
-                ui.spacing_mut().item_spacing.y = 0.0;
-                let spaces: Vec<_> = self
-                    .spaces
-                    .iter()
-                    .map(|space| (space.id.clone(), space.name.clone(), space.demo))
-                    .collect();
-                for (id, name, demo) in spaces {
-                    let active = self.selected_space.as_deref() == Some(&id);
-                    let muted = (!demo && self.account.is_some())
-                        .then(|| self.muted_label(&Scope::Space(id.clone())))
-                        .flatten();
-                    let text = if demo {
-                        "C".into()
-                    } else {
-                        name.chars()
-                            .next()
-                            .unwrap_or('C')
-                            .to_uppercase()
-                            .to_string()
-                    };
-                    let mut letter = if active { TEXT } else { MUTED };
-                    if muted.is_some() {
-                        letter = muted_color(letter);
-                    }
-                    let button = egui::Button::new(RichText::new(text).strong().color(letter))
-                        .min_size(egui::vec2(40.0, 40.0))
-                        .fill(if active {
-                            Color32::from_rgb(57, 35, 30)
-                        } else {
-                            SURFACE
-                        })
-                        .stroke(Stroke::new(
-                            1.0,
-                            if active {
-                                Color32::from_rgb(128, 81, 67)
+                // Many spaces scroll instead of pushing Create space out of
+                // reach; a visible scrollbar would push the tiles off-center.
+                egui::ScrollArea::vertical()
+                    .id_salt("space-rail")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.add_space(14.0);
+                        let spaces: Vec<_> = self
+                            .spaces
+                            .iter()
+                            .map(|space| (space.id.clone(), space.name.clone(), space.demo))
+                            .collect();
+                        for (id, name, demo) in spaces {
+                            let active = self.selected_space.as_deref() == Some(&id);
+                            let muted = (!demo && self.account.is_some())
+                                .then(|| self.muted_label(&Scope::Space(id.clone())))
+                                .flatten();
+                            let text = if demo {
+                                "C".into()
                             } else {
-                                BORDER
-                            },
-                        ))
-                        .corner_radius(if active { 8 } else { 12 });
-                    let response = ui
-                        .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                            ui.add(button)
-                        })
-                        .inner;
-                    // A muted space gets a bell-slash badge and says so on hover.
-                    let response = match &muted {
-                        Some(label) => {
-                            let badge = egui::Rect::from_center_size(
-                                response.rect.right_bottom() - egui::vec2(3.0, 3.0),
-                                egui::vec2(18.0, 18.0),
-                            );
-                            ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
-                            paint_icon(ui.painter(), badge.shrink(3.0), NavIcon::BellOff, MUTED);
-                            response.on_hover_text(format!("{name}\n{label}"))
+                                name.chars()
+                                    .next()
+                                    .unwrap_or('C')
+                                    .to_uppercase()
+                                    .to_string()
+                            };
+                            // Web: hover stays neutral; terracotta marks only the
+                            // current space.
+                            let tone = if active {
+                                let current = (PRESSED, Color32::from_rgb(128, 81, 67), TEXT);
+                                Tone {
+                                    rest: current,
+                                    hover: current,
+                                    press: (current.0, TERRACOTTA_BRIGHT, TEXT),
+                                }
+                            } else {
+                                Tone {
+                                    rest: (SURFACE, BORDER, MUTED),
+                                    hover: (RAISED, MUTED, TEXT),
+                                    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+                                }
+                            };
+                            // Not `strong()`: that would pin the pressed text color.
+                            let mut letter = RichText::new(text);
+                            if muted.is_some() {
+                                letter =
+                                    letter.color(muted_color(if active { TEXT } else { MUTED }));
+                            }
+                            let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
+                            let response = ui
+                                .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                    toned_rounded(
+                                        ui,
+                                        tone,
+                                        if active { 8 } else { 12 },
+                                        true,
+                                        button,
+                                    )
+                                })
+                                .inner;
+                            // A muted space gets a bell-slash badge and says so on hover.
+                            let response = match &muted {
+                                Some(label) => {
+                                    let badge = egui::Rect::from_center_size(
+                                        response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+                                        egui::vec2(18.0, 18.0),
+                                    );
+                                    ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                                    paint_icon(
+                                        ui.painter(),
+                                        badge.shrink(3.0),
+                                        NavIcon::BellOff,
+                                        MUTED,
+                                    );
+                                    response.on_hover_text(format!("{name}\n{label}"))
+                                }
+                                None => response.on_hover_text(name),
+                            };
+                            if active {
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            ui.max_rect().left() - 9.0,
+                                            response.rect.top() + 8.0,
+                                        ),
+                                        egui::vec2(3.0, 24.0),
+                                    ),
+                                    2.0,
+                                    TERRACOTTA_BRIGHT,
+                                );
+                            }
+                            if response.clicked() {
+                                self.select_space(id);
+                            } else if response.hovered() || response.has_focus() {
+                                self.prefetch(NavigationTarget {
+                                    space: if demo { None } else { Some(id) },
+                                    channel: None,
+                                });
+                            }
+                            ui.add_space(10.0);
                         }
-                        None => response.on_hover_text(name),
-                    };
-                    if active {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                egui::pos2(ui.max_rect().left() - 9.0, response.rect.top() + 8.0),
-                                egui::vec2(3.0, 24.0),
-                            ),
-                            2.0,
-                            TERRACOTTA_BRIGHT,
-                        );
-                    }
-                    if response.clicked() {
-                        self.select_space(id);
-                    } else if response.hovered() || response.has_focus() {
-                        self.prefetch(NavigationTarget {
-                            space: if demo { None } else { Some(id) },
-                            channel: None,
-                        });
-                    }
-                    ui.add_space(10.0);
-                }
-                for invitation in self.invitations.clone() {
-                    // The space's initial, matching web, Apple and Android.
-                    let initial = invitation
-                        .name
-                        .trim()
-                        .chars()
-                        .next()
-                        .map(|letter| letter.to_uppercase().to_string())
-                        .unwrap_or_default();
-                    let response = ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(initial).strong().color(TERRACOTTA_BRIGHT),
+                        for invitation in self.invitations.clone() {
+                            // The space's initial, matching web, Apple and Android.
+                            let initial = invitation
+                                .name
+                                .trim()
+                                .chars()
+                                .next()
+                                .map(|letter| letter.to_uppercase().to_string())
+                                .unwrap_or_default();
+                            let invited = (SURFACE, TERRACOTTA, TERRACOTTA_BRIGHT);
+                            let response = toned_rounded(
+                                ui,
+                                Tone {
+                                    rest: invited,
+                                    hover: (SURFACE, TERRACOTTA_BRIGHT, TERRACOTTA_BRIGHT),
+                                    press: (PRESSED, TERRACOTTA_BRIGHT, TERRACOTTA_BRIGHT),
+                                },
+                                12,
+                                true,
+                                egui::Button::new(initial).min_size(egui::vec2(40.0, 40.0)),
                             )
-                            .min_size(egui::vec2(40.0, 40.0))
-                            .fill(SURFACE)
-                            .stroke(Stroke::new(1.0, TERRACOTTA))
-                            .corner_radius(12),
-                        )
-                        .on_hover_text(format!("Invitation to {}", invitation.name));
-                    if response.clicked() {
-                        self.dialog = Some(Dialog::Invitation(invitation));
-                    }
-                    ui.add_space(10.0);
-                }
-                let tooltip = self.create_space_tooltip();
-                let add_enabled = self.account.is_none() || self.can_create_space();
-                let (rect, add) = ui.allocate_exact_size(
-                    egui::vec2(40.0, 40.0),
-                    if add_enabled {
-                        egui::Sense::click()
-                    } else {
-                        egui::Sense::hover()
-                    },
-                );
-                let plus = if add_enabled {
-                    TERRACOTTA_BRIGHT
-                } else {
-                    TERRACOTTA_BRIGHT.gamma_multiply(0.45)
-                };
-                ui.painter()
-                    .rect_filled(rect, 12.0, if add.hovered() { RAISED } else { SURFACE });
-                let inset = rect.shrink(0.5);
-                let corners = [
-                    inset.right_top() + egui::vec2(-12.0, 12.0),
-                    inset.right_bottom() + egui::vec2(-12.0, -12.0),
-                    inset.left_bottom() + egui::vec2(12.0, -12.0),
-                    inset.left_top() + egui::vec2(12.0, 12.0),
-                ];
-                let mut outline = Vec::new();
-                for (corner, center) in corners.into_iter().enumerate() {
-                    for step in 0..=8 {
-                        let angle =
-                            (corner as f32 - 1.0 + step as f32 / 8.0) * std::f32::consts::FRAC_PI_2;
-                        outline.push(center + egui::vec2(angle.cos(), angle.sin()) * 12.0);
-                    }
-                }
-                outline.push(outline[0]);
-                ui.painter().extend(egui::Shape::dashed_line(
-                    &outline,
-                    Stroke::new(1.0, BORDER),
-                    3.0,
-                    3.0,
-                ));
-                add.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, add_enabled, "Create space")
-                });
-                paint_icon(
-                    ui.painter(),
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
-                    NavIcon::Plus,
-                    plus,
-                );
-                if add.on_hover_text(tooltip).clicked() {
-                    self.dialog = Some(if self.account.is_some() {
-                        Dialog::CreateSpace
-                    } else {
-                        Dialog::SignIn
+                            .on_hover_text(format!("Invitation to {}", invitation.name));
+                            if response.clicked() {
+                                self.dialog = Some(Dialog::Invitation(invitation));
+                            }
+                            ui.add_space(10.0);
+                        }
+                        let tooltip = self.create_space_tooltip();
+                        let add_enabled = self.account.is_none() || self.can_create_space();
+                        let (rect, add) = ui.allocate_exact_size(
+                            egui::vec2(40.0, 40.0),
+                            if add_enabled {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            },
+                        );
+                        let plus = if add_enabled {
+                            TERRACOTTA_BRIGHT
+                        } else {
+                            TERRACOTTA_BRIGHT.gamma_multiply(0.45)
+                        };
+                        ui.painter().rect_filled(
+                            rect,
+                            12.0,
+                            if add.hovered() { RAISED } else { SURFACE },
+                        );
+                        let inset = rect.shrink(0.5);
+                        let corners = [
+                            inset.right_top() + egui::vec2(-12.0, 12.0),
+                            inset.right_bottom() + egui::vec2(-12.0, -12.0),
+                            inset.left_bottom() + egui::vec2(12.0, -12.0),
+                            inset.left_top() + egui::vec2(12.0, 12.0),
+                        ];
+                        let mut outline = Vec::new();
+                        for (corner, center) in corners.into_iter().enumerate() {
+                            for step in 0..=8 {
+                                let angle = (corner as f32 - 1.0 + step as f32 / 8.0)
+                                    * std::f32::consts::FRAC_PI_2;
+                                outline.push(center + egui::vec2(angle.cos(), angle.sin()) * 12.0);
+                            }
+                        }
+                        outline.push(outline[0]);
+                        ui.painter().extend(egui::Shape::dashed_line(
+                            &outline,
+                            Stroke::new(1.0, BORDER),
+                            3.0,
+                            3.0,
+                        ));
+                        add.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                add_enabled,
+                                "Create space",
+                            )
+                        });
+                        paint_icon(
+                            ui.painter(),
+                            egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
+                            NavIcon::Plus,
+                            plus,
+                        );
+                        if add.on_hover_text(tooltip).clicked() {
+                            self.dialog = Some(if self.account.is_some() {
+                                Dialog::CreateSpace
+                            } else {
+                                Dialog::SignIn
+                            });
+                            self.form_name.clear();
+                        }
+                        ui.add_space(14.0);
                     });
-                    self.form_name.clear();
-                }
             });
     }
 
@@ -5915,139 +6000,140 @@ impl CaperApp {
                         .frame(egui::Frame::NONE)
                         .show_inside(ui, |ui| self.account_bar(ui));
                 }
+                // Pinned above the scrolling channel list, as on web.
+                let header = ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 54.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        let width = ui.available_width()
+                            - if self.navigation_open { 36.0 } else { 0.0 };
+                        let (rect, actions) = ui.allocate_exact_size(
+                            egui::vec2(width, 38.0),
+                            if self.owner() || self.can_leave_space() {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            },
+                        );
+                        if (self.owner() || self.can_leave_space())
+                            && (actions.hovered() || actions.has_focus())
+                        {
+                            ui.painter().rect_filled(rect, 8.0, RAISED);
+                        }
+                        let name = self
+                            .detail
+                            .as_ref()
+                            .map_or("Caper", |detail| if detail.space.demo { "Caper" } else { detail.space.name.as_str() });
+                        let title_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+                        let muted = space_scope.as_ref().and_then(|scope| self.muted_label(scope));
+                        if let Some(label) = &muted {
+                            muted_indicator(
+                                ui,
+                                egui::Rect::from_center_size(
+                                    egui::pos2(rect.right() - 38.0, rect.center().y),
+                                    egui::vec2(14.0, 14.0),
+                                ),
+                                actions.id.with("muted"),
+                                label,
+                            );
+                        }
+                        ui.painter()
+                            .with_clip_rect(egui::Rect::from_min_max(
+                                title_rect.min,
+                                egui::pos2(
+                                    title_rect.right() - if muted.is_some() { 46.0 } else { 24.0 },
+                                    title_rect.bottom(),
+                                ),
+                            ))
+                            .text(
+                                egui::pos2(title_rect.left(), title_rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                name,
+                                egui::FontId::new(
+                                    15.0,
+                                    egui::FontFamily::Name("Satoshi Bold".into()),
+                                ),
+                                TEXT,
+                            );
+                        actions.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                self.owner() || self.can_leave_space(),
+                                format!("{name} actions"),
+                            )
+                        });
+                        if self.owner() || self.can_leave_space() {
+                            paint_icon(
+                                ui.painter(),
+                                egui::Rect::from_center_size(
+                                    egui::pos2(rect.right() - 16.0, rect.center().y),
+                                    egui::vec2(16.0, 16.0),
+                                ),
+                                NavIcon::Chevron,
+                                MUTED,
+                            );
+                            if actions.clicked() && !egui::Popup::menu(&actions).is_open() {
+                                self.load_notifications();
+                            }
+                            egui::Popup::menu(&actions).width(width).show(|ui| {
+                                if ui.button("Browse channels").clicked() {
+                                    self.browse_channels = true;
+                                    self.channel_search.clear();
+                                    ui.close();
+                                }
+                                if let Some(scope) = &space_scope {
+                                    self.notification_items(ui, scope, "space");
+                                    ui.separator();
+                                }
+                                if self.can_leave_space() {
+                                    if ui
+                                        .button(RichText::new("Leave space…").color(ERROR))
+                                        .clicked()
+                                    {
+                                        if let Some(detail) = &self.detail {
+                                            self.dialog = Some(Dialog::LeaveSpace {
+                                                id: detail.space.id.clone(),
+                                                name: detail.space.name.clone(),
+                                            });
+                                        }
+                                        ui.close();
+                                    }
+                                    return;
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::image_and_text(
+                                            egui::Image::new(egui::include_image!(
+                                                "../resources/icons/settings.svg"
+                                            ))
+                                            .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                            "Space settings",
+                                        )
+                                        .min_size(egui::vec2(width - 16.0, 36.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.open_manage_space();
+                                    ui.close();
+                                }
+                            });
+                        }
+                        if self.navigation_open
+                            && drawn_icon_button(ui, NavIcon::Close, "Close navigation")
+                                .clicked()
+                        {
+                            self.navigation_open = false;
+                        }
+                    },
+                );
+                ui.painter().hline(
+                    (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
+                    header.response.rect.bottom(),
+                    Stroke::new(1.0, BORDER),
+                );
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {
-                        let header = ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), 54.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                let width = ui.available_width()
-                                    - if self.navigation_open { 36.0 } else { 0.0 };
-                                let (rect, actions) = ui.allocate_exact_size(
-                                    egui::vec2(width, 38.0),
-                                    if self.owner() || self.can_leave_space() {
-                                        egui::Sense::click()
-                                    } else {
-                                        egui::Sense::hover()
-                                    },
-                                );
-                                if (self.owner() || self.can_leave_space())
-                                    && (actions.hovered() || actions.has_focus())
-                                {
-                                    ui.painter().rect_filled(rect, 8.0, RAISED);
-                                }
-                                let name = self
-                                    .detail
-                                    .as_ref()
-                                    .map_or("Caper", |detail| if detail.space.demo { "Caper" } else { detail.space.name.as_str() });
-                                let title_rect = rect.shrink2(egui::vec2(8.0, 0.0));
-                                let muted = space_scope.as_ref().and_then(|scope| self.muted_label(scope));
-                                if let Some(label) = &muted {
-                                    muted_indicator(
-                                        ui,
-                                        egui::Rect::from_center_size(
-                                            egui::pos2(rect.right() - 38.0, rect.center().y),
-                                            egui::vec2(14.0, 14.0),
-                                        ),
-                                        actions.id.with("muted"),
-                                        label,
-                                    );
-                                }
-                                ui.painter()
-                                    .with_clip_rect(egui::Rect::from_min_max(
-                                        title_rect.min,
-                                        egui::pos2(
-                                            title_rect.right() - if muted.is_some() { 46.0 } else { 24.0 },
-                                            title_rect.bottom(),
-                                        ),
-                                    ))
-                                    .text(
-                                        egui::pos2(title_rect.left(), title_rect.center().y),
-                                        egui::Align2::LEFT_CENTER,
-                                        name,
-                                        egui::FontId::new(
-                                            15.0,
-                                            egui::FontFamily::Name("Satoshi Bold".into()),
-                                        ),
-                                        TEXT,
-                                    );
-                                actions.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
-                                        self.owner() || self.can_leave_space(),
-                                        format!("{name} actions"),
-                                    )
-                                });
-                                if self.owner() || self.can_leave_space() {
-                                    paint_icon(
-                                        ui.painter(),
-                                        egui::Rect::from_center_size(
-                                            egui::pos2(rect.right() - 16.0, rect.center().y),
-                                            egui::vec2(16.0, 16.0),
-                                        ),
-                                        NavIcon::Chevron,
-                                        MUTED,
-                                    );
-                                    if actions.clicked() && !egui::Popup::menu(&actions).is_open() {
-                                        self.load_notifications();
-                                    }
-                                    egui::Popup::menu(&actions).width(width).show(|ui| {
-                                        if ui.button("Browse channels").clicked() {
-                                            self.browse_channels = true;
-                                            self.channel_search.clear();
-                                            ui.close();
-                                        }
-                                        if let Some(scope) = &space_scope {
-                                            self.notification_items(ui, scope, "space");
-                                            ui.separator();
-                                        }
-                                        if self.can_leave_space() {
-                                            if ui
-                                                .button(RichText::new("Leave space…").color(ERROR))
-                                                .clicked()
-                                            {
-                                                if let Some(detail) = &self.detail {
-                                                    self.dialog = Some(Dialog::LeaveSpace {
-                                                        id: detail.space.id.clone(),
-                                                        name: detail.space.name.clone(),
-                                                    });
-                                                }
-                                                ui.close();
-                                            }
-                                            return;
-                                        }
-                                        if ui
-                                            .add(
-                                                egui::Button::image_and_text(
-                                                    egui::Image::new(egui::include_image!(
-                                                        "../resources/icons/settings.svg"
-                                                    ))
-                                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                                    "Space settings",
-                                                )
-                                                .min_size(egui::vec2(width - 16.0, 36.0)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.open_manage_space();
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                                if self.navigation_open
-                                    && drawn_icon_button(ui, NavIcon::Close, "Close navigation")
-                                        .clicked()
-                                {
-                                    self.navigation_open = false;
-                                }
-                            },
-                        );
-                        ui.painter().hline(
-                            (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
-                            header.response.rect.bottom(),
-                            Stroke::new(1.0, BORDER),
-                        );
                         if let Some(scope) = &space_scope
                             && self.notifications.error(scope).is_some()
                         {
@@ -6060,16 +6146,8 @@ impl CaperApp {
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
-                                if drawn_icon_button(
-                                    ui,
-                                    if self.channels_expanded {
-                                        NavIcon::Chevron
-                                    } else {
-                                        NavIcon::ChevronRight
-                                    },
-                                    "Toggle channels",
-                                )
-                                .clicked()
+                                if chevron_button(ui, self.channels_expanded, "Toggle channels")
+                                    .clicked()
                                 {
                                     self.channels_expanded = !self.channels_expanded;
                                     self.effects.toggle(self.channels_expanded);
@@ -6114,12 +6192,25 @@ impl CaperApp {
                                                         self.dialog = Some(Dialog::CreateChannel);
                                                         ui.close();
                                                     }
+                                                    // Every item has an icon, so the labels line up.
                                                     if ui
-                                                        .button(if self.channels_expanded {
-                                                            "Collapse channels"
-                                                        } else {
-                                                            "Expand channels"
-                                                        })
+                                                        .add(egui::Button::image_and_text(
+                                                            if self.channels_expanded {
+                                                                egui::Image::new(egui::include_image!(
+                                                                    "../resources/icons/chevron-right.svg"
+                                                                ))
+                                                            } else {
+                                                                egui::Image::new(egui::include_image!(
+                                                                    "../resources/icons/chevron-down.svg"
+                                                                ))
+                                                            }
+                                                            .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                                            if self.channels_expanded {
+                                                                "Collapse channels"
+                                                            } else {
+                                                                "Expand channels"
+                                                            },
+                                                        ))
                                                         .clicked()
                                                     {
                                                         self.channels_expanded =
@@ -6153,29 +6244,53 @@ impl CaperApp {
                         );
                         ui.add_space(4.0);
                         if self.browse_channels {
-                            if ui.button("Close Browse").clicked() {
-                                self.browse_channels = false;
-                                self.channel_search.clear();
-                            }
-                            ui.add(egui::TextEdit::singleline(&mut self.channel_search).hint_text("Search channels"));
-                            let query = self.channel_search.to_lowercase();
-                            let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
-                                .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
-                                .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
-                            for (id, name, private) in previews {
-                                ui.horizontal(|ui| {
-                                    if ui.button(format!("# {name}")).clicked() { self.select_channel(id.clone(), false); }
-                                    if ui.small_button("Join").clicked() && let Some(space) = self.selected_space.clone() {
-                                        self.admin(AdminOperation::JoinChannel { space, channel: id.clone() });
-                                    }
-                                    // Web: owners manage any channel from Browse, joined or not.
-                                    if self.owner() && drawn_icon_button(ui, NavIcon::Settings, &format!("Manage {name}")).on_hover_text("Channel settings").clicked() {
-                                        self.browse_channels = false;
-                                        self.channel_search.clear();
-                                        self.open_manage_channel(&id, &name, private);
-                                    }
-                                });
-                            }
+                            // Spaced like the rest of the sidebar instead of stacked
+                            // edge to edge; previews read as channel rows.
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 6.0);
+                                ui.spacing_mut().interact_size.y = 28.0;
+                                if secondary_button(ui, "Close Browse", true).clicked() {
+                                    self.browse_channels = false;
+                                    self.channel_search.clear();
+                                }
+                                ui.add_sized(
+                                    [ui.available_width(), 32.0],
+                                    egui::TextEdit::singleline(&mut self.channel_search)
+                                        .vertical_align(egui::Align::Center)
+                                        .margin(egui::Margin::symmetric(8, 4))
+                                        .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
+                                );
+                                let query = self.channel_search.to_lowercase();
+                                let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
+                                    .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
+                                    .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
+                                for (id, name, private) in previews {
+                                    ui.horizontal(|ui| {
+                                        let trailing = 50.0 + if self.owner() { 32.0 } else { 0.0 };
+                                        let (row, _) = channel_button(
+                                            ui,
+                                            egui::vec2((ui.available_width() - trailing).max(48.0), 32.0),
+                                            &name,
+                                            Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
+                                            self.selected_channel.as_deref() == Some(&id),
+                                            RowExtras::default(),
+                                        );
+                                        if row.clicked() { self.select_channel(id.clone(), false); }
+                                        if toned(ui, SECONDARY_TONE, true, egui::Button::new(bold("Join").size(11.0)).min_size(egui::vec2(46.0, 28.0))).clicked()
+                                            && let Some(space) = self.selected_space.clone()
+                                        {
+                                            self.admin(AdminOperation::JoinChannel { space, channel: id.clone() });
+                                        }
+                                        // Web: owners manage any channel from Browse, joined or not.
+                                        if self.owner() && drawn_icon_button(ui, NavIcon::Settings, &format!("Manage {name}")).on_hover_text("Channel settings").clicked() {
+                                            self.browse_channels = false;
+                                            self.channel_search.clear();
+                                            self.open_manage_channel(&id, &name, private);
+                                        }
+                                    });
+                                }
+                            });
+                            ui.add_space(6.0);
                         }
                         let channels: Vec<_> =
                             self.detail.as_ref().map_or_else(Vec::new, |detail| {
@@ -6271,19 +6386,27 @@ impl CaperApp {
                             ui.add_space(4.0);
                         }
                         for invitation in invitations {
-                            ui.group(|ui| {
+                            egui::Frame::new()
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(8)
+                                .inner_margin(10)
+                                .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 3.0;
                                 ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
                                 ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
                                 ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
+                                ui.add_space(6.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Decline").clicked() && let Some(space) = self.selected_space.clone() {
+                                    if secondary_button(ui, "Decline", true).clicked() && let Some(space) = self.selected_space.clone() {
                                         self.admin(AdminOperation::DeclineChannelInvitation { space, channel: invitation.channel.id.clone() });
                                     }
-                                    if ui.button("Accept").clicked() && let Some(space) = self.selected_space.clone() {
+                                    if primary_button(ui, "Accept", true).clicked() && let Some(space) = self.selected_space.clone() {
                                         self.admin(AdminOperation::AcceptChannelInvitation { space, channel: invitation.channel.id.clone() });
                                     }
                                 });
                             });
+                            ui.add_space(6.0);
                         }
                         let active_visible = self.channels_expanded
                             && self.detail.as_ref().is_some_and(|detail| {
@@ -6406,39 +6529,23 @@ impl CaperApp {
                     display_name,
                     account.avatar_id,
                 );
-                let mut label = egui::text::LayoutJob::default();
-                label.append(
-                    display_name,
-                    0.0,
-                    egui::TextFormat {
-                        font_id: egui::FontId::new(
-                            13.0,
-                            egui::FontFamily::Name("Satoshi Medium".into()),
-                        ),
-                        color: if self_active { TEXT } else { MUTED },
-                        ..Default::default()
-                    },
-                );
-                label.append(
-                    " you",
-                    0.0,
-                    egui::TextFormat {
-                        font_id: egui::FontId::new(
-                            12.0,
-                            egui::FontFamily::Name("Satoshi Medium".into()),
-                        ),
-                        color: MUTED,
-                        ..Default::default()
-                    },
-                );
-                let galley = ui.painter().layout_job(label);
-                ui.painter().with_clip_rect(rect).galley(
-                    egui::pos2(
-                        rect.left() + 35.0,
-                        rect.center().y - galley.size().y / 2.0 - 1.0,
+                // Level with the DM rows' names below; a long name gives way
+                // to "you".
+                paint_row_name(
+                    ui,
+                    egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
+                    rect.width() - 32.0 - 6.0,
+                    (
+                        display_name,
+                        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                        if self_active { TEXT } else { MUTED },
                     ),
-                    galley,
-                    TEXT,
+                    (
+                        "you",
+                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                        MUTED,
+                    ),
+                    true,
                 );
                 if self_unread {
                     ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
@@ -6738,13 +6845,20 @@ impl CaperApp {
                 ui,
                 egui::vec2(ui.available_width() - 18.0, 28.0),
                 "Message requests",
-                Some(if open {
-                    NavIcon::Chevron
-                } else {
-                    NavIcon::ChevronRight
-                }),
+                None,
                 false,
                 RowExtras::default(),
+            );
+            // Turns like the Channels chevron instead of swapping icons.
+            let openness = ui.ctx().animate_bool_with_time(response.id, open, 0.15);
+            paint_chevron(
+                ui,
+                egui::Rect::from_center_size(
+                    egui::pos2(response.rect.left() + 17.5, response.rect.center().y),
+                    egui::vec2(17.0, 17.0),
+                ),
+                openness,
+                MUTED,
             );
             ui.label(
                 RichText::new(requests.len().to_string())
@@ -6794,29 +6908,22 @@ impl CaperApp {
                 &request.peer.display_name,
                 request.peer.avatar_id,
             );
-            let mut label = egui::text::LayoutJob::default();
-            label.append(
-                &request.peer.display_name,
-                0.0,
-                egui::TextFormat {
-                    font_id: egui::FontId::new(
-                        13.0,
-                        egui::FontFamily::Name("Satoshi Medium".into()),
-                    ),
-                    color: if active { TEXT } else { MUTED },
-                    ..Default::default()
-                },
-            );
-            label.append(
-                &format!(" @{}", request.peer.username),
-                0.0,
-                egui::TextFormat::simple(egui::FontId::proportional(12.0), MUTED),
-            );
-            let galley = ui.painter().layout_job(label);
-            ui.painter().with_clip_rect(rect).galley(
-                egui::pos2(rect.left() + 47.0, rect.center().y - galley.size().y / 2.0),
-                galley,
-                TEXT,
+            // The @username shortens (then goes) before the display name.
+            paint_row_name(
+                ui,
+                egui::pos2(rect.left() + 47.0, rect.center().y),
+                rect.width() - 47.0 - 6.0,
+                (
+                    &request.peer.display_name,
+                    egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                    if active { TEXT } else { MUTED },
+                ),
+                (
+                    &format!("@{}", request.peer.username),
+                    egui::FontId::proportional(12.0),
+                    MUTED,
+                ),
+                false,
             );
             if response.clicked() {
                 self.select_direct(request);
@@ -6946,17 +7053,13 @@ impl CaperApp {
                     font,
                     MUTED,
                 );
-                paint_icon(
-                    ui.painter(),
+                paint_chevron(
+                    ui,
                     egui::Rect::from_center_size(
                         egui::pos2(count_x + text_width + 9.0, rect.center().y),
                         egui::vec2(14.0, 14.0),
                     ),
-                    if open {
-                        NavIcon::Chevron
-                    } else {
-                        NavIcon::ChevronRight
-                    },
+                    ui.ctx().animate_bool_with_time(stack.id, open, 0.15),
                     MUTED,
                 );
                 let stack = stack.on_hover_text(label);
@@ -7072,6 +7175,22 @@ impl CaperApp {
                                 ui.vertical(|ui| {
                                     ui.set_min_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 0.0;
+                                    // 32px rows, the name (and any local-mute
+                                    // line) centered on the avatar.
+                                    ui.set_min_height(32.0);
+                                    let lines = ui.fonts_mut(|fonts| {
+                                        fonts.row_height(&egui::FontId::new(
+                                            12.0,
+                                            egui::FontFamily::Name("Satoshi Bold".into()),
+                                        )) + if local_muted {
+                                            fonts
+                                                .row_height(&egui::FontId::proportional(10.0))
+                                                .max(10.0)
+                                        } else {
+                                            0.0
+                                        }
+                                    });
+                                    ui.add_space(((32.0 - lines) / 2.0).max(0.0));
                                     ui.add(
                                         egui::Label::new(
                                             bold(if is_self {
@@ -7136,9 +7255,16 @@ impl CaperApp {
                             }
                         }
                         if own && participant.id != self.voice.self_id {
-                            let options = ui.add(
-                                egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
-                                    .frame(false)
+                            // Web's quiet participant-menu button.
+                            let options = toned(
+                                ui,
+                                Tone {
+                                    rest: (Color32::TRANSPARENT, Color32::TRANSPARENT, MUTED),
+                                    hover: (BORDER, BORDER, TEXT),
+                                    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+                                },
+                                true,
+                                egui::Button::new(RichText::new("Audio").size(10.0))
                                     .min_size(egui::vec2(46.0, 28.0)),
                             );
                             options.widget_info(|| {
@@ -7155,31 +7281,22 @@ impl CaperApp {
                                 .id(menu_id)
                                 .width(240.0)
                                 .show(|ui| {
-                                    let label = ui.horizontal(|ui| {
-                                        let label = ui.label(bold("User volume"));
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                ui.label(format!("{}%", playback.gain_percent));
-                                            },
-                                        );
-                                        label
-                                    });
-                                    let volume = ui
-                                        .add(
-                                            egui::Slider::new(&mut playback.gain_percent, 0..=200)
-                                                .show_value(false),
-                                        )
-                                        .labelled_by(label.inner.id);
+                                    // The Audio test's full-width volume control.
+                                    let volume = volume_slider(
+                                        ui,
+                                        "User volume",
+                                        &mut playback.gain_percent,
+                                    );
+                                    ui.add_space(4.0);
                                     let muted = ui.checkbox(&mut playback.muted, "Mute");
-                                    if volume.changed() {
+                                    if volume {
                                         self.effects
                                             .slider(f32::from(playback.gain_percent) / 200.0);
                                     }
                                     if muted.changed() {
                                         self.effects.toggle(!playback.muted);
                                     }
-                                    if volume.changed() || muted.changed() {
+                                    if volume || muted.changed() {
                                         self.voice
                                             .set_participant_playback(&participant.id, playback);
                                     }
@@ -7290,16 +7407,48 @@ impl CaperApp {
         }
         if let Some(error) = self.voice.error.clone() {
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(error).size(11.0).color(ERROR))
-                        .wrap()
-                        .selectable(false),
+            // The text wraps beside its dismiss button instead of pushing the
+            // button and the account bar below past the column. Its first line
+            // centers on the button, so a one-line error sits level with it.
+            let width = ui.available_width();
+            let galley = egui::WidgetText::from(RichText::new(error).size(11.0).color(ERROR))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Wrap),
+                    (width - 34.0).max(1.0),
+                    egui::TextStyle::Body,
                 );
-                if drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error").clicked() {
-                    self.voice.error = None;
-                }
-            });
+            let first_line = galley
+                .rows
+                .first()
+                .map_or(galley.size().y, |row| row.height());
+            let inset = ((28.0 - first_line) / 2.0).max(0.0);
+            let (row, _) = ui.allocate_exact_size(
+                egui::vec2(width, (inset + galley.size().y).max(28.0)),
+                egui::Sense::hover(),
+            );
+            let text = egui::Rect::from_min_size(
+                row.min + egui::vec2(0.0, inset),
+                egui::vec2((width - 34.0).max(1.0), galley.size().y),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(text)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| ui.add(egui::Label::new(galley).selectable(false)),
+            );
+            let dismiss = ui
+                .scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::pos2(row.right() - 28.0, row.top()),
+                        egui::vec2(28.0, 28.0),
+                    )),
+                    |ui| drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error"),
+                )
+                .inner;
+            if dismiss.clicked() {
+                self.voice.error = None;
+            }
             ui.add_space(8.0);
         }
         let (rect, _) =
@@ -7316,6 +7465,18 @@ impl CaperApp {
             content.min,
             egui::pos2(content.right() - 122.0, content.bottom()),
         );
+        let profile_label = if self.account.is_some() {
+            format!("Edit profile for {}", self.identity_name())
+        } else {
+            "Sign in to edit your profile".into()
+        };
+        let open_profile = ui.interact(profile, ui.id().with("profile"), egui::Sense::click());
+        open_profile.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &profile_label)
+        });
+        if open_profile.hovered() || open_profile.has_focus() {
+            ui.painter().rect_filled(profile, 4.0, COMPOSER);
+        }
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(profile)
@@ -7333,18 +7494,18 @@ impl CaperApp {
                         "unknown"
                     },
                 );
-                ui.add(egui::Label::new(bold(self.identity_name()).size(12.8)).truncate());
+                // At the narrowest sidebar the name would collapse to "F…":
+                // show the avatar alone; the button keeps the full name.
+                if ui.available_width() >= 40.0 {
+                    ui.add(
+                        egui::Label::new(bold(self.identity_name()).size(12.8))
+                            .truncate()
+                            .selectable(false),
+                    );
+                }
             },
         );
-        if ui
-            .interact(profile, ui.id().with("profile"), egui::Sense::click())
-            .on_hover_text(if self.account.is_some() {
-                format!("Edit profile for {}", self.identity_name())
-            } else {
-                "Sign in to edit your profile".into()
-            })
-            .clicked()
-        {
+        if open_profile.on_hover_text(profile_label).clicked() {
             self.dialog = Some(if self.account.is_some() {
                 Dialog::Profile
             } else {
@@ -7427,6 +7588,9 @@ impl CaperApp {
                 let settings =
                     audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false)
                         .on_hover_text("User Settings");
+                if self.focus_user_settings {
+                    settings.request_focus();
+                }
                 if settings.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&settings).is_open());
                 }
@@ -7661,21 +7825,16 @@ impl CaperApp {
         let kind = if input { "Microphone" } else { "Speaker" };
         let label = ui.label(bold(kind).size(11.5).color(MUTED));
         ui.add_space(8.0);
-        let button = ui
-            .add_sized(
-                [ui.available_width(), 36.0],
-                egui::Button::new(RichText::new(selected).size(12.8))
-                    .fill(RAISED)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(8),
-            )
-            .labelled_by(label.id);
-        egui::Popup::menu(&button).width(300.0).show(|ui| {
-            ui.add_enabled_ui(
-                matches!(self.voice.microphone, MicrophoneState::Idle),
-                |ui| self.device_options(ui, input),
-            );
-        });
+        // Devices can't change during a microphone test: the picker says so
+        // and looks unavailable instead of opening a disabled list.
+        let idle = matches!(self.voice.microphone, MicrophoneState::Idle);
+        let button = device_picker(ui, &selected, idle)
+            .labelled_by(label.id)
+            .on_disabled_hover_text("End the microphone test to change devices.");
+        let width = button.rect.width().max(232.0);
+        egui::Popup::menu(&button)
+            .width(width)
+            .show(|ui| self.device_options(ui, input));
         ui.add_space(16.0);
         if input {
             let mut gain = self.voice.preferences.input_percent;
@@ -7742,9 +7901,11 @@ impl CaperApp {
             );
             if let Some(started) = recording {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        bold(format!("{:.1}s", started.elapsed().as_secs_f32().min(30.0)))
-                            .size(14.0),
+                    tabular_label(
+                        ui,
+                        &format!("{:.1}s", started.elapsed().as_secs_f32().min(30.0)),
+                        egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                        TEXT,
                     );
                     let (dot, _) =
                         ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
@@ -7781,7 +7942,15 @@ impl CaperApp {
                     .horizontal(|ui| {
                         let label = ui.label(bold("Voice enhancement").size(13.0));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(bold(format!("{strength}%")).color(TERRACOTTA_BRIGHT));
+                            tabular_label(
+                                ui,
+                                &format!("{strength}%"),
+                                egui::FontId::new(
+                                    12.5,
+                                    egui::FontFamily::Name("Satoshi Bold".into()),
+                                ),
+                                TERRACOTTA_BRIGHT,
+                            );
                         });
                         label
                     })
@@ -7818,13 +7987,11 @@ impl CaperApp {
                 MicrophoneState::Preparing | MicrophoneState::Processing(_) => ("Preparing…", true),
                 _ => ("Test microphone", false),
             };
-            let button = ui.add_enabled(
+            let button = toned(
+                ui,
+                PRIMARY_TONE,
                 self.persist_preferences && !busy,
-                egui::Button::new(bold(text).color(Color32::WHITE))
-                    .fill(TERRACOTTA)
-                    .stroke(Stroke::new(1.0, TERRACOTTA))
-                    .corner_radius(8)
-                    .min_size(egui::vec2(160.0, 48.0)),
+                egui::Button::new(bold(text)).min_size(egui::vec2(160.0, 48.0)),
             );
             if button.clicked() {
                 if recording.is_some() {
@@ -8032,9 +8199,10 @@ impl CaperApp {
             ui.painter().vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
         }
         let (heading, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),54.0), egui::Sense::hover());
-        ui.painter().text(egui::pos2(heading.left()+12.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
+        // Level with the rows' avatars below (16px in).
+        ui.painter().text(egui::pos2(heading.left()+16.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
             if !demo {
-                ui.painter().text(egui::pos2(heading.right()-12.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
+                ui.painter().text(egui::pos2(heading.right()-16.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
             }
         ui.painter().hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
         ui.add_space(8.0);
@@ -8153,17 +8321,14 @@ impl CaperApp {
                 );
                 if owner {
                     ui.add_space(18.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                bold("Create channel").size(12.5).color(Color32::WHITE),
-                            )
-                            .fill(TERRACOTTA)
-                            .stroke(Stroke::new(1.0, TERRACOTTA))
-                            .corner_radius(8)
+                    if toned(
+                        ui,
+                        PRIMARY_TONE,
+                        true,
+                        egui::Button::new(bold("Create channel").size(12.5))
                             .min_size(egui::vec2(0.0, 38.0)),
-                        )
-                        .clicked()
+                    )
+                    .clicked()
                     {
                         self.form_name.clear();
                         self.form_private = false;
@@ -8285,8 +8450,15 @@ impl CaperApp {
             heading.response.rect.bottom(),
             Stroke::new(1.0, BORDER),
         );
+        // Inset like the channel composer, on the panel's own surface.
+        let composer_frame = egui::Frame::new()
+            .fill(CONVERSATION)
+            .inner_margin(egui::Margin::symmetric(18, 12));
         if !read_only {
-            egui::TopBottomPanel::bottom("thread-composer").show_inside(ui, |ui| {
+            let composer = egui::TopBottomPanel::bottom("thread-composer")
+                .show_separator_line(false)
+                .frame(composer_frame)
+                .show_inside(ui, |ui| {
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
                     ui.label(&pending.text);
@@ -8319,18 +8491,47 @@ impl CaperApp {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
-                let draft = self.thread_drafts.entry(root.clone()).or_default();
-                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
+                ui.add_space(8.0);
+                // Web's send row: the broadcast choice, then Send at the end.
+                let send = ui
+                    .horizontal(|ui| {
+                        let draft = self.thread_drafts.entry(root.clone()).or_default();
+                        ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
+                        let empty = draft.0.trim().is_empty();
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            primary_button(ui, "Send reply", !blocked && !loading && !empty).clicked()
+                        })
+                        .inner
+                    })
+                    .inner;
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
-                let send = ui.add_enabled(!blocked && !loading && !draft.0.trim().is_empty(), egui::Button::new("Send reply")).clicked();
                 if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
             });
+            ui.painter().hline(
+                composer.response.rect.x_range(),
+                composer.response.rect.top(),
+                Stroke::new(1.0, BORDER),
+            );
         } else {
-            ui.label(if direct {
-                "You can’t reply in this conversation."
-            } else {
-                "Join the channel to reply."
-            });
+            let note = egui::TopBottomPanel::bottom("thread-composer")
+                .show_separator_line(false)
+                .frame(composer_frame)
+                .show_inside(ui, |ui| {
+                    ui.label(
+                        RichText::new(if direct {
+                            "You can’t reply in this conversation."
+                        } else {
+                            "Join the channel to reply."
+                        })
+                        .size(12.0)
+                        .color(MUTED),
+                    );
+                });
+            ui.painter().hline(
+                note.response.rect.x_range(),
+                note.response.rect.top(),
+                Stroke::new(1.0, BORDER),
+            );
         }
         egui::ScrollArea::vertical()
             .id_salt(("thread-history", &root))
@@ -8357,10 +8558,12 @@ impl CaperApp {
                         self.load_thread(false);
                     }
                 }
+                // The channel's "Load older messages" style, as on web.
                 if has_more
-                    && ui
-                        .add_enabled(!loading, egui::Button::new("Load older replies"))
-                        .clicked()
+                    && history_row(ui, |ui| {
+                        centered_history_button(ui, "Load older replies", !loading)
+                    })
+                    .clicked()
                 {
                     self.load_thread(true);
                 }
@@ -8380,16 +8583,19 @@ impl CaperApp {
                 }
                 self.messages_or_blocked(ui, &replies);
                 if has_newer
-                    && ui
-                        .add_enabled(
-                            !self.context_loading,
-                            egui::Button::new("Load newer replies"),
-                        )
-                        .clicked()
+                    && history_row(ui, |ui| {
+                        centered_history_button(ui, "Load newer replies", !self.context_loading)
+                    })
+                    .clicked()
                 {
                     self.load_newer_context(Some(root.clone()));
                 }
-                if window.is_some() && ui.button("Back to latest replies").clicked() {
+                if window.is_some()
+                    && history_row(ui, |ui| {
+                        centered_history_button(ui, "Back to latest replies", true)
+                    })
+                    .clicked()
+                {
                     self.open_thread(root.clone());
                 }
             });
@@ -8462,7 +8668,7 @@ impl CaperApp {
                                         if let (Some(space), Some(channel)) = (self.selected_space.clone(), self.selected_channel.clone())
                                             && let Some(entry) = self.detail.as_ref().and_then(|detail| detail.channels.iter().find(|item| item.id == channel)).cloned()
                                             && !entry.joined
-                                            && ui.button("Join channel").clicked()
+                                            && secondary_button(ui, "Join channel", true).clicked()
                                         {
                                             self.admin(AdminOperation::JoinChannel { space, channel });
                                         }
@@ -8472,7 +8678,7 @@ impl CaperApp {
                                         // 1:1 DMs only; personal notes have no peer to block.
                                         let blocked = direct.blocked || self.is_blocked(&direct.peer.id);
                                         let account = Self::peer_account(&direct.peer);
-                                        if ui.add_enabled(!self.block_busy, egui::Button::new(if blocked { "Unblock" } else { "Block" })).clicked() {
+                                        if secondary_button(ui, if blocked { "Unblock" } else { "Block" }, !self.block_busy).clicked() {
                                             if blocked {
                                                 self.unblock(account);
                                             } else {
@@ -8707,6 +8913,9 @@ impl CaperApp {
                     history = history.vertical_scroll_offset(offset);
                 } else if jump_latest {
                     history = history.vertical_scroll_offset(f32::MAX);
+                    // That offset is clamped only as the pass ends; don't
+                    // show the empty pass drawn past the end.
+                    ui.ctx().request_discard("jump to the latest message");
                 }
             }
             let history = history.show(ui, |ui| {
@@ -8715,14 +8924,13 @@ impl CaperApp {
                             ui.label(RichText::new(error).color(MUTED));
                             ui.add_space(10.0);
                             ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(bold("Try again").size(11.52))
-                                        .fill(RAISED)
-                                        .stroke(Stroke::new(1.0, BORDER))
-                                        .corner_radius(8),
-                                )
-                                .clicked()
+                            if toned(
+                                ui,
+                                SECONDARY_TONE,
+                                true,
+                                egui::Button::new(bold("Try again").size(11.52)),
+                            )
+                            .clicked()
                             {
                                 self.reload_channel();
                             }
@@ -8783,8 +8991,8 @@ impl CaperApp {
                         }
                     }
                     self.timeline = timeline;
-                    if self.has_newer && ui.add_enabled(!self.context_loading, egui::Button::new("Load newer messages")).clicked() { self.load_newer_context(None); }
-                    if self.context_window.is_some() && ui.button("Back to latest messages").clicked() { self.reload_channel(); }
+                    if self.has_newer && history_row(ui, |ui| centered_history_button(ui, "Load newer messages", !self.context_loading)).clicked() { self.load_newer_context(None); }
+                    if self.context_window.is_some() && history_row(ui, |ui| centered_history_button(ui, "Back to latest messages", true)).clicked() { self.reload_channel(); }
                     if self.has_newer || self.context_window.is_some() {
                         previous = None;
                     }
@@ -8810,14 +9018,14 @@ impl CaperApp {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
                                 ui.horizontal(|ui| {
-                                    let button = |label| egui::Button::new(RichText::new(label).size(12.0)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).min_size(egui::vec2(60.0, 32.0));
-                                    if ui.add_enabled(self.draft.is_empty(), button("Edit"))
+                                    let button = |label| egui::Button::new(RichText::new(label).size(12.0)).min_size(egui::vec2(60.0, 32.0));
+                                    if toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
                                         .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
                                         && let Some(text) = self.discard_rejected() {
                                         self.draft = text;
                                         ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
                                     }
-                                    if ui.add(button("Dismiss")).clicked() { self.discard_rejected(); }
+                                    if toned(ui, QUIET_TONE, true, button("Dismiss")).clicked() { self.discard_rejected(); }
                                 });
                             });
                         } else if !pending.sending {
@@ -8882,52 +9090,38 @@ impl CaperApp {
 
     fn history_header(&mut self, ui: &mut egui::Ui) {
         let font = egui::FontId::proportional(11.52);
-        let width = |ui: &egui::Ui, text: &str| {
-            ui.fonts_mut(|fonts| {
-                fonts
-                    .layout_no_wrap(text.into(), font.clone(), MUTED)
-                    .size()
-                    .x
-            })
+        let width = |ui: &egui::Ui, text: &str, font: egui::FontId| {
+            ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.into(), font, MUTED).size().x)
         };
-        let button = |text: &str| {
-            egui::Button::new(bold(text).size(11.52).color(MUTED))
-                .fill(Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0, BORDER))
-                .corner_radius(8)
-        };
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 44.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_min_height(44.0);
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
-                if self.older_error.is_some() {
-                    let label = "Couldn’t load older messages.";
-                    let total = width(ui, label) + 8.0 + width(ui, "Retry") + 20.0;
-                    ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
-                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
-                    if ui.add(button("Retry")).clicked() {
-                        self.load_older();
-                    }
-                } else if self.has_more {
-                    let label = if self.loading_older {
-                        "Loading…"
-                    } else {
-                        "Load older messages"
-                    };
-                    ui.add_space(((ui.available_width() - width(ui, label) - 20.0) / 2.0).max(0.0));
-                    if ui.add_enabled(!self.loading_older, button(label)).clicked() {
-                        self.load_older();
-                    }
-                } else {
-                    let label = "Beginning of conversation";
-                    ui.add_space(((ui.available_width() - width(ui, label)) / 2.0).max(0.0));
-                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+        history_row(ui, |ui| {
+            if self.older_error.is_some() {
+                let label = "Couldn’t load older messages.";
+                let total = width(ui, label, font.clone())
+                    + 8.0
+                    + width(ui, "Retry", history_button_font())
+                    + 20.0;
+                ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+                ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+                if history_button(ui, "Retry", true).clicked() {
+                    self.load_older();
                 }
-            },
-        );
+            } else if self.has_more {
+                let label = if self.loading_older {
+                    "Loading…"
+                } else {
+                    "Load older messages"
+                };
+                if centered_history_button(ui, label, !self.loading_older).clicked() {
+                    self.load_older();
+                }
+            } else {
+                let label = "Beginning of conversation";
+                ui.add_space(
+                    ((ui.available_width() - width(ui, label, font.clone())) / 2.0).max(0.0),
+                );
+                ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+            }
+        });
     }
 
     fn after_history(
@@ -8943,8 +9137,27 @@ impl CaperApp {
             if let Some(previous) = self.older_anchor.take() {
                 // Keep the reader's place after older messages arrive above.
                 self.history_offset = Some(offset + (height - previous).max(0.0));
+                // This pass drew the new page at the old offset, pushing the
+                // reader's message down for a frame; redo it at the new one.
+                ui.ctx()
+                    .request_discard("keep the reading position above older messages");
                 ui.ctx().request_repaint();
             }
+            // egui moves a list stuck to its newest message only as the pass
+            // ends, so a pass that grew the list (a new message) or shrank
+            // its viewport (a taller composer) drew it a frame late, partly
+            // hidden. Redo that pass at the corrected offset.
+            let at_end = height <= viewport + 0.5 || offset >= height - viewport - 0.5;
+            if self.history_at_end
+                && at_end
+                && height > viewport + 0.5
+                && ((height - self.history_height).abs() > 0.5
+                    || (viewport - self.history_viewport).abs() > 0.5)
+            {
+                ui.ctx().request_discard("keep the newest message in place");
+            }
+            self.history_at_end = at_end;
+            self.history_viewport = viewport;
             self.history_height = height;
             if self.timeline.messages().next().is_some()
                 && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
@@ -9033,6 +9246,8 @@ impl CaperApp {
             plain_time
         };
         let short = grouped.then(|| short_time(&message.created_at));
+        let can_react = self.selected_is_joined() && self.session.is_some();
+        let action_width = if in_thread { 50.0 } else { 76.0 };
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -9121,6 +9336,12 @@ impl CaperApp {
                     message.author.is_guest,
                     short.as_deref(),
                     |ui| {
+                        // Compact follow-ups have no header line for the hover
+                        // actions to sit beside: keep their text clear of them
+                        // instead of under them (web floats the first line).
+                        if grouped && can_react && !in_pins {
+                            ui.set_max_width((ui.available_width() - action_width - 8.0).max(80.0));
+                        }
                         // Web: a thread reply also sent to the channel links back.
                         // Pins has its own Go to message.
                         if !in_thread
@@ -9280,9 +9501,8 @@ impl CaperApp {
                         });
                 });
         }
-        let can_react = self.selected_is_joined() && self.session.is_some();
+        let mut actions_open = false;
         if can_react {
-            let action_width = if in_thread { 50.0 } else { 76.0 };
             let actions_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     message_rect.right() - action_width - 18.0,
@@ -9320,41 +9540,63 @@ impl CaperApp {
                     ui.id().with((&message.id, "more-action")),
                     egui::Sense::click(),
                 );
+                // The whole bar stays while its menu or picker is open, even
+                // once the pointer has moved into it.
+                let menu_open =
+                    egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&more));
+                let picker_open = self.reaction_picker.as_deref() == Some(message.id.as_str());
+                actions_open = menu_open || picker_open;
                 let visible = ui.rect_contains_pointer(message_rect)
+                    || menu_open
+                    || picker_open
                     || emoji.has_focus()
                     || more.has_focus()
                     || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
-                    // Web's bordered surface buttons: grouped rows have no
-                    // header line, so the strip can sit over their text.
-                    for button in [reply.as_ref(), Some(&emoji), Some(&more)]
-                        .into_iter()
-                        .flatten()
-                    {
+                    // Web's bordered surface buttons.
+                    for (button, open) in [
+                        (reply.as_ref(), false),
+                        (Some(&emoji), picker_open),
+                        (Some(&more), menu_open),
+                    ] {
+                        let Some(button) = button else {
+                            continue;
+                        };
+                        let lit = open || button.hovered() || button.has_focus();
                         ui.painter().rect(
                             button.rect,
                             8.0,
-                            SURFACE,
-                            Stroke::new(
-                                1.0,
-                                if button.hovered() || button.has_focus() {
-                                    TERRACOTTA
-                                } else {
-                                    BORDER
-                                },
-                            ),
+                            if lit { RAISED } else { SURFACE },
+                            Stroke::new(1.0, if lit { TERRACOTTA } else { BORDER }),
                             egui::StrokeKind::Inside,
                         );
                     }
+                    let icon = |button: &egui::Response, open: bool| {
+                        if open || button.hovered() {
+                            TEXT
+                        } else {
+                            MUTED
+                        }
+                    };
                     if let Some(reply) = &reply {
-                        paint_icon(ui.painter(), reply.rect.shrink(5.0), NavIcon::Speech, MUTED);
+                        paint_icon(
+                            ui.painter(),
+                            reply.rect.shrink(5.0),
+                            NavIcon::Speech,
+                            icon(reply, false),
+                        );
                     }
                     if let Some(entry) = emoji::find("🙂") {
                         self.reaction_textures
                             .image(ui, entry, 14.0)
                             .paint_at(ui, emoji_rect.shrink(5.0));
                     }
-                    paint_icon(ui.painter(), more_rect.shrink(5.0), NavIcon::More, MUTED);
+                    paint_icon(
+                        ui.painter(),
+                        more_rect.shrink(5.0),
+                        NavIcon::More,
+                        icon(&more, menu_open),
+                    );
                 }
                 if let Some(reply) = reply {
                     reply.widget_info(|| {
@@ -9484,7 +9726,9 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
-                if !in_pins || !reactions.is_empty() {
+                // An empty row would still take a 36px line under every
+                // message, doubling the gaps between them.
+                if !reactions.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         for reaction in &reactions {
                             let owned = author.as_ref().is_some_and(|id| {
@@ -9505,22 +9749,29 @@ impl CaperApp {
                                 },
                                 if owned { ", including you" } else { "" }
                             );
-                            let response = ui.add_enabled(
+                            // Web's chips: a lighter border on hover.
+                            let tone = if owned {
+                                let own = (PRESSED, TERRACOTTA, Color32::from_rgb(242, 174, 156));
+                                Tone {
+                                    rest: own,
+                                    hover: (own.0, TERRACOTTA_BRIGHT, own.2),
+                                    press: (own.0, TERRACOTTA_BRIGHT, own.2),
+                                }
+                            } else {
+                                Tone {
+                                    rest: (RAISED, BORDER, MUTED),
+                                    hover: (RAISED, MUTED, TEXT),
+                                    press: (RAISED, TERRACOTTA_BRIGHT, TEXT),
+                                }
+                            };
+                            let response = toned(
+                                ui,
+                                tone,
                                 can_react,
                                 egui::Button::image_and_text(
                                     image,
                                     RichText::new(reaction.author_ids.len().to_string()).size(11.0),
-                                )
-                                .fill(if owned {
-                                    Color32::from_rgb(57, 35, 30)
-                                } else {
-                                    RAISED
-                                })
-                                .stroke(Stroke::new(
-                                    1.0,
-                                    if owned { TERRACOTTA_BRIGHT } else { BORDER },
-                                ))
-                                .corner_radius(8),
+                                ),
                             );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
@@ -9607,6 +9858,25 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
+        } else if !in_pins {
+            // Web's faint row highlight while hovered, kept while the row's
+            // menu or picker is open. Thread and jump tints win.
+            let rect = egui::Rect::from_x_y_ranges(
+                ui.max_rect().x_range(),
+                message_rect.top()..=controls.response.rect.bottom(),
+            );
+            let highlighted = self.focused_message.as_deref() == Some(&message.id)
+                || (!in_thread
+                    && self
+                        .thread_view
+                        .as_ref()
+                        .is_some_and(|thread| thread.root == message.id));
+            if !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
+                ui.painter().set(
+                    tint,
+                    egui::Shape::rect_filled(rect, 0.0, Color32::from_white_alpha(5)),
+                );
+            }
         }
         if !in_pins && self.scroll_to_target && self.focused_message.as_deref() == Some(&message.id)
         {
@@ -10812,9 +11082,14 @@ impl CaperApp {
             dialog,
             Dialog::ConfirmDelete { .. }
                 | Dialog::LeaveSpace { .. }
+                | Dialog::LeaveChannel { .. }
                 | Dialog::Block { .. }
                 | Dialog::RemoveMember { .. }
+                | Dialog::StartDirect
+                | Dialog::Invitation(_)
         ) {
+            // Short forms: a fixed shell (it never resizes) without a mostly
+            // empty frame below their actions.
             300.0
         } else {
             420.0
@@ -10861,8 +11136,16 @@ impl CaperApp {
                         ui.set_width(width.min(available.x));
                         ui.set_height(dialog_height.min(available.y));
                         let dialog_top = ui.min_rect().top();
+                        // The 7px bottom inset plus the item spacing and the
+                        // separator's half leave the divider as far below the
+                        // title row as the dialog's top edge is above it.
                         egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(22, 18))
+                            .inner_margin(egui::Margin {
+                                left: 22,
+                                right: 22,
+                                top: 18,
+                                bottom: 7,
+                            })
                             .show(ui, |ui| {
                                 ui.horizontal_top(|ui| {
                                     ui.vertical(|ui| {
@@ -10887,15 +11170,23 @@ impl CaperApp {
                                         egui::Layout::right_to_left(egui::Align::TOP),
                                         |ui| {
                                             ui.add_enabled_ui(!removing, |ui| {
-                                                if drawn_icon_button(
-                                                    ui,
-                                                    NavIcon::Close,
-                                                    &format!("Close {title}"),
-                                                )
-                                                .clicked()
-                                                {
-                                                    close = true;
-                                                }
+                                                // Centered on the 36px title row.
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(28.0, 36.0),
+                                                    egui::Layout::top_down(egui::Align::Center),
+                                                    |ui| {
+                                                        ui.add_space(4.0);
+                                                        if drawn_icon_button(
+                                                            ui,
+                                                            NavIcon::Close,
+                                                            &format!("Close {title}"),
+                                                        )
+                                                        .clicked()
+                                                        {
+                                                            close = true;
+                                                        }
+                                                    },
+                                                );
                                             });
                                         },
                                     );
@@ -10910,7 +11201,7 @@ impl CaperApp {
                         };
                         egui::ScrollArea::vertical()
                             .id_salt(("modal-content", title))
-                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 160.0 } else { 92.0 }).max(1.0))
+                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 149.0 } else { 81.0 }).max(1.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -10930,53 +11221,53 @@ impl CaperApp {
                                                 if let Some(inviter) = &invitation.inviter {
                                                     ui.label(format!("{} (@{}) invited you.", inviter.display_name, inviter.username));
                                                 }
-                                                ui.add_space(16.0);
-                                                ui.horizontal(|ui| {
-                                                    // Only the clicked response says it is in progress.
-                                                    let declining = self.loading && self.invitation_declining;
-                                                    let accepting = self.loading && !self.invitation_declining;
-                                                    if ui.add_enabled(!self.loading, egui::Button::new(if declining { "Declining…" } else { "Decline" })).clicked() {
-                                                        self.invitation_declining = true;
-                                                        self.admin(AdminOperation::DeclineInvitation { space: invitation.id.clone() });
-                                                    }
-                                                    if primary_button(ui, if accepting { "Accepting…" } else { "Accept invitation" }, !self.loading).clicked() {
-                                                        self.invitation_declining = false;
-                                                        self.admin(AdminOperation::AcceptInvitation { space: invitation.id });
-                                                    }
-                                                });
+                                                // Only the clicked response says it is in progress.
+                                                let declining = self.loading && self.invitation_declining;
+                                                let accepting = self.loading && !self.invitation_declining;
+                                                let (decline, accept) = dialog_buttons(
+                                                    ui,
+                                                    if declining { "Declining…" } else { "Decline" },
+                                                    if accepting { "Accepting…" } else { "Accept invitation" },
+                                                    PRIMARY_TONE,
+                                                    !self.loading,
+                                                    !self.loading,
+                                                );
+                                                if decline.clicked() {
+                                                    self.invitation_declining = true;
+                                                    self.admin(AdminOperation::DeclineInvitation { space: invitation.id.clone() });
+                                                } else if accept.clicked() {
+                                                    self.invitation_declining = false;
+                                                    self.admin(AdminOperation::AcceptInvitation { space: invitation.id });
+                                                }
                                             }
                                             Dialog::ConfirmDelete { space, channel, name } => {
                                                 let kind = if channel.is_some() { "channel" } else { "space" };
                                                 let display = if channel.is_some() { format!("#{name}") } else { name };
                                                 ui.label(format!("Delete {display} for everyone? {} This cannot be undone.", if channel.is_some() { "This channel and its messages will disappear from the space." } else { "All its channels and their messages will disappear from the space." }));
-                                                ui.add_space(16.0);
-                                                ui.horizontal(|ui| {
-                                                    if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() { close = true; }
-                                                    let delete = ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Deleting…".into() } else { format!("Delete {kind}") }).color(ERROR)));
-                                                    if delete.clicked() && !delete.double_clicked() {
-                                                        self.admin(match channel { Some(channel) => AdminOperation::DeleteChannel { space, channel }, None => AdminOperation::DeleteSpace { space } });
-                                                    }
-                                                });
+                                                let label = if self.loading { "Deleting…".into() } else { format!("Delete {kind}") };
+                                                let (cancel, delete) = dialog_buttons(ui, "Cancel", &label, DANGER_TONE, !self.loading, !self.loading);
+                                                if cancel.clicked() { close = true; }
+                                                if delete.clicked() && !delete.double_clicked() {
+                                                    self.admin(match channel { Some(channel) => AdminOperation::DeleteChannel { space, channel }, None => AdminOperation::DeleteSpace { space } });
+                                                }
                                             }
                                             Dialog::LeaveSpace { id, .. } => {
                                                 ui.label("You will lose access to its channels and conversations. An owner can add you again later.");
-                                                ui.add_space(16.0);
-                                                ui.horizontal(|ui| {
-                                                    if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() {
-                                                        self.dialog = None;
-                                                    }
-                                                    if ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Leaving…" } else { "Leave space" }).color(ERROR))).clicked()
-                                                        && let Some(account) = &self.account {
-                                                        let member = account.id.clone();
-                                                        self.voice.revoke_space(&id);
-                                                        self.admin(AdminOperation::LeaveSpace { space: id, member });
-                                                    }
-                                                });
+                                                let (cancel, leave) = dialog_buttons(ui, "Cancel", if self.loading { "Leaving…" } else { "Leave space" }, DANGER_TONE, !self.loading, !self.loading);
+                                                if cancel.clicked() {
+                                                    self.dialog = None;
+                                                }
+                                                if leave.clicked()
+                                                    && let Some(account) = &self.account {
+                                                    let member = account.id.clone();
+                                                    self.voice.revoke_space(&id);
+                                                    self.admin(AdminOperation::LeaveSpace { space: id, member });
+                                                }
                                             }
                                             Dialog::LeaveChannel { space, channel, .. } => {
                                                 let private_loss = !self.owner() && self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel && item.private));
                                                 ui.label(if private_loss { "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." } else { "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call." });
-                                                let (cancel, leave) = dialog_actions(ui, "Leave channel", !self.loading, false);
+                                                let (cancel, leave) = dialog_actions(ui, if self.loading { "Leaving…" } else { "Leave channel" }, !self.loading, false);
                                                 if cancel { self.dialog = None; }
                                                 if leave { self.admin(AdminOperation::LeaveChannel { space, channel }); }
                                             }
@@ -10984,16 +11275,13 @@ impl CaperApp {
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                             Dialog::Block { account, request } => {
                                                 ui.label("You won't see their messages unless you choose to, and they can't send you DMs or requests.");
-                                                ui.add_space(16.0);
-                                                ui.horizontal(|ui| {
-                                                    if ui.add_enabled(!self.block_busy, egui::Button::new("Cancel")).clicked() { close = true; }
-                                                    let block = ui.add_enabled(!self.block_busy, egui::Button::new(RichText::new(if self.block_busy { "Blocking…" } else { "Block" }).color(ERROR)));
-                                                    if block.clicked() {
-                                                        self.block_busy = true;
-                                                        self.block_error = None;
-                                                        self.account_op(AccountOperation::SetBlock { account, blocked: true, request });
-                                                    }
-                                                });
+                                                let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, !self.block_busy);
+                                                if cancel.clicked() { close = true; }
+                                                if block.clicked() {
+                                                    self.block_busy = true;
+                                                    self.block_error = None;
+                                                    self.account_op(AccountOperation::SetBlock { account, blocked: true, request });
+                                                }
                                                 if let Some(error) = &self.block_error {
                                                     ui.colored_label(ERROR, error);
                                                 }
@@ -11004,31 +11292,41 @@ impl CaperApp {
                                                 } else {
                                                     format!("They’ll lose access to {place} and its channels. You can invite them again later.")
                                                 });
-                                                ui.add_space(16.0);
-                                                ui.horizontal(|ui| {
-                                                    let cancel = ui.add_enabled(!self.loading, egui::Button::new("Cancel"));
-                                                    if self.focus_dialog_field {
-                                                        cancel.request_focus();
-                                                    }
-                                                    if cancel.clicked() { close = true; }
-                                                    let remove = ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Removing…" } else { "Remove" }).color(ERROR)));
-                                                    if remove.clicked() {
-                                                        self.admin(AdminOperation::RemoveMember { space, channel, member });
-                                                    }
-                                                });
+                                                let (cancel, remove) = dialog_buttons(ui, "Cancel", if self.loading { "Removing…" } else { "Remove" }, DANGER_TONE, !self.loading, !self.loading);
+                                                if self.focus_dialog_field {
+                                                    cancel.request_focus();
+                                                }
+                                                if cancel.clicked() { close = true; }
+                                                if remove.clicked() {
+                                                    self.admin(AdminOperation::RemoveMember { space, channel, member });
+                                                }
                                             }
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
-                                                let username = ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
+                                                let username = ui.add_sized(
+                                                    [ui.available_width(), 42.0],
+                                                    egui::TextEdit::singleline(&mut self.member_username)
+                                                        .vertical_align(egui::Align::Center)
+                                                        .margin(egui::Margin::symmetric(8, 4))
+                                                        .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
+                                                );
                                                 if self.focus_dialog_field {
                                                     username.request_focus();
                                                 }
                                                 if username.changed() {
                                                     self.error = None;
                                                 }
-                                                ui.add_space(16.0);
-                                                if ui.add_enabled(!self.loading && !self.member_username.trim().is_empty(), egui::Button::new(if self.loading { "Opening…" } else { "Open conversation" })).clicked()
+                                                let (cancel, open) = dialog_buttons(
+                                                    ui,
+                                                    "Cancel",
+                                                    if self.loading { "Opening…" } else { "Open conversation" },
+                                                    PRIMARY_TONE,
+                                                    !self.loading,
+                                                    !self.loading && !self.member_username.trim().is_empty(),
+                                                );
+                                                if cancel.clicked() { close = true; }
+                                                if open.clicked()
                                                     && let Some(token) = self.token.clone() {
                                                     self.loading = true;
                                                     self.error = None;
@@ -11181,9 +11479,7 @@ impl CaperApp {
             ui.separator();
             ui.add_space(18.0);
             self.privacy_settings(ui);
-            ui.add_space(18.0);
-            ui.separator();
-            ui.add_space(18.0);
+            ui.add_space(14.0);
             self.blocked_settings(ui);
         }
     }
@@ -11241,8 +11537,14 @@ impl CaperApp {
     /// "Who can start a DM with you", saved as soon as it changes and reverted
     /// with an inline error if the save fails.
     fn privacy_settings(&mut self, ui: &mut egui::Ui) {
-        ui.label(bold("Who can start a DM with you").size(12.0).color(MUTED));
+        // A section title with quieter sub-labels, like Notifications.
+        ui.label(bold("Privacy").size(12.0).color(MUTED));
         ui.add_space(6.0);
+        ui.label(
+            RichText::new("Who can start a DM with you")
+                .size(13.0)
+                .color(TEXT),
+        );
         let options = [
             (
                 "anyone",
@@ -11289,8 +11591,9 @@ impl CaperApp {
         }
     }
 
+    /// Part of the Privacy section.
     fn blocked_settings(&mut self, ui: &mut egui::Ui) {
-        ui.label(bold("Blocked accounts").size(12.0).color(MUTED));
+        ui.label(RichText::new("Blocked accounts").size(13.0).color(TEXT));
         ui.add_space(6.0);
         match self.blocks.clone() {
             None if self.blocks_error.is_none() => {
@@ -11375,17 +11678,42 @@ impl CaperApp {
                 .small()
                 .color(MUTED),
         );
-        if primary(
-            ui,
-            if self.loading {
-                "Saving…"
-            } else {
-                "Save profile"
-            },
-            self.loading || self.username.len() < 3 || self.display_name.trim().is_empty(),
-        )
-        .clicked()
-        {
+        // Web's compact, end-aligned primary (sized so "Saving…" doesn't
+        // resize it); Log out stays apart at the start of the row.
+        let enabled =
+            !self.loading && self.username.len() >= 3 && !self.display_name.trim().is_empty();
+        ui.add_space(20.0);
+        let (log_out, save) = ui
+            .horizontal(|ui| {
+                let log_out = self
+                    .account
+                    .is_some()
+                    .then(|| secondary_button(ui, "Log out", true));
+                let save = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().button_padding.x = 12.0;
+                        toned(
+                            ui,
+                            PRIMARY_TONE,
+                            enabled,
+                            egui::Button::new(
+                                bold(if self.loading {
+                                    "Saving…"
+                                } else {
+                                    "Save profile"
+                                })
+                                .size(12.0),
+                            )
+                            .min_size(egui::vec2(112.0, 36.0)),
+                        )
+                    })
+                    .inner;
+                (log_out, save)
+            })
+            .inner;
+        if log_out.is_some_and(|button| button.clicked()) {
+            self.logout();
+        } else if save.clicked() {
             self.loading = true;
             self.worker.send(Command::Profile {
                 generation: self.generation,
@@ -11393,9 +11721,6 @@ impl CaperApp {
                 username: self.username.trim().to_ascii_lowercase(),
                 display_name: self.display_name.trim().into(),
             });
-        }
-        if self.account.is_some() && ui.button("Log out").clicked() {
-            self.logout();
         }
     }
 
@@ -11843,17 +12168,14 @@ impl CaperApp {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if !member.owner
-                                && ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Remove").size(11.0).color(MUTED),
-                                        )
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::new(1.0, BORDER))
-                                        .corner_radius(7)
+                                && toned(
+                                    ui,
+                                    REMOVE_TONE,
+                                    true,
+                                    egui::Button::new(RichText::new("Remove").size(11.0))
                                         .min_size(egui::vec2(64.0, 32.0)),
-                                    )
-                                    .clicked()
+                                )
+                                .clicked()
                                 && let Some(space) = self.selected_space.clone()
                             {
                                 // Confirm first; "Cancel invite" stays one click.
@@ -12043,6 +12365,63 @@ fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Res
     response.on_hover_text(label)
 }
 
+/// Web's device `<select>`: the choice at the start, a chevron at the end, a
+/// lighter border on hover and dimmed while unavailable.
+fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 36.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, selected));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let fade = if enabled { 1.0 } else { 0.5 };
+    let border = if open || response.has_focus() {
+        TERRACOTTA_BRIGHT
+    } else if response.hovered() {
+        Color32::from_rgb(74, 79, 83)
+    } else {
+        BORDER
+    };
+    ui.painter().rect(
+        rect,
+        8.0,
+        RAISED.gamma_multiply(fade),
+        Stroke::new(1.0, border.gamma_multiply(fade)),
+        egui::StrokeKind::Inside,
+    );
+    let chevron = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 18.0, rect.center().y),
+        egui::vec2(14.0, 14.0),
+    );
+    paint_icon(
+        ui.painter(),
+        chevron,
+        NavIcon::Chevron,
+        MUTED.gamma_multiply(fade),
+    );
+    let text = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, rect.top()),
+        egui::pos2(chevron.left() - 8.0, rect.bottom()),
+    );
+    let galley = egui::WidgetText::from(RichText::new(selected).size(12.8)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        text.width().max(1.0),
+        egui::TextStyle::Body,
+    );
+    ui.painter().galley(
+        egui::pos2(text.left(), text.center().y - galley.size().y / 2.0),
+        galley,
+        TEXT.gamma_multiply(fade),
+    );
+    response
+}
+
 fn settings_switch(
     ui: &mut egui::Ui,
     value: &mut bool,
@@ -12087,6 +12466,39 @@ fn settings_switch(
     ui.painter()
         .circle_filled(egui::pos2(x, rect.center().y), 9.0, TEXT);
     response
+}
+
+/// Web's section chevron: chevron-down, turned a quarter while closed.
+/// `openness` runs from 0 (closed) to 1 (open), so the turn can animate.
+fn paint_chevron(ui: &egui::Ui, rect: egui::Rect, openness: f32, color: Color32) {
+    egui::Image::new(egui::include_image!("../resources/icons/chevron-down.svg"))
+        .tint(color)
+        .rotate(
+            -std::f32::consts::FRAC_PI_2 * (1.0 - openness),
+            egui::Vec2::splat(0.5),
+        )
+        .paint_at(ui, rect);
+}
+
+/// `drawn_icon_button` for a section toggle whose chevron turns as it opens.
+fn chevron_button(ui: &mut egui::Ui, open: bool, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    let openness = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("open"), open, 0.15);
+    paint_chevron(
+        ui,
+        rect.shrink(5.0),
+        openness,
+        if response.hovered() { TEXT } else { MUTED },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, label)
+    });
+    response.on_hover_text(label)
 }
 
 fn drawn_icon_button_with_tooltip(
@@ -12212,7 +12624,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
     // These are the web client's Lucide vectors, not approximate glyphs.
     let source = match icon {
         NavIcon::Chevron => egui::include_image!("../resources/icons/chevron-down.svg"),
-        NavIcon::ChevronRight => egui::include_image!("../resources/icons/chevron-right.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
@@ -12344,16 +12755,15 @@ fn channel_button(
             },
         );
     }
-    let timer_font = egui::FontId::monospace(11.0);
+    // Web: Satoshi Medium with tabular digits, so the row doesn't twitch
+    // every second.
+    let timer_font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
     let timer_right = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
     let timer_width = extras.duration.map_or(0.0, |text| {
-        let galley =
-            ui.painter()
-                .layout_no_wrap(text.into(), timer_font.clone(), VOICE_SESSION_GREEN);
-        let width = galley.size().x;
+        let (galley, width) = tabular_galley(ui, text, &timer_font, VOICE_SESSION_GREEN);
         let timer_rect = egui::Rect::from_min_size(
             egui::pos2(timer_right - width, rect.center().y - galley.size().y / 2.0),
-            galley.size(),
+            egui::vec2(width, galley.size().y),
         );
         let timer = ui.interact(
             timer_rect,
@@ -12381,18 +12791,22 @@ fn channel_button(
         muted_indicator(ui, bell, response.id.with("muted"), label);
         name_right -= 20.0;
     }
-    ui.painter()
-        .with_clip_rect(egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 31.0, rect.top()),
-            egui::pos2(name_right, rect.bottom()),
-        ))
-        .text(
-            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
-            egui::Align2::LEFT_CENTER,
-            name,
-            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-            color,
-        );
+    // Long names end in "…" rather than a letter cut in half.
+    let label = truncated_galley(
+        ui,
+        name,
+        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+        color,
+        name_right - rect.left() - 32.0,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.left() + 32.0,
+            rect.center().y - 1.0 - label.size().y / 2.0,
+        ),
+        label,
+        color,
+    );
     let mut opened = false;
     if let Some(menu) = extras.menu {
         let row_hovered = ui.rect_contains_pointer(rect);
@@ -12431,6 +12845,84 @@ fn channel_button(
     (response, opened)
 }
 
+/// A single-line galley cut with "…" at `width`.
+fn truncated_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(font, color),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
+}
+
+/// A sidebar row's name and its quieter suffix ("you", "@username"), cut
+/// with "…" instead of clipped mid-letter. With `keep_suffix` the name gives
+/// way to the whole suffix; otherwise the suffix shortens first and is left
+/// out once too little of it would show. `left_center` is the name's start.
+fn paint_row_name(
+    ui: &egui::Ui,
+    left_center: egui::Pos2,
+    width: f32,
+    (name, name_font, name_color): (&str, egui::FontId, Color32),
+    (suffix, suffix_font, suffix_color): (&str, egui::FontId, Color32),
+    keep_suffix: bool,
+) {
+    let mut whole = egui::text::LayoutJob::default();
+    whole.append(
+        name,
+        0.0,
+        egui::TextFormat::simple(name_font.clone(), name_color),
+    );
+    whole.append(
+        &format!(" {suffix}"),
+        0.0,
+        egui::TextFormat::simple(suffix_font.clone(), suffix_color),
+    );
+    let whole = ui.fonts_mut(|fonts| fonts.layout_job(whole));
+    if whole.size().x <= width {
+        ui.painter().galley(
+            egui::pos2(left_center.x, left_center.y - whole.size().y / 2.0),
+            whole,
+            name_color,
+        );
+        return;
+    }
+    const GAP: f32 = 4.0;
+    let whole_suffix =
+        truncated_galley(ui, suffix, suffix_font.clone(), suffix_color, f32::INFINITY);
+    let name_width = if keep_suffix {
+        width - whole_suffix.size().x - GAP
+    } else {
+        width
+    };
+    let name = truncated_galley(ui, name, name_font, name_color, name_width);
+    let top = left_center.y - name.size().y / 2.0;
+    let bottom = top + name.size().y;
+    let rest = width - name.size().x - GAP;
+    let suffix = if keep_suffix {
+        Some(whole_suffix)
+    } else {
+        (rest >= 24.0).then(|| truncated_galley(ui, suffix, suffix_font, suffix_color, rest))
+    };
+    let suffix_left = left_center.x + name.size().x + GAP;
+    ui.painter()
+        .galley(egui::pos2(left_center.x, top), name, name_color);
+    if let Some(suffix) = suffix {
+        // Share the name's baseline.
+        ui.painter().galley(
+            egui::pos2(suffix_left, bottom - suffix.size().y),
+            suffix,
+            suffix_color,
+        );
+    }
+}
+
 /// The shadow a sliding layer (the conversation over Browse, the member list
 /// over the conversation) casts toward the leading edge.
 const EDGE_SHADOW: egui::Shadow = egui::Shadow {
@@ -12440,22 +12932,18 @@ const EDGE_SHADOW: egui::Shadow = egui::Shadow {
     color: egui::Color32::from_black_alpha(110),
 };
 
+/// Pins' `drawn_icon_button` beside it, kept lit while the list is shown.
 fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click());
-    if active || response.hovered() {
-        ui.painter().rect_filled(rect, 7.0, RAISED);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if active || response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
     }
     let color = if response.hovered() || active {
         TEXT
     } else {
         MUTED
     };
-    paint_icon(
-        ui.painter(),
-        egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
-        NavIcon::Users,
-        color,
-    );
+    paint_icon(ui.painter(), rect.shrink(5.0), NavIcon::Users, color);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
@@ -13237,6 +13725,12 @@ fn configure(context: &egui::Context) {
     style.visuals.widgets.open.bg_fill = COMPOSER;
     style.visuals.widgets.open.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
     style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
+    // Plain buttons and menu items fill with these, not `bg_fill`; egui's
+    // grays (60/70) were lighter than every token around them.
+    style.visuals.widgets.inactive.weak_bg_fill = RAISED;
+    style.visuals.widgets.hovered.weak_bg_fill = BORDER;
+    style.visuals.widgets.active.weak_bg_fill = PRESSED;
+    style.visuals.widgets.open.weak_bg_fill = COMPOSER;
     style.visuals.selection.bg_fill = TERRACOTTA;
     style.visuals.override_text_color = Some(TEXT);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -13252,6 +13746,38 @@ fn bold(text: impl Into<String>) -> RichText {
 
 fn black(text: impl Into<String>) -> RichText {
     RichText::new(text).family(egui::FontFamily::Name("Satoshi Black".into()))
+}
+
+/// Web's shared sign-in/profile primary: `login_action` at the end of the
+/// row, sized for its `idle` label (at least 200px), so the pending label
+/// ("Saving…") never resizes it.
+fn compact_login_action(
+    ui: &mut egui::Ui,
+    text: &str,
+    idle: &str,
+    disabled: bool,
+) -> egui::Response {
+    let width = (ui
+        .painter()
+        .layout_no_wrap(
+            idle.into(),
+            egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
+            TEXT,
+        )
+        .size()
+        .x
+        + 84.0)
+        .max(200.0)
+        .min(ui.available_width());
+    ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 58.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| login_action(ui, text, disabled),
+        )
+        .inner
+    })
+    .inner
 }
 
 fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
@@ -13308,7 +13834,12 @@ fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
         .horizontal(|ui| {
             let label = ui.label(bold(name).size(12.8).color(MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(bold(format!("{value}%")).size(12.8).color(MUTED));
+                tabular_label(
+                    ui,
+                    &format!("{value}%"),
+                    egui::FontId::new(12.8, egui::FontFamily::Name("Satoshi Bold".into())),
+                    MUTED,
+                );
             });
             label
         })
@@ -13333,16 +13864,11 @@ fn outlined_button(ui: &mut egui::Ui, text: &str, pressed: bool) -> egui::Respon
     // Web's flex button fills its column with its label at the start.
     let button = ui
         .with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-            ui.add(
-                egui::Button::new(
-                    bold(text)
-                        .size(12.5)
-                        .color(Color32::from_rgb(227, 153, 133)),
-                )
-                .fill(Color32::from_rgba_unmultiplied(182, 77, 50, 36))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(137, 70, 53)))
-                .corner_radius(8)
-                .min_size(egui::vec2(0.0, 36.0)),
+            toned(
+                ui,
+                VOICE_TONE,
+                true,
+                egui::Button::new(bold(text).size(12.5)).min_size(egui::vec2(0.0, 36.0)),
             )
         })
         .inner;
@@ -13384,16 +13910,6 @@ fn input_meter(ui: &mut egui::Ui, levels: &std::collections::VecDeque<f32>, acti
     }
 }
 
-fn primary(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
-    ui.add_enabled(
-        !disabled,
-        egui::Button::new(text)
-            .fill(TERRACOTTA)
-            .min_size(egui::vec2(ui.available_width(), 44.0))
-            .corner_radius(8),
-    )
-}
-
 /// Web's `.space-field` input; channel creation shows its # or lock icon inside.
 fn name_field(
     ui: &mut egui::Ui,
@@ -13430,41 +13946,302 @@ fn name_field(
     response
 }
 
+/// A framed button's (fill, border, text) at rest, hovered, and pressed or
+/// keyboard-focused.
+#[derive(Clone, Copy)]
+struct Tone {
+    rest: (Color32, Color32, Color32),
+    hover: (Color32, Color32, Color32),
+    press: (Color32, Color32, Color32),
+}
+
+const PRESSED: Color32 = Color32::from_rgb(57, 35, 30);
+
+/// Web's `.primary`.
+const PRIMARY_TONE: Tone = Tone {
+    rest: (TERRACOTTA, TERRACOTTA, TEXT),
+    hover: (TERRACOTTA_BRIGHT, TERRACOTTA_BRIGHT, TEXT),
+    press: (Color32::from_rgb(150, 62, 40), TERRACOTTA_BRIGHT, TEXT),
+};
+
+/// Web's `.secondary`: a neutral hover, like the dialogs' Cancel.
+const SECONDARY_TONE: Tone = Tone {
+    rest: (RAISED, BORDER, TEXT),
+    hover: (BORDER, MUTED, TEXT),
+    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+};
+
+/// Web's quiet bordered chat buttons (Load older messages, Retry, Edit).
+const QUIET_TONE: Tone = Tone {
+    rest: (Color32::TRANSPARENT, BORDER, MUTED),
+    hover: (BORDER, MUTED, TEXT),
+    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+};
+
+/// Web's member-list Remove: quiet until hovered, then a red wash.
+const REMOVE_TONE: Tone = Tone {
+    rest: (Color32::TRANSPARENT, BORDER, MUTED),
+    hover: (
+        Color32::from_rgba_unmultiplied_const(185, 54, 70, 31),
+        Color32::from_rgb(163, 59, 72),
+        Color32::from_rgb(255, 140, 154),
+    ),
+    press: (
+        Color32::from_rgba_unmultiplied_const(185, 54, 70, 51),
+        Color32::from_rgb(255, 140, 154),
+        Color32::from_rgb(255, 140, 154),
+    ),
+};
+
+/// Web's `.danger`: confirms a deletion, removal or block.
+const DANGER_TONE: Tone = Tone {
+    rest: (
+        Color32::from_rgb(185, 54, 70),
+        Color32::from_rgb(185, 54, 70),
+        Color32::WHITE,
+    ),
+    hover: (
+        Color32::from_rgb(212, 67, 85),
+        Color32::from_rgb(212, 67, 85),
+        Color32::WHITE,
+    ),
+    press: (
+        Color32::from_rgb(160, 46, 60),
+        Color32::from_rgb(255, 140, 154),
+        Color32::WHITE,
+    ),
+};
+
+/// Web's `.danger-outline`: opens a destructive confirmation.
+const DANGER_OUTLINE_TONE: Tone = Tone {
+    rest: (
+        Color32::TRANSPARENT,
+        Color32::from_rgb(163, 59, 72),
+        Color32::from_rgb(255, 140, 154),
+    ),
+    hover: (
+        Color32::from_rgba_unmultiplied_const(185, 54, 70, 41),
+        Color32::from_rgb(212, 67, 85),
+        Color32::from_rgb(255, 171, 181),
+    ),
+    press: (
+        Color32::from_rgba_unmultiplied_const(185, 54, 70, 61),
+        Color32::from_rgb(255, 140, 154),
+        Color32::from_rgb(255, 171, 181),
+    ),
+};
+
+/// Web's `.voice-button`.
+const VOICE_TONE: Tone = Tone {
+    rest: (
+        Color32::from_rgba_unmultiplied_const(182, 77, 50, 36),
+        Color32::from_rgb(137, 70, 53),
+        Color32::from_rgb(227, 153, 133),
+    ),
+    hover: (
+        Color32::from_rgba_unmultiplied_const(182, 77, 50, 61),
+        TERRACOTTA_BRIGHT,
+        Color32::from_rgb(227, 153, 133),
+    ),
+    press: (
+        Color32::from_rgba_unmultiplied_const(182, 77, 50, 82),
+        TERRACOTTA_BRIGHT,
+        Color32::from_rgb(240, 180, 164),
+    ),
+};
+
+/// Adds `button` with `tone`'s hover and pressed states. An explicit
+/// `Button::fill`/`stroke` would hold in every state, so the tone comes from
+/// this scope's widget visuals instead; give the label no color of its own.
+fn toned(ui: &mut egui::Ui, tone: Tone, enabled: bool, button: egui::Button<'_>) -> egui::Response {
+    toned_rounded(ui, tone, 8, enabled, button)
+}
+
+/// `toned` with another corner radius, like the space rail's 12px tiles.
+fn toned_rounded(
+    ui: &mut egui::Ui,
+    tone: Tone,
+    radius: u8,
+    enabled: bool,
+    button: egui::Button<'_>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.override_text_color = None;
+        let widgets = &mut visuals.widgets;
+        for (state, (fill, border, text)) in [
+            (&mut widgets.noninteractive, tone.rest),
+            (&mut widgets.inactive, tone.rest),
+            (&mut widgets.hovered, tone.hover),
+            (&mut widgets.active, tone.press),
+        ] {
+            state.weak_bg_fill = fill;
+            state.bg_fill = fill;
+            state.bg_stroke = Stroke::new(1.0, border);
+            state.fg_stroke.color = text;
+            state.corner_radius = CornerRadius::same(radius);
+            // No 1px growth on hover: the color change is the feedback.
+            state.expansion = 0.0;
+        }
+        ui.add_enabled(enabled, button)
+    })
+    .inner
+}
+
 /// Web's `.secondary` dialog button.
 fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     ui.spacing_mut().button_padding.x = 12.0;
-    ui.add_enabled(
+    toned(
+        ui,
+        SECONDARY_TONE,
         enabled,
-        egui::Button::new(bold(text).size(12.0))
-            .fill(RAISED)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(7)
-            .min_size(egui::vec2(0.0, 36.0)),
+        egui::Button::new(bold(text).size(12.0)).min_size(egui::vec2(0.0, 36.0)),
     )
 }
 
 /// Web's `.primary` dialog button.
 fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     ui.spacing_mut().button_padding.x = 12.0;
-    ui.add_enabled(
+    toned(
+        ui,
+        PRIMARY_TONE,
         enabled,
-        egui::Button::new(bold(text).size(12.0))
-            .fill(TERRACOTTA)
-            .stroke(Stroke::new(1.0, TERRACOTTA))
-            .corner_radius(7)
-            .min_size(egui::vec2(0.0, 36.0)),
+        egui::Button::new(bold(text).size(12.0)).min_size(egui::vec2(0.0, 36.0)),
     )
+}
+
+/// Satoshi has no tabular figures: lay `text` out with every digit in a cell
+/// as wide as the widest digit, so a running timer or a dragged percentage
+/// keeps its width (web's `font-variant-numeric: tabular-nums`). Returns the
+/// galley and the width to reserve for it.
+fn tabular_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: &egui::FontId,
+    color: Color32,
+) -> (std::sync::Arc<egui::Galley>, f32) {
+    ui.fonts_mut(|fonts| {
+        let digit = ('0'..='9')
+            .map(|digit| fonts.glyph_width(font, digit))
+            .fold(0.0, f32::max);
+        let mut job = egui::text::LayoutJob::default();
+        let mut width = 0.0;
+        // Each character is its own section; a digit's padding is split
+        // around it, so the leading space carries the previous one's half.
+        let mut carry = 0.0;
+        for (start, c) in text.char_indices() {
+            let glyph = fonts.glyph_width(font, c);
+            let pad = if c.is_ascii_digit() {
+                (digit - glyph) / 2.0
+            } else {
+                0.0
+            };
+            job.sections.push(egui::text::LayoutSection {
+                leading_space: carry + pad,
+                byte_range: start..start + c.len_utf8(),
+                format: egui::TextFormat::simple(font.clone(), color),
+            });
+            carry = pad;
+            width += glyph + 2.0 * pad;
+        }
+        job.text = text.into();
+        (fonts.layout_job(job), width)
+    })
+}
+
+/// A label drawn with `tabular_galley`.
+fn tabular_label(
+    ui: &mut egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+) -> egui::Response {
+    let (galley, width) = tabular_galley(ui, text, &font, color);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, galley.size().y), egui::Sense::hover());
+    ui.painter().galley(rect.min, galley, color);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    response
+}
+
+/// Web's 44px history header row ("Load older messages"), shared by threads.
+fn history_row<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 44.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(44.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
+            content(ui)
+        },
+    )
+    .inner
+}
+
+fn history_button_font() -> egui::FontId {
+    egui::FontId::new(11.52, egui::FontFamily::Name("Satoshi Bold".into()))
+}
+
+/// Web's quiet bordered history button.
+fn history_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
+    toned(
+        ui,
+        QUIET_TONE,
+        enabled,
+        egui::Button::new(RichText::new(label).font(history_button_font())),
+    )
+}
+
+/// A history button centered in its row.
+fn centered_history_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    let width = ui.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(label.into(), history_button_font(), MUTED)
+            .size()
+            .x
+    });
+    ui.add_space(((ui.available_width() - width - 20.0) / 2.0).max(0.0));
+    history_button(ui, label, enabled)
 }
 
 /// Web's `SubmitRow`: Cancel, then the primary action, aligned to the end.
 /// While `pending`, both are disabled. Returns (cancel, submit).
 fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool, pending: bool) -> (bool, bool) {
+    let (cancel, submit) = dialog_buttons(
+        ui,
+        "Cancel",
+        label,
+        PRIMARY_TONE,
+        !pending,
+        enabled && !pending,
+    );
+    (cancel.clicked(), submit.clicked())
+}
+
+/// Web's `.space-dialog-actions`: the secondary choice, then the action in
+/// `tone`, aligned to the end. The action keeps a minimum width so its
+/// pending label ("Leaving…") doesn't shift the row. Returns both responses.
+fn dialog_buttons(
+    ui: &mut egui::Ui,
+    secondary: &str,
+    action: &str,
+    tone: Tone,
+    secondary_enabled: bool,
+    action_enabled: bool,
+) -> (egui::Response, egui::Response) {
     ui.add_space(20.0);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let submit = primary_button(ui, label, enabled && !pending).clicked();
-            let cancel = secondary_button(ui, "Cancel", !pending).clicked();
-            (cancel, submit)
+            ui.spacing_mut().button_padding.x = 12.0;
+            let action = toned(
+                ui,
+                tone,
+                action_enabled,
+                egui::Button::new(bold(action).size(12.0)).min_size(egui::vec2(112.0, 36.0)),
+            );
+            let secondary = secondary_button(ui, secondary, secondary_enabled);
+            (secondary, action)
         })
         .inner
     })
@@ -13605,11 +14382,11 @@ fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Resp
 }
 
 fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(Color32::from_rgb(255, 128, 149)))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(185, 54, 77)))
-            .fill(Color32::TRANSPARENT)
-            .min_size(egui::vec2(112.0, 36.0)),
+    toned(
+        ui,
+        DANGER_OUTLINE_TONE,
+        true,
+        egui::Button::new(text).min_size(egui::vec2(112.0, 36.0)),
     )
 }
 
@@ -14129,6 +14906,95 @@ mod tests {
         render(&mut app, &context, vec![]);
         assert_eq!(app.history_offset, Some(260.0));
         assert_eq!(app.older_anchor, Some(height));
+    }
+
+    fn scroll_fixture(context: &egui::Context, range: std::ops::RangeInclusive<u32>) -> CaperApp {
+        let mut app = CaperApp::new(
+            context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let messages = scroll_messages(&app, range.clone());
+        app.timeline
+            .reset(messages, &range.end().to_string())
+            .unwrap();
+        app.has_more = false;
+        app
+    }
+
+    fn scroll_messages(
+        app: &CaperApp,
+        range: std::ops::RangeInclusive<u32>,
+    ) -> Vec<crate::model::Message> {
+        let template = app.timeline.messages().next().unwrap().clone();
+        range
+            .map(|index| {
+                let mut message = template.clone();
+                message.id = format!("scroll-{index}");
+                message.client_message_id = format!("scroll-command-{index}");
+                message.seq = index.to_string();
+                message.content.text = format!("Scroll fixture message {index}");
+                message
+            })
+            .collect()
+    }
+
+    #[test]
+    fn older_messages_keep_the_reading_position_in_the_frame_they_arrive() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 21..=60);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // Scroll to the top as a reader does, which also unsticks the list.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 20_000.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let before = render(&mut app, &context, vec![]);
+        let anchor = "Scroll fixture message 21";
+        let position = text_position(&before, anchor);
+        // What `accept_older` does when a page arrives.
+        app.older_anchor = Some(app.history_height);
+        let older = scroll_messages(&app, 1..=20);
+        app.timeline.prepend(older).unwrap();
+        // The very next frame, not only a later one, keeps the anchor still.
+        let arrived = render(&mut app, &context, vec![]);
+        assert_eq!(text_position(&arrived, anchor), position);
+        let settled = render(&mut app, &context, vec![]);
+        assert_eq!(text_position(&settled, anchor), position);
+    }
+
+    #[test]
+    fn a_growing_draft_moves_the_newest_message_in_the_same_frame() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let newest = "Scroll fixture message 40";
+        let resting = text_position(&render(&mut app, &context, vec![]), newest);
+        app.draft = "one\ntwo\nthree\nfour".into();
+        let grown = text_position(&render(&mut app, &context, vec![]), newest);
+        assert!(
+            grown.y < resting.y,
+            "the newest message rose with the composer"
+        );
+        for _ in 0..3 {
+            let settled = text_position(&render(&mut app, &context, vec![]), newest);
+            assert_eq!(settled, grown, "the first frame was already settled");
+        }
     }
 
     #[test]
@@ -15047,7 +15913,8 @@ mod tests {
         assert_eq!(app.privacy.as_deref(), Some("anyone"), "reverted");
         let error = app.privacy_error.clone().unwrap();
         assert!(error.starts_with("Could not save:"), "{error}");
-        let output = render(&mut app, &context, vec![]);
+        // Inline under the choices, which can sit at the scrolled body's edge.
+        let output = scroll_modal_to_bottom(&mut app, &context);
         assert!(texts(&output).contains(&error.as_str()));
     }
 

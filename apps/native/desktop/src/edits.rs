@@ -1,6 +1,7 @@
 //! Author editing and retained history. HTTP snapshots are cursor-neutral.
 use crate::{
-    BORDER, CAPER, CaperApp, ERROR, MUTED, RAISED, TERRACOTTA, TEXT, egui, model, worker::Command,
+    BORDER, CAPER, CaperApp, ERROR, MUTED, RAISED, SURFACE, TERRACOTTA, TEXT, egui, model,
+    worker::Command,
 };
 use model::{Message, MessageVersion, MessageVersions};
 use similar::{ChangeTag, TextDiff};
@@ -254,68 +255,88 @@ impl CaperApp {
             let id = egui::Id::new("message-editor");
             let previous_size =
                 context.memory(|memory| memory.area_rect(id).map(|rect| rect.size()));
-            let modal = egui::Modal::new(id).show(context, |ui| {
-                ui.set_width(500.0_f32.min(context.content_rect().width() - 48.0));
-                ui.heading("Edit message");
-                ui.colored_label(
-                    MUTED,
-                    "Previous versions remain visible to people who can read this message.",
-                );
-                let text_id = egui::Id::new("edit-message-text");
-                if std::mem::take(&mut editor.caret_end) {
-                    // Continue editing where the message ends, as on web.
-                    let mut state =
-                        egui::TextEdit::load_state(ui.ctx(), text_id).unwrap_or_default();
-                    state
-                        .cursor
-                        .set_char_range(Some(egui::text::CCursorRange::one(
-                            egui::text::CCursor::new(editor.draft.chars().count()),
-                        )));
-                    state.store(ui.ctx(), text_id);
-                }
-                let input = ui.add_enabled(
-                    !editor.busy,
-                    egui::TextEdit::multiline(&mut editor.draft)
-                        .id(text_id)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(7),
-                );
-                if editor.focus {
-                    input.request_focus();
-                    editor.focus = false;
-                }
-                ui.colored_label(MUTED, format!("{} / 4,000", editor.draft.chars().count()));
-                if let Some(error) = &editor.error {
-                    ui.colored_label(ERROR, error);
-                    reload = ui
-                        .add_enabled(
-                            !editor.busy,
-                            egui::Button::new("Discard draft and load latest"),
+            // The app's dialog surface, title and action row, as on web.
+            let modal = egui::Modal::new(id)
+                .frame(dialog_frame(context))
+                .show(context, |ui| {
+                    ui.set_width(500.0_f32.min(context.content_rect().width() - 48.0));
+                    ui.label(crate::bold("Edit message").size(18.4));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Previous versions remain visible to people who can read this message.",
                         )
-                        .clicked();
-                }
-                ui.horizontal(|ui| {
-                    close = ui
-                        .add_enabled(!editor.busy, egui::Button::new("Cancel"))
-                        .clicked();
-                    save = ui
-                        .add_enabled(
-                            !editor.busy && valid_text(&editor.draft),
-                            egui::Button::new(if editor.busy {
-                                "Saving…"
-                            } else {
-                                "Save changes"
-                            })
-                            .fill(TERRACOTTA),
-                        )
-                        .clicked();
-                });
-                save |= !editor.busy
-                    && valid_text(&editor.draft)
-                    && ui.input_mut(|input| {
-                        input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                        .size(12.8)
+                        .color(MUTED),
+                    );
+                    ui.add_space(12.0);
+                    let text_id = egui::Id::new("edit-message-text");
+                    if std::mem::take(&mut editor.caret_end) {
+                        // Continue editing where the message ends, as on web.
+                        let mut state =
+                            egui::TextEdit::load_state(ui.ctx(), text_id).unwrap_or_default();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(editor.draft.chars().count()),
+                            )));
+                        state.store(ui.ctx(), text_id);
+                    }
+                    let input = ui.add_enabled(
+                        !editor.busy,
+                        egui::TextEdit::multiline(&mut editor.draft)
+                            .id(text_id)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(7)
+                            .margin(egui::Margin::symmetric(10, 8)),
+                    );
+                    if editor.focus {
+                        input.request_focus();
+                        editor.focus = false;
+                    }
+                    // In a row: a bare right-to-left layout claims the modal's
+                    // whole height.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / 4,000",
+                                    crate::grouped(editor.draft.chars().count())
+                                ))
+                                .size(11.5)
+                                .color(MUTED),
+                            );
+                        });
                     });
-            });
+                    if let Some(error) = &editor.error {
+                        ui.colored_label(ERROR, error);
+                        reload = ui
+                            .add_enabled(
+                                !editor.busy,
+                                egui::Button::new("Discard draft and load latest"),
+                            )
+                            .clicked();
+                    }
+                    let (cancel, submit) = crate::dialog_buttons(
+                        ui,
+                        "Cancel",
+                        if editor.busy {
+                            "Saving…"
+                        } else {
+                            "Save changes"
+                        },
+                        crate::PRIMARY_TONE,
+                        !editor.busy,
+                        !editor.busy && valid_text(&editor.draft),
+                    );
+                    close = cancel.clicked();
+                    save = submit.clicked();
+                    save |= !editor.busy
+                        && valid_text(&editor.draft)
+                        && ui.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                        });
+                });
             if previous_size != Some(modal.response.rect.size()) {
                 context.request_repaint(); // Recenter after draft/error or viewport size changes.
             }
@@ -346,97 +367,103 @@ impl CaperApp {
             let previous_size =
                 context.memory(|memory| memory.area_rect(id).map(|rect| rect.size()));
             let previous_selection = history.selected;
-            let modal = egui::Modal::new(id).show(context, |ui| {
-                ui.set_width(840.0_f32.min(context.content_rect().width() - 48.0));
-                ui.horizontal(|ui| {
-                    ui.heading("Message history");
-                    close = ui.button("Close").clicked();
-                });
-                ui.colored_label(
-                    MUTED,
-                    format!(
-                        "{} · Previous versions are retained.",
-                        history.message.author.name
-                    ),
-                );
-                egui::ScrollArea::vertical()
-                    .max_height((context.content_rect().height() - 150.0).clamp(120.0, 560.0))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if history.versions.len() > 1 {
-                            comparison(ui, &history.versions[1], &history.versions[0], true);
-                        } else if let Some(original) = history.versions.first() {
-                            ui.label("Original version");
-                            ui.label(&original.content.text);
-                        }
-                        if history.versions.len() > 1 {
-                            ui.separator();
-                            ui.label("View previous versions");
-                            egui::ComboBox::from_id_salt("older-message-version")
-                                .selected_text(history.selected.map_or_else(
-                                    || "Choose an earlier version…".into(),
-                                    |revision| format!("Version {revision}"),
-                                ))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut history.selected,
-                                        None,
-                                        "Choose an earlier version…",
-                                    );
-                                    for version in history.versions.iter().skip(1) {
+            let modal = egui::Modal::new(id)
+                .frame(dialog_frame(context))
+                .show(context, |ui| {
+                    ui.set_width(840.0_f32.min(context.content_rect().width() - 48.0));
+                    ui.horizontal(|ui| {
+                        ui.label(crate::bold("Message history").size(18.4));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = crate::secondary_button(ui, "Close", true).clicked();
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} · Previous versions are retained.",
+                            history.message.author.name
+                        ))
+                        .size(12.8)
+                        .color(MUTED),
+                    );
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical()
+                        .max_height((context.content_rect().height() - 150.0).clamp(120.0, 560.0))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if history.versions.len() > 1 {
+                                comparison(ui, &history.versions[1], &history.versions[0], true);
+                            } else if let Some(original) = history.versions.first() {
+                                ui.label("Original version");
+                                ui.label(&original.content.text);
+                            }
+                            if history.versions.len() > 1 {
+                                ui.separator();
+                                ui.label("View previous versions");
+                                egui::ComboBox::from_id_salt("older-message-version")
+                                    .selected_text(history.selected.map_or_else(
+                                        || "Choose an earlier version…".into(),
+                                        |revision| format!("Version {revision}"),
+                                    ))
+                                    .show_ui(ui, |ui| {
                                         ui.selectable_value(
                                             &mut history.selected,
-                                            Some(version.revision),
-                                            version_label(version),
+                                            None,
+                                            "Choose an earlier version…",
                                         );
-                                    }
-                                });
-                            if let Some(after) = history
-                                .versions
-                                .iter()
-                                .find(|version| Some(version.revision) == history.selected)
-                            {
-                                if let Some(before) = history
+                                        for version in history.versions.iter().skip(1) {
+                                            ui.selectable_value(
+                                                &mut history.selected,
+                                                Some(version.revision),
+                                                version_label(version),
+                                            );
+                                        }
+                                    });
+                                if let Some(after) = history
                                     .versions
                                     .iter()
-                                    .find(|version| version.revision + 1 == after.revision)
+                                    .find(|version| Some(version.revision) == history.selected)
                                 {
-                                    comparison(ui, before, after, false);
-                                } else {
-                                    ui.label(if after.revision == 1 {
-                                        "Original version".into()
+                                    if let Some(before) = history
+                                        .versions
+                                        .iter()
+                                        .find(|version| version.revision + 1 == after.revision)
+                                    {
+                                        comparison(ui, before, after, false);
                                     } else {
-                                        format!("Version {}", after.revision)
-                                    });
-                                    ui.monospace(&after.content.text);
-                                    if after.revision > 1 && history.more {
-                                        ui.colored_label(
-                                            MUTED,
-                                            "Load older versions to compare this change.",
-                                        );
+                                        ui.label(if after.revision == 1 {
+                                            "Original version".into()
+                                        } else {
+                                            format!("Version {}", after.revision)
+                                        });
+                                        ui.monospace(&after.content.text);
+                                        if after.revision > 1 && history.more {
+                                            ui.colored_label(
+                                                MUTED,
+                                                "Load older versions to compare this change.",
+                                            );
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if history.loading {
-                            ui.label("Loading versions…");
-                        }
-                        if let Some(error) = &history.error {
-                            ui.colored_label(ERROR, error);
-                            load = ui
-                                .add_enabled(!history.loading, egui::Button::new("Retry"))
-                                .clicked();
-                        }
-                        if history.more && history.error.is_none() {
-                            load = ui
-                                .add_enabled(
-                                    !history.loading,
-                                    egui::Button::new("Load older versions"),
-                                )
-                                .clicked();
-                        }
-                    });
-            });
+                            if history.loading {
+                                ui.label("Loading versions…");
+                            }
+                            if let Some(error) = &history.error {
+                                ui.colored_label(ERROR, error);
+                                load = ui
+                                    .add_enabled(!history.loading, egui::Button::new("Retry"))
+                                    .clicked();
+                            }
+                            if history.more && history.error.is_none() {
+                                load = ui
+                                    .add_enabled(
+                                        !history.loading,
+                                        egui::Button::new("Load older versions"),
+                                    )
+                                    .clicked();
+                            }
+                        });
+                });
             if previous_selection != history.selected
                 || previous_size != Some(modal.response.rect.size())
             {
@@ -452,6 +479,15 @@ impl CaperApp {
             }
         }
     }
+}
+
+/// The app's dialog surface: web's 24px inset, 8px corners and border.
+fn dialog_frame(context: &egui::Context) -> egui::Frame {
+    egui::Frame::popup(&context.style())
+        .fill(SURFACE)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(8)
+        .inner_margin(24)
 }
 
 fn version_label(version: &MessageVersion) -> String {
@@ -495,6 +531,7 @@ fn comparison(ui: &mut egui::Ui, before: &MessageVersion, after: &MessageVersion
             egui::Frame::new()
                 .fill(RAISED)
                 .stroke(egui::Stroke::new(1.0, BORDER))
+                .corner_radius(8)
                 .inner_margin(8)
                 .show(column, |ui| {
                     let mut job = egui::text::LayoutJob::default();
@@ -518,7 +555,10 @@ fn comparison(ui: &mut egui::Ui, before: &MessageVersion, after: &MessageVersion
                             },
                         );
                     }
-                    ui.add(egui::Label::new(job).wrap());
+                    // Columns justify wrapped labels, spreading the words out.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.add(egui::Label::new(job).wrap());
+                    });
                 });
         }
     });
