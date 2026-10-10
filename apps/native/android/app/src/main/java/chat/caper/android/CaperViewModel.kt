@@ -111,11 +111,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val directs = runCatching { api.directConversations(token) }
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
-                    screen = SessionScreen.Home, account = account,
+                    screen = SessionScreen.Home, restoring = true, account = account,
                     spaces = list.spaces, invitations = list.invitations, limits = list.limits,
                     directConversations = directs.getOrNull()?.conversations.orEmpty(),
                     error = directs.exceptionOrNull()?.let(::message),
                 )
+                viewModelScope.launch {
+                    delay(RESTORE_LIMIT_MS)
+                    if (requestAccountGeneration == accountGeneration) finishRestoring()
+                }
                 refreshBlocks()
                 refreshNotificationSettings()
                 createChatSession(requestAccountGeneration)
@@ -129,7 +133,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 pendingChannelIntent = null
                 if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
                 else if (pendingChannel != null) selectSpace(pendingChannel.first, pendingChannel.second)
-                else list.spaces.firstOrNull()?.let { selectSpace(it.id) }
+                else list.spaces.firstOrNull()?.let { selectSpace(it.id) } ?: finishRestoring()
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut, error = message(error))
@@ -302,13 +306,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
-                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
-                spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])?.let(::selectChannel)
+                val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
+                // While restoring, the loading screen waits for the landing conversation too.
+                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0,
+                    restoring = mutable.value.restoring && landing != null)
+                landing?.let(::selectChannel)
                 notice?.let { mutable.value = mutable.value.copy(error = it) }
             } catch (error: Throwable) {
                 if (request == generation) {
                     if (error is ApiException && error.status == 404) removeUnavailableSpace(id)
-                    else { retryOpen = { selectSpace(id, preferredChannelId) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                    else { retryOpen = { selectSpace(id, preferredChannelId) }; mutable.value = mutable.value.copy(busy = false, restoring = false, openError = message(error)) }
                 }
             }
         }
@@ -320,7 +327,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(
             spaces = mutable.value.spaces.filter { it.id != id }, selectedSpace = null,
-            busy = false, openError = null, error = "This space is no longer available.",
+            busy = false, restoring = false, openError = null, error = "This space is no longer available.",
         )
     }
 
@@ -344,13 +351,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (request != generation) return@launch
                 installHistoryPins(history)
-                mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
+                mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(channel.id, history.cursor, request, channel.joined)
             } catch (error: Throwable) {
                 if (request != generation) return@launch
-                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                if (error is ApiException && error.status in listOf(401, 403, 404)) { revokeChannel(); finishRestoring() }
                 // Web shows a failed first load in the conversation with Try again.
-                else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+                else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, restoring = false, messagesError = message(error))
             }
         }
     }
@@ -367,11 +374,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 require(history.channel?.direct == true) { "Direct-message history was not marked direct." }
                 installHistoryPins(history)
-                mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
+                mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(conversation.id, history.cursor, request)
                 markDirectRead(conversation.id, history.cursor)
             } catch (error: Throwable) {
-                if (request == generation) mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+                if (request == generation) mutable.value = mutable.value.copy(busy = false, messagesLoading = false, restoring = false, messagesError = message(error))
             }
         }
     }
@@ -1742,6 +1749,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return error.status in listOf(401, 403, 404)
     }
 
+    /** Shows Home: its first conversation is ready, failed, or took longer than the cap. */
+    private fun finishRestoring() {
+        if (mutable.value.restoring) mutable.value = mutable.value.copy(restoring = false)
+    }
+
     private fun revokeChannel() {
         mutable.value.selectedChannel?.id?.let { VoiceCallService.stopIfChannel(getApplication(), it) }
         ++generation
@@ -1835,6 +1847,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         const val PRESENCE_PAGE_SIZE = 25
     }
 }
+
+/** The longest launch keeps the loading screen up while restoring the last conversation. */
+internal const val RESTORE_LIMIT_MS = 5_000L
 
 /** Web/Apple: [preferred] when the space has it, else the channel last opened there while still joined, else the first joined channel. */
 internal fun spaceLandingChannel(channels: List<Channel>, preferred: String?, remembered: String?): Channel? =
