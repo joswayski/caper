@@ -8497,7 +8497,8 @@ impl CaperApp {
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0).max(1.0),
             ).size().y);
-            let editor_height = (draft_height + 20.0).clamp(42.0, (ui.ctx().viewport_rect().height() * 0.4).min(320.0));
+            let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(42.0, 320.0);
+            let editor_height = (draft_height + 20.0).clamp(42.0, max_editor_height);
             let session_row = if self.session_error.is_some() { 24.0 } else { 0.0 };
             let joined = self.selected_is_joined();
             let composer = egui::TopBottomPanel::bottom("composer")
@@ -8588,7 +8589,7 @@ impl CaperApp {
                     let suggestions = self.suggestion_keys(ui, composer_id, &draft);
                     let editor = egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
-                        .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
+                        .max_height(max_editor_height)
                         .min_scrolled_height(42.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui|
@@ -20804,6 +20805,22 @@ mod tests {
                 })
                 .expect("composer outline")
         };
+        // Window creation/minimization can report a height below the configured
+        // minimum. The first Windows crash reported 64 points (40% = 25.6).
+        for height in [64.0, 104.0, 106.0] {
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, height),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            );
+            assert_eq!(editor_height(&output), 42.0);
+            assert_eq!(app.draft, "first");
+        }
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         assert_eq!(editor_height(&output), 42.0);
