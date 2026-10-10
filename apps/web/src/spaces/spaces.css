@@ -202,7 +202,8 @@
 }
 .spaces-room .voice-panel::before {
   position: absolute;
-  top: -13px;
+  /* Include both the panel border and the composer's top border. */
+  top: -14px;
   left: -13px;
   right: -13px;
   height: 1px;

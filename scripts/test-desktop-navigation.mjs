@@ -129,6 +129,19 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url.toString());
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
+  assert.deepEqual(
+    evaluate(`(() => {
+      const panel = document.querySelector(".voice-panel");
+      const account = panel.getBoundingClientRect();
+      const field = document.querySelector("#chat-message").getBoundingClientRect();
+      const composer = document.querySelector(".chat-composer").getBoundingClientRect();
+      const dividerTop = account.top + parseFloat(getComputedStyle(panel).borderTopWidth)
+        + parseFloat(getComputedStyle(panel, "::before").top);
+      return [account.top - field.top, account.bottom - field.bottom, dividerTop - composer.top];
+    })()`),
+    [0, 0, 0],
+    "Account and composer outlines and their upper dividers must align",
+  );
   // The member list starts closed on every client.
   browser("click", ".member-list-toggle");
   wait('document.querySelector(".space-member-presence .presence-dot")?.dataset.status === "online"');
