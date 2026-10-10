@@ -5156,7 +5156,8 @@ mobile push is implemented, not treated as current supported functionality.
 
 On narrow layouts, **Back to Browse** replaces the conversation's Browse label.
 Tap the channel name for **Pins** and **Members**; neither has a dedicated mobile
-header button. Pins opens the existing pinned-message view; web/Android offer
+header button. (Both are header buttons now: Pins since #363, and Members since
+[Sliding member list on phones](#sliding-member-list-on-phones-october-10-2026).) Pins opens the existing pinned-message view; web/Android offer
 **Messages** in the dropdown to return, while Apple retains its sheet's Messages
 control. Members uses the existing member panel, including Close and outside-tap
 dismissal. Direct messages and unjoined previews keep Pins but omit Members;
@@ -5410,3 +5411,63 @@ were added later on every client.)
 release independently, in any order; merging does not deploy. Roll back web with
 the previous web image and native clients with a corrected higher-build-number
 release. No data rollback is required.
+
+### Sliding member list on phones (October 10, 2026)
+
+On narrow layouts the member list now behaves like Browse:
+
+- **Header button:** Members (Show/Hide member list) is an icon button right of
+  Pins on every width. A channel's title no longer opens a dropdown on phones.
+  A 1:1 DM's title keeps its menu for Block/Unblock on Apple and Android; web's
+  DM Block stays a header button.
+- **Slide:** the list slides in from the trailing edge over the conversation,
+  below its header, with Browse's timing, and slides out before it is removed.
+  The 25% backdrop fades with it. Header button, Close, backdrop and Android
+  Back all animate it.
+- **Finger:** on touch clients a left swipe on the conversation opens it and a
+  right swipe on the panel closes it, following the finger with Browse's
+  release rules (past halfway, or a 300/s flick after 40 of travel). Web and
+  Android start the opening swipe anywhere on the timeline; Apple starts it
+  within 24pt of the trailing edge, mirroring Browse's leading edge. Opening
+  Browse with the list open carries it with the conversation.
+- **Look:** rounded 16px corners outlined on every side (the leading-only line
+  used to vanish into the top corner on Apple), and the edge shadow the
+  conversation casts over Browse (web `-12px 0 32px rgb(0 0 0 / 0.45)`, Apple
+  radius 16 / x −12 / 45% as in #431, Android 16dp elevation, Rust desktop's
+  egui edge shadow).
+- **Reduced motion:** opens and closes at once.
+
+| Platform | Behavior and validation boundary |
+| --- | --- |
+| Web ≤760px | `membersDrawer.ts` poses the panel with WAAPI (Browse's 320ms easing; a release keeps the finger's speed) and keeps it mounted, inert, while it leaves. Wide layouts toggle at once, as before. `npm run check` passes and `npm test` passes 492 tests on Node 24. In Chromium touch emulation against the disposable fixture, `scripts/test-desktop-navigation.mjs` passes its new header-order, slide-in, backdrop, snap-back, flick-close, mid-drag tracking, flick-open and 320px checks, and all Browse checks. Its first desktop step waits for mocked presence that never arrives (also on `main`: the mocked gateway keeps reconnecting), so that run skipped that one wait. Other agent-browser scripts now wait for the slide-out but were not run. 390px and 320px captures were inspected. Not Safari, Firefox or physical-device acceptance. |
+| Android narrow | A second `BrowseDrawer` with the same spring; the drag runs on the unmoving conversation layer in the opposite direction. `compileDebugKotlin`, `testDebugUnitTest` (235 tests) and `lintDebug` (0 errors) pass with SDK 36. `smoke.py` covers the header order and both swipes (ruff passes) but was not run. No emulator or device: there is no KVM here. |
+| Apple narrow | `DrawerSwipe` generalizes Browse's swipe to either edge; a `MembersOverlay` poses the panel in a scoped transaction like `BrowseLayer`. Swift 6.1 on Linux parses `CaperView.swift` and the UI tests, and the generic drawer pattern (protocol, `@Observable`, generic `@Environment`) type-checks against a stub with SwiftUI's signature. No Xcode build, UI test or device run. `testNarrowConversationAndBrowse` now covers the header button and both swipes. |
+| Rust desktop narrow | No touch gestures, as with Browse. The header button slides the list (0.3s cubic ease-out); clicking the backdrop closes it. Fmt, application-package Clippy (`--no-deps`) and 329 tests pass (9 existing ignored), including a new one for the button order and the slide in and out. Xvfb renders of `parity-narrow` (closed, mid-slide, open, closed by the backdrop) were inspected. Not macOS or Windows acceptance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+**Deployment order.**
+
+1. No infrastructure, secret/configuration, database migration, API, gateway or
+   Valkey change. Web, Android, Apple and Rust desktop deploy independently, in
+   any order; merging does not deploy. Wait for the merged revision's immutable
+   web image and set `MERGED_SHA` to that full commit SHA.
+2. Deploy web from an authenticated checkout with the production Kubernetes
+   context:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this SHA's deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build native clients through their existing workflows:
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios`,
+   `bash apps/native/apple/build.sh macos` and
+   `bash apps/native/desktop/build.sh`. Build output is not a store release.
+4. On a real iPhone, an Android phone and mobile Safari/Chrome, check the
+   Members button beside Pins, the slide in and out from the button, Close and
+   backdrop, slow drags snapping back and flicks both ways, vertical scrolling
+   in a long list, opening Browse with the list open, and Reduce Motion.
+   Roll back web by deploying the previous known-good image SHA with the command
+   above; for native clients ship a corrected higher-build-number build. No data
+   rollback is required.

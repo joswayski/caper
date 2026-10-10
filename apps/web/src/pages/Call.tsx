@@ -60,6 +60,7 @@ import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
 import { useBrowseLayout, useBrowseSwipe } from "../spaces/browseTransition";
+import { useMembersDrawer } from "../spaces/membersDrawer";
 import "./call.css";
 
 const initialState: CallViewState = {
@@ -525,6 +526,12 @@ export default function Call({
   const roomRef = useRef<HTMLElement>(null);
   const peeking = narrow && navigationOpen && !!onNavigationToggle;
   useBrowseLayout(roomRef, navigationOpen);
+  const members = useMembersDrawer(
+    roomRef,
+    narrow && !navigationOpen && !!membersPanel,
+    membersVisible,
+    setMembersVisible,
+  );
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
@@ -1302,6 +1309,14 @@ export default function Call({
         className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
         data-direct={channel?.direct ? "" : undefined}
         {...navigationSwipe}
+        onPointerDownCapture={(event) => {
+          navigationSwipe.onPointerDownCapture(event);
+          members.swipe.onPointerDownCapture(event);
+        }}
+        onClickCapture={(event) => {
+          navigationSwipe.onClickCapture(event);
+          members.swipe.onClickCapture(event);
+        }}
       >
         {spaceRail}
         <ChannelSidebar>
@@ -1591,24 +1606,6 @@ export default function Call({
                   </button>
                 )
               }
-              channelMenu={
-                narrow ? (
-                  <>
-                    {membersPanel && (
-                      <button
-                        type="button"
-                        className="member-list-toggle"
-                        aria-expanded={membersVisible}
-                        aria-controls={membersVisible ? "space-member-list" : undefined}
-                        onClick={() => setMembersVisible(!membersVisible)}
-                      >
-                        <Users aria-hidden="true" />
-                        {membersVisible ? "Hide member list" : "Members"}
-                      </button>
-                    )}
-                  </>
-                ) : undefined
-              }
               headerActions={
                 <div className="voice-actions">
                   {!audioPanel && actionError && (
@@ -1617,7 +1614,7 @@ export default function Call({
                     </div>
                   )}
                   {channelJoined && channelActions}
-                  {!narrow && membersPanel && (
+                  {membersPanel && (
                     <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
                       <button
                         type="button"
@@ -1625,7 +1622,7 @@ export default function Call({
                         aria-label={membersVisible ? "Hide member list" : "Show member list"}
                         aria-expanded={membersVisible}
                         aria-controls={membersVisible ? "space-member-list" : undefined}
-                        onClick={() => setMembersVisible(!membersVisible)}
+                        onClick={() => members.change(!membersVisible)}
                       >
                         <Users aria-hidden="true" />
                       </button>
@@ -1636,15 +1633,15 @@ export default function Call({
             />
           )}
         </div>
-        {membersVisible && membersPanel && (
+        {(membersVisible || members.closing) && membersPanel && (
           <>
             <button
               type="button"
               className="member-list-backdrop"
               aria-label="Close member list"
-              onClick={() => setMembersVisible(false)}
+              onClick={() => members.change(false)}
             />
-            {membersPanel(() => setMembersVisible(false))}
+            {membersPanel(() => members.change(false))}
           </>
         )}
         {peeking && (

@@ -208,9 +208,15 @@ try {
   wait('!document.querySelector(".space-member-presence")');
   assert.equal(evaluate('document.body.textContent.includes("TEST FIXTURE design history")'), true);
   assert.equal(
-    evaluate('document.querySelector(".chat-heading > .voice-actions .member-list-toggle")'),
+    evaluate('document.querySelector(".chat-channel-menu")'),
     null,
-    "Mobile members belongs in the channel menu",
+    "The mobile channel title has no dropdown",
+  );
+  assert.ok(
+    evaluate(
+      '["chat-pins-toggle", "member-list-toggle"].map(name => document.querySelector(`.chat-heading .${name}`).getBoundingClientRect().left).reduce((pins, members) => members > pins)',
+    ),
+    "Mobile Members is a header button right of Pins",
   );
   // Pins is an icon-only header control on every layout (#363).
   assert.equal(
@@ -285,7 +291,6 @@ try {
     [60, 0, "touchEnd", 800],
     [120, 0, "touchEnd", 1200],
     [30, 0],
-    [-100, 0],
     [90, 140],
     [100, 0, "touchCancel"],
   ]) {
@@ -380,21 +385,6 @@ try {
     "Showing and hiding Browse must not refetch the current history",
   );
 
-  browser("focus", ".chat-channel-menu summary");
-  browser("press", "Enter");
-  wait('document.querySelector(".chat-channel-menu").open');
-  screenshot("mobile-channel-menu");
-  await swipe(p.x - 60, p.y, 100);
-  assert.equal(browsing(), false, "An open dropdown must not pass a gesture through to navigation");
-  assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu").open'),
-    false,
-    "Outside touch dismisses the dropdown",
-  );
-  browser("click", ".chat-channel-menu summary");
-  browser("press", "Escape");
-  assert.equal(evaluate('document.querySelector(".chat-channel-menu").open'), false);
-  assert.equal(evaluate('document.activeElement === document.querySelector(".chat-channel-menu summary")'), true);
   assert.equal(
     evaluate('document.querySelector(".chat-heading .chat-pins-toggle").getAttribute("aria-label")'),
     "Pins",
@@ -411,18 +401,53 @@ try {
     "mobile draft survives both swipe directions",
     "Pins must preserve the conversation draft",
   );
-  browser("click", ".chat-channel-menu summary");
-  browser("click", ".chat-channel-menu .member-list-toggle");
-  wait('!!document.querySelector(".space-member-presence")');
+  // Members slides over the conversation like Browse and follows a finger both
+  // ways: left from the conversation opens it, right on the panel closes it.
+  const drawer = ".space-member-presence";
+  const drawerOpen = () => evaluate(`!!document.querySelector("${drawer}:not([inert])")`);
+  const drawerSettled = () => wait(`!document.querySelector("${drawer}")?.getAnimations().length`);
+  const drawerGone = () => wait(`!document.querySelector("${drawer}")`);
   assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu").open'),
-    false,
-    "Choosing Members closes the menu",
+    evaluate(`(async () => {
+      document.querySelector(".chat-heading .member-list-toggle").click();
+      await new Promise((resolve) => setTimeout(resolve));
+      return document.querySelector("${drawer}").getAnimations().length;
+    })()`),
+    1,
+    "Members slides in",
+  );
+  drawerSettled();
+  assert.equal(
+    evaluate('document.querySelector(".chat-heading .member-list-toggle").getAttribute("aria-expanded")'),
+    "true",
   );
   screenshot("mobile-members");
-  await swipe(p.x - 60, p.y, 100);
-  assert.equal(browsing(), false, "Member overlay must not pass swipes through");
-  if (evaluate('!!document.querySelector(".space-member-presence")')) browser("click", ".member-list-close");
+  await swipe(20, p.y, 100);
+  assert.equal(browsing(), false, "The member backdrop must not pass swipes through");
+  assert.equal(drawerOpen(), true, "Swiping the backdrop leaves Members open");
+  const memberRow = point(`${drawer} li`);
+  await swipe(memberRow.x, memberRow.y, 60, 0, "touchEnd", 800);
+  drawerSettled();
+  assert.equal(drawerOpen(), true, "A slow drag short of halfway leaves Members open");
+  await swipe(memberRow.x, memberRow.y, 100);
+  drawerGone();
+  assert.equal(browsing(), false, "A right flick on the panel closes Members without opening Browse");
+  await touch("touchStart", p.x + 100, p.y);
+  for (let step = 1; step <= 10; step++) await touch("touchMove", p.x + 100 - step * 10, p.y);
+  const [offset, drawerTravel] = evaluate(`(() => {
+    const room = document.querySelector(".spaces-room"), panel = document.querySelector("${drawer}");
+    return [new DOMMatrixReadOnly(getComputedStyle(panel).transform).m41, room.clientWidth - panel.offsetLeft + 48];
+  })()`);
+  assert.ok(Math.abs(offset - (drawerTravel - 100)) < 2, `Members follows the finger (${offset})`);
+  screenshot("mobile-members-swipe-midway");
+  await touch("touchEnd", 0, 0, 0.2); // Held still before lifting: not a fling.
+  drawerGone();
+  await swipe(p.x + 100, p.y, -100);
+  drawerSettled();
+  assert.equal(drawerOpen(), true, "A left flick on the conversation opens Members");
+  assert.equal(browsing(), false);
+  browser("click", ".member-list-close");
+  drawerGone();
   browser("click", ".navigation-toggle");
   settled();
   assert.equal(browsing(), true, "Back button must open Browse");
@@ -463,14 +488,16 @@ try {
   );
   browser("set", "viewport", "320", "568", "2");
   evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-  browser("click", ".chat-channel-menu summary");
+  browser("click", ".chat-heading .member-list-toggle");
+  drawerSettled();
   assert.equal(
     evaluate("document.documentElement.scrollWidth <= innerWidth"),
     true,
-    "Channel dropdown must fit a small phone",
+    "The header and Members must fit a small phone",
   );
-  screenshot("mobile-small-menu");
-  browser("press", "Escape");
+  screenshot("mobile-small-members");
+  browser("click", ".member-list-close");
+  drawerGone();
 
   // A refused new DM stays in its dialog, without moving controls or the shell.
   const directArtifacts = process.env.NAVIGATION_TEST_DIRECT_ARTIFACTS;
@@ -534,7 +561,7 @@ try {
     "PASS: New-DM refusals stay inline; loading, refusal and editing preserve modal, input, button and sidebar bounds at 1280px, 390px and 320px.",
   );
   console.log(
-    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members dropdown, empty Pins and 320px layout.",
+    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members header button and finger-tracked drawer, empty Pins and 320px layout.",
   );
 } finally {
   socket?.close();
