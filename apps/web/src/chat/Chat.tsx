@@ -589,24 +589,68 @@ export default function Chat({
     prependAnchor.current = undefined;
     if (!scroller || !anchor) return;
     let frame = 0;
-    let frames = 0;
+    let ticks = 0;
     let still = 0;
-    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
-    const stop = () => {
-      cancelAnimationFrame(frame);
-      for (const type of inputs) scroller.removeEventListener(type, stop);
+    let stopped = false;
+    // Rendered rows' offsets from the anchor, from the last frame that showed it.
+    let around = new Map<string, number>();
+    // Virtuoso applies its measured-size corrections in animation frame
+    // callbacks that run after one of ours would, so the reader saw each
+    // half-corrected frame (the list jumped by up to a few hundred pixels).
+    // Correct from a ResizeObserver callback instead: those run after every
+    // animation frame callback and layout, just before paint. A hidden
+    // sentinel resized each frame makes sure the callback runs every frame,
+    // including frames where Virtuoso only changed scrollTop.
+    const sentinel = document.createElement("div");
+    sentinel.setAttribute("aria-hidden", "true");
+    sentinel.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none";
+    const anchorOffset = () => {
+      const rows = new Map<string, number>();
+      for (const row of scroller.querySelectorAll<HTMLElement>(".chat-message[data-message-key]")) {
+        const offset = messageOffset(scroller, row.dataset.messageKey!, row);
+        if (offset !== undefined) rows.set(row.dataset.messageKey!, offset);
+      }
+      const offset = rows.get(anchor.key);
+      if (offset !== undefined) {
+        around = new Map([...rows].map(([key, value]) => [key, value - offset]));
+        return offset;
+      }
+      // Virtuoso can briefly render a range without the anchor while it
+      // re-measures; place it from the nearest row seen beside it.
+      let nearest: [string, number] | undefined;
+      for (const [key, value] of around)
+        if (rows.has(key) && (!nearest || Math.abs(value) < Math.abs(nearest[1]))) nearest = [key, value];
+      return nearest && rows.get(nearest[0])! - nearest[1];
     };
     const hold = () => {
-      const offset = messageOffset(scroller, anchor.key);
+      if (stopped) return;
+      const offset = anchorOffset();
       if (offset !== undefined && Math.abs(offset - anchor.offset) >= 1) {
         scroller.scrollTop += offset - anchor.offset;
         still = 0;
-      } else still++;
-      if (++frames < 60 && still < 6) frame = requestAnimationFrame(hold);
-      else stop();
+      } else if (++still >= 6) stop();
+    };
+    const observer = new ResizeObserver(hold);
+    const tick = () => {
+      if (++ticks > 60) return stop();
+      sentinel.style.width = `${(ticks % 2) + 1}px`;
+      frame = requestAnimationFrame(tick);
+    };
+    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    const stop = () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      sentinel.remove();
+      for (const type of inputs) scroller.removeEventListener(type, stop);
     };
     for (const type of inputs) scroller.addEventListener(type, stop, { passive: true });
-    frame = requestAnimationFrame(hold);
+    document.body.append(sentinel);
+    observer.observe(sentinel);
+    frame = requestAnimationFrame(tick);
+    // Virtuoso re-renders the old first row (now without its date divider or
+    // header) in a sync update right after this commit, before any paint.
+    queueMicrotask(hold);
     return stop;
   }, [firstItemIndex]);
 
