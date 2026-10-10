@@ -156,7 +156,8 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
-  height: 42px;
+  /* The voice panel adds two border pixels: match the 42px message field. */
+  height: 40px;
   padding: 4px;
   container: account / inline-size;
 }
