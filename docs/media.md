@@ -92,9 +92,14 @@ the API back only stops resolving new mentions. Validation:
 
 Apple composer frames use their measured content height rather than filling the
 174-point maximum: channel/DM drafts start at 42 points; thread replies retain
-their 72-point minimum. Longer drafts grow and then scroll. iPhone parity tests
-assert empty/single-line alignment with Send, multiline growth, the height cap,
-shrinking after deletion/send, and compact thread replies with the keyboard open.
+their 72-point minimum. Longer drafts grow and then scroll. iOS adds no extra
+bottom margin below channel/DM or thread controls: SwiftUI's safe area already
+avoids the docked keyboard and, when it is closed, the home indicator. macOS
+retains its 12-point bottom margin. iPhone parity tests assert empty/single-line
+alignment with Send, multiline growth, the height cap, shrinking after
+deletion/send, and compact thread replies with the keyboard open. They also
+require the controls to meet the keyboard without a gap and check the resting
+safe-area layout after keyboard dismissal and reopening.
 Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
 with Xcode before release and inspect the composer attachments. These new iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
