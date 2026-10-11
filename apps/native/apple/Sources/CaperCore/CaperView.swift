@@ -2842,6 +2842,9 @@ private struct NativeThreadView: View {
             // The thread is a cover on iPhone, which only it can present over.
             .modifier(MediaViewerHost())
             #endif
+            // One element for the whole panel; without it SwiftUI copies the
+            // identifier onto every child and a query for the panel is ambiguous.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-thread")
     }
 }
