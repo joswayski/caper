@@ -89,7 +89,10 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 }
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
-const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
+// Computed border-box sizes retain subpixels without the homepage window's
+// transform scale. Rounded offsets accumulate error between the preview and list.
+const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") =>
+  parseFloat(getComputedStyle(element)[field === "offsetHeight" ? "height" : "width"]);
 /** A message row's top below the scroller's top edge, in layout pixels (the homepage window is scaled). */
 function messageOffset(scroller: HTMLElement, key: string, row?: Element | null) {
   row ??= scroller.querySelector(`.chat-message[data-message-key="${CSS.escape(key)}"]`);
@@ -1539,8 +1542,6 @@ export default function Chat({
                 }}
                 computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
                 defaultItemHeight={70}
-                // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
-                // window the rect is scaled, which would hide the newest messages.
                 itemSize={measureItem}
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}

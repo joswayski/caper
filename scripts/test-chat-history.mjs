@@ -38,7 +38,13 @@ function fixture() {
   });
   const messages = Array.from(
     { length: Number(new URL(location.href).searchParams.get("fixtureCount") ?? 3000) },
-    (_, i) => message(i + 1),
+    (_, i) =>
+      message(
+        i + 1,
+        undefined,
+        undefined,
+        new URL(location.href).searchParams.has("fixtureAlternate") && i % 2 ? ownAuthor : author,
+      ),
   );
   const sockets = [];
   const control = (window.chatHistoryFixture = {
@@ -48,6 +54,8 @@ function fixture() {
     holdNext: false,
     release: undefined,
     initialFrames: [],
+    initialPositions: [],
+    initialPaintDone: false,
     latestKey: messages.at(-1)?.clientMessageId,
     append(text = "Fixture live arrival", id, sender) {
       const next = message(messages.length + 1, text, id, sender);
@@ -124,7 +132,7 @@ function fixture() {
       if (request.type !== "subscribe") return;
       this.subscriptions.set(request.id, request);
       const event =
-        request.kind === "chat"
+        request.kind === "chat" || request.kind === "notifications"
           ? { type: "ready", cursor: request.after ?? "0" }
           : request.kind === "presence"
             ? { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status: "online" })) }
@@ -143,6 +151,7 @@ function fixture() {
   window.localStorage.removeItem("caper.chat.session");
   // Check painted content, not merely the absence of a loading label. Virtuoso
   // used to expose an empty list during its initial scroll-to-bottom frames.
+  let handoffAt;
   const sampleInitialPaint = () => {
     const region = document.querySelector('.chat-messages[aria-busy="false"]');
     if (region && messages.length) {
@@ -155,7 +164,19 @@ function fixture() {
           );
         }),
       );
-      if (!document.querySelector(".chat-initial-messages")) return;
+      const preview = region.querySelector(".chat-initial-messages");
+      const latest = (preview ?? region.querySelector(".chat-scroller"))?.querySelector(
+        `[data-message-key="${control.latestKey}"]`,
+      );
+      if (latest?.checkVisibility({ visibilityProperty: true }))
+        control.initialPositions.push({ preview: !!preview, offset: latest.getBoundingClientRect().top - bounds.top });
+      if (!preview) {
+        handoffAt ??= performance.now();
+        if (performance.now() - handoffAt >= 1_000) {
+          control.initialPaintDone = true;
+          return;
+        }
+      }
     }
     requestAnimationFrame(sampleInitialPaint);
   };
@@ -334,12 +355,44 @@ function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
   console.log(`PASS: ${name}: 30 painted return frames, retained scroll position and stable scrollbar.`);
 }
 
+function initialPosition(layout) {
+  wait("chatHistoryFixture.initialPaintDone");
+  const initialPositions = evaluate("chatHistoryFixture.initialPositions");
+  assert.ok(
+    initialPositions.some((frame) => frame.preview),
+    "Sample the first painted history preview",
+  );
+  assert.ok(
+    initialPositions.some((frame) => !frame.preview),
+    "Sample the measured scrolling list",
+  );
+  const initialShift =
+    Math.max(...initialPositions.map((frame) => frame.offset)) -
+    Math.min(...initialPositions.map((frame) => frame.offset));
+  assert.ok(initialShift < 1, `${layout}: opening populated history must not shift messages: ${initialShift}px`);
+  console.log(`PASS: ${layout}: preview-to-scroller handoff and one settled second: ${initialShift.toFixed(3)}px.`);
+}
+
 try {
   browser("open", "about:blank");
+  const shortUrl = new URL(url);
+  shortUrl.searchParams.set("fixtureCount", "12");
+  shortUrl.searchParams.set("fixtureAlternate", "1");
+  for (const [layout, width, height] of [
+    ["desktop short history", 1280, 800],
+    ["narrow short history", 390, 844],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("open", shortUrl.toString());
+    initialPosition(layout);
+    assert.ok(latestVisible(), `${layout}: newest text stays visible`);
+    screenshot(`chat-initial-${width}`);
+  }
   browser("set", "viewport", "1280", "800", "2");
   browser("open", url);
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-offline")');
   evaluate("document.fonts.ready.then(() => true)");
+  initialPosition("desktop paginated history");
   wait(latestVisibleExpression);
   settle();
   assert.ok(metrics().rows < 35);
