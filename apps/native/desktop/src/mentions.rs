@@ -1,7 +1,8 @@
 //! `@mention` contract v1, shared with the API and every client: token grammar,
 //! composer suggestions and insertion, which message tokens to highlight, and
-//! what a person pill's card shows. `@feedback` (or `@caper`) asks the
-//! Caper team, who are notified and can read and reply in place.
+//! what a person pill's card shows. `@feedback` (or any other team name,
+//! like `@caper` or `@admin`) asks the Caper team, who are notified and can
+//! read and reply in place.
 
 use crate::model::{Author, DirectConversation, Member, Mention, Person as KnownPerson};
 use std::ops::Range;
@@ -71,8 +72,9 @@ pub enum Candidate {
     Person(Person),
     Everyone,
     Here,
-    /// The Caper team, in every conversation. Inserts `@feedback`.
-    Feedback,
+    /// The Caper team, in every conversation, by the first team name the
+    /// query starts (`@ad` inserts `@admin`).
+    Feedback(&'static str),
 }
 
 impl Candidate {
@@ -82,20 +84,48 @@ impl Candidate {
             Self::Person(person) => &person.username,
             Self::Everyone => "everyone",
             Self::Here => "here",
-            Self::Feedback => FEEDBACK,
+            Self::Feedback(name) => name,
         }
     }
 }
 
-/// The name the `@feedback` suggestion inserts.
-pub const FEEDBACK: &str = "feedback";
-/// What tagging the team means, under the `@feedback` suggestion.
-pub const FEEDBACK_LABEL: &str = "Caper team · can read and reply here";
+/// The team suggestion's secondary label.
+pub const FEEDBACK_LABEL: &str = "Notify the Caper team";
 /// Under a message that asked the team.
-pub const FEEDBACK_NOTICE: &str = "Caper team notified";
-/// The server's team aliases. Both resolve to a `feedback` entry; only
-/// `feedback` is suggested.
-const FEEDBACK_ALIASES: [&str; 2] = [FEEDBACK, "caper"];
+pub const FEEDBACK_NOTICE: &str = "Caper team has been notified 🫡";
+/// The server's reserved team names, in suggestion order. Every one
+/// resolves to the message's `feedback` entry.
+pub const FEEDBACK_ALIASES: [&str; 17] = [
+    "feedback",
+    "caper",
+    "capers",
+    "caperchat",
+    "caper_feedback",
+    "caper_support",
+    "support",
+    "team",
+    "staff",
+    "admin",
+    "admins",
+    "administrator",
+    "administrators",
+    "mod",
+    "mods",
+    "moderator",
+    "moderators",
+];
+
+/// The team name a non-empty query suggests: the first that starts with it.
+pub fn team_name(query: &str) -> Option<&'static str> {
+    let query = query.to_ascii_lowercase();
+    (!query.is_empty())
+        .then(|| {
+            FEEDBACK_ALIASES
+                .into_iter()
+                .find(|alias| alias.starts_with(&query))
+        })
+        .flatten()
+}
 
 /// Which specials a composer offers besides people.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,32 +137,21 @@ pub struct Specials {
 }
 
 /// Up to six rows: matching people by rank then username, then the matching
-/// specials (`everyone`, `here`, `feedback`), which always keep their slots.
-/// `feedback` matches a non-empty prefix of `feedback` or `caper`. Callers pass people
+/// specials (`everyone`, `here`, then one team name), which always keep their
+/// slots. A non-empty query offers the first team name it starts. Callers pass people
 /// without the current user.
 pub fn suggestions(people: &[Person], specials: Specials, query: &str) -> Vec<Candidate> {
     let query = query.to_ascii_lowercase();
-    let specials: Vec<_> = [
-        (Candidate::Everyone, specials.channel),
-        (Candidate::Here, specials.channel),
-        (Candidate::Feedback, specials.feedback),
-    ]
-    .into_iter()
-    .filter(|(special, offered)| {
-        *offered
-            && match special {
-                // Only once something is typed: a bare `@` lists people.
-                Candidate::Feedback => {
-                    !query.is_empty()
-                        && FEEDBACK_ALIASES
-                            .iter()
-                            .any(|alias| alias.starts_with(&query))
-                }
-                _ => special.name().starts_with(&query),
-            }
-    })
-    .map(|(special, _)| special)
-    .collect();
+    let team = specials
+        .feedback
+        .then(|| team_name(&query))
+        .flatten()
+        .map(Candidate::Feedback);
+    let specials: Vec<_> = [Candidate::Everyone, Candidate::Here]
+        .into_iter()
+        .filter(|special| specials.channel && special.name().starts_with(&query))
+        .chain(team)
+        .collect();
     let mut ranked: Vec<_> = people
         .iter()
         .filter_map(|person| {
@@ -205,7 +224,7 @@ fn tokens(text: &str) -> Vec<(Range<usize>, String)> {
 
 /// The server entry backing a token's lowercase name. Unresolved names, and
 /// `everyone`/`here` without their entry (as in DMs), stay plain. One
-/// `feedback` entry backs every `@feedback` and `@caper` token.
+/// `feedback` entry backs every team-name token (`@feedback`, `@caper`, …).
 fn resolved<'a>(name: &str, mentions: &'a [Mention]) -> Option<&'a Mention> {
     mentions.iter().find(|entry| match entry.kind.as_str() {
         "everyone" | "here" => entry.kind == name,
@@ -520,7 +539,28 @@ mod tests {
     }
 
     #[test]
-    fn feedback_is_suggested_everywhere_for_feedback_and_caper_prefixes() {
+    fn one_team_name_is_suggested_everywhere_for_a_typed_prefix() {
+        for (query, name) in [
+            ("fe", "feedback"),
+            ("FEED", "feedback"),
+            ("c", "caper"),
+            ("cap", "caper"),
+            ("capers", "capers"),
+            ("caperc", "caperchat"),
+            ("caper_s", "caper_support"),
+            ("s", "support"),
+            ("st", "staff"),
+            ("t", "team"),
+            ("ad", "admin"),
+            ("administrators", "administrators"),
+            ("mo", "mod"),
+            ("moderat", "moderator"),
+        ] {
+            assert_eq!(team_name(query), Some(name), "{query}");
+        }
+        assert_eq!(team_name(""), None, "never on a bare @");
+        assert_eq!(team_name("feedbackx"), None);
+        assert_eq!(team_name("x"), None);
         let people = [
             person("alex", "Alex Rivera"),
             person("feedback_fan", "Fern"),
@@ -531,15 +571,9 @@ mod tests {
                 ["feedback_fan", "feedback"],
                 "matching people rank first: {specials:?}"
             );
-            assert_eq!(names(&suggestions(&[], specials, "c")), ["feedback"]);
-            assert_eq!(
-                names(&suggestions(&[], specials, "caper")),
-                ["feedback"],
-                "@caper suggests the team, which inserts @feedback"
-            );
+            assert_eq!(names(&suggestions(&[], specials, "ad")), ["admin"]);
+            assert_eq!(names(&suggestions(&[], specials, "mo")), ["mod"]);
             assert!(suggestions(&people, specials, "feedbackx").is_empty());
-            assert!(suggestions(&people, specials, "capers").is_empty());
-            assert!(!suggestions(&[], specials, "e").contains(&Candidate::Feedback));
         }
         assert_eq!(
             names(&suggestions(&people, CHANNEL, "")),
@@ -547,13 +581,9 @@ mod tests {
             "a bare @ never suggests the team"
         );
         assert!(suggestions(&[], DIRECT, "").is_empty());
-        let many: Vec<_> = (0..10)
-            .map(|index| person(&format!("user{index}"), "Member"))
-            .collect();
-        assert_eq!(
-            names(&suggestions(&many, DIRECT, "f")),
-            ["feedback"],
-            "no member matches"
+        assert!(
+            suggestions(&[], channel(true), "ad").is_empty(),
+            "only where the team is offered"
         );
         let fans: Vec<_> = (0..10)
             .map(|index| person(&format!("fan{index}"), "Member"))
@@ -563,15 +593,11 @@ mod tests {
             ["fan0", "fan1", "fan2", "fan3", "fan4", "feedback"],
             "the team keeps its slot"
         );
-        assert_eq!(Candidate::Feedback.name(), "feedback");
-        let active = token("hi @cap", 7).unwrap();
+        let active = token("hi @ad", 6).unwrap();
         assert_eq!(
-            insert("hi @cap", &active, Candidate::Feedback.name()),
-            Some(("hi @feedback ".into(), 13))
+            insert("hi @ad", &active, Candidate::Feedback("admin").name()),
+            Some(("hi @admin ".into(), 10))
         );
-        for alias in ["admin", "team", "support"] {
-            assert!(suggestions(&[], CHANNEL, alias).is_empty(), "{alias}");
-        }
     }
 
     #[test]
@@ -655,23 +681,25 @@ mod tests {
     }
 
     #[test]
-    fn feedback_and_caper_tokens_become_pills_with_the_team_notice() {
+    fn team_name_tokens_become_pills_with_the_team_notice() {
         let mentions = [entry("feedback", None, None)];
-        let text = "@Feedback uploads fail (@caper) feedback@caper.chat @feedbacks @capers x@caper";
+        let text = "@Feedback uploads fail (@caper) @ADMIN @mods @Caper_Support feedback@caper.chat @feedbacks @moderatorx x@caper";
         assert_eq!(
             pills(text, &mentions),
-            ["@Feedback", "@caper"],
+            ["@Feedback", "@caper", "@ADMIN", "@mods", "@Caper_Support"],
             "case-insensitive, same boundaries as other mentions"
         );
+        for alias in FEEDBACK_ALIASES {
+            assert_eq!(pills(&format!("@{alias}"), &mentions).len(), 1, "{alias}");
+        }
         assert!(
-            pills("@feedback", &[]).is_empty(),
+            pills("@feedback @admin", &[]).is_empty(),
             "plain text without the server's entry (a guest's message)"
         );
-        assert!(pills("@feedback", &[user("u1", "feedback")]).len() == 1);
         assert!(notifies_team(&mentions));
         assert!(!notifies_team(&[user("u1", "feedback")]));
         assert!(!notifies_team(&[]));
-        let highlighted = highlights("@caper hi", &mentions);
+        let highlighted = highlights("@team hi", &mentions);
         assert_eq!(highlighted[0].1.kind, "feedback", "no profile card");
         let decoded: crate::model::Content = serde_json::from_value(serde_json::json!({
             "version": 1, "type": "text", "text": "@feedback help",
@@ -683,6 +711,8 @@ mod tests {
             !mentions_me(&mentions, "someone", Some("me")),
             "asking the team is not mentioning you"
         );
+        assert_eq!(FEEDBACK_NOTICE, "Caper team has been notified 🫡");
+        assert_eq!(FEEDBACK_LABEL, "Notify the Caper team");
     }
 
     #[test]

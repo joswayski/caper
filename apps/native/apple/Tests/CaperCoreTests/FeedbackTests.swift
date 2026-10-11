@@ -153,7 +153,17 @@ final class FeedbackTests: XCTestCase {
         XCTAssertFalse(MentionAutocomplete.asksFeedback(message("@caper hi", [])))
         XCTAssertFalse(MentionAutocomplete.mentionsCurrentUser(message("@feedback", [.feedback]), currentUserID: selfID),
                        "@feedback does not tint the row as a mention of you")
-        XCTAssertEqual(FeedbackInbox.notified, "Caper team notified")
+        XCTAssertEqual(FeedbackInbox.notified, "Caper team has been notified 🫡")
+        // Every team name is a pill once the message asked the team.
+        XCTAssertEqual(MentionAutocomplete.segments(in: "@Admin @mods @support_x", mentions: [.feedback]), [
+            MentionSegment(text: "@Admin", highlighted: true),
+            MentionSegment(text: " ", highlighted: false),
+            MentionSegment(text: "@mods", highlighted: true),
+            MentionSegment(text: " @support_x", highlighted: false),
+        ])
+        for name in MentionAutocomplete.feedbackAliases {
+            XCTAssertTrue(MentionAutocomplete.isHighlighted(name: name.uppercased(), mentions: [.feedback]), name)
+        }
     }
 
     // MARK: Autocomplete
@@ -165,29 +175,41 @@ final class FeedbackTests: XCTestCase {
 
     func testFeedbackSuggestionMatchesEitherAliasEverywhere() throws {
         XCTAssertEqual(MentionCandidate.feedback.kind, .feedback)
-        XCTAssertEqual(MentionCandidate.feedback.displayName, "Caper team · can read and reply here")
-        XCTAssertEqual(ComposerSuggestionsView.mentionLabel(.feedback), "@feedback, Caper team · can read and reply here")
+        XCTAssertEqual(MentionCandidate.feedback.displayName, "Notify the Caper team")
+        XCTAssertEqual(ComposerSuggestionsView.mentionLabel(.feedback), "@feedback, Notify the Caper team")
+        XCTAssertEqual(MentionAutocomplete.feedbackAliases.first, "feedback")
+        XCTAssertEqual(MentionAutocomplete.feedbackAliases.count, 17)
 
         let members = [Member(id: "Carol0000001", username: "carol", displayName: "Carol King", owner: false)]
         let space = MentionSource.space(members: members, excluding: selfID)
         XCTAssertEqual(names("@f", space), ["feedback"])
         XCTAssertEqual(names("@FEED", space), ["feedback"])
         XCTAssertEqual(names("@feedback", space), ["feedback"])
-        XCTAssertEqual(names("@ca", space), ["carol", "feedback"], "a prefix of caper offers it too, after people")
-        XCTAssertEqual(names("@caper", space), ["feedback"])
+        XCTAssertEqual(names("@ca", space), ["carol", "caper"], "the first team name the query starts, after people")
+        XCTAssertEqual(names("@caper", space), ["caper"])
+        XCTAssertEqual(names("@capers", space), ["capers"])
+        XCTAssertEqual(names("@caper_s", space), ["caper_support"])
+        XCTAssertEqual(names("@ad", space), ["admin"])
+        XCTAssertEqual(names("@mo", space), ["mod"])
+        XCTAssertEqual(names("@s", space), ["support"])
+        XCTAssertEqual(names("@st", space), ["staff"])
+        XCTAssertEqual(names("@TEA", space), ["team"])
         XCTAssertEqual(names("@feedbackx", space), [])
-        XCTAssertEqual(names("@capers", space), [])
+        XCTAssertEqual(names("@moderatorsx", space), [])
+        let admin = try XCTUnwrap(MentionAutocomplete.match(text: "@ad", selection: caret("@ad"), markedText: false, source: space))
+        XCTAssertEqual(admin.choices.map(\.kind), [.feedback], "one team suggestion")
+        XCTAssertEqual(MentionAutocomplete.inserting(admin.choices[0], in: "@ad", match: admin)?.text, "@admin ")
 
         let peer = DirectMessagePeer(id: "Pat000000001", username: "pat", displayName: "Pat")
-        XCTAssertEqual(names("@c", .direct(peer: peer, accountID: selfID)), ["feedback"], "DMs")
+        XCTAssertEqual(names("@c", .direct(peer: peer, accountID: selfID)), ["caper"], "DMs")
         let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "me", displayName: "Me"), accountID: selfID)
-        XCTAssertEqual(names("@c", notes), ["feedback"], "personal notes")
+        XCTAssertEqual(names("@c", notes), ["caper"], "personal notes")
         XCTAssertEqual(names("@", notes), [], "a bare @ stays about people")
         XCTAssertEqual(names("@", space), ["carol", "everyone", "here"], "no @feedback until something is typed")
 
         let match = try XCTUnwrap(MentionAutocomplete.match(text: "hi @cap", selection: caret("hi @cap"), markedText: false, source: notes))
-        XCTAssertEqual(MentionAutocomplete.inserting(match.choices[0], in: "hi @cap", match: match)?.text, "hi @feedback ",
-                       "either alias inserts @feedback")
+        XCTAssertEqual(MentionAutocomplete.inserting(match.choices[0], in: "hi @cap", match: match)?.text, "hi @caper ",
+                       "the matching team name is inserted")
         XCTAssertTrue(ComposerAutocompleteMatch.mention(match).offersFeedback)
     }
 
@@ -256,7 +278,6 @@ final class FeedbackTests: XCTestCase {
                                      direct: false, reportID: rootID).title, "#plans · Studio")
         XCTAssertEqual(FeedbackVisit(channelID: "Dm0000000001", spaceID: "", spaceName: "Direct messages", channelName: "Alice & Bob",
                                      direct: true, reportID: rootID).title, "Alice & Bob")
-        XCTAssertEqual(FeedbackInbox.banner, "Visiting as the Caper team — everyone here sees your replies.")
     }
 
     // MARK: Notifications
@@ -348,6 +369,7 @@ final class FeedbackTests: XCTestCase {
             case "/api/chat/channels/\(self.channelID)/messages/\(self.rootID)/thread": return (200, Data(thread.utf8))
             case "/api/chat/session": return (200, Data(#"{"token":"chat-secret","author":{"id":"Team00000001","name":"Team","isGuest":false}}"#.utf8))
             case "/api/people": return (200, Data(#"{"people":[]}"#.utf8))
+            case "/api/channels/\(self.channelID)/media/status": return (200, Data(#"{"enabled":true}"#.utf8))
             default: throw URLError(.badURL)
             }
         }
@@ -363,15 +385,21 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(model.visit?.reporter, reporter)
         XCTAssertNil(model.selectedChannelID, "a visit is not a channel in the sidebar")
         XCTAssertNil(model.selectedDirectMessageID)
-        XCTAssertTrue(model.chat.visitor)
+        XCTAssertTrue(model.showingFeedback, "Back returns to the inbox, whose row holds voice")
+        let channel = try XCTUnwrap(model.visitChannel, "a visited space channel offers voice")
+        XCTAssertEqual(channel.spaceId, "Space0000001")
+        XCTAssertNil(model.voiceAvailable(in: channel))
+        await model.refreshVoiceAvailability(channel: channel)
+        XCTAssertEqual(model.voiceAvailable(in: channel), true)
+        XCTAssertEqual(model.voiceRoster(for: channelID), [])
         XCTAssertEqual(model.chat.threadRootID, rootID, "replies land in the report's thread")
         XCTAssertEqual(model.chat.focusedMessageID, replyID)
         XCTAssertTrue(model.chat.threadMessages.contains { $0.id == replyID })
         XCTAssertTrue(model.isShowing(.feedback(FeedbackTarget(channelID: channelID, spaceID: nil, messageID: replyID, threadRootID: nil))))
-        XCTAssertFalse(paths.contains { $0.contains("/read") || $0.contains("/pin") }, "no read markers or pins for visitors")
+        XCTAssertFalse(paths.contains { $0.contains("/read") }, "no read markers for visitors")
 
         await model.closeVisit()
         XCTAssertNil(model.visit, "with nothing before it, closing leaves an empty stage")
-        XCTAssertFalse(model.chat.visitor)
+        XCTAssertNil(model.visitChannel)
     }
 }

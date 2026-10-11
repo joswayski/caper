@@ -24,7 +24,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ADMIN_BADGE
-import chat.caper.android.data.VISIT_BANNER
 import chat.caper.android.data.feedbackAge
 import chat.caper.android.data.feedbackLocation
 import chat.caper.android.data.feedbackPreview
@@ -109,12 +108,6 @@ import chat.caper.android.ui.*
             if (preview.isNotEmpty()) Text(preview, color = MessageText, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
-}
-
-/** The slim, neutral notice under a visited conversation's header. */
-@Composable internal fun VisitBanner() {
-    Text(VISIT_BANNER, Modifier.fillMaxWidth().background(Surface).padding(horizontal = 18.dp, vertical = 7.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp)
-    HorizontalDivider(color = Border)
 }
 
 /** Marks a Caper feedback team member's message, in the pin gold with a soft glow. The server stamps it, so a look-alike name can't. */

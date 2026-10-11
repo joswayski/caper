@@ -17,9 +17,12 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
                                            displayName: "Everyone in this channel")
     static let here = MentionCandidate(kind: .here, id: "here", username: "here",
                                        displayName: "Everyone online in this channel")
-    /// Asks the Caper team to read this conversation; its label says so up front.
-    static let feedback = MentionCandidate(kind: .feedback, id: "feedback", username: "feedback",
-                                           displayName: "Caper team · can read and reply here")
+    /// One of the Caper team's names (`MentionAutocomplete.feedbackAliases`),
+    /// inserted as typed. At most one is offered, so its id is fixed.
+    static func team(_ name: String) -> MentionCandidate {
+        MentionCandidate(kind: .feedback, id: "feedback", username: name, displayName: "Notify the Caper team")
+    }
+    static let feedback = team("feedback")
 
     static func member(id: String, username: String, displayName: String, avatarId: Int? = nil) -> MentionCandidate {
         MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId)
@@ -130,8 +133,12 @@ struct MentionPill: Equatable, Hashable, Identifiable, Sendable {
 enum MentionAutocomplete {
     static let maximumNameLength = 32
     static let maximumChoices = 6
-    /// `@feedback` and `@caper` both ask the Caper team (the server's `FEEDBACK_ALIASES`).
-    static let feedbackAliases = ["feedback", "caper"]
+    /// Every name that asks the Caper team (reserved usernames, the server's
+    /// list), in suggestion order.
+    static let feedbackAliases = [
+        "feedback", "caper", "capers", "caperchat", "caper_feedback", "caper_support", "support", "team", "staff",
+        "admin", "admins", "administrator", "administrators", "mod", "mods", "moderator", "moderators",
+    ]
 
     static func isFeedbackAlias(_ name: String) -> Bool { feedbackAliases.contains(name.lowercased()) }
 
@@ -179,13 +186,14 @@ enum MentionAutocomplete {
     /// or one of its space-separated words starts with the query), 3 (username
     /// contains it), ties by username; an empty query puts every member at 1.
     /// Matching specials (`everyone`, `here`, then `feedback`) follow the
-    /// members and keep their slots within the cap of six. `feedback` needs a
-    /// non-empty query that starts either alias, `feedback` or `caper`.
+    /// members and keep their slots within the cap of six. The team special
+    /// needs a non-empty query: the first team name it starts, inserted as is
+    /// (`@ad` offers `@admin`).
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
         var specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
         // Only once something is typed: a bare `@` stays about people.
-        if source.feedback, !query.isEmpty, feedbackAliases.contains(where: { $0.hasPrefix(query) }) { specials.append(.feedback) }
+        if source.feedback, !query.isEmpty, let name = feedbackAliases.first(where: { $0.hasPrefix(query) }) { specials.append(.team(name)) }
         let members = source.members.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
             let username = candidate.username.lowercased()
             let displayName = candidate.displayName.lowercased()
@@ -247,8 +255,8 @@ enum MentionAutocomplete {
     }
 
     /// A token is highlighted only when `content.mentions` resolves it:
-    /// `everyone`/`here` need their entry, every `@feedback`/`@caper` the
-    /// `feedback` entry, other names a `user` entry with that username.
+    /// `everyone`/`here` need their entry, every team name (`@feedback`,
+    /// `@caper`, `@admin`…) the `feedback` entry, other names a `user` entry with that username.
     /// Unresolved names stay plain text.
     static func isHighlighted(name: String, mentions: [MessageMention]) -> Bool {
         let name = name.lowercased()
@@ -278,7 +286,7 @@ enum MentionAutocomplete {
             if cursor < token.range.lowerBound {
                 segments.append(MentionSegment(text: string(scalars[cursor..<token.range.lowerBound]), highlighted: false))
             }
-            // `@feedback`/`@caper` pills open no profile card.
+            // Team-name pills open no profile card.
             let feedback = isFeedbackAlias(token.name) && mentions.contains(.feedback)
             segments.append(MentionSegment(text: string(scalars[token.range]), highlighted: true,
                                            user: feedback ? nil : user(named: token.name, in: mentions)))

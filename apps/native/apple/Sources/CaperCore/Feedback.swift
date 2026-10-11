@@ -166,9 +166,8 @@ public enum FeedbackInbox {
     public static let subtitle = "Conversations where someone asked the Caper team. Replies post there, for everyone in it."
     public static let empty = "No feedback yet."
     public static let loadFailed = "Couldn’t load feedback."
-    public static let banner = "Visiting as the Caper team — everyone here sees your replies."
-    /// Under a message that said `@feedback` or `@caper`.
-    public static let notified = "Caper team notified"
+    /// Under a message that asked the Caper team (`@feedback`, `@caper`, `@admin`…).
+    public static let notified = "Caper team has been notified 🫡"
     public static let answered = "Answered"
     public static let waiting = "Waiting"
 

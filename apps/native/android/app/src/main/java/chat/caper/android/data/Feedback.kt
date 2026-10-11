@@ -19,10 +19,7 @@ import java.util.Locale
 internal const val ADMIN_BADGE = "ADMIN"
 
 /** The small muted line under a message that asked the Caper team to look. */
-internal const val CAPER_TEAM_NOTIFIED = "Caper team notified"
-
-/** The slim banner in a visited conversation. */
-internal const val VISIT_BANNER = "Visiting as the Caper team — everyone here sees your replies."
+internal const val CAPER_TEAM_NOTIFIED = "Caper team has been notified 🫡"
 
 /** The server reported this message to the Caper team (`content.mentions` has a `feedback` entry). */
 internal fun notifiesCaperTeam(content: ChatContent): Boolean = content.mentions.any { it.type == "feedback" }

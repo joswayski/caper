@@ -18,7 +18,7 @@ internal data class MentionToken(val start: Int, val end: Int, val query: String
 /** A person or special name the composer can suggest after `@`. */
 internal data class MentionCandidate(
     val username: String,
-    /** The display name for people; the muted description for `@everyone`/`@here`/`@feedback`. */
+    /** The display name for people; the muted description for `@everyone`/`@here`/team names. */
     val label: String,
     val special: Boolean = false,
     val avatarId: Int? = null,
@@ -30,14 +30,30 @@ internal val mentionSpecials = listOf(
 )
 
 /**
- * `@feedback` asks the Caper team to read the conversation and reply in it. It is offered in
- * every conversation (channels, threads, DMs and your notes) when the query starts `feedback`
- * or `caper` (the server's other name for it), and always inserts `@feedback `.
+ * The names that ask the Caper team to look (all reserved usernames), in the server's order.
+ * Any of them in a message with a `feedback` mention entry is a pill.
  */
-internal val mentionFeedback = MentionCandidate("feedback", "Caper team · can read and reply here", special = true)
+internal val FEEDBACK_NAMES = listOf(
+    "feedback", "caper", "capers", "caperchat", "caper_feedback", "caper_support", "support", "team", "staff",
+    "admin", "admins", "administrator", "administrators", "mod", "mods", "moderator", "moderators",
+)
 
-/** The names that ask the Caper team to look, as the server reads them. */
-internal val FEEDBACK_NAMES = setOf("feedback", "caper")
+/** The muted description of the team suggestion. */
+internal const val FEEDBACK_SUGGESTION_LABEL = "Notify the Caper team"
+
+/**
+ * The one team suggestion for a non-empty [query]: the first team name that starts with it,
+ * inserted as named (`@ad` → `@admin`, `@cap` → `@caper`, `@fe` → `@feedback`). Offered in
+ * every conversation (channels, threads, DMs and your notes), never for a bare `@`.
+ */
+internal fun feedbackSuggestion(query: String): MentionCandidate? {
+    val needle = query.lowercase(Locale.ROOT)
+    if (needle.isEmpty()) return null
+    return FEEDBACK_NAMES.firstOrNull { it.startsWith(needle) }?.let { MentionCandidate(it, FEEDBACK_SUGGESTION_LABEL, special = true) }
+}
+
+/** The team suggestion, whose description gets its own line in the popup. */
+internal val MentionCandidate.teamSuggestion: Boolean get() = special && label == FEEDBACK_SUGGESTION_LABEL && username in FEEDBACK_NAMES
 
 internal fun Char.isMentionNameChar(): Boolean =
     this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_'
@@ -62,7 +78,7 @@ internal fun mentionToken(value: TextFieldValue): MentionToken? {
  * specials in a space channel; in a DM, everyone from `GET /api/people`,
  * falling back to the other participant until that list loads. A visit has no
  * member list: the reporter and people the loaded messages name. [feedback]
- * offers `@feedback` (signed-in accounts, every conversation).
+ * offers the team suggestion (signed-in accounts, every conversation).
  */
 internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean, val feedback: Boolean = false)
 
@@ -111,13 +127,13 @@ internal fun visitMentionPeople(state: AppUiState, self: String?): List<MentionC
 /**
  * Members ranked exact username, username prefix, display-name word prefix,
  * then username substring (ties by username), followed by matching specials
- * (`@everyone`, `@here`, then `@feedback` once something is typed, which `caper` also finds).
+ * (`@everyone`, `@here`, then one team name once something is typed, see [feedbackSuggestion]).
  * Specials keep their slots within [limit].
  */
 internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int = 6): List<MentionCandidate> {
     val needle = query.lowercase(Locale.ROOT)
     val specials = ((if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) } else emptyList()) +
-        listOfNotNull(mentionFeedback.takeIf { source.feedback && needle.isNotEmpty() && FEEDBACK_NAMES.any { name -> name.startsWith(needle) } })).take(limit)
+        listOfNotNull(if (source.feedback) feedbackSuggestion(needle) else null)).take(limit)
     val people = source.people.mapNotNull { person ->
         val username = person.username.lowercase(Locale.ROOT)
         val display = person.label.lowercase(Locale.ROOT)
@@ -160,8 +176,8 @@ internal fun mentionSpans(text: String): List<MentionSpan> {
 }
 
 /**
- * Tokens the server resolved: specials with their entry (every `@feedback` and `@caper` with a
- * `feedback` entry), users by username. Unknown types are ignored.
+ * Tokens the server resolved: specials with their entry (every team name in [FEEDBACK_NAMES]
+ * with a `feedback` entry), users by username. Unknown types are ignored.
  */
 internal fun highlightedMentions(text: String, mentions: List<MessageMention>): List<MentionSpan> {
     if (mentions.isEmpty()) return emptyList()
@@ -179,7 +195,7 @@ internal fun highlightedMentions(text: String, mentions: List<MessageMention>): 
     }
 }
 
-/** The `user` entry behind a highlighted pill; null for `@everyone`/`@here`/`@feedback`/`@caper`, which open nothing. */
+/** The `user` entry behind a highlighted pill; null for `@everyone`/`@here` and team names, which open nothing. */
 internal fun mentionedUser(span: MentionSpan, mentions: List<MessageMention>): MessageMention? =
     if (span.name == "everyone" || span.name == "here" || span.name in FEEDBACK_NAMES) null
     else mentions.firstOrNull { it.type == "user" && it.username?.lowercase(Locale.ROOT) == span.name }

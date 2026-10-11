@@ -978,7 +978,9 @@ private struct ChannelSidebar: View {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
-                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
+                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })),
+                       // The expanded Feedback inbox shows a visited channel's call under its row.
+                       narrow || !model.showingFeedback || model.visitChannel == nil || model.visitChannel?.id != model.voice.context?.channelID {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("In voice · \(model.voice.participants.count) · \(model.voice.context?.channelName ?? "general")")
                                 .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -1328,7 +1330,7 @@ private struct ChannelVoiceSlot: View {
                                deafened: $0.deafened)
             }
         }
-        return model.voicePresence.roster(for: channel.id)
+        return model.voiceRoster(for: channel.id)
     }
 
     private var pending: Bool {
@@ -2330,12 +2332,9 @@ private struct ChatView: View {
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                // Visitors never see or change pins.
-                if model.visit == nil {
-                    Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
-                        .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
-                        .accessibilityIdentifier("channel-pins")
-                }
+                Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
+                    .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
+                    .accessibilityIdentifier("channel-pins")
                 // Right of Pins on every width, as on web.
                 if membersAvailable {
                     Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
@@ -2509,7 +2508,7 @@ private struct ChatView: View {
                 }.font(CaperTheme.font(11)).padding(10)
             }
             HStack(spacing: 7) {
-                if !chat.typingNames.isEmpty && model.visit == nil {
+                if !chat.typingNames.isEmpty {
                     TypingDots()
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                 }
@@ -2551,7 +2550,6 @@ private struct ChatView: View {
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { VStack(alignment: .leading, spacing: 8) {
-            if model.visit != nil { VisitBanner() }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
             }
@@ -2665,7 +2663,6 @@ private struct ChatView: View {
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: chat.canInteract,
                                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
-                                    showsPin: !chat.visitor,
                                     togglePin: {
                                         reactionMessage = nil
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
@@ -2910,7 +2907,6 @@ private struct NativeThreadView: View {
             }
             if chat.isPreview { Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
-                if model.visit != nil { VisitBanner() }
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError {
                     // As under the channel's composer.
@@ -2950,7 +2946,6 @@ private struct NativeThreadView: View {
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                     canReact: chat.canInteract,
                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
-                    showsPin: !chat.visitor,
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: nil,
                     // The conversation's forward sheet is under this cover on iPhone; the thread presents its own.
@@ -3294,11 +3289,9 @@ private struct MessageRow: View {
         if chat.canEdit(message) { Button("Edit message") { editing = true } }
         if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
         if let reaction = message.reactions?.first { Button("View reactions") { reactors.show(message.id, reaction.emoji) } }
-        if !chat.visitor {
-            Button(message.pin == nil ? "Pin message" : "Unpin message") {
-                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-            }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
-        }
+        Button(message.pin == nil ? "Pin message" : "Unpin message") {
+            Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+        }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
         Button("Copy text") { copy(message.content.text) }
         Button("Copy message ID") { copy(message.id) }
         if canBlockAuthor {
@@ -4063,8 +4056,6 @@ private struct MessageActionsSheet: View {
     @State private var history = false
     let canReact: Bool
     let canPin: Bool
-    /// False in a feedback visit, where pins are not offered at all.
-    var showsPin = true
     let togglePin: () -> Void
     let reply: (() -> Void)?
     let canForward: Bool
@@ -4087,7 +4078,7 @@ private struct MessageActionsSheet: View {
 
     /// Fits every offered action without scrolling.
     private var actionsHeight: CGFloat {
-        var height: CGFloat = showsPin ? 286 : 242
+        var height: CGFloat = 286
         if reply != nil { height += 44 }
         if canForward { height += 50 }
         if chat.canEdit(message) { height += 44 }
@@ -4138,22 +4129,18 @@ private struct MessageActionsSheet: View {
                 }.accessibilityIdentifier("message-action-view-reactions")
                 Divider()
             }
-            if showsPin {
-                Button(action: togglePin) {
-                    Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.disabled(!canPin)
-            }
+            Button(action: togglePin) {
+                Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }.disabled(!canPin)
             if let reply {
-                if showsPin { Divider() }
+                Divider()
                 Button(action: reply) {
                     Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
-            // Earlier rows end with their own divider; without Pin, the middle
-            // rows only separate each other.
             if canForward {
-                if showsPin || reply != nil { Divider() }
+                Divider()
                 Button {
                     forwardRequested = true
                     dismiss()
@@ -4161,7 +4148,7 @@ private struct MessageActionsSheet: View {
                     Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
-            if showsPin || reply != nil || canForward { Divider() }
+            Divider()
             Button {
                 UIPasteboard.general.string = message.content.text
                 dismiss()
@@ -4692,6 +4679,14 @@ private struct FeedbackPullToRefresh: ViewModifier {
 private struct FeedbackInboxList: View {
     @Bindable var model: AppModel
     let pushed: Bool
+    /// The row that holds the visited channel's voice: the visited report, or
+    /// another report from that channel.
+    private var voiceReportID: String? {
+        guard let visit = model.visit, model.visitChannel != nil else { return nil }
+        let reports = model.feedbackReports
+        return (reports.first { $0.channel.id == visit.channelID && $0.messageId == visit.reportID }
+            ?? reports.first { $0.channel.id == visit.channelID })?.id
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if pushed {
@@ -4731,6 +4726,10 @@ private struct FeedbackInboxList: View {
                 VStack(spacing: 2) {
                     ForEach(model.feedbackReports) { report in
                         FeedbackReportRow(model: model, report: report, pushed: pushed, now: context.date)
+                        // A visited space channel's voice, like a channel row's.
+                        if report.id == voiceReportID, let channel = model.visitChannel {
+                            ChannelVoiceSlot(model: model, channel: channel).padding(.leading, pushed ? 41 : 31)
+                        }
                     }
                 }
             }
@@ -4794,23 +4793,6 @@ private struct FeedbackReportRow: View {
             .accessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now))
             .accessibilityValue(selected ? "Selected" : "")
             .accessibilityIdentifier("feedback-report-\(report.id)")
-    }
-}
-
-/// "Visiting as the Caper team — everyone here sees your replies." Neutral
-/// chrome above a visit's composers.
-private struct VisitBanner: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(FeedbackInbox.banner).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("feedback-visit-banner")
     }
 }
 

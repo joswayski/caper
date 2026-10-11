@@ -1209,6 +1209,8 @@ impl CaperApp {
                             channel,
                             name: "general".into(),
                             direct: false,
+                            space_id: "space0000001".into(),
+                            space_name: "Fixture Studio".into(),
                             title: "#general · Fixture Studio".into(),
                             reporter: None,
                             origin: feedback::Origin::Inbox,
@@ -2093,6 +2095,9 @@ impl CaperApp {
 
     /// Voice actions use their own channel's media root, independently of text.
     fn media_root(&self, channel: &str) -> (String, Option<String>) {
+        if self.visited_channel(channel).is_some() {
+            return (channel.into(), Some(channel.into()));
+        }
         match &self.detail {
             Some(detail) if !detail.space.demo => (channel.into(), Some(channel.into())),
             _ => ("general".into(), None),
@@ -2101,7 +2106,24 @@ impl CaperApp {
 
     /// Query each listed channel once per account/access epoch, not per frame.
     fn refresh_media_status(&mut self) {
-        if self.selected_direct.is_some() || !self.persist_preferences {
+        if !self.persist_preferences {
+            return;
+        }
+        // A visited space channel's call, like a joined channel's.
+        if let Some(channel) = self
+            .visiting()
+            .filter(|visit| !visit.direct)
+            .map(|visit| visit.channel.clone())
+            && self.media_status_roots.insert(channel.clone())
+        {
+            self.worker.send(Command::MediaStatus {
+                generation: self.navigation_cache_generation,
+                root: channel.clone(),
+                token: self.token.clone(),
+                channel: Some(channel),
+            });
+        }
+        if self.selected_direct.is_some() {
             return;
         }
         let channels: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| {
@@ -3086,8 +3108,9 @@ impl CaperApp {
 
     /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
     fn empty_conversation_note(&self) -> String {
+        // A visit is never one person's private conversation with you.
         if self.visiting().is_some() {
-            return feedback::BANNER.to_owned();
+            return String::new();
         }
         match self.selected_direct_conversation() {
             Some(direct) => format!(
@@ -3876,20 +3899,31 @@ impl CaperApp {
         self.channel_rosters.clear();
         self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
+        // A visited space channel's roster comes first, then the open space's.
+        let visited =
+            self.visiting()
+                .filter(|visit| !visit.direct)
+                .map(|visit| gateway::MediaChannel {
+                    id: visit.channel.clone(),
+                    demo: false,
+                });
         let media = gateway::MediaWatch {
             epoch: self.roster_generation,
-            channels: self.detail.as_ref().map_or_else(Vec::new, |detail| {
-                detail
-                    .channels
-                    .iter()
-                    .filter(|channel| self.selected_is_joined() && channel.joined)
-                    .take(gateway::MAX_MEDIA_CHANNELS)
-                    .map(|channel| gateway::MediaChannel {
-                        id: channel.id.clone(),
-                        demo: detail.space.demo,
-                    })
-                    .collect()
-            }),
+            channels: visited
+                .into_iter()
+                .chain(self.detail.as_ref().map_or_else(Vec::new, |detail| {
+                    detail
+                        .channels
+                        .iter()
+                        .filter(|channel| self.selected_is_joined() && channel.joined)
+                        .map(|channel| gateway::MediaChannel {
+                            id: channel.id.clone(),
+                            demo: detail.space.demo,
+                        })
+                        .collect()
+                }))
+                .take(gateway::MAX_MEDIA_CHANNELS)
+                .collect(),
         };
         let presence = if self.token.is_some() {
             self.detail
@@ -4354,7 +4388,30 @@ impl CaperApp {
             .unwrap_or_else(|| "Guest".into())
     }
 
+    /// The open visit when `channel` is its space channel (DMs have no voice).
+    fn visited_channel(&self, channel: &str) -> Option<&feedback::Visit> {
+        self.visiting()
+            .filter(|visit| !visit.direct && visit.channel == channel)
+    }
+
     fn voice_target(&self, channel: &str) -> Option<(CallContext, Option<String>)> {
+        // The feedback team takes part in a visited space channel's call.
+        if let Some(visit) = self.visited_channel(channel) {
+            if self.token.is_none()
+                || self.unavailable_rosters.contains(channel)
+                || self.join_unavailable(channel).is_some()
+            {
+                return None;
+            }
+            return Some((
+                CallContext {
+                    channel_id: visit.channel.clone(),
+                    channel_name: visit.name.clone(),
+                    space_name: visit.space_name.clone(),
+                },
+                Some(visit.space_id.clone()),
+            ));
+        }
         let detail = self.detail.as_ref()?;
         let target = detail.channels.iter().find(|item| item.id == channel)?;
         if !target.joined
@@ -4420,7 +4477,9 @@ impl CaperApp {
         };
         let clicked = chrono::Utc::now().timestamp_millis().max(0) as u64;
         self.voice_join_request += 1;
-        if let Some(space) = space {
+        // A visit isn't a space membership to recheck; the media service
+        // authorizes the feedback team's access itself.
+        if let Some(space) = space.filter(|_| self.visited_channel(channel).is_none()) {
             self.pending_voice_join = Some((channel.into(), self.voice.state.generation, clicked));
             self.worker.send(Command::CheckVoice {
                 request: self.voice_join_request,
@@ -4493,9 +4552,10 @@ impl CaperApp {
                 session_started_at,
             } if generation == self.roster_generation
                 && self.selected_channel.is_some()
-                && self.detail.as_ref().is_some_and(|detail| {
-                    detail.channels.iter().any(|item| item.id == channel)
-                }) =>
+                && (self.visited_channel(&channel).is_some()
+                    || self.detail.as_ref().is_some_and(|detail| {
+                        detail.channels.iter().any(|item| item.id == channel)
+                    })) =>
             {
                 self.unavailable_rosters.remove(&channel);
                 if let Some(started) = session_started_at.filter(|_| !participants.is_empty()) {
@@ -5429,8 +5489,7 @@ impl CaperApp {
     }
 
     fn set_typing(&mut self, typing: bool) {
-        // Visitors never show as typing.
-        if self.typing_sent == typing || self.visiting().is_some() {
+        if self.typing_sent == typing {
             return;
         }
         let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
@@ -10223,10 +10282,6 @@ impl CaperApp {
             heading.response.rect.bottom(),
             Stroke::new(1.0, BORDER),
         );
-        // A narrow window shows only the thread, so it carries the banner.
-        if self.narrow_layout && self.visiting().is_some() {
-            visit_banner(ui, "thread-visit-banner");
-        }
         // Inset like the channel composer, on the panel's own surface.
         let composer_frame = egui::Frame::new()
             .fill(CONVERSATION)
@@ -10441,7 +10496,7 @@ impl CaperApp {
                                         if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                         else { self.members_visible = !self.members_visible; }
                                     }
-                                    // Visitors get no pins, members, join, block or settings.
+                                    // A visit has no members, join, leave or settings.
                                     if let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) {
                                         let back = match origin {
                                             feedback::Origin::Conversation { .. } => "Close",
@@ -10450,7 +10505,6 @@ impl CaperApp {
                                         if secondary_button(ui, back, true).clicked() {
                                             self.leave_visit();
                                         }
-                                        return;
                                     }
                                     if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
@@ -10488,8 +10542,29 @@ impl CaperApp {
                 heading.response.rect.bottom(),
                 Stroke::new(1.0, BORDER),
             );
-            if self.visiting().is_some() {
-                visit_banner(ui, "visit-banner");
+            // A visited space channel's voice, as its sidebar row would show it.
+            if let Some(channel) = self
+                .visiting()
+                .filter(|visit| !visit.direct)
+                .map(|visit| (visit.channel.clone(), visit.name.clone()))
+            {
+                let voice = egui::TopBottomPanel::top("visit-voice")
+                    .show_separator_line(false)
+                    .frame(
+                        egui::Frame::new()
+                            .fill(CONVERSATION)
+                            .inner_margin(egui::Margin::symmetric(9, 4)),
+                    )
+                    .show_inside(ui, |ui| {
+                        ui.set_max_width(320.0);
+                        self.channel_voice_summary(ui, &channel.0, &channel.1);
+                        self.channel_voice_roster(ui, &channel.0);
+                    });
+                ui.painter().hline(
+                    voice.response.rect.x_range(),
+                    voice.response.rect.bottom(),
+                    Stroke::new(1.0, BORDER),
+                );
             }
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
@@ -10703,12 +10778,10 @@ impl CaperApp {
                         .inner_margin(egui::Margin::symmetric(18, 2)),
                 )
                 .show_inside(ui, |ui| {
-                    // Visitors see no typing indicators.
-                    let visiting = self.visiting().is_some();
                     let names: Vec<_> = self
                         .typers
                         .values()
-                        .filter(|typer| typer.typing && !visiting)
+                        .filter(|typer| typer.typing)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
@@ -11271,13 +11344,11 @@ impl CaperApp {
             let opened = row.contains_pointer()
                 && !body.link_hovered
                 && ui.input(|i| i.pointer.secondary_clicked());
-            // Visitors can't forward out of (or into) a visited conversation.
-            let forwardable = self.visiting().is_none();
             egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
-                    if forwardable && ui.button("Forward message").clicked() {
+                    if ui.button("Forward message").clicked() {
                         self.forwarding.picker(
                             &self.worker,
                             self.generation,
@@ -11518,9 +11589,7 @@ impl CaperApp {
                         }
                     });
                     ui.separator();
-                    let visiting = self.visiting().is_some();
-                    if !visiting
-                        && ui.button("Forward message").clicked()
+                    if ui.button("Forward message").clicked()
                         && let Some(token) = self.token.clone()
                     {
                         self.forwarding.picker(
@@ -11546,13 +11615,12 @@ impl CaperApp {
                         self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
                         ui.close();
                     }
-                    if !visiting
-                        && ui
-                            .add_enabled(
-                                !self.pending_pins.contains(&message.id),
-                                egui::Button::new(if active { "Unpin" } else { "Pin" }),
-                            )
-                            .clicked()
+                    if ui
+                        .add_enabled(
+                            !self.pending_pins.contains(&message.id),
+                            egui::Button::new(if active { "Unpin" } else { "Pin" }),
+                        )
+                        .clicked()
                     {
                         self.set_pin(message, !active);
                         ui.close();
@@ -11585,13 +11653,39 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
-                // Below a message that asked the team (`@feedback`/`@caper`).
+                // Below a message that asked the team (any team name). The
+                // salute is drawn from the emoji sheet, like reactions.
                 if mentions::notifies_team(&message.content.mentions) {
-                    ui.label(
-                        RichText::new(mentions::FEEDBACK_NOTICE)
-                            .size(11.0)
-                            .color(MUTED),
-                    );
+                    let notice = ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        match emoji::find("🫡") {
+                            Some(entry) => {
+                                ui.label(
+                                    RichText::new(
+                                        mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
+                                    )
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                                let salute = self.reaction_textures.image(ui, entry, 13.0);
+                                ui.add(salute);
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new(mentions::FEEDBACK_NOTICE)
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            }
+                        }
+                    });
+                    notice.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            mentions::FEEDBACK_NOTICE,
+                        )
+                    });
                 }
                 // An empty row would still take a 36px line under every
                 // message, doubling the gaps between them.
@@ -15667,31 +15761,6 @@ fn feedback_row(
     response
 }
 
-/// The slim neutral line over a visited conversation.
-fn visit_banner(ui: &mut egui::Ui, id: &'static str) {
-    let banner = egui::TopBottomPanel::top(id)
-        .exact_height(28.0)
-        .show_separator_line(false)
-        .frame(
-            egui::Frame::new()
-                .fill(CONVERSATION)
-                .inner_margin(egui::Margin::symmetric(18, 0)),
-        )
-        .show_inside(ui, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(feedback::BANNER).size(11.5).color(MUTED))
-                        .truncate(),
-                );
-            });
-        });
-    ui.painter().hline(
-        banner.response.rect.x_range(),
-        banner.response.rect.bottom(),
-        Stroke::new(1.0, BORDER),
-    );
-}
-
 /// A message row: avatar, then the name and time above the body. A grouped
 /// row (`grouped` is its short time, like "9:42") continues the row above
 /// instead: no avatar or header, 2px top padding, and the avatar column stays
@@ -16363,10 +16432,10 @@ fn mention_suggestion(
         }
         mentions::Candidate::Everyone => ("@everyone".into(), "Everyone in this channel".into()),
         mentions::Candidate::Here => ("@here".into(), "Everyone online in this channel".into()),
-        mentions::Candidate::Feedback => ("@feedback".into(), mentions::FEEDBACK_LABEL.into()),
+        mentions::Candidate::Feedback(name) => {
+            (format!("@{name}"), mentions::FEEDBACK_LABEL.into())
+        }
     };
-    // The team's row says what tagging means in full, on a second line.
-    let feedback = matches!(candidate, mentions::Candidate::Feedback);
     let mut text = egui::text::LayoutJob::default();
     text.append(
         &title,
@@ -16378,12 +16447,8 @@ fn mention_suggestion(
     );
     // Smaller secondary text keeps the specials' descriptions inside 260px.
     text.append(
-        &if feedback {
-            format!("\n{detail}")
-        } else {
-            format!(" {detail}")
-        },
-        if feedback { 0.0 } else { 4.0 },
+        &format!(" {detail}"),
+        4.0,
         egui::TextFormat {
             valign: egui::Align::Center,
             ..egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED)
@@ -16392,11 +16457,7 @@ fn mention_suggestion(
     let slot = egui::Id::new("mention-suggestion-avatar").with(candidate.name());
     let row = egui::Button::new((egui::Atom::custom(slot, egui::vec2(24.0, 24.0)), text))
         .min_size(egui::vec2(width, 44.0))
-        .wrap_mode(if feedback {
-            egui::TextWrapMode::Wrap
-        } else {
-            egui::TextWrapMode::Truncate
-        })
+        .truncate()
         .stroke(Stroke::NONE)
         .fill(fill)
         .atom_ui(ui);
@@ -16407,7 +16468,7 @@ fn mention_suggestion(
             }
             mentions::Candidate::Everyone
             | mentions::Candidate::Here
-            | mentions::Candidate::Feedback => {
+            | mentions::Candidate::Feedback(_) => {
                 ui.painter()
                     .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
                 ui.painter().text(
@@ -23478,7 +23539,8 @@ mod tests {
         // The fixture previews `GET /api/people`: space members and DM peers.
         assert_eq!(names(&app, ""), ["alex", "maya"], "a bare @ lists people");
         assert!(names(&app, "every").is_empty(), "no everyone/here in DMs");
-        assert_eq!(names(&app, "cap"), ["feedback"], "the team, in DMs too");
+        assert_eq!(names(&app, "cap"), ["caper"], "the team, in DMs too");
+        assert_eq!(names(&app, "ad"), ["admin"]);
         app.people = None;
         assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
 
@@ -23552,6 +23614,8 @@ mod tests {
             channel,
             name: "plans".into(),
             direct: false,
+            space_id: "space0000009".into(),
+            space_name: "Studio".into(),
             title: "#plans · Studio".into(),
             reporter: Some(crate::feedback::Reporter {
                 id: "fixture-zoe".into(),
@@ -23562,7 +23626,7 @@ mod tests {
             origin: crate::feedback::Origin::Inbox,
         });
         assert_eq!(names(&app, ""), ["zoe"]);
-        assert_eq!(names(&app, "c"), ["feedback"]);
+        assert_eq!(names(&app, "c"), ["caper"]);
         assert!(
             names(&app, "here").is_empty(),
             "no everyone/here in a visit"
@@ -23636,7 +23700,7 @@ mod tests {
     }
 
     #[test]
-    fn visits_hide_member_only_controls_and_show_the_team_banner() {
+    fn visits_take_part_like_members_without_member_only_controls() {
         let (context, mut app) = fixture("parity-feedback-visit");
         app.token = Some("fixture-only-token".into());
         app.foreground = true;
@@ -23645,26 +23709,46 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         let labels = texts(&output);
         for label in [
-            crate::feedback::BANNER,
             "#general · Fixture Studio",
             "Back to feedback",
-            mentions::FEEDBACK_NOTICE,
+            "Caper team has been notified",
             "ADMIN",
         ] {
             assert!(labels.contains(&label), "{label}: {labels:?}");
         }
+        assert!(
+            !labels.iter().any(|label| label.contains("Visiting as")),
+            "no banner: {labels:?}"
+        );
         assert!(!labels.contains(&"Join channel"), "{labels:?}");
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| **label == "Join voice")
+                .count(),
+            4,
+            "the visited channel's voice row, besides the sidebar's three"
+        );
         assert_eq!(app.channel_name(), "general");
         assert!(
             !app.conversation_is_direct(),
             "a visited channel keeps its #"
         );
         assert!(app.selected_is_joined(), "visitors can reply");
-        app.set_typing(true);
-        assert!(!app.typing_sent, "visitors never send typing");
+        let channel = app.selected_channel.clone().unwrap();
+        app.media_availability.remove(&channel);
+        assert!(
+            app.voice_target(&channel).is_none(),
+            "checking availability"
+        );
+        app.media_availability.insert(channel.clone(), true);
+        let (context_call, space) = app.voice_target(&channel).expect("visitors join voice");
+        assert_eq!(space.as_deref(), Some("space0000001"));
+        assert_eq!(context_call.space_name, "Fixture Studio");
+        assert_eq!(app.media_root(&channel), (channel.clone(), Some(channel)));
         assert_eq!(
             app.empty_conversation_note(),
-            crate::feedback::BANNER,
+            "",
             "never a DM's privacy note"
         );
         click_at(

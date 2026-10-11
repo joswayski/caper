@@ -112,28 +112,39 @@ class MentionAutocompleteTest {
         assertEquals(inSpace, mentionSource(AppUiState(account = me, selectedSpace = detail, selectedChannel = channel, people = people)))
     }
 
-    @Test fun `feedback is offered in every conversation for caper and feedback prefixes`() {
-        assertEquals(MentionCandidate("feedback", "Caper team · can read and reply here", special = true), mentionFeedback)
+    @Test fun `one team name is offered for a typed prefix, in the server's order`() {
         val channel = MentionSource(listOf(person("felix"), person("bob")), specials = true, feedback = true)
-        assertEquals(listOf("feedback"), mentionSuggestions(channel, "FEED").map { it.username })
-        assertEquals(listOf("feedback"), mentionSuggestions(channel, "cap").map { it.username })
-        assertEquals(listOf("feedback"), mentionSuggestions(channel, "caper").map { it.username })
+        fun team(query: String) = mentionSuggestions(MentionSource(emptyList(), specials = false, feedback = true), query)
+        assertEquals(listOf(MentionCandidate("feedback", "Notify the Caper team", special = true)), team("FEED"))
+        assertEquals(mapOf(
+            "fe" to "feedback", "cap" to "caper", "caper" to "caper", "capers" to "capers", "caperc" to "caperchat",
+            "caper_" to "caper_feedback", "caper_s" to "caper_support", "s" to "support", "st" to "staff", "te" to "team",
+            "ad" to "admin", "admins" to "admins", "admini" to "administrator", "administrators" to "administrators",
+            "mo" to "mod", "mods" to "mods", "mode" to "moderator", "moderators" to "moderators",
+        ), listOf("fe", "cap", "caper", "capers", "caperc", "caper_", "caper_s", "s", "st", "te", "ad", "admins", "admini", "administrators",
+            "mo", "mods", "mode", "moderators").associateWith { team(it).single().username })
+        assertTrue(team("feedbacks").isEmpty())
+        assertTrue(team("x").isEmpty())
+        assertTrue(team("h").isEmpty())
+        assertTrue(team("").isEmpty())
+        assertEquals(17, FEEDBACK_NAMES.size)
         // People rank first; specials keep their order and slots.
         assertEquals(listOf("felix", "feedback"), mentionSuggestions(channel, "f").map { it.username })
         // A bare `@` stays about people.
         assertEquals(listOf("bob", "felix", "everyone", "here"), mentionSuggestions(channel, "").map { it.username })
         val crowd = MentionSource((1..8).map { person("user$it") }, specials = true, feedback = true)
         assertEquals(listOf("user1", "user2", "user3", "user4", "everyone", "here"), mentionSuggestions(crowd, "").map { it.username })
-        assertTrue(mentionSuggestions(channel, "feedbacks").isEmpty())
-        assertTrue(mentionSuggestions(channel, "capers").isEmpty())
-        // DMs and notes: `@feedback` without `@everyone`/`@here`; without an account, nothing.
+        // DMs and notes: the team without `@everyone`/`@here`; without an account, nothing.
         val dm = MentionSource(listOf(person("bob")), specials = false, feedback = true)
         assertEquals(listOf("bob"), mentionSuggestions(dm, "").map { it.username })
-        assertEquals(listOf("feedback"), mentionSuggestions(dm, "fe").map { it.username })
+        assertEquals(listOf("admin"), mentionSuggestions(dm, "ad").map { it.username })
         assertTrue(mentionSuggestions(dm, "ev").isEmpty())
         assertTrue(mentionSuggestions(MentionSource(emptyList(), specials = true), "fe").isEmpty())
-        // `@cap` inserts `@feedback`.
-        assertEquals("@feedback ", insertMention(atEnd("@cap"), mentionToken(atEnd("@cap"))!!, mentionFeedback.username)!!.text)
+        // The suggested name is what gets inserted.
+        val typed = atEnd("@ad")
+        assertEquals("@admin ", insertMention(typed, mentionToken(typed)!!, team("ad").single().username)!!.text)
+        assertTrue(team("ad").single().teamSuggestion)
+        assertFalse(MentionCandidate("everyone", "Everyone in this channel", special = true).teamSuggestion)
     }
 
     @Test fun `channels, threads, DMs and notes all offer feedback to accounts`() {
@@ -176,14 +187,19 @@ class MentionAutocompleteTest {
             MentionCandidate("cy", "Cy"),
             MentionCandidate("ann", "Ann A", avatarId = 4),
         ), source.people)
-        // `c` also finds `@feedback` (as `caper`).
-        assertEquals(listOf("cy", "feedback"), mentionSuggestions(source, "c").map { it.username })
-        assertEquals(listOf("ann", "cy", "rae", "feedback"), mentionSuggestions(source, "").map { it.username })
-        // Without a reporter (opened from a notification) or names: only `@feedback`.
-        assertEquals(listOf("feedback"), mentionSuggestions(mentionSource(state.copy(visit = visit.copy(reporter = null), messages = emptyList())), "").map { it.username })
+        // `c` also finds the team (as `caper`).
+        assertEquals(listOf("cy", "caper"), mentionSuggestions(source, "c").map { it.username })
+        assertEquals(listOf("ann", "cy", "rae"), mentionSuggestions(source, "").map { it.username })
+        // Without a reporter (opened from a notification) or names: only the team.
+        val bare = mentionSource(state.copy(visit = visit.copy(reporter = null), messages = emptyList()))
+        assertTrue(mentionSuggestions(bare, "").isEmpty())
+        assertEquals(listOf("feedback"), mentionSuggestions(bare, "fe").map { it.username })
     }
 
-    @Test fun `feedback and caper pills need a feedback entry and open no profile`() {
+    @Test fun `every team name is a pill with a feedback entry and opens no profile`() {
+        assertEquals(listOf("admin", "mods", "caper_support", "team"),
+            highlightedMentions("@Admin @MODS (@caper_support) [@team]", listOf(MessageMention("feedback"))).map { it.name })
+        assertTrue(highlightedMentions("@admin @mods", listOf(MessageMention("everyone"))).isEmpty())
         val text = "@Feedback please, @caper too, and @bob"
         val feedback = MessageMention("feedback")
         assertEquals(listOf("feedback", "caper", "bob"), highlightedMentions(text, listOf(feedback, user("bob"))).map { it.name })

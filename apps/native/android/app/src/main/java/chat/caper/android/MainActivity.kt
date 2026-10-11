@@ -263,10 +263,12 @@ internal data class VoiceJoinIntent(
     val joinStartedAt: Long = System.currentTimeMillis(),
 ) {
     fun isCurrent(state: AppUiState, currentAccountEpoch: Long, freshChannelIds: Set<String>? = null): Boolean =
-        state.screen == SessionScreen.Home &&
-            state.selectedSpace?.space?.id == spaceId && state.account?.id == accountId &&
-            currentAccountEpoch == accountEpoch && state.selectedSpace.space.demo == demo &&
-            state.selectedSpace.channels.any { it.id == channelId && it.joined } && channelId !in state.deniedVoiceChannels &&
+        state.screen == SessionScreen.Home && state.account?.id == accountId && currentAccountEpoch == accountEpoch &&
+            // A joined channel of the open space, or the visited space channel (feedback team).
+            (state.selectedSpace?.let { detail ->
+                detail.space.id == spaceId && detail.space.demo == demo && detail.channels.any { it.id == channelId && it.joined }
+            } == true || !demo && state.visit?.let { !it.direct && it.spaceId == spaceId && it.channelId == channelId } == true) &&
+            channelId !in state.deniedVoiceChannels &&
             (freshChannelIds == null || channelId in freshChannelIds)
 }
 
@@ -438,13 +440,19 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         if (!requested.isCurrent(state, viewModel.accountEpoch) || !VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) pendingVoiceJoin = null
     }
     val joinVoice: (Channel) -> Unit = { channel ->
+        // The open space's joined channel, or a visited space channel (feedback team).
+        val visited = state.visit?.takeIf { !it.direct && it.channelId == channel.id }
         val space = state.selectedSpace?.space
+        val spaceId = if (visited != null) visited.spaceId else space?.id
+        val spaceName = if (visited != null) visited.spaceName.orEmpty() else space?.name
+        val demo = visited == null && space?.demo == true
+        val allowed = visited != null || channel.joined && state.selectedSpace?.channels?.any { it.id == channel.id && it.joined } == true
         if (pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
-            BuildConfig.ENABLE_NATIVE_VOICE && space != null && state.voiceAvailable(channel) == true &&
-            channel.joined && state.selectedSpace.channels.any { it.id == channel.id && it.joined } && channel.id !in state.deniedVoiceChannels) {
+            BuildConfig.ENABLE_NATIVE_VOICE && spaceId != null && spaceName != null && state.voiceAvailable(channel) == true &&
+            allowed && channel.id !in state.deniedVoiceChannels) {
             voicePermissionError = null
-            pendingVoiceJoin = VoiceJoinIntent(channel.id, space.id, channel.name, space.name,
-                state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, space.demo,
+            pendingVoiceJoin = VoiceJoinIntent(channel.id, spaceId, channel.name, spaceName,
+                state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, demo,
                 VoiceCallService.beginJoinAuthorization())
             permission.launch(buildList {
                 add(Manifest.permission.RECORD_AUDIO)
@@ -497,7 +505,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 .browseDrag(members, direction = -1f, travel = { membersTravel }) { membersVisible = it }
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: if (state.feedbackShown) "feedback" else "empty") {
-                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
+                                        joinVoice = joinVoice, pendingVoiceJoin = pendingVoiceJoin) { setNavigationOpen(true) }
                                 }
                                 // Composed while shown or sliding; it moves with the conversation over Browse.
                                 if (membersShown || membersInView) {
@@ -529,10 +538,12 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize(),
+                            joinVoice, pendingVoiceJoin) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
                     } else {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f),
+                            joinVoice, pendingVoiceJoin) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
@@ -1356,6 +1367,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     toggleMembers: () -> Unit,
     voicePermissionError: String?,
     modifier: Modifier = Modifier,
+    /** Joins a channel's voice (here: a visited space channel's, under its header). */
+    joinVoice: (Channel) -> Unit = {},
+    pendingVoiceJoin: VoiceJoinIntent? = null,
     openNavigation: () -> Unit,
 ) {
     val threadDrafts = rememberSaveableStateHolder()
@@ -1372,7 +1386,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         fun saveWidth() { preferences.edit().putFloat("threadWidth", preferredWidth.coerceIn(300f, 600f)).apply() }
         fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
         Row(Modifier.fillMaxSize()) {
-            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
+            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), joinVoice, pendingVoiceJoin, openNavigation)
             if (!narrow && state.thread != null) Box(Modifier.width(width.dp).fillMaxHeight()) {
                 threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
                     ThreadConversation(state, viewModel, Modifier.fillMaxSize())
@@ -1479,7 +1493,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun ChannelConversation(
     state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit,
     narrow: Boolean, membersVisible: Boolean, toggleMembers: () -> Unit, voicePermissionError: String?,
-    modifier: Modifier = Modifier, openNavigation: () -> Unit,
+    modifier: Modifier = Modifier, joinVoice: (Channel) -> Unit = {}, pendingVoiceJoin: VoiceJoinIntent? = null, openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
     if (channel == null) {
@@ -1488,7 +1502,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         else EmptyChannel(state, narrow, show, openNavigation, modifier)
         return
     }
-    // A feedback visit: the normal conversation without pins, members, typing or joining, and Back returns to the inbox.
+    // A feedback visit: the normal conversation (with voice under the header for a space channel) without a member list,
+    // joining or settings; Back returns to the inbox.
     val visit = state.visit
     // Back leaves a visit for the inbox, unless phone Browse is showing (Back closes that first).
     val browse = LocalBrowseDrawer.current
@@ -1541,7 +1556,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 channel.direct -> channel.name
                 else -> "# ${channel.name}"
             }, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (visit == null) IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
+            IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
             // Right of Pins on every width, and the same size, as on web.
@@ -1556,7 +1571,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
         HorizontalDivider(color = Border)
-        if (visit?.visitor == true) VisitBanner()
+        // A visited space channel's voice, where its sidebar row would show it (DMs have no voice).
+        if (visit != null && !visit.direct && visit.spaceId != null && BuildConfig.ENABLE_NATIVE_VOICE) {
+            VisitVoice(state, voice, channel, viewModel, joinVoice, pendingVoiceJoin)
+            HorizontalDivider(color = Border)
+        }
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
             Text(buildAnnotatedString {
@@ -1613,7 +1632,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
             }
         }
-        if (joined && visit == null) TypingLine(state.typingAuthors)
+        if (joined) TypingLine(state.typingAuthors)
         if (joined) HorizontalDivider(color = Border)
         val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
         // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
@@ -1680,6 +1699,70 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
             DraftCounter(draft.text)
+        }
+    }
+}
+
+/**
+ * A visited space channel's voice, laid out like its sidebar row would be: who is in voice
+ * (expandable), the session timer, and Join / Switch here. The team member joins like a member.
+ */
+@Composable private fun VisitVoice(
+    state: AppUiState, voice: VoiceState, channel: Channel, viewModel: CaperViewModel,
+    joinVoice: (Channel) -> Unit, pendingVoiceJoin: VoiceJoinIntent?,
+) {
+    val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
+    val activeHere = activeChannel == channel.id
+    val people = if (activeHere) voice.participants else state.voiceRosters[channel.id].orEmpty()
+    val available = state.voiceAvailable(channel)
+    LaunchedEffect(channel.id, available) { if (available == null) viewModel.checkVoiceAvailability(channel) }
+    val sessionStartedAt = (if (activeHere) voice.sessionStartedAt ?: state.voiceSessionStartedAt[channel.id] else state.voiceSessionStartedAt[channel.id])
+        ?: pendingVoiceJoin?.takeIf { it.channelId == channel.id }?.joinStartedAt
+    var rosterOpen by remember(channel.id) { mutableStateOf(false) }
+    val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceJoin?.channelId == channel.id
+    val switching = activeChannel != null && !activeHere
+    val denied = channel.id in state.deniedVoiceChannels
+    val enabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+        !denied && available == true
+    val label = if (joiningHere) "Joining…" else if (switching) "Switch here" else "Join voice"
+    val description = if (joiningHere) "Joining voice in #${channel.name}" else if (switching) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.lucide_speech), null, Modifier.padding(start = 6.dp).size(14.dp), tint = TextMuted)
+            Spacer(Modifier.width(6.dp))
+            if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 6.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
+                Text("${people.size} in voice", maxLines = 1, softWrap = false, fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
+                Spacer(Modifier.width(4.dp))
+                DisclosureChevron(rosterOpen, Modifier.size(15.dp))
+            } else Text("Voice", color = TextMuted, fontSize = 11.sp)
+            sessionStartedAt?.let { Spacer(Modifier.width(6.dp)); VoiceSessionTimer(it) }
+            Spacer(Modifier.weight(1f))
+            if (activeHere && voice.phase == VoiceState.Phase.CONNECTED) Text("In voice", color = TextMuted, fontSize = 11.sp)
+            else TextButton({ joinVoice(channel) }, enabled = enabled, shape = MaterialTheme.shapes.small,
+                colors = ButtonDefaults.textButtonColors(contentColor = TextMuted, disabledContentColor = TextMuted.copy(alpha = 0.45f)),
+                contentPadding = PaddingValues(horizontal = 6.dp),
+                modifier = Modifier.heightIn(min = 48.dp).semantics {
+                    contentDescription = if (!activeHere && !denied) voiceJoinUnavailableLabel(available) ?: description else description
+                }) {
+                Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp)); Text(label, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (people.isNotEmpty() && rosterOpen) {
+            if (activeHere) VoiceRoster(voice)
+            else people.forEach { participant ->
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(participant.name, 28.dp, avatarId = participant.avatarId)
+                    Spacer(Modifier.width(8.dp))
+                    Text(participant.name, Modifier.weight(1f, fill = false), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (participant.deafened || participant.muted) Row(Modifier.padding(start = 4.dp).semantics { contentDescription = if (participant.deafened) "Deafened" else "Muted" }) {
+                        if (participant.muted) Icon(painterResource(R.drawable.lucide_mic_off), null, Modifier.size(15.dp), tint = TextMuted)
+                        if (participant.deafened) Icon(painterResource(R.drawable.lucide_headphone_off), null, Modifier.size(15.dp), tint = TextMuted)
+                    }
+                }
+            }
         }
     }
 }
@@ -1793,8 +1876,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
         } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
-        // `@feedback`'s description says what tagging means, so it gets its own lines.
-        if (candidate == mentionFeedback) Column(Modifier.padding(vertical = 6.dp)) {
+        // The team suggestion's description says what tagging means, so it gets its own line.
+        if (candidate.teamSuggestion) Column(Modifier.padding(vertical = 6.dp)) {
             Text(primary, color = Text, fontSize = 13.sp, maxLines = 1)
             Text(secondary, color = TextMuted, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         } else Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2239,7 +2322,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
-        // `@feedback`/`@caper`: the server told the Caper team, who can read and reply here.
+        // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
         if (notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
         ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -2323,8 +2406,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
                     }
-                    // Visits have no pins.
-                    if (canReact && state.visit == null) {
+                    if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
                         HorizontalDivider(color = Border)

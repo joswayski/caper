@@ -105,8 +105,7 @@ class FeedbackTest {
         assertEquals("#plans · Studio", visitTitle(VisitUi("channel00001", "space0000001", "Studio", "plans", direct = false)))
         assertEquals("Alice & Bob", visitTitle(VisitUi("direct000001", null, null, "Alice & Bob", direct = true)))
         assertEquals("#plans", visitTitle(VisitUi("channel00001", "space0000001", null, "plans", direct = false)))
-        assertEquals("Visiting as the Caper team — everyone here sees your replies.", VISIT_BANNER)
-        assertEquals("Caper team notified", CAPER_TEAM_NOTIFIED)
+        assertEquals("Caper team has been notified 🫡", CAPER_TEAM_NOTIFIED)
         assertEquals("ADMIN", ADMIN_BADGE)
     }
 

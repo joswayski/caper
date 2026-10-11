@@ -116,22 +116,24 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
-- `@feedback` in place. Every composer (channels, threads, DMs, notes)
-  suggests `@feedback` ("Caper team · can read and reply here") for a typed prefix
-  of `feedback` or `caper`. `@feedback`/`@caper` tokens with a server
-  `feedback` entry render as pills without a profile card, with "Caper team
-  notified" under the message. Messages with `author.admin` show a gold ADMIN
-  badge. Accounts with `feedbackTeam` get a **Feedback** row by the DMs that
-  opens the inbox (`GET /api/feedback`, refreshed on open, by Refresh and
-  after a reply; older pages on demand): reporter, "#channel · Space" or
-  "DM · …", preview or "Sent N files", age, and "Answered" or "Waiting".
-  A report, or a `feedback` notification click, opens the conversation by
-  channel id at the message and in its thread. Without membership
-  (`visitor: true`) it is a visit: a "Visiting as the Caper team" banner and
-  no pins, typing, voice, join, members, settings, forwarding or read
-  markers. Back returns to the inbox (or the conversation a notification
-  interrupted). Conversations the team member already belongs to open
-  normally.
+- `@feedback` in place. The team names (`feedback`, `caper`, `admin`, `mod`
+  and the API's other reserved names) work everywhere: once something is
+  typed after `@`, every composer (channels, threads, DMs, notes) suggests
+  the first team name it starts ("Notify the Caper team"). With a server
+  `feedback` entry, each such token renders as a pill without a profile card,
+  and "Caper team has been notified 🫡" sits under the message. Messages with
+  `author.admin` show a gold ADMIN badge. Accounts with `feedbackTeam` get a
+  **Feedback** row by the DMs that opens the inbox (`GET /api/feedback`,
+  refreshed on open, by Refresh and after a reply; older pages on demand):
+  reporter, "#channel · Space" or "DM · …", preview or "Sent N files", age,
+  and "Answered" or "Waiting". A report, or a `feedback` notification click,
+  opens the conversation by channel id at the message and in its thread.
+  Without membership (`visitor: true`) the team takes part like a member
+  (replies, files, reactions, typing, pins, forwarding, and a visited space
+  channel's voice from a row under the header), but there is no member list,
+  read marker, join/leave, settings or notification menu. Back returns to
+  the inbox (or the conversation a notification interrupted). Conversations
+  the team member already belongs to open normally.
 - Notification controls govern phone push and local desktop notifications.
   The space menu and each channel's options menu set
   **Notifications** (Default, All messages, Only @mentions, Nothing) and

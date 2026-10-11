@@ -282,6 +282,9 @@ pub struct Visit {
     /// "plans", or "Alice & Bob" for a DM.
     pub name: String,
     pub direct: bool,
+    /// The visited channel's space (empty for a DM), for its voice call.
+    pub space_id: String,
+    pub space_name: String,
     /// "#plans · Studio", or "Alice & Bob".
     pub title: String,
     pub reporter: Option<Reporter>,
@@ -301,14 +304,13 @@ impl Visit {
             },
             name,
             direct,
+            space_id: history.space.id.clone(),
+            space_name: history.space.name.clone(),
             reporter: request.target.reporter,
             origin: request.origin,
         }
     }
 }
-
-/// The slim line over a visited conversation.
-pub const BANNER: &str = "Visiting as the Caper team — everyone here sees your replies.";
 
 #[cfg(test)]
 mod tests {
@@ -506,6 +508,10 @@ mod tests {
             ("#plans · Studio", "plans", false)
         );
         assert_eq!(channel.origin, Origin::Inbox);
+        assert_eq!(
+            (channel.space_id.as_str(), channel.space_name.as_str()),
+            ("space0000001", "Studio")
+        );
         assert_eq!(channel.reporter.unwrap().username, "alice");
         let direct = Visit::new(request, &history("", "Direct messages", "Alice & Bob"));
         assert_eq!(

@@ -608,8 +608,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Opens [target]'s conversation by ID, even when it is in none of your lists. The server's
-     * `visitor` flag means you are not in it: it opens as a visit (no pins, typing, voice,
-     * membership, settings or read markers). A conversation you are in after all opens the usual
+     * `visitor` flag means you are not in it: it opens as a visit, where you take part like a
+     * member (typing, pins, voice in space channels) but have no member list, membership,
+     * settings or read markers. A conversation you are in after all opens the usual
      * way when your lists have it. Either way the report's message and thread are focused.
      */
     private fun openFeedbackConversation(target: FeedbackTarget) {
@@ -644,8 +645,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
                     busy = false, messagesLoading = false, messagesError = null, restoring = false,
                 )
-                // Live updates work for visitors; typing, presence and voice are not watched.
-                openGateway(channel.id, history.cursor, request, participating = false)
+                // Visitors take part like members: live updates, typing and (space channels) voice rosters.
+                openGateway(channel.id, history.cursor, request)
                 focusReport(target)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
@@ -1047,8 +1048,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channelId = voice.channelId ?: return
         val context = VoiceNavigationContext(generation, accountGeneration, VoiceCallService.navigationEpoch(), spaceId, channelId)
         if (!context.isCurrent(generation, accountGeneration, VoiceCallService.navigationEpoch(), VoiceCallService.state.value)) return
-        if (mutable.value.selectedSpace?.space?.id == spaceId && mutable.value.selectedChannel?.id == channelId) {
+        if (mutable.value.selectedSpace?.space?.id == spaceId && mutable.value.selectedChannel?.id == channelId ||
+            mutable.value.visit?.channelId == channelId) {
             onOpened()
+            return
+        }
+        // A call in a visited channel: visit it again.
+        if (mutable.value.spaces.none { it.id == spaceId }) {
+            lastVisit?.takeIf { it.channelId == channelId && it.spaceId == spaceId }?.let { openFeedbackConversation(it); onOpened() }
             return
         }
         val token = accountToken
@@ -1244,6 +1251,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun checkVoiceAvailability(channel: Channel? = mutable.value.selectedChannel) {
         val current = mutable.value
         channel ?: return
+        if (visitedVoiceChannel() == channel.id) return checkVisitedVoice(channel.id)
         val detail = current.selectedSpace ?: return
         if (!channel.joined || detail.channels.none { it.id == channel.id && it.joined }) return
         val spaceId = detail.space.id
@@ -1258,6 +1266,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } ?: false
             if (accountRequest == accountGeneration && mutable.value.selectedSpace?.let { it.space.id == spaceId && it.channels.any { item -> item.id == channel.id } } == true)
                 mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
+        }
+    }
+
+    /** A visited space channel, whose voice a team member may join like a member (never a DM). */
+    private fun visitedVoiceChannel(): String? = mutable.value.visit?.takeIf { !it.direct && it.spaceId != null }?.channelId
+
+    /** Voice rosters to watch: the open space's joined channels, plus a visited space channel. */
+    private fun mediaChannels(detail: SpaceDetail?): List<String> =
+        (listOfNotNull(visitedVoiceChannel()) + detail?.channels?.filter { it.joined }?.map { it.id }.orEmpty()).distinct().take(24)
+
+    /** The visited channel's media status, kept while that visit stays open. */
+    private fun checkVisitedVoice(channelId: String) {
+        val token = accountToken
+        val accountRequest = accountGeneration
+        availabilityRequests[channelId]?.cancel()
+        availabilityRequests[channelId] = viewModelScope.launch {
+            val enabled = withTimeoutOrNull(10_000) {
+                runCatching { api.mediaStatus(token, channelId, false).enabled }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
+            } ?: false
+            if (accountRequest == accountGeneration && visitedVoiceChannel() == channelId)
+                mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (channelId to enabled))
         }
     }
 
@@ -1284,8 +1313,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reportActivity() { gateway?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
-    /** Visits send no typing indicators (the server refuses them there). */
-    fun setTyping(active: Boolean) { if (mutable.value.visit == null) chatToken?.let { gateway?.sendTyping(it, active) } }
+    fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
 
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
@@ -1340,8 +1368,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setPin(messageId: String, active: Boolean) {
-        // Visits have no pins.
-        if (mutable.value.visit != null) return
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         if (pinWorkers[messageId]?.isActive == true) return
         val target = (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == messageId } ?: return
@@ -1450,7 +1476,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 // The cached sidebar listing is not an authorization decision. Check fresh
                 // server access before start() synchronously replaces a healthy current call.
-                val accessible = api.space(checkNotNull(token), intent.spaceId).let { detail ->
+                // A visited channel (its space is not yours) is checked through its own media status.
+                val accessible = if (!intent.demo && visitedVoiceChannel() == intent.channelId && mutable.value.visit?.spaceId == intent.spaceId) {
+                    if (api.mediaStatus(checkNotNull(token), intent.channelId, false).enabled) setOf(intent.channelId) else emptySet()
+                } else api.space(checkNotNull(token), intent.spaceId).let { detail ->
                     if (detail.space.id != intent.spaceId) emptySet() else detail.channels.filter { it.joined }.mapTo(mutableSetOf()) { it.id }
                 }
                 if (request != voiceAuthorizationRequest || spaceRequest != spaceAccessGeneration ||
@@ -1786,7 +1815,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } },
             onMedia = { channelId, people, sessionStartedAt -> viewModelScope.launch {
                 if (participating && generation == request && (channelId.isEmpty() && mutable.value.selectedSpace?.space?.demo == true ||
-                    mutable.value.selectedSpace?.channels?.any { it.id == channelId } == true && channelId !in mutable.value.deniedVoiceChannels)) {
+                    (mutable.value.selectedSpace?.channels?.any { it.id == channelId } == true || visitedVoiceChannel() == channelId) &&
+                    channelId !in mutable.value.deniedVoiceChannels)) {
                     mutable.value = mutable.value.copy(
                         voiceRosters = mutable.value.voiceRosters + (channelId to people),
                         voiceSessionStartedAt = if (sessionStartedAt == null) mutable.value.voiceSessionStartedAt - channelId
@@ -1817,7 +1847,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         connection.start()
         if (participating) watchVisiblePresence()
         val detail = mutable.value.selectedSpace
-        if (participating && detail != null) connection.watchMedia(detail.channels.filter { it.joined }.take(24).map { it.id }, detail.space.demo)
+        if (participating && (detail != null || mutable.value.visit != null)) connection.watchMedia(mediaChannels(detail), detail?.space?.demo == true)
     }
 
     private fun watchVisiblePresence() {
@@ -2103,7 +2133,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     threadOnlyRows = emptySet(),
                     contextStart = null, contextEnd = null, hasNewerMessages = false,
                 )
-                openGateway(channel.id, history.cursor, request, channel.joined && mutable.value.visit == null)
+                openGateway(channel.id, history.cursor, request, channel.joined)
                 if (mutable.value.thread != null) loadThread()
             } catch (error: Throwable) {
                 if (generation == request) {
@@ -2333,7 +2363,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             voiceSessionStartedAt = mutable.value.voiceSessionStartedAt.filterKeys { id -> id.isEmpty() && detail.space.demo || detail.channels.any { it.id == id } },
             deniedVoiceChannels = mutable.value.deniedVoiceChannels.filterTo(mutableSetOf()) { id -> detail.channels.any { it.id == id } },
         )
-        gateway?.watchMedia(detail.channels.filter { it.joined }.take(24).map { it.id }, detail.space.demo)
+        gateway?.watchMedia(mediaChannels(detail), detail.space.demo)
         watchVisiblePresence()
     }
 

@@ -525,7 +525,7 @@ data class AppUiState(
 
     /** Each channel's media root decides its own stable sidebar Join action. */
     fun voiceAvailable(channel: Channel): Boolean? =
-        voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
+        voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true && visit?.channelId != channel.id, channel.id)]
 
     val voiceAvailable: Boolean? get() = selectedChannel?.let(::voiceAvailable)
 

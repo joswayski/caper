@@ -80,7 +80,16 @@ public final class AppModel {
     public var showingFeedback = false
     /// A conversation the feedback team is visiting without joining it. It is
     /// open while no channel or DM is selected, and any other navigation ends it.
-    public private(set) var visit: FeedbackVisit? { didSet { if visit?.channelID != oldValue?.channelID { removeShownNotifications() } } }
+    public private(set) var visit: FeedbackVisit? {
+        didSet {
+            guard visit?.channelID != oldValue?.channelID else { return }
+            removeShownNotifications()
+            watchVisitVoice()
+        }
+    }
+    /// Who is in voice in a visited space channel, which the space's own
+    /// rosters don't cover.
+    public let visitVoicePresence: VoicePresenceModel
     /// What closing the visit returns to on wider layouts.
     @ObservationIgnored private var visitReturn: (spaceID: String?, channelID: String?, directMessageID: String?)?
     /// Shows the Feedback inbox and opens feedback notifications as visits.
@@ -187,6 +196,7 @@ public final class AppModel {
         voice = voiceClient
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
+        visitVoicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         // A reply from the team can answer a report: refresh the inbox's status.
         chatModel.onMessageSent = { [weak self] in
@@ -523,7 +533,7 @@ public final class AppModel {
             await presence.stop(); await voicePresence.stop()
             guard generation == attempt, navigationGeneration == navigation, navigationCacheEpoch == epoch else { return }
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
-            visit = nil; visitReturn = nil; chat.visitor = false
+            visit = nil; visitReturn = nil
             navigationOpen = false
             Task { [weak self] in await self?.refreshPeople() }
             // An incoming request opens read-only: no chat session, no composer,
@@ -1024,7 +1034,7 @@ public final class AppModel {
             selectedSpaceID = space.id
             selectedDirectMessageID = nil
             selectedChannelID = channel?.id
-            visit = nil; visitReturn = nil; chat.visitor = false
+            visit = nil; visitReturn = nil
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
             navigationOpen = false
@@ -1061,7 +1071,7 @@ public final class AppModel {
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
                 if !spaceVerified { detail = nil; selectedSpaceID = nil }
                 selectedChannelID = nil
-                if visit != nil { visit = nil; visitReturn = nil; chat.visitor = false }
+                if visit != nil { visit = nil; visitReturn = nil }
                 if voice.isActive(spaceID: space.id), !spaceVerified || channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
                 await chat.stop()
                 if !spaceVerified { await presence.stop(); await voicePresence.stop() }
@@ -1433,12 +1443,23 @@ public final class AppModel {
     public var voiceAvailable: Bool? { viewedVoiceRoot.flatMap { voiceAvailability[$0] } }
 
     public func voiceAvailable(in channel: Channel) -> Bool? {
+        if isVisitVoice(channel) {
+            if visitVoicePresence.unavailableChannels.contains(channel.id) { return false }
+            return voiceAvailability[channel.id]
+        }
         guard let detail, detail.channels.contains(where: { $0.id == channel.id }) else { return nil }
         if voicePresence.unavailableChannels.contains(channel.id) { return false }
         return voiceAvailability[detail.space.demo == true ? "general" : channel.id]
     }
 
     public func refreshVoiceAvailability(channel: Channel? = nil) async {
+        if let channel, isVisitVoice(channel) {
+            let accountGeneration = generation
+            let enabled = (try? await api.mediaStatus(channelID: channel.id)) ?? false
+            guard !Task.isCancelled, generation == accountGeneration, visit?.channelID == channel.id else { return }
+            voiceAvailability[channel.id] = enabled
+            return
+        }
         guard let detail,
               let channel = channel ?? detail.channels.first(where: { $0.id == selectedChannelID }) else { return }
         let root = detail.space.demo == true ? "general" : channel.id
@@ -1466,6 +1487,7 @@ public final class AppModel {
 
     /// Verify at click time; a denied switch must not evict a healthy call.
     public func joinVoice(channel: Channel) async {
+        if isVisitVoice(channel), let visit { await joinVisitVoice(visit); return }
         guard pendingVoiceChannelID == nil, voice.phase != .joining, voice.phase != .reconnecting,
               voice.phase != .leaving, let detail, channel.joined, detail.channels.contains(where: { $0.id == channel.id && $0.joined }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
@@ -1822,8 +1844,8 @@ extension AppModel {
                     return
                 }
             }
-            // Presence and voice rosters stay with the space shown in Browse;
-            // a visit has no member list, voice, pins or read markers.
+            // Presence stays with the space shown in Browse; a visit has no
+            // member list or read markers. Its inbox row holds voice.
             if visit == nil {
                 visitReturn = (selectedSpaceID, selectedChannelID, selectedDirectMessageID)
             }
@@ -1832,8 +1854,10 @@ extension AppModel {
                                   direct: direct, reportID: target.messageID, reporter: target.reporter)
             selectedDirectMessageID = nil; selectedChannelID = nil
             navigationOpen = false
+            // Back (phones) returns to the inbox, where the visited row offers voice.
+            if isFeedbackTeam { showingFeedback = true }
             Task { [weak self] in await self?.refreshPeople() }
-            chat.directPeerID = nil; chat.visitor = true
+            chat.directPeerID = nil
             await chat.open(history: history, displayName: account?.displayName ?? "")
             guard generation == attempt, navigationGeneration == navigation, visit?.channelID == target.channelID,
                   chat.channelID == target.channelID else { return }
@@ -1866,15 +1890,77 @@ extension AppModel {
         // Nothing to return to (or it failed to open): an empty stage.
         guard visit != nil else { return }
         navigationGeneration += 1
-        visit = nil; visitReturn = nil; chat.visitor = false
+        visit = nil; visitReturn = nil
         await chat.stop()
+    }
+
+    /// A visited space channel, for its voice slot. DMs have no voice.
+    public var visitChannel: Channel? {
+        guard let visit, !visit.direct, !visit.spaceID.isEmpty else { return nil }
+        return Channel(id: visit.channelID, spaceId: visit.spaceID, name: visit.channelName, private: false, joined: true)
+    }
+
+    /// Who is in voice in a channel: the open space's rosters, or the visit's.
+    public func voiceRoster(for channelID: String) -> [VoiceSpectator] {
+        if let channel = visitChannel, channel.id == channelID, isVisitVoice(channel) {
+            return visitVoicePresence.roster(for: channelID)
+        }
+        return voicePresence.roster(for: channelID)
+    }
+
+    /// The visited space channel, when the open space doesn't list it itself.
+    func isVisitVoice(_ channel: Channel) -> Bool {
+        guard let visitChannel, visitChannel.id == channel.id else { return false }
+        return detail?.channels.contains(where: { $0.id == channel.id }) != true
+    }
+
+    /// Watches the visited space channel's voice roster while the visit is open.
+    private func watchVisitVoice() {
+        let channel = visitChannel
+        let presence = visitVoicePresence
+        Task {
+            if let channel { await presence.watch(spaceID: channel.spaceId, channels: [channel], demo: false) }
+            else { await presence.stop() }
+        }
+    }
+
+    /// Joins voice in the visited space channel, like any channel: access is
+    /// rechecked at click time and a denied switch keeps the current call.
+    private func joinVisitVoice(_ visit: FeedbackVisit) async {
+        guard pendingVoiceChannelID == nil, voice.phase != .joining, voice.phase != .reconnecting, voice.phase != .leaving,
+              voice.context?.channelID != visit.channelID || voice.phase == .idle || voice.phase == .failed else { return }
+        voiceJoinGeneration += 1
+        let joinAttempt = voiceJoinGeneration
+        let clicked = Int64(Date().timeIntervalSince1970 * 1_000)
+        pendingVoiceStartedAt = clicked
+        pendingVoiceChannelID = visit.channelID
+        defer { if voiceJoinGeneration == joinAttempt { pendingVoiceChannelID = nil } }
+        let accountGeneration = generation
+        do {
+            let history = try await api.history(channelID: visit.channelID)
+            guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
+            guard history.channel?.id == visit.channelID, self.visit?.channelID == visit.channelID else {
+                visitVoicePresence.revoke(channelID: visit.channelID)
+                return
+            }
+            if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
+            await voice.join(channelID: visit.channelID,
+                             context: VoiceContext(channelID: visit.channelID, channelName: visit.channelName,
+                                                   spaceID: visit.spaceID, spaceName: visit.spaceName),
+                             name: account?.displayName ?? "Guest", joinStartedAt: clicked,
+                             sessionStartedAt: visitVoicePresence.sessionStartedAt(for: visit.channelID))
+        } catch {
+            guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
+            visitVoicePresence.revoke(channelID: visit.channelID)
+            navigationError = FriendlyError.message(for: error)
+        }
     }
 
     private func clearFeedbackState() {
         feedbackRequest += 1
         feedbackReports = []; feedbackCursor = nil; feedbackLoading = false; feedbackLoaded = false; feedbackError = nil
         showingFeedback = false
-        visit = nil; visitReturn = nil; chat.visitor = false
+        visit = nil; visitReturn = nil
     }
 }
 
@@ -2000,10 +2086,6 @@ public final class ChatModel {
     /// The other person in the open DM, kept by `AppModel`. Blocking them stops
     /// reactions, pins and edits as well as sending; the server refuses them too.
     public var directPeerID: String?
-    /// The open conversation is a feedback visit (kept by `AppModel`). Visitors
-    /// send, react and edit their own messages, but never pin or take part in
-    /// typing indicators, which the server refuses them.
-    public var visitor = false
     /// After the server confirms a sent message or reply.
     @ObservationIgnored public var onMessageSent: (() -> Void)?
     /// Reacting, pinning and editing need a chat session (not a preview), and
@@ -2703,7 +2785,7 @@ public final class ChatModel {
     }
 
     public func setPin(messageID: String, active: Bool) async {
-        guard !isPreview, !visitor, let channelID, let session, !pendingPins.contains(messageID) else { return }
+        guard !isPreview, let channelID, let session, !pendingPins.contains(messageID) else { return }
         guard let message = (messages + pinnedMessages).first(where: { $0.id == messageID }) else { return }
         pendingPins.insert(messageID); pinErrors[messageID] = nil
         failedPinActions[messageID] = nil
@@ -3303,7 +3385,7 @@ public final class ChatModel {
     }
 
     private func flushTyping() {
-        guard !visitor, let channelID, let session else { return }
+        guard let channelID, let session else { return }
         let active = typingActive
         if !active && !typingSent { return }
         if active && typingSent && Date().timeIntervalSince(typingSentAt) < 0.5 { return }
@@ -3323,7 +3405,7 @@ public final class ChatModel {
     }
 
     private func receiveTyping(author: ChatAuthor, typing: Bool, revision: String) {
-        guard !visitor, author.id != session?.author.id, (try? Sequence.compare(revision, "0")) != nil else { return }
+        guard author.id != session?.author.id, (try? Sequence.compare(revision, "0")) != nil else { return }
         if let previous = typers[author.id], (try? Sequence.compare(revision, previous.revision)) != .orderedDescending { return }
         guard typers[author.id] != nil || typers.count < 64 else { return }
         typers[author.id] = (author, typing, revision, Date().addingTimeInterval(6))
