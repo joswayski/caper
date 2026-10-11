@@ -953,6 +953,15 @@ export default function Call({
       .current!.setMuted(muted)
       .catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared."));
   };
+  const toggleDeafen = () => {
+    if (state.monitoring) return;
+    const deafened = !state.deafened;
+    playSound(deafened ? "toggle-off" : "toggle-on");
+    setActionError(undefined);
+    void clientRef
+      .current!.setDeafened(deafened)
+      .catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared."));
+  };
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
       ++actionGeneration.current;
@@ -1343,6 +1352,7 @@ export default function Call({
         <button
           ref={header && !activeHere ? viewedJoin : undefined}
           className={`channel-join ${header ? "voice-button header-voice-join" : "channel-quick-join"}`}
+          data-occupied={header && !activeHere && rosterFor(channelId).people.length > 0 ? "" : undefined}
           type="button"
           data-channel={channelId ?? ""}
           data-connected={activeHere ? "" : undefined}
@@ -1371,17 +1381,29 @@ export default function Call({
   };
   /** Who is in voice in the open channel, with its join or leave action, for the conversation header. */
   const muteControl = !idle && (
-    // Phones keep the call's mute in the header, since Browse holds the account bar.
-    <button
-      type="button"
-      className={`voice-icon-button header-voice-mute${state.muted ? " active" : ""}`}
-      aria-disabled={state.monitoring}
-      aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
-      aria-pressed={state.muted}
-      onClick={toggleMute}
-    >
-      {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
-    </button>
+    // Phones keep the call's mute and deafen in the header, since Browse holds the account bar.
+    <>
+      <button
+        type="button"
+        className={`voice-icon-button header-voice-mute${state.muted ? " active" : ""}`}
+        aria-disabled={state.monitoring}
+        aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
+        aria-pressed={state.muted}
+        onClick={toggleMute}
+      >
+        {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
+      </button>
+      <button
+        type="button"
+        className={`voice-icon-button header-voice-mute${state.deafened ? " active" : ""}`}
+        aria-disabled={state.monitoring}
+        aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"}
+        aria-pressed={state.deafened}
+        onClick={toggleDeafen}
+      >
+        {state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}
+      </button>
+    </>
   );
   const headerVoice = (() => {
     // A DM or preview has no voice of its own; on phones it still offers the call's mute and Leave.
@@ -1604,17 +1626,7 @@ export default function Call({
                     aria-disabled={state.monitoring}
                     aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"}
                     aria-pressed={state.deafened}
-                    onClick={() => {
-                      if (state.monitoring) return;
-                      const deafened = !state.deafened;
-                      playSound(deafened ? "toggle-off" : "toggle-on");
-                      setActionError(undefined);
-                      void clientRef
-                        .current!.setDeafened(deafened)
-                        .catch((error) =>
-                          setActionError(error instanceof Error ? error.message : "Deafen state could not be shared."),
-                        );
-                    }}
+                    onClick={toggleDeafen}
                   >
                     {state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}
                   </button>

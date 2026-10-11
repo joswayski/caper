@@ -8333,6 +8333,13 @@ impl CaperApp {
         self.effects.toggle(muted);
     }
 
+    /// As the account bar's deafen.
+    fn toggle_deafen(&mut self) {
+        let deafened = self.voice.state.audio.deafened;
+        self.voice.command(VoiceOperation::Deafen(!deafened));
+        self.effects.toggle(deafened);
+    }
+
     /// The header's Leave, as the dock's hang-up.
     fn header_leave(&mut self, ui: &mut egui::Ui) {
         let button = header_voice_button(ui, NavIcon::PhoneOff, "Leave", HANGUP_TONE);
@@ -8562,16 +8569,16 @@ impl CaperApp {
     }
 
     /// Phones' voice: one bordered group of icon buttons that keep the wide
-    /// header's names: the call's mute while in voice, then Join voice,
-    /// Switch here, Joining… or Leave. The name's subtitle says how many
-    /// are in voice. `channel` is the open channel's id and name; without
-    /// one (a DM or preview) the group is the call's mute and Leave.
+    /// header's names: while in voice the call's mute and deafen, then Join
+    /// voice, Switch here, Joining… or Leave. The name's subtitle says how
+    /// many are in voice. `channel` is the open channel's id and name;
+    /// without one (a DM or preview) the group is the call's controls.
     fn narrow_voice(&mut self, ui: &mut egui::Ui, channel: Option<(&str, &str)>) {
         let action = channel.map_or(VoiceAction::Leave, |(id, _)| self.voice_action(id));
-        let mute = self.in_voice();
-        let buttons = 1 + usize::from(mute);
+        let in_voice = self.in_voice();
+        let buttons = 1 + 2 * usize::from(in_voice);
         // Web: 2px inside the border at each end and between buttons.
-        let width = 2.0 + 2.0 + buttons as f32 * 44.0 + (buttons - 1) as f32 * 2.0 + 2.0;
+        let width = 2.0 + 2.0 + buttons as f32 * 42.0 + (buttons - 1) as f32 * 2.0 + 2.0;
         let (group, _) = ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::hover());
         ui.painter().rect_stroke(
             group,
@@ -8586,13 +8593,17 @@ impl CaperApp {
         );
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.add_space(2.0);
-        if mute {
+        if in_voice {
             let muted = self.voice.state.audio.muted;
             let button = voice_icon_button(
                 &mut ui,
                 if muted { NavIcon::MicOff } else { NavIcon::Mic },
-                if muted { MUTED_MIC } else { MUTED },
-                if muted { MUTED_MIC } else { TEXT },
+                if muted {
+                    (MUTED_MIC, MUTED_MIC)
+                } else {
+                    (MUTED, TEXT)
+                },
+                None,
                 if muted {
                     "Unmute microphone"
                 } else {
@@ -8605,14 +8616,40 @@ impl CaperApp {
             {
                 self.toggle_mute();
             }
+            let deafened = self.voice.state.audio.deafened;
+            let button = voice_icon_button(
+                &mut ui,
+                if deafened {
+                    NavIcon::VolumeX
+                } else {
+                    NavIcon::Headphones
+                },
+                if deafened {
+                    (MUTED_MIC, MUTED_MIC)
+                } else {
+                    (MUTED, TEXT)
+                },
+                None,
+                if deafened {
+                    "Undeafen audio"
+                } else {
+                    "Deafen audio"
+                },
+            );
+            if button
+                .on_hover_text(if deafened { "Undeafen" } else { "Deafen" })
+                .clicked()
+            {
+                self.toggle_deafen();
+            }
         }
         match (action, channel) {
             (VoiceAction::Leave, _) | (_, None) => {
                 let button = voice_icon_button(
                     &mut ui,
                     NavIcon::PhoneOff,
-                    HANGUP_TONE.rest.2,
-                    HANGUP_TONE.hover.2,
+                    (MUTED_MIC, MUTED_MIC),
+                    Some((LEAVE_TINT, LEAVE_HOVER)),
                     "Leave voice",
                 );
                 if button.on_hover_text("Leave this voice channel").clicked() {
@@ -8625,8 +8662,8 @@ impl CaperApp {
                     voice_icon_button(
                         ui,
                         NavIcon::Headphones,
-                        VOICE_TONE.rest.2,
-                        VOICE_TONE.hover.2,
+                        (VOICE_TONE.rest.2, VOICE_TONE.hover.2),
+                        None,
                         &label,
                     )
                 })
@@ -8644,17 +8681,23 @@ impl CaperApp {
                 } else {
                     "Join voice"
                 };
+                // People are talking here: Join glows softly until you are in.
+                let occupied = enabled && !self.voice_people(id).0.is_empty();
+                let glow = ui.painter().add(egui::Shape::Noop);
                 let button = ui
                     .add_enabled_ui(enabled, |ui| {
                         voice_icon_button(
                             ui,
                             NavIcon::Headphones,
-                            VOICE_TONE.rest.2,
-                            VOICE_TONE.hover.2,
+                            (VOICE_TONE.rest.2, VOICE_TONE.hover.2),
+                            occupied.then_some((OCCUPIED_JOIN_TINT, VOICE_TONE.hover.0)),
                             label,
                         )
                     })
                     .inner;
+                if occupied {
+                    join_glow(&ui, glow, button.rect, 6.0);
+                }
                 self.voice_join_response(&ui, button, id, label, &tooltip);
             }
         }
@@ -8682,6 +8725,8 @@ impl CaperApp {
                 button.on_disabled_hover_text(format!("Connecting to #{name}…"));
             }
             VoiceAction::Join { switching, enabled } => {
+                // People are talking here: Join glows softly until you are in.
+                let glow = ui.painter().add(egui::Shape::Noop);
                 let button = ui
                     .add_enabled_ui(enabled, |ui| {
                         header_voice_button(
@@ -8696,6 +8741,9 @@ impl CaperApp {
                         )
                     })
                     .inner;
+                if enabled && !self.voice_people(id).0.is_empty() {
+                    join_glow(ui, glow, button.rect, 8.0);
+                }
                 let tooltip = if switching {
                     format!("Switch voice to #{name}")
                 } else {
@@ -15036,21 +15084,26 @@ fn header_menu_item(
 /// Web's muted microphone in the phone header.
 const MUTED_MIC: Color32 = Color32::from_rgb(0xFF, 0x71, 0x82);
 
-/// Phones' 44px icon-only voice button; `label` stays its accessible name.
-/// A disabled `ui` dims it.
+/// Phones' 42px icon-only voice button; `label` stays its accessible name.
+/// `color` is the icon's rest and hover colors; `fill` the optional tinted
+/// background's. A disabled `ui` dims it.
 fn voice_icon_button(
     ui: &mut egui::Ui,
     icon: NavIcon,
-    color: Color32,
-    hover: Color32,
+    color: (Color32, Color32),
+    fill: Option<(Color32, Color32)>,
     label: &str,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
-    let lit = response.hovered() || response.has_focus();
-    if lit {
-        ui.painter().rect_filled(rect, 6.0, RAISED);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(42.0, 44.0), egui::Sense::click());
+    let lit = ui.is_enabled() && (response.hovered() || response.has_focus());
+    let background = match fill {
+        Some((rest, hover)) => Some(if lit { hover } else { rest }),
+        None => lit.then_some(RAISED),
+    };
+    if let Some(background) = background {
+        ui.painter().rect_filled(rect, 6.0, background);
     }
-    let color = if lit { hover } else { color };
+    let color = if lit { color.1 } else { color.0 };
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
@@ -15065,6 +15118,37 @@ fn voice_icon_button(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response
+}
+
+/// Phones' Leave: a red tint behind the red icon.
+const LEAVE_TINT: Color32 = Color32::from_rgba_unmultiplied_const(212, 67, 85, 46);
+const LEAVE_HOVER: Color32 = Color32::from_rgba_unmultiplied_const(212, 67, 85, 66);
+/// Phones' occupied Join: a faint terracotta tint.
+const OCCUPIED_JOIN_TINT: Color32 = Color32::from_rgba_unmultiplied_const(182, 77, 50, 41);
+/// Web's `voice-join-glow`: one 2.4s ease-in-out breath.
+const JOIN_GLOW_PERIOD: f64 = 2.4;
+
+/// The glow's color `time` seconds in: transparent at the ends of each
+/// breath, rgb(219 104 73 / 0.45) at its middle.
+fn join_glow_color(time: f64) -> Color32 {
+    let phase = (time % JOIN_GLOW_PERIOD) / JOIN_GLOW_PERIOD;
+    let strength = (1.0 - (std::f64::consts::TAU * phase).cos()) / 2.0;
+    Color32::from_rgba_unmultiplied(219, 104, 73, (0.45 * 255.0 * strength).round() as u8)
+}
+
+/// Web's pulsing `box-shadow: 0 0 14px 2px` behind an occupied Join, into
+/// `slot` (reserved before the button so the glow sits behind it). It only
+/// repaints while drawn. Desktop has no reduced-motion setting to honor.
+fn join_glow(ui: &egui::Ui, slot: egui::layers::ShapeIdx, rect: egui::Rect, corner: f32) {
+    let shadow = egui::Shadow {
+        offset: [0, 0],
+        blur: 14,
+        spread: 2,
+        color: join_glow_color(ui.input(|input| input.time)),
+    };
+    ui.painter()
+        .set(slot, shadow.as_shape(rect, CornerRadius::from(corner)));
+    ui.ctx().request_repaint_after(Duration::from_millis(33));
 }
 
 /// Who is in voice, as one sentence: "Maya, Alex, Sam and 2 more are in voice".
@@ -16749,18 +16833,22 @@ const VOICE_TONE: Tone = Tone {
     ),
 };
 
-/// Web's `.voice-hangup` in the header: quiet until hovered, then red.
+/// Web's `.header-voice .voice-leave`: red on a red tint, with a red border.
 const HANGUP_TONE: Tone = Tone {
-    rest: (COMPOSER, Color32::TRANSPARENT, MUTED),
+    rest: (
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 36),
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 115),
+        MUTED_MIC,
+    ),
     hover: (
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 46),
-        Color32::TRANSPARENT,
-        Color32::from_rgb(255, 113, 130),
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 66),
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 115),
+        MUTED_MIC,
     ),
     press: (
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 46),
-        Color32::from_rgb(255, 113, 130),
-        Color32::from_rgb(255, 113, 130),
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 66),
+        MUTED_MIC,
+        MUTED_MIC,
     ),
 };
 
@@ -21085,16 +21173,23 @@ mod tests {
             assert!(bounds.bottom() <= 54.0, "{label} sits in the header");
             bounds
         };
-        // Browse | the name | one group: the call's mute, then Leave.
+        // Browse | the name | one group: the call's mute and deafen, then Leave.
         let browse = header(&closed, "Browse");
         let title = header(&closed, "#general options");
         let mute = header(&closed, "Mute microphone");
+        let deafen = header(&closed, "Deafen audio");
         let leave = header(&closed, "Leave voice");
         assert!(browse.right() < title.left() && title.right() < mute.left());
-        assert!(mute.right() < leave.left() && leave.right() <= 390.0 - 12.0);
-        assert_eq!(
-            (mute.size(), leave.size()),
-            (egui::vec2(44.0, 44.0), egui::vec2(44.0, 44.0))
+        assert!(mute.right() < deafen.left() && deafen.right() < leave.left());
+        assert!(leave.right() <= 390.0 - 12.0);
+        for button in [mute, deafen, leave] {
+            assert_eq!(button.size(), egui::vec2(42.0, 44.0));
+        }
+        // Leave is red: a red tint behind it.
+        assert!(
+            closed.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect == leave && rect.fill == super::LEAVE_TINT)),
+            "Leave sits on a red tint"
         );
         let people = app.voice_people("chan00000001").0;
         if let Some(summary) = super::voice_summary(&people) {
@@ -21117,8 +21212,8 @@ mod tests {
                 _ => None,
             })
             .expect("one bordered voice group");
-        // Just the two icon buttons inside the border.
-        assert_eq!(group.width(), 2.0 + 2.0 + 44.0 + 2.0 + 44.0 + 2.0);
+        // Just the three icon buttons inside the border.
+        assert_eq!(group.width(), 2.0 + 2.0 + 3.0 * 42.0 + 2.0 * 2.0 + 2.0);
         assert!(!group.contains_rect(title));
         let shown = texts(&closed);
         assert!(!shown.contains(&"Leave"), "no labels on phones");
@@ -21191,7 +21286,15 @@ mod tests {
         assert!(app.voice.state.audio.muted);
         let output = narrow(&mut app, 2.7, vec![]);
         let mic = header(&output, "Unmute microphone");
-        assert_eq!(mic.size(), egui::vec2(44.0, 44.0));
+        assert_eq!(mic.size(), egui::vec2(42.0, 44.0));
+        // And deafening, as the account bar does.
+        tap(&mut app, 2.8, node_center(&output, "Deafen audio"));
+        assert!(app.voice.state.audio.deafened);
+        let output = narrow(&mut app, 2.9, vec![]);
+        assert_eq!(
+            header(&output, "Undeafen audio").size(),
+            egui::vec2(42.0, 44.0)
+        );
 
         // A DM has no voice of its own, but keeps the call's mute and Leave.
         let id = "dm0000000001".to_owned();
@@ -21212,23 +21315,31 @@ mod tests {
         app.selected_direct = Some(id);
         narrow(&mut app, 3.0, vec![]);
         let output = narrow(&mut app, 3.1, vec![]);
-        let (title, mic, leave) = (
+        let (title, mic, deafen, leave) = (
             header(&output, "TEST FIXTURE Maya options"),
             header(&output, "Unmute microphone"),
+            header(&output, "Undeafen audio"),
             header(&output, "Leave voice"),
         );
-        assert!(title.right() < mic.left() && mic.right() < leave.left());
+        assert!(title.right() < mic.left() && mic.right() < deafen.left());
+        assert!(deafen.right() < leave.left());
         assert!(
             output.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::Rect(rect) if rect.stroke.color == super::BORDER
                     && rect.rect.contains_rect(mic) && rect.rect.contains_rect(leave))),
-            "the DM's mute and Leave share one group"
+            "the DM's mute, deafen and Leave share one group"
         );
         assert!(!texts(&output).contains(&"Join voice"));
         tap(&mut app, 3.2, leave.center());
         assert!(matches!(app.voice.state.phase, Phase::Idle));
         let output = narrow(&mut app, 3.3, vec![]);
-        for label in ["Leave voice", "Unmute microphone", "Mute microphone"] {
+        for label in [
+            "Leave voice",
+            "Unmute microphone",
+            "Mute microphone",
+            "Undeafen audio",
+            "Deafen audio",
+        ] {
             assert!(
                 node_bounds(&output, label).is_none_or(|bounds| bounds.bottom() > 54.0),
                 "out of a call, the DM header has no {label}"
@@ -21942,7 +22053,12 @@ mod tests {
         // whose subtitle says how many are in voice.
         for width in (380..=760).step_by(20) {
             let (output, join, count_shown) = header(5, width as f32, "planning-notes");
-            assert_eq!(join.size(), egui::vec2(44.0, 44.0), "{width}");
+            assert_eq!(join.size(), egui::vec2(42.0, 44.0), "{width}");
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.rect == join && rect.fill == super::OCCUPIED_JOIN_TINT)),
+                "{width}: an occupied Join is tinted"
+            );
             assert!(!count_shown, "{width}: phones show no count beside voice");
             assert!(
                 node_bounds(&output, summary).is_none(),
@@ -22021,8 +22137,125 @@ mod tests {
             })
             .expect("the header offers Leave");
         assert!(leave.x > 340.0);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect.contains(leave)
+                    && rect.rect.height() == 34.0
+                    && rect.fill == super::HANGUP_TONE.rest.0
+                    && rect.stroke.color == super::HANGUP_TONE.rest.1)),
+            "the header's Leave is red on a red tint with a red border"
+        );
+        assert_eq!(super::HANGUP_TONE.rest.2, super::MUTED_MIC);
         click(&mut app, &context, leave);
         assert!(matches!(app.voice.state.phase, Phase::Idle));
+    }
+
+    #[test]
+    fn occupied_join_glows_softly_until_you_are_in() {
+        assert_eq!(super::join_glow_color(0.0).a(), 0);
+        assert_eq!(super::join_glow_color(2.4).a(), 0);
+        assert_eq!(
+            super::join_glow_color(1.2),
+            egui::Color32::from_rgba_unmultiplied(219, 104, 73, 115)
+        );
+        assert!(super::join_glow_color(0.6).a() > 0 && super::join_glow_color(0.6).a() < 115);
+        let glows = |occupied: bool, width: f32, connected: bool| {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.token = Some("fixture-only".into());
+            if occupied {
+                app.channel_rosters.insert(
+                    "chan00000001".into(),
+                    vec![crate::model::VoiceOccupant {
+                        id: "maya".into(),
+                        avatar_id: Some(15),
+                        name: "Maya".into(),
+                        muted: false,
+                        deafened: false,
+                    }],
+                );
+            }
+            if connected {
+                app.voice.state.phase =
+                    Phase::Connected(app.voice_target("chan00000001").unwrap().0);
+            }
+            let frame = |app: &mut CaperApp, time: f64| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app, 0.0);
+            context.enable_accesskit();
+            let output = frame(&mut app, 1.2);
+            // The header's action; wide layouts also offer Leave in the dock.
+            let label = if connected {
+                "Leave voice"
+            } else {
+                "Join voice"
+            };
+            let action = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(label))
+                .filter_map(|(_, node)| node.bounds())
+                .find(|bounds| bounds.y1 <= 54.0)
+                .map(|bounds| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                        egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                    )
+                })
+                .expect("the header's voice action");
+            let glow = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.blur_width > 0.0 && rect.rect.contains_rect(action) =>
+                {
+                    Some(rect.fill)
+                }
+                _ => None,
+            });
+            if glow.is_some() {
+                let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+                assert!(
+                    repaint <= Duration::from_millis(50),
+                    "the glow animates: {repaint:?}"
+                );
+            }
+            glow
+        };
+        for width in [1440.0, 390.0] {
+            assert_eq!(
+                glows(true, width, false),
+                Some(super::join_glow_color(1.2)),
+                "{width}: people in voice here make Join glow"
+            );
+            assert_eq!(
+                glows(false, width, false),
+                None,
+                "{width}: an empty channel's Join is still"
+            );
+            assert_eq!(
+                glows(true, width, true),
+                None,
+                "{width}: no glow once you are in"
+            );
+        }
     }
 
     #[test]

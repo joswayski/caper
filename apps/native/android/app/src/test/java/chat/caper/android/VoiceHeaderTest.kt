@@ -17,4 +17,13 @@ class VoiceHeaderTest {
         assertEquals("2 in voice", headerSubtitle(null, 2))
         assertEquals("", headerSubtitle(null, 0))
     }
+
+    @Test fun `join glows only while others are in voice here and you can join or switch`() {
+        assertEquals(true, headerJoinGlows(occupied = true, action = HeaderVoiceAction.Join, enabled = true))
+        assertEquals(true, headerJoinGlows(occupied = true, action = HeaderVoiceAction.Switch, enabled = true))
+        assertEquals(false, headerJoinGlows(occupied = false, action = HeaderVoiceAction.Join, enabled = true))
+        assertEquals(false, headerJoinGlows(occupied = true, action = HeaderVoiceAction.Join, enabled = false))
+        assertEquals(false, headerJoinGlows(occupied = true, action = HeaderVoiceAction.Joining, enabled = true))
+        assertEquals(false, headerJoinGlows(occupied = true, action = HeaderVoiceAction.Leave, enabled = true))
+    }
 }

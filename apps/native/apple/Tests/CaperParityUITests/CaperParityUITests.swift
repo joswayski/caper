@@ -1172,7 +1172,14 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(["Mute microphone", "Unmute microphone"].contains(headerMute.label))
         XCTAssertGreaterThanOrEqual(headerMute.frame.width, 44)
         XCTAssertGreaterThanOrEqual(headerMute.frame.height, 44)
-        XCTAssertLessThan(headerMute.frame.maxX, headerLeave.frame.minX + 1, "The microphone sits before Leave")
+        // Then deafen, then the red disconnect.
+        let headerDeafen = app.buttons["header-deafen"]
+        XCTAssertTrue(headerDeafen.exists, "Phones show the call's deafen toggle in the header")
+        XCTAssertTrue(["Deafen audio", "Undeafen audio"].contains(headerDeafen.label))
+        XCTAssertGreaterThanOrEqual(headerDeafen.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(headerDeafen.frame.height, 44)
+        XCTAssertLessThan(headerMute.frame.maxX, headerDeafen.frame.minX + 1, "The microphone sits before deafen")
+        XCTAssertLessThan(headerDeafen.frame.maxX, headerLeave.frame.minX + 1, "Deafen sits before Leave")
         XCTAssertGreaterThan(headerMute.frame.minX, app.descendants(matching: .any)["channel-title-menu"].frame.maxX - 1,
                           "The voice group follows the title menu")
         XCTAssertGreaterThanOrEqual(headerLeave.frame.width, 44)
@@ -1183,6 +1190,7 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Back to Browse"].tap()
         #else
         XCTAssertFalse(headerMute.exists, "Wide layouts keep the microphone in the account bar")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "Wide layouts keep deafen in the account bar")
         let pins = app.buttons["channel-pins"]
         XCTAssertLessThan(headerLeave.frame.maxX, pins.frame.minX, "Voice sits before Pins, apart from the icons")
         #endif
@@ -1376,6 +1384,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(pins.frame.maxX, toggle.frame.minX + 1, "Members sits right of Pins")
         XCTAssertFalse(app.descendants(matching: .any)["channel-title-menu"].exists, "Wide headers keep separate Pins and Members buttons")
         XCTAssertFalse(app.buttons["header-mute"].exists, "Wide layouts keep the microphone in the account bar")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "Wide layouts keep deafen in the account bar")
         capture("members-hidden", app: app)
         toggle.tap()
         assertStaticText("Members", in: app, timeout: 2)
@@ -2226,6 +2235,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(join.frame.minX, title.frame.maxX - 1, "Voice follows the title menu")
         XCTAssertEqual(staticTexts("Join voice", in: app).count, 0, "Phone headers show no voice text labels")
         XCTAssertFalse(app.buttons["header-mute"].exists, "The header's microphone appears only during a call")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "The header's deafen toggle appears only during a call")
         XCTAssertGreaterThan(channel.frame.width, 0, "The channel name keeps room beside the voice action")
         // Below the header is only the conversation: the account bar stays in Browse.
         let accountProfile = app.buttons["account-profile"]

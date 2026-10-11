@@ -70,17 +70,22 @@ class VoiceHeaderUiTest {
         compose.runOnIdle { assertEquals(3, joined); assertEquals(1, left) }
     }
 
-    @Test fun phoneHeaderMutesBeforeTheActionDuringACall() {
+    @Test fun phoneHeaderMutesAndDeafensBeforeTheActionDuringACall() {
         val muted = mutableStateOf(false)
+        val deafened = mutableStateOf(false)
         val monitoring = mutableStateOf(false)
         var toggled = 0
+        var deafenToggled = 0
         var left = 0
         compose.setContent {
             CaperTheme {
                 Row {
                     HeaderVoice(listOf(person("a", "Maya")), HeaderVoiceAction.Leave, "design", enabled = true, unavailableLabel = null, compact = true,
                         onJoin = {}, onPrepare = {}, onLeave = { left++ },
-                        mute = { HeaderMuteButton(muted.value, monitoring.value) { toggled++; muted.value = !muted.value } })
+                        audioControls = {
+                            HeaderMuteButton(muted.value, monitoring.value) { toggled++; muted.value = !muted.value }
+                            HeaderDeafenButton(deafened.value, monitoring.value) { deafenToggled++; deafened.value = !deafened.value }
+                        })
                 }
             }
         }
@@ -88,32 +93,43 @@ class VoiceHeaderUiTest {
         compose.onNodeWithContentDescription("Mute microphone").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, toggled); assertEquals(0, left) }
         compose.onNodeWithContentDescription("Unmute microphone").assertIsEnabled()
-        // The mic sits before the action, as on web.
+        compose.onNodeWithContentDescription("Deafen audio").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, deafenToggled); assertEquals(1, toggled) }
+        compose.onNodeWithContentDescription("Undeafen audio").assertIsEnabled()
+        // Mic, then deafen, then disconnect, as on web.
         val mic = compose.onNodeWithContentDescription("Unmute microphone").getUnclippedBoundsInRoot()
+        val deafen = compose.onNodeWithContentDescription("Undeafen audio").getUnclippedBoundsInRoot()
         val leave = compose.onNodeWithContentDescription("Leave voice").getUnclippedBoundsInRoot()
-        assertTrue(mic.right <= leave.left)
+        assertTrue(mic.right <= deafen.left)
+        assertTrue(deafen.right <= leave.left)
 
-        // Like the account bar's, mute waits while the Audio test holds the microphone.
+        // Like the account bar's, mute and deafen wait while the Audio test holds the microphone.
         compose.runOnIdle { monitoring.value = true }
         compose.onNodeWithContentDescription("Unmute microphone").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Undeafen audio").assertIsNotEnabled()
 
         compose.onNodeWithContentDescription("Leave voice").performClick()
-        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, left) }
+        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, deafenToggled); assertEquals(1, left) }
     }
 
-    @Test fun conversationWithoutVoiceOffersTheCallsMuteAndLeave() {
+    @Test fun conversationWithoutVoiceOffersTheCallsMuteDeafenAndLeave() {
         var toggled = 0
+        var deafenToggled = 0
         var left = 0
         compose.setContent {
             CaperTheme {
-                HeaderVoiceElsewhere({ HeaderMuteButton(muted = false, monitoring = false) { toggled++ } }) { left++ }
+                HeaderVoiceElsewhere({
+                    HeaderMuteButton(muted = false, monitoring = false) { toggled++ }
+                    HeaderDeafenButton(deafened = false, monitoring = false) { deafenToggled++ }
+                }) { left++ }
             }
         }
 
         compose.onNodeWithContentDescription("Join voice").assertDoesNotExist()
         compose.onNodeWithContentDescription("Mute microphone").performClick()
+        compose.onNodeWithContentDescription("Deafen audio").performClick()
         compose.onNodeWithContentDescription("Leave voice").performClick()
-        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, left) }
+        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, deafenToggled); assertEquals(1, left) }
     }
 
     @Test fun unavailableVoiceNamesWhyJoinIsDisabled() {

@@ -72,6 +72,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.geometry.Offset
@@ -1233,7 +1235,8 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
  * Joining… or Leave action. Channel rows carry no join, so empty channels stay a single line.
  * [compact] (phones) is one bordered group of icons beside the name, as in Slack: no faces,
  * count or labels (labels stay as accessible names; the title's subtitle says how many are in
- * voice), and [mute] before the action during a call.
+ * voice), and [audioControls] (mic and deafen) before the action during a call. While people are
+ * in voice here and you are not, Join or Switch here glows softly, as on web.
  */
 @Composable internal fun HeaderVoice(
     people: List<Participant>,
@@ -1246,7 +1249,7 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
     onPrepare: () -> Unit,
     onLeave: () -> Unit,
     speaking: Set<String> = emptySet(),
-    mute: (@Composable () -> Unit)? = null,
+    audioControls: (@Composable () -> Unit)? = null,
 ) {
     val label = when (action) { HeaderVoiceAction.Joining -> "Joining…"; HeaderVoiceAction.Switch -> "Switch here"; else -> "Join voice" }
     val description = when (action) {
@@ -1266,10 +1269,14 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             contentDescription = if (action == HeaderVoiceAction.Joining) description else unavailableLabel ?: description
             if (action == HeaderVoiceAction.Joining) stateDescription = "Busy"
         }
+    val glows = headerJoinGlows(people.isNotEmpty(), action, active)
     if (compact) return PhoneVoiceGroup {
-        mute?.invoke()
+        audioControls?.invoke()
         if (action == HeaderVoiceAction.Leave) HeaderLeaveIcon(onLeave)
-        else IconButton(onJoin, Modifier.size(48.dp).then(joinModifier), enabled = active) {
+        else IconButton(onJoin, Modifier.size(48.dp).voiceJoinGlow(glows, 6.dp)
+            // Phones: an occupied Join also gets a faint terracotta wash.
+            .then(if (glows) Modifier.background(OccupiedJoinWash, RoundedCornerShape(6.dp)) else Modifier)
+            .then(joinModifier), enabled = active) {
             Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(20.dp), tint = if (active) TerracottaLight else TerracottaLight.copy(alpha = 0.6f))
         }
     }
@@ -1283,14 +1290,16 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             }
         }
         val padding = PaddingValues(horizontal = 12.dp)
-        if (action == HeaderVoiceAction.Leave) TextButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
-            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = padding) {
+        // Web: disconnect is red in the header, on a red wash with a red-tinted border.
+        if (action == HeaderVoiceAction.Leave) OutlinedButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
+            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(containerColor = LeaveWash, contentColor = HeaderRed),
+            border = BorderStroke(1.dp, LeaveBorder), contentPadding = padding) {
             Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
             Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
         } else {
             // Web's terracotta-tinted voice button; disabled or joining, it dims rather than turning grey.
-            OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp).then(joinModifier),
+            OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp).voiceJoinGlow(glows, 8.dp).then(joinModifier),
                 enabled = active, shape = MaterialTheme.shapes.small,
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = TerracottaWash, contentColor = TerracottaLight,
                     disabledContainerColor = TerracottaWash, disabledContentColor = TerracottaLight.copy(alpha = 0.6f)),
@@ -1310,15 +1319,74 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) { content() }
 }
 
-/** Phones' icon-only Leave: it ends the call the same way as the dock's. */
+/** Phones' icon-only Leave, red on a red wash: it ends the call the same way as the dock's. */
 @Composable private fun HeaderLeaveIcon(onLeave: () -> Unit) {
-    IconButton(onLeave, Modifier.size(48.dp)) {
-        Icon(painterResource(R.drawable.lucide_phone_off), "Leave voice", Modifier.size(20.dp), tint = TextMuted)
+    IconButton(onLeave, Modifier.size(48.dp).background(LeaveWashPhone, RoundedCornerShape(6.dp))) {
+        Icon(painterResource(R.drawable.lucide_phone_off), "Leave voice", Modifier.size(20.dp), tint = HeaderRed)
     }
 }
 
-/** Web's active (muted) tint for the phone header's mic. */
-private val HeaderMutedRed = Color(0xFFFF7182)
+/** Web's header red: Leave, and the phone header's active mute and deafen. */
+private val HeaderRed = Color(0xFFFF7182)
+/** Web's Leave wash, rgb(212 67 85 / 0.14), and its border at 0.45; phones use a 0.18 wash. */
+private val LeaveWash = Color(0x24D44355)
+private val LeaveBorder = Color(0x73D44355)
+private val LeaveWashPhone = Color(0x2ED44355)
+/** Web's occupied Join on phones: rgb(182 77 50 / 0.16). */
+private val OccupiedJoinWash = Color(0x29B64D32)
+/** Web's `voice-join-glow` colour, rgb(219 104 73). */
+private val JoinGlow = Color(0xFFDB6849)
+
+/** Web's `data-occupied` Join: people are in voice here, you are not, and Join or Switch here is available. */
+internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabled: Boolean): Boolean =
+    occupied && enabled && (action == HeaderVoiceAction.Join || action == HeaderVoiceAction.Switch)
+
+/**
+ * Web's `voice-join-glow`: a terracotta box-shadow (0 0 14px 2px) whose alpha eases 0 to 0.45 and back
+ * over 2.4 s. With animations off (animator duration scale 0) it stays a soft static glow (0 0 10px 1px, 0.35).
+ */
+@Composable private fun Modifier.voiceJoinGlow(on: Boolean, corner: Dp): Modifier {
+    if (!on) return this
+    val context = LocalContext.current
+    val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val alpha: State<Float> = if (still) remember { mutableFloatStateOf(0.35f) }
+    else androidx.compose.animation.core.rememberInfiniteTransition(label = "voice-join-glow").animateFloat(0f, 0.45f,
+        androidx.compose.animation.core.infiniteRepeatable(tween(1_200, easing = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)),
+            androidx.compose.animation.core.RepeatMode.Reverse), label = "glow")
+    val blur = if (still) 10.dp else 14.dp
+    val spread = if (still) 1.dp else 2.dp
+    return drawBehind {
+        val strength = alpha.value
+        if (strength <= 0.01f) return@drawBehind
+        val grow = spread.toPx()
+        val radius = corner.toPx()
+        val canvas = drawContext.canvas.nativeCanvas
+        canvas.save()
+        // Like a box-shadow, the glow is only drawn outside the button.
+        canvas.clipOutPath(android.graphics.Path().apply {
+            addRoundRect(android.graphics.RectF(0f, 0f, size.width, size.height), radius, radius, android.graphics.Path.Direction.CW)
+        })
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        if (Build.VERSION.SDK_INT >= 28) {
+            // Hardware canvases blur from Android 9.
+            paint.color = JoinGlow.copy(alpha = strength).toArgb()
+            paint.maskFilter = android.graphics.BlurMaskFilter(blur.toPx(), android.graphics.BlurMaskFilter.Blur.NORMAL)
+            canvas.drawRoundRect(-grow, -grow, size.width + grow, size.height + grow, radius + grow, radius + grow, paint)
+        } else {
+            // Older versions: fading rings approximate the blur.
+            paint.style = android.graphics.Paint.Style.STROKE
+            val rings = 4
+            val ring = blur.toPx() / rings
+            paint.strokeWidth = ring
+            for (index in 0 until rings) {
+                val inset = grow + ring * (index + 0.5f)
+                paint.color = JoinGlow.copy(alpha = strength * (1f - index / rings.toFloat()) * 0.6f).toArgb()
+                canvas.drawRoundRect(-inset, -inset, size.width + inset, size.height + inset, radius + inset, radius + inset, paint)
+            }
+        }
+        canvas.restore()
+    }
+}
 
 /**
  * Phones keep the call's mute in the conversation header, since Browse holds the account bar.
@@ -1327,14 +1395,22 @@ private val HeaderMutedRed = Color(0xFFFF7182)
 @Composable internal fun HeaderMuteButton(muted: Boolean, monitoring: Boolean, onToggle: () -> Unit) {
     IconButton(onToggle, Modifier.size(48.dp).semantics { if (monitoring) stateDescription = "Stop mic test to change mute" }, enabled = !monitoring) {
         Icon(painterResource(if (muted) R.drawable.lucide_mic_off else R.drawable.lucide_mic), if (muted) "Unmute microphone" else "Mute microphone",
-            Modifier.size(20.dp), tint = if (muted) HeaderMutedRed else TextMuted)
+            Modifier.size(20.dp), tint = if (muted) HeaderRed else TextMuted)
     }
 }
 
-/** A DM, or any conversation without its own voice, still offers the call's mute and Leave on phones, in the same group. */
-@Composable internal fun HeaderVoiceElsewhere(mute: @Composable () -> Unit, onLeave: () -> Unit) {
+/** Phones' header deafen, beside mute during a call; it works like the account bar's. */
+@Composable internal fun HeaderDeafenButton(deafened: Boolean, monitoring: Boolean, onToggle: () -> Unit) {
+    IconButton(onToggle, Modifier.size(48.dp).semantics { if (monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !monitoring) {
+        Icon(painterResource(if (deafened) R.drawable.lucide_volume_x else R.drawable.lucide_headphones), if (deafened) "Undeafen audio" else "Deafen audio",
+            Modifier.size(20.dp), tint = if (deafened) HeaderRed else TextMuted)
+    }
+}
+
+/** A DM, or any conversation without its own voice, still offers the call's mute, deafen and Leave on phones, in the same group. */
+@Composable internal fun HeaderVoiceElsewhere(audioControls: @Composable () -> Unit, onLeave: () -> Unit) {
     PhoneVoiceGroup {
-        mute()
+        audioControls()
         HeaderLeaveIcon(onLeave)
     }
 }
@@ -1632,9 +1708,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val subtitle = headerSubtitle(memberCount, voicePeople.size)
         val title = if (channel.direct) channel.name else "# ${channel.name}"
         val inCall = voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING
-        // Phones keep the call's mute in the header, since Browse holds the account bar.
-        val headerMute: (@Composable () -> Unit)? = if (narrow && inCall) {
-            { HeaderMuteButton(voice.muted, voice.monitoring) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) } }
+        // Phones keep the call's mute and deafen in the header, since Browse holds the account bar.
+        val headerAudio: (@Composable () -> Unit)? = if (narrow && inCall) {
+            {
+                HeaderMuteButton(voice.muted, voice.monitoring) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }
+                HeaderDeafenButton(voice.deafened, voice.monitoring) { CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }
+            }
         } else null
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val headerWidth = maxWidth
@@ -1677,11 +1756,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         compact = narrow,
                         onJoin = { joinVoice(channel) }, onPrepare = { viewModel.prepareVoiceJoin(channel) }, onLeave = leaveVoice,
                         speaking = if (activeHere) voice.speakingParticipants else emptySet(),
-                        mute = headerMute,
+                        audioControls = headerAudio,
                     )
                     // A thin rule separates voice from the channel's Pins and Members.
                     if (!narrow) Box(Modifier.width(1.dp).height(28.dp).background(Border))
-                } else if (headerMute != null) HeaderVoiceElsewhere(headerMute, leaveVoice)
+                } else if (headerAudio != null) HeaderVoiceElsewhere(headerAudio, leaveVoice)
                 if (!narrow) IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
                     Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
                 }

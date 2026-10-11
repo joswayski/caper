@@ -281,8 +281,8 @@ Check these states on every native release, not only a wide populated screenshot
 - Join voice, Switch here and Leave follow the channel name in the conversation
   header, after the faces of who is in voice and before a divider, Pins and
   Members; the count and extra faces yield before the action clips. Phones open
-  Pins and Members from the channel name, keep voice as icons (headphones; mute
-  and Leave while in voice) in one bordered group, and show only the
+  Pins and Members from the channel name, keep voice as icons (headphones; mute,
+  deafen and a red Leave while in voice) in one bordered group, and show only the
   conversation below the header. Empty channel rows are one line; occupied rows
   add `N in voice`.
   On Mac and Rust desktop, hovering a row reveals its join shortcut without

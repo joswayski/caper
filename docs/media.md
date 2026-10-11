@@ -135,8 +135,10 @@ to three faces of who is in its voice with a count, then Join voice, Switch here
 a thin divider separates it from Pins and Members. Phones show only the
 conversation below a Slack-style header: the channel name (with "N members · M
 in voice" beneath it) opens the channel's menu of Pins and Members, and one
-bordered group holds icon-only voice buttons (headphones to join or switch; mute
-and Leave while in voice; mute and Leave in a DM). Phones show no faces in the
+bordered group holds icon-only voice buttons (headphones to join or switch;
+mute, deafen and a red disconnect while in voice, also in a DM). While others
+are in a channel's voice and you are not, its Join glows softly (static with
+reduced motion); Leave is red in every header. Phones show no faces in the
 header: the subtitle already says how many are in voice, and Browse lists them.
 Voice errors appear above the composer, and channels, rosters, the account bar
 and the voice dock stay in Browse.
@@ -4532,7 +4534,7 @@ shortcut, header Join/Switch/Leave, pending and failed-join checks, then stops a
 an existing "Disabled controls must not advertise a click" assertion that also
 fails on the previous `main`; other modes of that script and
 `test-home-demo.mjs` likewise fail on `main` before reaching voice changes. Rust
-desktop: fmt, clippy and 409 unit tests pass (headless egui renders). Android and
+desktop: fmt, clippy and 410 unit tests pass (headless egui renders). Android and
 Apple changes were not compiled or run here (no Android SDK or Xcode); run
 `./gradlew :app:testDebugUnitTest :app:connectedDebugAndroidTest`, `smoke.py`
 and the Apple parity UI tests before release. No live SFU, physical-device or

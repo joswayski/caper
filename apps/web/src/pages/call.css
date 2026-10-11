@@ -1706,14 +1706,45 @@
   min-height: 34px;
   padding: 0 12px;
 }
+/* Disconnect reads as such: red at rest, stronger on hover or focus. */
 .header-voice .voice-leave {
   width: auto;
   min-height: 34px;
   gap: 6px;
   padding: 0 12px;
+  border: 1px solid rgb(212 67 85 / 0.45);
   border-radius: 8px;
+  color: #ff7182;
+  background: rgb(212 67 85 / 0.14);
   font-size: 0.78rem;
   font-weight: 700;
+}
+.header-voice .voice-leave:focus-visible {
+  background: rgb(212 67 85 / 0.26);
+}
+@media (hover: hover) {
+  .header-voice .voice-leave:hover {
+    background: rgb(212 67 85 / 0.26);
+  }
+}
+/* People are talking here: Join glows softly until you are in. */
+.header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+  animation: voice-join-glow 2.4s ease-in-out infinite;
+}
+@keyframes voice-join-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(219 104 73 / 0);
+  }
+  50% {
+    box-shadow: 0 0 14px 2px rgb(219 104 73 / 0.45);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+    animation: none;
+    box-shadow: 0 0 10px 1px rgb(219 104 73 / 0.35);
+  }
 }
 /* Phones: one bordered group of icons beside the name, as in Slack. Who is in
    voice is the subtitle under the name ("2 in voice"), so no faces here; the
@@ -1735,7 +1766,7 @@
     display: none;
   }
   .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) {
-    width: 44px;
+    width: 42px;
     min-height: 44px;
     height: 44px;
     display: grid;
@@ -1744,6 +1775,13 @@
     border: 0;
     border-radius: 6px;
     background: transparent;
+  }
+  .chat-heading .header-voice .voice-leave {
+    color: #ff7182;
+    background: rgb(212 67 85 / 0.18);
+  }
+  .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+    background: rgb(182 77 50 / 0.16);
   }
   .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) svg {
     width: 20px;

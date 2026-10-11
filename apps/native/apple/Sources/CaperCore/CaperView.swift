@@ -1455,13 +1455,18 @@ private struct HeaderVoice: View {
                 // labels stay as accessible names. No faces: a lone face was unclear, and
                 // the title's subtitle already counts who is in voice.
                 HStack(spacing: 2) {
-                    if inVoiceCall(model.voice) { HeaderMuteButton(voice: model.voice) }
-                    if action.leaves { HeaderLeaveButton(model: model, compact: true) } else { join(action, compact: true) }
+                    if inVoiceCall(model.voice) {
+                        HeaderMuteButton(voice: model.voice)
+                        HeaderDeafenButton(voice: model.voice)
+                    }
+                    if action.leaves { HeaderLeaveButton(model: model, compact: true) }
+                    else { join(action, compact: true, occupied: !people.isEmpty) }
                 }.modifier(CompactVoiceGroup())
             } else {
                 HStack(spacing: 10) {
                     if !people.isEmpty { occupants(people, speaking: action.active) }
-                    if action.leaves { HeaderLeaveButton(model: model, compact: false) } else { join(action, compact: false) }
+                    if action.leaves { HeaderLeaveButton(model: model, compact: false) }
+                    else { join(action, compact: false, occupied: !people.isEmpty) }
                 }
             }
         }
@@ -1482,7 +1487,9 @@ private struct HeaderVoice: View {
     }
 
     /// Join voice, Switch here or Joining…: labelled on wider layouts, an icon on phones.
-    @ViewBuilder private func join(_ action: ChannelVoiceAction, compact: Bool) -> some View {
+    /// While people are talking here and you are not in this channel's call, it glows.
+    @ViewBuilder private func join(_ action: ChannelVoiceAction, compact: Bool, occupied: Bool) -> some View {
+        let glows = occupied && action.enabled && !action.active
         let button = Button { Task { await model.joinVoice(channel: channel) } } label: {
             if compact {
                 CaperIcon(name: "headphones", size: 20)
@@ -1495,11 +1502,13 @@ private struct HeaderVoice: View {
         }
         Group {
             if compact {
-                button.buttonStyle(HeaderVoiceIconButton(tint: CaperTheme.terracottaBright))
+                button.buttonStyle(HeaderVoiceIconButton(tint: CaperTheme.terracottaBright,
+                                                         fill: glows ? CaperTheme.terracotta.opacity(0.16) : .clear))
             } else {
                 button.buttonStyle(HeaderVoiceButton(primary: true)).fixedSize()
             }
         }
+        .modifier(VoiceJoinGlow(active: glows))
         .disabled(!action.enabled)
         .help(action.help)
         .accessibilityLabel(action.description(header: true))
@@ -1532,14 +1541,39 @@ private struct CompactVoiceGroup: ViewModifier {
     }
 }
 
+/// Web's #ff7182: a muted microphone, deafened audio and the header's disconnect.
+private let headerVoiceAlert = Color(red: 1, green: 113/255, blue: 130/255)
+/// Web's rgb(212 67 85): the tint behind the header's disconnect.
+private let headerVoiceDanger = Color(red: 212/255, green: 67/255, blue: 85/255)
+
+/// Web's voice-join-glow: a soft terracotta glow pulsing on a 2.4s cycle while
+/// people are in voice here and you are not; Reduce Motion keeps it still.
+private struct VoiceJoinGlow: ViewModifier {
+    let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lit = false
+    func body(content: Content) -> some View {
+        let opacity: Double = !active ? 0 : reduceMotion ? 0.35 : lit ? 0.45 : 0
+        content
+            .shadow(color: CaperTheme.terracottaBright.opacity(opacity), radius: reduceMotion ? 5 : 7)
+            .task(id: active && !reduceMotion) {
+                lit = false
+                guard active && !reduceMotion else { return }
+                // 1.2s each way: one 2.4s breath, as on web.
+                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { lit = true }
+            }
+    }
+}
+
 /// An icon-only 44-point control in a phone header's voice group.
 private struct HeaderVoiceIconButton: ButtonStyle {
     var tint: Color = CaperTheme.muted
+    var fill: Color = .clear
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(tint)
             .frame(width: 44, height: 44)
-            .background(configuration.isPressed ? CaperTheme.raised : Color.clear)
+            .background(configuration.isPressed ? CaperTheme.raised : fill)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
@@ -1555,11 +1589,27 @@ private struct HeaderMuteButton: View {
             CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
         }
         // Web's phone header tints a muted microphone red (#ff7182).
-        .buttonStyle(HeaderVoiceIconButton(tint: voice.muted ? Color(red: 1, green: 113/255, blue: 130/255) : CaperTheme.muted))
+        .buttonStyle(HeaderVoiceIconButton(tint: voice.muted ? headerVoiceAlert : CaperTheme.muted))
         .help(voice.muted ? "Unmute" : "Mute")
         .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
         .accessibilityValue(voice.muted ? "Muted" : "On")
         .accessibilityIdentifier("header-mute")
+    }
+}
+
+/// The call's deafen toggle beside the header's microphone on phones: the same
+/// action as the account bar's.
+private struct HeaderDeafenButton: View {
+    @Bindable var voice: VoiceClient
+    var body: some View {
+        Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
+            CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
+        }
+        .buttonStyle(HeaderVoiceIconButton(tint: voice.deafened ? headerVoiceAlert : CaperTheme.muted))
+        .help(voice.deafened ? "Undeafen" : "Deafen")
+        .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
+        .accessibilityValue(voice.deafened ? "Deafened" : "On")
+        .accessibilityIdentifier("header-deafen")
     }
 }
 
@@ -1584,8 +1634,9 @@ private struct HeaderLeaveButton: View {
             }
         }
         Group {
-            if compact { button.buttonStyle(HeaderVoiceIconButton()) }
-            else { button.buttonStyle(HeaderVoiceButton(primary: false)).fixedSize() }
+            // Disconnect is red everywhere in the header, as on web.
+            if compact { button.buttonStyle(HeaderVoiceIconButton(tint: headerVoiceAlert, fill: headerVoiceDanger.opacity(0.18))) }
+            else { button.buttonStyle(HeaderLeaveButtonStyle()).fixedSize() }
         }
         .help(connected ? "Disconnect" : "Cancel joining voice")
         .accessibilityLabel(connected ? "Leave voice" : "Cancel joining voice")
@@ -1593,7 +1644,26 @@ private struct HeaderLeaveButton: View {
     }
 }
 
-/// The header's voice action: terracotta-tinted Join or Switch here, neutral Leave.
+/// The wider header's labelled disconnect: #ff7182 on a red tint with a red-tinted border.
+private struct HeaderLeaveButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(CaperTheme.font(12, weight: .bold))
+            .foregroundStyle(headerVoiceAlert)
+            .padding(.horizontal, 10)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #else
+            .frame(minHeight: 30)
+            #endif
+            .background(headerVoiceDanger.opacity(configuration.isPressed ? 0.26 : 0.14))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(headerVoiceDanger.opacity(0.45)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .modifier(ControlHover())
+    }
+}
+
+/// The header's voice action: terracotta-tinted Join or Switch here.
 private struct HeaderVoiceButton: ButtonStyle {
     let primary: Bool
     @Environment(\.isEnabled) private var enabled
@@ -2550,9 +2620,10 @@ private struct ChatView: View {
                             .padding(.horizontal, 2).accessibilityHidden(true)
                     }
                 } else if narrow && inVoiceCall(voice) {
-                    // A DM or preview has no voice of its own; phones still offer the call's mute and Leave.
+                    // A DM or preview has no voice of its own; phones still offer the call's mute, deafen and Leave.
                     HStack(spacing: 2) {
                         HeaderMuteButton(voice: voice)
+                        HeaderDeafenButton(voice: voice)
                         HeaderLeaveButton(model: model, compact: true)
                     }.modifier(CompactVoiceGroup())
                 }
