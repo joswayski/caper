@@ -1411,7 +1411,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val usage = try { api.assetUsage(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
             if (request != accountGeneration) return@launch
             usage?.let { compression = it.compression }
-            mutable.value = mutable.value.copy(uploadsEnabled = usage != null)
+            mutable.value = mutable.value.copy(uploadsEnabled = usage != null, uploadsChecked = true)
         }
     }
 

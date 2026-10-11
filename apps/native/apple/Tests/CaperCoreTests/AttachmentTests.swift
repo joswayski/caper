@@ -1440,6 +1440,7 @@ final class AttachmentTests: XCTestCase {
         let chat = ChatModel(api: client())
         await chat.open(channelID: channelID, displayName: "Me")
         XCTAssertFalse(chat.canAttach, "hidden until usage succeeds")
+        XCTAssertEqual(chat.attachUnavailableReason, "Checking file uploads…")
         await chat.checkUploadAvailability()
         XCTAssertTrue(chat.canAttach)
         XCTAssertEqual(chat.attachmentCompression.imageQuality, 90, "the server's settings are applied")

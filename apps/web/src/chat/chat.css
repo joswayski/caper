@@ -2645,8 +2645,8 @@ a.chat-file:hover {
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
-  background: rgb(232 189 113 / 7%);
-  color: #e8bd71;
+  background: var(--pin-wash);
+  color: var(--pin-gold);
   font-size: 0.75rem;
   line-height: 1.5;
 }

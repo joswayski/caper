@@ -2021,13 +2021,18 @@ private struct TimelinePin: Equatable {
     var contentHeight: CGFloat
     var atBottom: Bool
     var firstID: String?
+    /// The last rows, whose reactions, edits and files grow the end in place.
+    var recent: [TimelineEntry]
+    /// More than a screen of short messages.
+    static let recentRows = 20
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
-    init(_ geometry: GeometryProxy, viewport: String, firstID: String?) {
+    init(_ geometry: GeometryProxy, viewport: String, firstID: String?, recent: [TimelineEntry]) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
         contentHeight = geometry.size.height
         atBottom = visible.maxY >= geometry.size.height - 24
         self.firstID = firstID
+        self.recent = recent
     }
 }
 
@@ -2037,11 +2042,13 @@ private final class TimelinePinBox {
     private var last: TimelinePin?
     /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
     /// A changed first row means history was prepended/replaced, not tail growth.
+    /// Growth that leaves the end without any recent row changing is LazyVStack
+    /// measuring rows as the reader starts scrolling up; that must not snap back.
     func needsReveal(to pin: TimelinePin) -> Bool {
         defer { last = pin }
         guard let last else { return false }
         return last.atBottom && last.firstID == pin.firstID &&
-            (pin.height < last.height || pin.contentHeight > last.contentHeight)
+            (pin.height < last.height || (pin.contentHeight > last.contentHeight && (pin.atBottom || pin.recent != last.recent)))
     }
 }
 
@@ -2317,6 +2324,7 @@ private struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     let entries = timelineEntries
+                    let recentRows = Array(entries.suffix(TimelinePin.recentRows))
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
                     let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
@@ -2396,7 +2404,7 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                     // Reactions grow existing rows; a draft or keyboard shrinks
                     // the viewport. Both retain a reader already at the bottom.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
@@ -2777,11 +2785,14 @@ private struct NativeThreadView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
+                    let replyRows = entries(replies)
+                    let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
+                    // The root's reactions grow the thread as well as its replies'.
+                    let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
                     LazyVStack(spacing: 0) {
-                        let replyRows = entries(replies)
                         let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
                         let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
-                        if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
+                        if let root {
                             threadEntries(entries([root]))
                             if let summary = root.thread, summary.replyCount > 0 {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
@@ -2815,7 +2826,7 @@ private struct NativeThreadView: View {
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }

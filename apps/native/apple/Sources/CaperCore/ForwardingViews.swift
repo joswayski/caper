@@ -167,10 +167,10 @@ struct ForwardConversationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Heads up! New reactions and replies appear here automatically.")
-                        .font(CaperTheme.font(12)).foregroundStyle(Color(red: 232 / 255, green: 189 / 255, blue: 113 / 255))
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.pinGold)
                         .padding(.horizontal, 10).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(red: 232 / 255, green: 189 / 255, blue: 113 / 255).opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+                        .background(CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     if let root {
                         SharedOriginalView(message: root)
                         let count = conversation?.root?.thread?.replyCount ?? conversation?.messages.count ?? 0

@@ -188,7 +188,13 @@ export default function Composer({
               type="button"
               className="chat-attach"
               aria-label="Attach files"
-              title={canAttach ? "Attach files" : (attachments.disabledReason ?? "File uploads are not ready yet")}
+              title={
+                !canAttach
+                  ? (attachments.disabledReason ?? "Checking file uploads…")
+                  : attachments.drafts.length >= MAX_ATTACHMENTS
+                    ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                    : "Attach files"
+              }
               disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
             >
