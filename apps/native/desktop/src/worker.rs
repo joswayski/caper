@@ -61,6 +61,18 @@ pub enum Command {
         id: String,
         seq: String,
     },
+    LoadUnread {
+        epoch: u64,
+        revision: u64,
+        token: String,
+    },
+    ReadChannel {
+        epoch: u64,
+        token: String,
+        space: String,
+        channel: String,
+        seq: String,
+    },
     Restore {
         generation: u64,
     },
@@ -276,6 +288,12 @@ pub enum AccountOperation {
         blocked: bool,
         request: Option<String>,
     },
+    InviteToSpace {
+        space: Space,
+        username: String,
+        user: String,
+        request: u64,
+    },
     Accept(String),
     Decline(String),
     LoadPrivacy,
@@ -301,6 +319,12 @@ pub enum AccountResult {
         blocked: bool,
         request: Option<String>,
         result: Result<(), String>,
+    },
+    Invitation {
+        space: Space,
+        user: String,
+        request: u64,
+        result: Result<Member, String>,
     },
     Accepted {
         id: String,
@@ -453,6 +477,18 @@ pub enum Event {
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
+    },
+    UnreadLoaded {
+        epoch: u64,
+        revision: u64,
+        result: Result<Vec<crate::model::UnreadSpace>, String>,
+    },
+    ChannelRead {
+        epoch: u64,
+        space: String,
+        channel: String,
+        seq: String,
+        result: Result<(), String>,
     },
     MembershipRefreshed {
         epoch: u64,
@@ -1217,6 +1253,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             let _ = api.read_direct(&token, &id, &seq);
             return;
         }
+        Command::LoadUnread {
+            epoch,
+            revision,
+            token,
+        } => Event::UnreadLoaded {
+            epoch,
+            revision,
+            result: api
+                .unread_spaces(&token)
+                .map(|value| value.spaces)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReadChannel {
+            epoch,
+            token,
+            space,
+            channel,
+            seq,
+        } => Event::ChannelRead {
+            epoch,
+            result: api
+                .read_channel(&token, &space, &channel, &seq)
+                .map_err(|error| error.to_string()),
+            space,
+            channel,
+            seq,
+        },
         Command::PrepareVoice { token, channel } => {
             api.prepare_voice(&token, &channel);
             return;
@@ -1643,6 +1706,19 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
             result: api.set_block(token, &account.id, blocked).map_err(text),
             account,
             blocked,
+            request,
+        },
+        AccountOperation::InviteToSpace {
+            space,
+            username,
+            user,
+            request,
+        } => AccountResult::Invitation {
+            result: api
+                .add_member(token, &space.id, None, &username)
+                .map_err(text),
+            space,
+            user,
             request,
         },
         AccountOperation::Accept(id) => AccountResult::Accepted {

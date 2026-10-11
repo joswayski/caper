@@ -1145,6 +1145,8 @@
   display: grid;
   gap: 12px;
   width: min(280px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1208,6 +1210,56 @@
 .chat-mention-card-message:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+.chat-mention-card-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-mention-card-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.chat-mention-card-action:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .chat-mention-card-action:hover:not(:disabled) {
+    background: var(--surface-raised);
+  }
+}
+.chat-profile-block {
+  color: var(--terracotta-bright);
+}
+.chat-profile-spaces {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  margin: 0;
+  padding: 2px;
+  overflow-y: auto;
+  list-style: none;
+}
+.chat-profile-spaces small,
+.chat-profile-status {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.chat-profile-status {
+  margin: 0;
 }
 /* Primary buttons. Hover-capable pointers only: the thread's Send stays on
    screen after a tap and would keep the brighter fill. */
@@ -1565,6 +1617,14 @@ a.chat-draft-preview:focus-visible strong {
 .chat-drafts small {
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
+}
+.chat-drafts .chat-draft-source-size {
+  display: inline;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-drafts .chat-draft-source-size {
+    display: none;
+  }
 }
 .chat-drafts li[data-error] small {
   color: #ff9b82;

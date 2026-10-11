@@ -30,7 +30,7 @@ import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
-import type { ChatMessage } from "../chat/types";
+import type { ChatAuthor, ChatMessage } from "../chat/types";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
@@ -67,6 +67,8 @@ import {
   listDirectConversations,
   listPeople,
   readDirectConversation,
+  listUnreadSpaces,
+  readChannel,
   directStatus,
   directUnread,
   deleteChannel,
@@ -95,6 +97,7 @@ import {
   type Space,
   type SpaceDetail,
   type SpaceLimits,
+  type UnreadSpace,
 } from "./client";
 import { friendlyError } from "./errors";
 import "./spaces.css";
@@ -1580,6 +1583,40 @@ export default function Spaces({
   const [account, setAccount] = useState<Account | undefined>(initialAccount);
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
+  const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
+  const unreadRevision = useRef(0);
+  const channelReads = useRef(new Map<string, string>());
+  const unreadAccount = useRef(account?.id);
+  unreadAccount.current = account?.id;
+  const refreshUnread = useCallback(async () => {
+    const accountId = account?.id;
+    if (!accountId) return;
+    const revision = ++unreadRevision.current;
+    try {
+      const result = await listUnreadSpaces();
+      if (unreadAccount.current === accountId && unreadRevision.current === revision) setUnreadSpaces(result.spaces);
+    } catch {
+      /* Keep the last known indicators during an outage. */
+    }
+  }, [account?.id]);
+  useEffect(() => {
+    unreadRevision.current++;
+    channelReads.current.clear();
+    setUnreadSpaces([]);
+    const refresh = () => {
+      if (!document.hidden) void refreshUnread();
+    };
+    refresh();
+    const timer = setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      unreadRevision.current++;
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refreshUnread]);
   // From the rail an invitation opens over the room instead of navigating away,
   // which would unmount the room and end a call in progress.
   const [railInvitation, setRailInvitation] = useState<Space>();
@@ -1669,8 +1706,9 @@ export default function Spaces({
   const notificationConversation = useRef<string | undefined>(undefined);
   notificationConversation.current = engaged && !navigationOpen ? (directId ?? view?.channelId) : undefined;
   useEffect(() => {
-    if (account?.id) return watchBrowserNotifications(account.id, () => notificationConversation.current);
-  }, [account?.id]);
+    if (account?.id)
+      return watchBrowserNotifications(account.id, () => notificationConversation.current, refreshUnread);
+  }, [account?.id, refreshUnread]);
   const changeNavigation = useCallback((open: boolean) => {
     navigationTarget.current = open;
     showNavigation(open);
@@ -1868,6 +1906,36 @@ export default function Spaces({
           ),
         ),
       )
+      .catch(() => undefined);
+  };
+
+  const readSpaceChannel = (seq: string) => {
+    const spaceId = view?.detail.space.id;
+    const channelId = view?.channelId;
+    const accountId = account?.id;
+    if (!accountId || !spaceId || !channelId || BigInt(channelReads.current.get(channelId) ?? "0") >= BigInt(seq))
+      return;
+    void readChannel(spaceId, channelId, seq)
+      .then(() => {
+        if (unreadAccount.current !== accountId) return;
+        unreadRevision.current++;
+        const previous = channelReads.current.get(channelId) ?? "0";
+        channelReads.current.set(channelId, BigInt(previous) > BigInt(seq) ? previous : seq);
+        setUnreadSpaces((current) =>
+          current
+            .map((space) =>
+              space.id !== spaceId
+                ? space
+                : {
+                    ...space,
+                    channels: space.channels.filter(
+                      (item) => item.id !== channelId || BigInt(item.lastSeq) > BigInt(seq),
+                    ),
+                  },
+            )
+            .filter((space) => space.channels.length),
+        );
+      })
       .catch(() => undefined);
   };
 
@@ -2559,6 +2627,8 @@ export default function Spaces({
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
+        const unread = unreadSpaces.some((item) => item.id === space.id);
+        const label = [space.name, unread && "unread activity", muted && "muted"].filter(Boolean).join(", ");
         return (
           <div
             className="space-rail-item"
@@ -2568,8 +2638,8 @@ export default function Spaces({
           >
             <button
               type="button"
-              title={muted ? `${space.name} (muted)` : space.name}
-              aria-label={muted ? `${space.name}, muted` : space.name}
+              title={label}
+              aria-label={label}
               aria-current={space.id === detail.space.id ? "page" : undefined}
               aria-busy={pending && space.id === selected.spaceId}
               onMouseEnter={() => prefetch(space.id)}
@@ -2577,6 +2647,7 @@ export default function Spaces({
               onClick={() => choose(space.id)}
             >
               <span>{initial(space.name)}</span>
+              {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
             </button>
           </div>
@@ -2812,6 +2883,12 @@ export default function Spaces({
                 >
                   {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
                   <span>{item.name}</span>
+                  {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
+                    <>
+                      <i className="channel-unread" aria-hidden="true" />
+                      <span className="sr-only">, unread activity</span>
+                    </>
+                  )}
                   {itemMuted && (
                     <>
                       <BellOff className="muted-icon" aria-hidden="true" />
@@ -2977,6 +3054,14 @@ export default function Spaces({
     setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     openDirect(conversation);
   };
+  const blockAuthor = (author: ChatAuthor) =>
+    setBlockTarget({
+      id: author.id,
+      username: "",
+      displayName: author.name,
+      avatarId: author.avatarId ?? undefined,
+    });
+  const profileSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
 
   return (
     <>
@@ -3034,14 +3119,7 @@ export default function Spaces({
             </p>
           ) : undefined
         }
-        onBlockAuthor={(author) =>
-          setBlockTarget({
-            id: author.id,
-            username: "",
-            displayName: author.name,
-            avatarId: author.avatarId ?? undefined,
-          })
-        }
+        onBlockAuthor={blockAuthor}
         initialAccount={account}
         initialHistory={
           directView
@@ -3057,7 +3135,7 @@ export default function Spaces({
               ? view.historyError
               : undefined
         }
-        onReadCursor={directView ? readDirect : undefined}
+        onReadCursor={directView ? readDirect : readSpaceChannel}
         mentionMembers={
           directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
         }
@@ -3067,6 +3145,7 @@ export default function Spaces({
           ...directs.map((conversation) => conversation.peer),
         ]}
         onMessagePerson={messagePerson}
+        profileSpaces={profileSpaces}
         onOpenForward={async (message) => {
           const revision = navigationRevision.current;
           const { source } = await forwardedConversation(message, AbortSignal.timeout(10_000));
@@ -3095,6 +3174,8 @@ export default function Spaces({
                   demo={detail.space.demo}
                   accountId={account?.id}
                   onMessagePerson={messagePerson}
+                  onBlockAuthor={blockAuthor}
+                  profileSpaces={profileSpaces}
                   onClose={onClose}
                 />
               )

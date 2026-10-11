@@ -273,6 +273,11 @@ struct MentionCard {
     focus_on_open: bool,
     /// The `CreateDirect` navigation while **Message** is opening a DM.
     opening: Option<u64>,
+    choosing_space: bool,
+    /// A membership revision and destination, independent of chat navigation.
+    inviting: Option<(u64, String)>,
+    invited: BTreeSet<String>,
+    status: Option<String>,
     error: Option<String>,
     /// Opened this pass: the click that opened it is not "outside".
     fresh: bool,
@@ -490,6 +495,9 @@ struct CaperApp {
     account: Option<Account>,
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
+    unread_spaces: Vec<model::UnreadSpace>,
+    unread_revision: u64,
+    channel_reads: BTreeMap<String, String>,
     /// `GET /api/people` for DM `@` suggestions; kept while it refreshes.
     people: Option<Vec<model::Person>>,
     /// Bumps on sign-in and sign-out; fences request, block, privacy and
@@ -712,6 +720,9 @@ impl CaperApp {
             account: None,
             spaces: Vec::new(),
             directs: Vec::new(),
+            unread_spaces: Vec::new(),
+            unread_revision: 0,
+            channel_reads: BTreeMap::new(),
             people: None,
             account_epoch: 0,
             blocks: None,
@@ -1184,7 +1195,7 @@ impl CaperApp {
                         app.selected_direct = None;
                         app.clear_channel_state();
                     }
-                } else if name == "parity-muted" {
+                } else if matches!(name, "parity-muted" | "parity-unread") {
                     // Labelled mutes: a muted space in the rail, a muted
                     // channel, a muted DM with unread messages (no dot) and
                     // a DM with notifications off (still dotted).
@@ -1227,6 +1238,13 @@ impl CaperApp {
                         }))
                         .expect("valid notification fixture"),
                     );
+                    if name == "parity-unread" {
+                        app.unread_spaces = serde_json::from_value(serde_json::json!([
+                            {"id": "space0000001", "channels": [{"id": "chan00000002", "lastSeq": "4"}]},
+                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "6"}]}
+                        ]))
+                        .expect("valid unread fixture");
+                    }
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
                         id: "invite000001".into(),
@@ -1982,6 +2000,41 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
+                Event::UnreadLoaded {
+                    epoch,
+                    revision,
+                    result: Ok(spaces),
+                } if epoch == self.account_epoch && revision == self.unread_revision => {
+                    self.unread_spaces = spaces;
+                    self.mark_selected_channel_read();
+                }
+                Event::ChannelRead {
+                    epoch,
+                    space,
+                    channel,
+                    seq,
+                    result: Ok(()),
+                } if epoch == self.account_epoch => {
+                    self.unread_revision += 1;
+                    let read = self
+                        .channel_reads
+                        .entry(channel.clone())
+                        .or_insert_with(|| "0".into());
+                    if model::sequence(&seq).unwrap_or(0) > model::sequence(read).unwrap_or(0) {
+                        *read = seq.clone();
+                    }
+                    for entry in &mut self.unread_spaces {
+                        if entry.id == space {
+                            entry.channels.retain(|item| {
+                                item.id != channel
+                                    || model::sequence(&item.last_seq).unwrap_or(0)
+                                        > model::sequence(&seq).unwrap_or(0)
+                            });
+                        }
+                    }
+                    self.unread_spaces
+                        .retain(|entry| !entry.channels.is_empty());
+                }
                 // A failed refresh keeps the previous list (or the peer fallback).
                 Event::PeopleLoaded {
                     generation,
@@ -2573,10 +2626,22 @@ impl CaperApp {
     }
 
     fn refresh_directs(&mut self) {
+        self.refresh_unread();
         if let Some(token) = self.token.clone() {
             self.directs_refreshed = Instant::now();
             self.worker.send(Command::LoadDirects {
                 generation: self.generation,
+                token,
+            });
+        }
+    }
+
+    fn refresh_unread(&mut self) {
+        if let Some(token) = self.token.clone() {
+            self.unread_revision += 1;
+            self.worker.send(Command::LoadUnread {
+                epoch: self.account_epoch,
+                revision: self.unread_revision,
                 token,
             });
         }
@@ -2598,6 +2663,9 @@ impl CaperApp {
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
+        self.unread_spaces.clear();
+        self.channel_reads.clear();
+        self.unread_revision += 1;
         self.membership_refreshing = false;
         self.space_notice = None;
         self.blocks = None;
@@ -2759,6 +2827,13 @@ impl CaperApp {
                 self.block_busy = false;
                 self.request_busy = false;
                 if let Err(error) = result {
+                    if let Some(card) = self
+                        .mention_card
+                        .as_mut()
+                        .filter(|card| card.pill.entry.id.as_deref() == Some(&account.id))
+                    {
+                        card.error = Some(error.clone());
+                    }
                     self.block_error = Some(error);
                     return;
                 }
@@ -2791,6 +2866,34 @@ impl CaperApp {
                         .collect();
                     for id in requests {
                         self.leave_request(&id);
+                    }
+                }
+            }
+            AccountResult::Invitation {
+                space,
+                user,
+                request,
+                result,
+            } => {
+                self.membership_revision += 1;
+                if let Ok(member) = &result
+                    && self.selected_space.as_deref() == Some(space.id.as_str())
+                    && self.managed_channel.is_none()
+                {
+                    self.managed_invitations.retain(|item| item.id != member.id);
+                    self.managed_invitations.push(member.clone());
+                }
+                if let Some(card) = self.mention_card.as_mut().filter(|card| {
+                    card.pill.entry.id.as_deref() == Some(user.as_str())
+                        && card.inviting.as_ref() == Some(&(request, space.id.clone()))
+                }) {
+                    card.inviting = None;
+                    match result {
+                        Ok(_) => {
+                            card.invited.insert(space.id);
+                            card.status = Some(format!("Invitation sent to {}.", space.name));
+                        }
+                        Err(error) => card.error = Some(error),
                     }
                 }
             }
@@ -3258,6 +3361,7 @@ impl CaperApp {
     }
 
     fn mark_selected_direct_read(&mut self) {
+        self.mark_selected_channel_read();
         if !self.foreground || self.selected_channel != self.selected_direct {
             return;
         }
@@ -3276,6 +3380,40 @@ impl CaperApp {
                 direct.read_seq = seq.clone();
             }
             self.worker.send(Command::ReadDirect { token, id, seq });
+        }
+    }
+
+    fn mark_selected_channel_read(&mut self) {
+        if !self.foreground
+            || self.navigation_open
+            || self.loading
+            || self.has_newer
+            || self.selected_direct.is_some()
+        {
+            return;
+        }
+        if let (Some(space), Some(channel), Some(token)) = (
+            self.selected_space.clone(),
+            self.selected_channel.clone(),
+            self.token.clone(),
+        ) {
+            let seq = self.timeline.cursor();
+            if model::sequence(&seq).unwrap_or(0)
+                <= self
+                    .channel_reads
+                    .get(&channel)
+                    .and_then(|value| model::sequence(value).ok())
+                    .unwrap_or(0)
+            {
+                return;
+            }
+            self.worker.send(Command::ReadChannel {
+                epoch: self.account_epoch,
+                token,
+                space,
+                channel,
+                seq,
+            });
         }
     }
 
@@ -5513,6 +5651,7 @@ impl eframe::App for CaperApp {
         self.receive();
         if self.foreground && !was_foreground {
             self.mark_selected_direct_read();
+            self.refresh_unread();
             self.refresh_membership();
         }
         self.refresh_media_status();
@@ -6511,6 +6650,7 @@ impl CaperApp {
                             .collect();
                         for (id, name, demo) in spaces {
                             let active = self.selected_space.as_deref() == Some(&id);
+                            let unread = self.unread_spaces.iter().any(|space| space.id == id);
                             let muted = (!demo && self.account.is_some())
                                 .then(|| self.muted_label(&Scope::Space(id.clone())))
                                 .flatten();
@@ -6565,10 +6705,29 @@ impl CaperApp {
                                         NavIcon::BellOff,
                                         MUTED,
                                     );
-                                    response.on_hover_text(format!("{name}\n{label}"))
+                                    response.on_hover_text(format!(
+                                        "{name}\n{label}{}",
+                                        if unread { "\nUnread activity" } else { "" }
+                                    ))
                                 }
-                                None => response.on_hover_text(name),
+                                None => response.on_hover_text(if unread {
+                                    format!("{name}\nUnread activity")
+                                } else {
+                                    name.clone()
+                                }),
                             };
+                            if unread {
+                                let center = response.rect.right_top() + egui::vec2(-1.0, 1.0);
+                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
+                                ui.painter().circle_filled(center, 3.0, TEXT);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        format!("{name}, unread activity"),
+                                    )
+                                });
+                            }
                             if active {
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
@@ -7050,6 +7209,7 @@ impl CaperApp {
                                 });
                                 let muted =
                                     scope.as_ref().and_then(|scope| self.muted_label(scope));
+                                let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
                                 // Demo channels have no options.
                                 let mut menu = None;
                                 if let Some(space) = &space {
@@ -7069,6 +7229,7 @@ impl CaperApp {
                                     active,
                                     RowExtras {
                                         muted,
+                                        unread,
                                         duration: duration.as_deref(),
                                         menu,
                                     },
@@ -7299,6 +7460,7 @@ impl CaperApp {
                         active,
                         RowExtras {
                             muted,
+                            unread: false,
                             duration: None,
                             menu: Some(RowMenu {
                                 label: format!(
@@ -10179,6 +10341,10 @@ impl CaperApp {
                 author: None,
                 focus_on_open: true,
                 opening: None,
+                choosing_space: false,
+                inviting: None,
+                invited: BTreeSet::new(),
+                status: None,
                 error: None,
                 fresh: true,
             });
@@ -12034,6 +12200,10 @@ impl CaperApp {
             author: Some(author.clone()),
             focus_on_open,
             opening: None,
+            choosing_space: false,
+            inviting: None,
+            invited: BTreeSet::new(),
+            status: None,
             error: None,
             fresh: true,
         });
@@ -12085,6 +12255,28 @@ impl CaperApp {
                 )
             };
         let mut message = false;
+        let blocked = card
+            .pill
+            .entry
+            .id
+            .as_deref()
+            .is_some_and(|id| self.is_blocked(id));
+        let owned_spaces: Vec<_> = self
+            .spaces
+            .iter()
+            .filter(|space| {
+                !space.demo
+                    && self
+                        .account
+                        .as_ref()
+                        .is_some_and(|account| account.id == space.owner_id)
+            })
+            .cloned()
+            .collect();
+        let busy = card.opening.is_some() || card.inviting.is_some() || self.block_busy;
+        let mut block_action = false;
+        let mut toggle_spaces = false;
+        let mut invitation = None;
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .pivot(pivot)
@@ -12099,57 +12291,124 @@ impl CaperApp {
                     .show(ui, |ui| {
                         // 280px including the padding and the border.
                         ui.set_width(246.0);
+                        // Areas reuse their last size. Let newly opened destinations
+                        // and errors grow before the scroll area clips to that size.
+                        ui.set_max_height(context.content_rect().height() - 64.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        let initial = profile
-                            .display_name
-                            .as_deref()
-                            .or(profile.username.as_deref())
-                            .unwrap_or("Profile");
-                        avatar(ui, initial, profile.avatar_id, 48.0, false);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(bold(profile.title()).size(15.0).color(TEXT));
-                            if profile.display_name.is_some()
-                                && let Some(username) = &profile.username
-                            {
-                                ui.label(
-                                    RichText::new(format!("@{username}"))
-                                        .size(12.0)
-                                        .color(MUTED),
-                                );
-                            }
-                        });
-                        if profile.me {
-                            ui.label(RichText::new("You").size(12.0).color(MUTED));
-                            return;
-                        }
-                        if profile.username.is_none() {
-                            return;
-                        }
-                        let opening = card.opening.is_some();
-                        // Full width with a centered label.
-                        let button = ui
-                            .vertical_centered_justified(|ui| {
-                                ui.add_enabled(
-                                    !opening,
-                                    egui::Button::new(
-                                        bold(if opening { "Opening…" } else { "Message" })
-                                            .size(12.0),
-                                    )
-                                    .fill(TERRACOTTA)
-                                    .stroke(Stroke::new(1.0, TERRACOTTA))
-                                    .corner_radius(7)
-                                    .min_size(egui::vec2(0.0, 36.0)),
-                                )
-                            })
-                            .inner;
-                        if card.fresh && card.focus_on_open {
-                            button.request_focus();
-                        }
-                        message = button.clicked();
-                        if let Some(error) = &card.error {
-                            ui.label(RichText::new(error).size(12.0).color(ERROR));
-                        }
+                        egui::ScrollArea::vertical()
+                            .max_height(context.content_rect().height() - 64.0)
+                            .show(ui, |ui| {
+                                let initial = profile
+                                    .display_name
+                                    .as_deref()
+                                    .or(profile.username.as_deref())
+                                    .unwrap_or("Profile");
+                                avatar(ui, initial, profile.avatar_id, 48.0, false);
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.label(bold(profile.title()).size(15.0).color(TEXT));
+                                    if profile.display_name.is_some()
+                                        && let Some(username) = &profile.username
+                                    {
+                                        ui.label(
+                                            RichText::new(format!("@{username}"))
+                                                .size(12.0)
+                                                .color(MUTED),
+                                        );
+                                    }
+                                });
+                                if profile.me {
+                                    ui.label(RichText::new("You").size(12.0).color(MUTED));
+                                    return;
+                                }
+                                if !blocked && profile.username.is_some() {
+                                    // Full width with a centered label.
+                                    let button = ui
+                                        .vertical_centered_justified(|ui| {
+                                            ui.add_enabled(
+                                                !busy,
+                                                egui::Button::new(
+                                                    bold(if card.opening.is_some() {
+                                                        "Opening…"
+                                                    } else {
+                                                        "Message"
+                                                    })
+                                                    .size(12.0),
+                                                )
+                                                .fill(TERRACOTTA)
+                                                .stroke(Stroke::new(1.0, TERRACOTTA))
+                                                .corner_radius(7)
+                                                .min_size(egui::vec2(0.0, 36.0)),
+                                            )
+                                        })
+                                        .inner;
+                                    if card.fresh && card.focus_on_open {
+                                        button.request_focus();
+                                    }
+                                    message = button.clicked();
+                                    if card.pill.entry.id.is_some() && !owned_spaces.is_empty() {
+                                        toggle_spaces = ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new("Invite to space")
+                                                    .min_size(egui::vec2(246.0, 36.0)),
+                                            )
+                                            .clicked();
+                                        if card.choosing_space {
+                                            for space in &owned_spaces {
+                                                let label = if card
+                                                    .inviting
+                                                    .as_ref()
+                                                    .is_some_and(|(_, id)| id == &space.id)
+                                                {
+                                                    "Sending…".to_owned()
+                                                } else if card.invited.contains(&space.id) {
+                                                    format!("{} · Invited", space.name)
+                                                } else {
+                                                    space.name.clone()
+                                                };
+                                                if ui
+                                                    .add_enabled(
+                                                        !busy && !card.invited.contains(&space.id),
+                                                        egui::Button::new(label)
+                                                            .min_size(egui::vec2(246.0, 36.0)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    invitation = Some(space.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if card.pill.entry.id.is_some() && self.account.is_some() {
+                                    let button = ui.add_enabled(
+                                        !busy,
+                                        egui::Button::new(
+                                            RichText::new(if blocked {
+                                                "Unblock"
+                                            } else {
+                                                "Block"
+                                            })
+                                            .color(ERROR),
+                                        )
+                                        .min_size(egui::vec2(246.0, 36.0)),
+                                    );
+                                    if card.fresh
+                                        && card.focus_on_open
+                                        && (blocked || profile.username.is_none())
+                                    {
+                                        button.request_focus();
+                                    }
+                                    block_action = button.clicked();
+                                }
+                                if let Some(status) = &card.status {
+                                    ui.label(RichText::new(status).size(12.0).color(MUTED));
+                                }
+                                if let Some(error) = &card.error {
+                                    ui.label(RichText::new(error).size(12.0).color(ERROR));
+                                }
+                            });
                     });
             });
         let escape =
@@ -12163,6 +12422,44 @@ impl CaperApp {
         }
         if let Some(open) = &mut self.mention_card {
             open.fresh = false;
+            if toggle_spaces {
+                open.choosing_space = !open.choosing_space;
+            }
+        }
+        if block_action && let Some(user) = &card.pill.entry.id {
+            let account = model::BlockedAccount {
+                id: user.clone(),
+                username: profile.username.clone().unwrap_or_default(),
+                display_name: profile.title(),
+                avatar_id: profile.avatar_id,
+            };
+            if blocked {
+                if let Some(open) = &mut self.mention_card {
+                    open.error = None;
+                }
+                self.unblock(account);
+            } else {
+                self.mention_card = None;
+                self.showing_pins = false;
+                self.confirm_block(account, None);
+            }
+        }
+        if let Some(space) = invitation
+            && let (Some(username), Some(user)) = (&profile.username, &card.pill.entry.id)
+        {
+            self.membership_revision += 1;
+            let request = self.membership_revision;
+            if let Some(open) = &mut self.mention_card {
+                open.inviting = Some((request, space.id.clone()));
+                open.error = None;
+                open.status = None;
+            }
+            self.account_op(AccountOperation::InviteToSpace {
+                space,
+                username: username.clone(),
+                user: user.clone(),
+                request,
+            });
         }
         if message && let Some(username) = &profile.username {
             self.message_from_card(&card.pill.entry, username);
@@ -13961,6 +14258,7 @@ struct RowExtras<'a> {
     /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
     /// "Muted until 5:00 PM".
     muted: Option<String>,
+    unread: bool,
     duration: Option<&'a str>,
     menu: Option<RowMenu<'a>>,
 }
@@ -13995,7 +14293,11 @@ fn channel_button(
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             active,
-            name,
+            if extras.unread {
+                format!("{name}, unread activity")
+            } else {
+                name.to_owned()
+            },
         )
     });
     if active || response.hovered() || response.has_focus() {
@@ -14062,6 +14364,11 @@ fn channel_button(
         width + 9.0
     });
     let mut name_right = timer_right - timer_width;
+    if extras.unread {
+        ui.painter()
+            .circle_filled(egui::pos2(name_right - 6.0, rect.center().y), 3.0, TEXT);
+        name_right -= 16.0;
+    }
     if let Some(label) = &extras.muted {
         let bell = egui::Rect::from_center_size(
             egui::pos2(name_right - 9.0, rect.center().y),
@@ -22090,6 +22397,7 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
         assert!(!shows(&output, "Message"), "no Message for yourself");
+        assert!(!shows(&output, "Block") && !shows(&output, "Invite to space"));
 
         let outside = text_center(&output, "Beginning of conversation");
         click_at(&mut app, &context, outside);
@@ -22104,6 +22412,149 @@ mod tests {
         assert!(
             app.mention_card.is_none(),
             "@everyone stays non-interactive"
+        );
+    }
+
+    #[test]
+    fn profile_invites_target_an_owned_space_without_changing_conversation_or_membership() {
+        let (base, _) = account_server(vec![(
+            "POST /api/spaces/another-space/members",
+            201,
+            r#"{"id":"fixture-alex","username":"alex","displayName":"Alex","owner":false}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.spaces.extend([
+            model::Space {
+                id: "another-space".into(),
+                name: "Another owned space".into(),
+                owner_id: "fixture-owner".into(),
+                inviter: None,
+                demo: false,
+            },
+            model::Space {
+                id: "someone-elses-space".into(),
+                name: "Not owned".into(),
+                owner_id: "fixture-maya".into(),
+                inviter: None,
+                demo: false,
+            },
+            model::Space {
+                id: "demo-space".into(),
+                name: "Owned demo".into(),
+                owner_id: "fixture-owner".into(),
+                inviter: None,
+                demo: true,
+            },
+        ]);
+        let selected_space = app.selected_space.clone();
+        let selected_channel = app.selected_channel.clone();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Invite to space"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        // The rail also contains space names: constrain this assertion to the card.
+        let card = context
+            .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+            .unwrap();
+        let card_labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if card.contains(text.pos) => {
+                    Some(text.galley.job.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            card_labels.contains(&"Another owned space"),
+            "{card_labels:?}"
+        );
+        assert!(!card_labels.contains(&"Not owned") && !card_labels.contains(&"Owned demo"));
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Another owned space"),
+        );
+        receive_until(&mut app, |app| {
+            app.mention_card
+                .as_ref()
+                .is_some_and(|card| card.status.is_some())
+        });
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Invitation sent to Another owned space."));
+        assert!(shows(&output, "Another owned space · Invited"));
+        assert_eq!(app.selected_space, selected_space);
+        assert_eq!(app.selected_channel, selected_channel);
+        assert!(
+            app.managed_invitations.is_empty(),
+            "off-current invitations never pollute the open space"
+        );
+        assert_eq!(
+            app.detail.as_ref().unwrap().members.len(),
+            3,
+            "an invitation is not membership"
+        );
+    }
+
+    #[test]
+    fn profile_block_requires_confirmation_and_unblock_restores_actions() {
+        let (base, _) = account_server(vec![
+            ("PUT /api/blocks/fixture-alex", 204, ""),
+            ("DELETE /api/blocks/fixture-alex", 204, ""),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
+        click_at(&mut app, &context, alex);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, last_text_position(&output, "Block"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Block Alex?"));
+        assert!(!app.is_blocked("fixture-alex"));
+        click_at(&mut app, &context, last_text_position(&output, "Block"));
+        receive_until(&mut app, |app| app.is_blocked("fixture-alex"));
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Unblock"));
+        assert!(!shows(&output, "Message") && !shows(&output, "Invite to space"));
+        click_at(&mut app, &context, last_text_position(&output, "Unblock"));
+        receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            shows(&output, "Message")
+                && shows(&output, "Invite to space")
+                && shows(&output, "Block"),
+            "{:?}",
+            text_shapes(&output)
         );
     }
 

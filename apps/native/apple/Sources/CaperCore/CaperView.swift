@@ -291,7 +291,7 @@ private struct BrowseLayer: ViewModifier {
         let uncovered = drag ?? (showsBrowse ? 1 : 0)
         let reduceMotion = self.reduceMotion
         // Follow the finger while dragged and spring into place otherwise,
-        // keeping a release's own spring (and speed).
+        // keeping a release's own timing.
         content.transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
@@ -349,10 +349,13 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     let travelled = abs(uncovered - (open ? 1 : 0))
                     let commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(value.translation.width) >= 40))
                     let target: CGFloat = commit != open ? 1 : 0
-                    // Carry the finger's speed into the spring, relative to the distance left.
+                    // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
                     let remaining = target - uncovered
-                    let velocity = abs(remaining) > 0.01 ? opening * value.velocity.width / drawer.travel / remaining : 0
-                    withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
+                    let distance = abs(remaining)
+                    let speed = (remaining > 0 ? 1 : -1) * opening * value.velocity.width / drawer.travel
+                    let duration = speed > 0 ? min(0.32, max(0.16, 3 * distance / speed)) : 0.32
+                    let slope = distance > 0 ? min(3, max(0, speed * duration / distance)) : 0
+                    withAnimation(reduceMotion ? nil : .timingCurve(0.2, Double(0.2 * slope), 0.35, 1, duration: Double(duration))) {
                         drawer.drag = nil
                         if commit {
                             // Only Browse marks its switch; the member list animates inside the conversation.
@@ -769,10 +772,10 @@ private struct SpaceRailButton: View {
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
+    private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        guard muted else { return base }
-        return base.isEmpty ? "Muted" : base + ", Muted"
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -785,6 +788,13 @@ private struct SpaceRailButton: View {
                 .clipShape(RoundedRectangle(cornerRadius: corner))
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
+                .overlay(alignment: .topTrailing) {
+                    if unread {
+                        Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                    }
+                }
         }
         .buttonStyle(.plain).help(name)
         .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
@@ -1144,9 +1154,9 @@ private struct ChannelSidebarItem: View {
     private var nameOpacity: Double { muted ? 0.55 : 1 }
     private var rowState: String {
         let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
-        guard muted else { return base }
-        return base.isEmpty ? "Muted" : base + ", Muted"
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
+    private var unread: Bool { model.unreadSpaces.contains { $0.channels.contains { $0.id == channel.id } } }
 
     @ViewBuilder private var optionsMenuItems: some View {
         if model.isOwner {
@@ -1171,6 +1181,7 @@ private struct ChannelSidebarItem: View {
                         Text(channel.name).lineLimit(1).opacity(nameOpacity)
                         if muted { MutedBell() }
                         Spacer(minLength: 0)
+                        if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
@@ -1504,7 +1515,7 @@ private struct MembersOverlay: View {
         let travel = width + 8 + 48
         let reduceMotion = self.reduceMotion
         // As in BrowseLayer: follow the finger while dragged and spring into
-        // place otherwise, keeping a release's own spring (and speed).
+        // place otherwise, keeping a release's own timing.
         let settle: (inout Transaction) -> Void = { transaction in
             if drag != nil || reduceMotion { transaction.animation = nil }
             else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
@@ -2540,14 +2551,16 @@ private struct ChatView: View {
             }
             }
             }.padding(.horizontal, 18).padding(.top, 12)
-            #if os(macOS)
+            // Keep breathing room above the keyboard/home-indicator safe area.
             .padding(.bottom, 12)
-            #endif
-            // iOS already avoids the keyboard/home indicator through the safe area.
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
-        }.background(CaperTheme.conversation)
+        }.background {
+            // Paint behind iOS's rounded keyboard corners; only the background
+            // ignores the safe area, so the controls still avoid the keyboard.
+            CaperTheme.conversation.ignoresSafeArea()
+        }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
             #if os(macOS)
@@ -2855,11 +2868,9 @@ private struct NativeThreadView: View {
                     Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
                 }
             }.padding(.horizontal, 12).padding(.top, 12)
-            #if os(macOS)
             .padding(.bottom, 12)
-            #endif
             }
-        }.background(CaperTheme.conversation)
+        }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
@@ -3453,58 +3464,119 @@ private struct MentionCardView: View {
     @Bindable var model: AppModel
     let person: MentionCardPerson
     let close: () -> Void
-    @State private var opening = false
+    @State private var pending: String?
     @State private var error: String?
+    @State private var status: String?
+    @State private var choosingSpace = false
+    @State private var invited: Set<String> = []
+    @State private var blockTarget: BlockTarget?
+    private var blocked: Bool { model.blockedIDs.contains(person.id) }
+    private var ownedSpaces: [Space] { model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                    .accessibilityIdentifier("mention-card-title")
-                if let subtitle = person.subtitle {
-                    Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                        .accessibilityIdentifier("mention-card-username")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                        .accessibilityIdentifier("mention-card-title")
+                    if let subtitle = person.subtitle {
+                        Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                            .accessibilityIdentifier("mention-card-username")
+                    }
                 }
-            }
-            if person.isSelf {
-                Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                    .accessibilityIdentifier("mention-card-you")
-            } else if person.username != nil {
-                Button(opening ? "Opening…" : "Message") { Task { await message() } }
-                    .buttonStyle(CaperPrimaryButton())
-                    .disabled(opening)
-                    .accessibilityIdentifier("mention-card-message")
-                if let error {
-                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("mention-card-error")
+                if person.isSelf {
+                    Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("mention-card-you")
+                } else {
+                    if !blocked, person.username != nil {
+                        Button(pending == "message" ? "Opening…" : "Message") { Task { await message() } }
+                            .buttonStyle(CaperPrimaryButton())
+                            .disabled(pending != nil)
+                            .accessibilityIdentifier("mention-card-message")
+                    }
+                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                        Button("Invite to space") { choosingSpace.toggle() }
+                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                            .accessibilityIdentifier("mention-card-invite")
+                        if choosingSpace {
+                            VStack(spacing: 6) {
+                                ForEach(ownedSpaces) { space in
+                                    Button(pending == space.id ? "Sending…" : space.name + (invited.contains(space.id) ? " · Invited" : "")) {
+                                        Task { await invite(space) }
+                                    }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                        .disabled(pending != nil || invited.contains(space.id))
+                                }
+                            }.accessibilityLabel("Spaces you own")
+                        }
+                    }
+                    Button {
+                        if blocked { Task { await changeBlock(false) } }
+                        else { blockTarget = BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId) }
+                    } label: {
+                        Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
+                            .foregroundStyle(CaperTheme.terracottaBright)
+                    }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                        .accessibilityIdentifier("mention-card-block")
+                    if let status {
+                        Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("mention-card-status")
+                    }
+                    if let error {
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("mention-card-error")
+                    }
                 }
-            }
+            }.padding(16)
         }
-        .padding(16)
         #if os(macOS)
         // A fixed width keeps the popover's size independent of its content.
-        .frame(width: 280, alignment: .leading)
+        .frame(width: 280, height: person.isSelf ? 172 : choosingSpace ? 460 : blocked ? 210 : 320, alignment: .topLeading)
         .background(CaperTheme.surface)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .presentationDetents([.height(person.isSelf ? 196 : 268)])
+        .presentationDetents(person.isSelf ? [.height(196)] : [.height(380), .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
         #endif
+        .modifier(BlockConfirmation(target: $blockTarget, block: { _ in await changeBlock(true) }))
         // Contain, so this identifier does not replace each child's own.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mention-card")
     }
 
     private func message() async {
-        guard !opening, let username = person.username else { return }
-        opening = true; error = nil
-        defer { opening = false }
+        guard pending == nil, !blocked, let username = person.username else { return }
+        pending = "message"; error = nil
+        defer { pending = nil }
         do {
             if try await model.createDirectMessage(username: username) { close() }
             else { error = "Couldn’t open that conversation." }
+        } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func invite(_ space: Space) async {
+        guard pending == nil, !blocked, !invited.contains(space.id), let username = person.username else { return }
+        pending = space.id; error = nil; status = nil
+        defer { pending = nil }
+        do {
+            try await model.addSpaceMember(username: username, spaceID: space.id)
+            invited.insert(space.id)
+            status = "Invitation sent to \(space.name)."
+        } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func changeBlock(_ block: Bool) async {
+        guard pending == nil else { return }
+        pending = block ? "block" : "unblock"; error = nil
+        defer { pending = nil }
+        do {
+            if block {
+                try await model.block(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
+            } else { try await model.unblock(accountID: person.id) }
+            status = block ? "Blocked." : "Unblocked."
         } catch { self.error = FriendlyError.message(for: error) }
     }
 }

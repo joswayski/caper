@@ -213,10 +213,9 @@ object AttachmentPolicy {
         else -> true
     }
 
-    /** "1.6 MB → 143 KB" once compression saved space, otherwise the stored size. */
+    /** The final upload size, falling back to the source size for unchanged/restored files. */
     fun sizeLabel(sourceSize: Long, storedSize: Long?): String =
-        if (storedSize != null && storedSize < sourceSize) "${formatBytes(sourceSize)} → ${formatBytes(storedSize)}"
-        else formatBytes(storedSize ?: sourceSize)
+        formatBytes(storedSize ?: sourceSize)
 
     fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"

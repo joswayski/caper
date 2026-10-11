@@ -96,19 +96,23 @@ the API back only stops resolving new mentions. Validation:
 
 Apple composer frames use their measured content height rather than filling the
 174-point maximum: channel/DM drafts start at 42 points; thread replies retain
-their 72-point minimum. Longer drafts grow and then scroll. iOS adds no extra
-bottom margin below channel/DM or thread controls: SwiftUI's safe area already
-avoids the docked keyboard and, when it is closed, the home indicator. macOS
-retains its 12-point bottom margin. iPhone parity tests assert empty/single-line
-alignment with Send, multiline growth, the height cap, shrinking after
-deletion/send, and compact thread replies with the keyboard open. They also
-require the controls to meet the keyboard without a gap and check the resting
-safe-area layout after keyboard dismissal and reopening. In parity mode only,
+their 72-point minimum. Longer drafts grow and then scroll. Both iOS and macOS
+keep a 12-point bottom margin below channel/DM and thread controls, matching
+web, Android and Rust desktop. SwiftUI's safe area still avoids the docked
+keyboard and, when it is closed, the home indicator. The conversation and
+thread backgrounds—not their controls—ignore the safe area, filling the exposed
+rounded keyboard corners with the chat color instead of the root's blackout
+color. iPhone parity tests assert empty/single-line alignment with Send,
+multiline growth, the height cap, shrinking after deletion/send, and compact
+thread replies with the keyboard open. They also require a 12-point gap above
+the keyboard and check the resting safe-area layout after keyboard dismissal
+and reopening. In parity mode only,
 the app exposes UIKit's keyboard end frame to measure the full system keyboard,
 including predictions; iOS 26's XCUITest keyboard element excludes that bar.
 The tests retain their two-point tolerance and do not alter keyboard settings.
 Run `./apps/native/apple/parity-screenshots.sh ios` and its `macos` counterpart
-with Xcode before release and inspect the composer attachments. These new iPhone
+with Xcode before release and inspect the composer attachments, including both
+keyboard corners and the keyboard-closed home-indicator background. These iPhone
 checks and native rendering were not executed in the Linux orb; passing web and
 fixture tests do not validate SwiftUI/UIKit/AppKit sizing.
 
@@ -1273,7 +1277,7 @@ npx wrangler deploy --env staging
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
 | Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 Composer thumbnails and filenames are clickable before sending, including while
@@ -1284,6 +1288,13 @@ Quick Look for the staged local file. Android grants the selected content URI
 to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
+
+Ready draft chips show only the final upload size on Android, iOS and the web's
+mobile/touch layout (up to 760px or a coarse pointer). Desktop web, macOS and Rust
+desktop retain the original-to-final comparison when compression saved space.
+Preparing/compressing, upload progress and error labels are unchanged. Source
+byte counts and compression/upload behavior are unchanged; this is presentation
+only. Native Android/iOS builds and device rendering remain release checks.
 
 The channel/DM attachment control sits inside the left edge of the message box
 on web, Android, iOS/macOS and Rust desktop, sharing its background and outline.
@@ -6041,6 +6052,72 @@ uses a resizable egui thread SidePanel (300–480) and is unchanged.
    previous known-good image SHA with the command above. For native clients, ship
    a corrected higher-build-number release. No data rollback is required.
 
+### Profile-card actions (October 11, 2026)
+
+Web (desktop and narrow), Android, iOS/macOS and Rust desktop offer **Block**
+with the existing confirmation and **Unblock** on other people's profile cards.
+Blocked cards hide Message and Invite; your own card only says You. Historical
+authors with an account ID but no known username can still be blocked, but cannot
+be messaged or invited by an invented username.
+
+**Invite to space** lists non-demo spaces owned by the account, using the existing
+owner-only invitation API. Choosing one sends a seven-day pending invitation;
+the person must accept before joining. It does not switch the current space/DM
+or insert a member locally. Failures remain inline and retryable; success names
+the destination and disables it for this card session. Existing members, pending
+invitations, recipient privacy/blocks and server limits retain their API rules.
+
+Blocking retains the existing semantics described under Message requests,
+blocking and privacy: it prevents DMs/requests and invitations from the blocked
+person and collapses their text. It does not remove membership or mute voice
+in shared spaces. No API, database or permission change is included.
+
+Validation: `npm run check` and `npm test` (561 tests) pass. The Chromium
+`scripts/test-message-pins.mjs` fixture run checks invitation refusal/retry,
+pending-not-member state, unchanged navigation, Block cancel/confirm, collapsed
+text, Unblock failure/retry and restored actions, plus the existing profile/Pins
+flows. Desktop and 390px sheet default/picker/error/success/blocked captures were
+inspected; narrow Chromium is not a native phone test. Rust workspace tests,
+fmt and the debug build cover Linux (403 application tests pass, 12 existing
+tests ignored); loopback profile regressions check ownership/demo filtering,
+off-current invitation isolation and Block/Unblock. Linux 2x Xvfb default-card
+and expanded-picker renders were inspected.
+Application-package Clippy (`--no-deps -D warnings`) passes; dependency-inclusive
+workspace Clippy fails on 34 existing vendored `webrtc-sys` missing-safety-doc
+errors. Those dependencies are not changed here.
+Android Gradle compilation/tests are blocked by the missing Android SDK; Apple
+has no Swift/Xcode toolchain here. Neither has native rendering or device
+validation. Browser/loopback fixtures are not deployed-API, physical-device or
+live-SFU acceptance. No Docker daemon is available; the web build stage passed
+directly, but no container image was built in this orb.
+
+**Deployment order.**
+
+1. Land the preceding profile-entry-point fix first. No infrastructure,
+   secrets/configuration, database migration, API or gateway rollout is needed.
+   After both changes land, web and all native clients can release independently;
+   merging alone does not deploy them.
+2. After merge, wait for the immutable web image for the merged revision. From an
+   authenticated infrastructure checkout with the production Kubernetes context,
+   set `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for that deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/test on supported hosts with `bash apps/native/android/build.sh`,
+   `bash apps/native/apple/build.sh ios`, `bash apps/native/apple/build.sh macos`
+   and `bash apps/native/desktop/build.sh`. Verify profile entry points, Block
+   cancel/confirm/Unblock, errors and invitation acceptance on real clients
+   before the existing signed/store release process. Check that shared-space
+   membership and voice remain unchanged. Build output is not a store release.
+4. Verify those same cases on deployed web at desktop/mobile widths. Roll back
+   web with the previous known-good image SHA using step 2; ship a corrected
+   higher-build-number native release. Existing invitations/blocks remain valid;
+   no data rollback is required.
+
 ### Workspace loading and stable attachment controls (October 11, 2026)
 
 The client-only web workspace now renders a server-safe branded skeleton during
@@ -6105,8 +6182,8 @@ is unchanged. Rust desktop uses the shorter slide in narrow windows.
 | Platform | Validation boundary |
 | --- | --- |
 | Web | `npm run check` and all 565 `npm test` tests pass. The button-frame regression from `scripts/test-desktop-navigation.mjs` passes independently against the labelled local API fixture at 390px and 320px: 220ms intermediate positions in both directions, hidden/inert chat while browsing, retained draft and instant reduced-motion navigation. Chromium touch-emulated settled and test-frozen intermediate renders were inspected; the recorder dropped transition frames, so the recording is not evidence of smooth motion. Linux WebKit 27.2 with an iPhone profile passes button timing, intermediate pose, return tap, draft retention and reduced motion; the frozen intermediate render was inspected. These are browser emulations, not physical phones. The complete navigation script remains blocked by its existing presence mock; a scratch run skipping that wait also stops at a member-drawer gesture check. |
-| Android | Button timing updated; swipe and member-drawer springs retained. `:app:compileDebugKotlin` cannot configure because the Android SDK is absent. No Kotlin compilation, native rendering or physical-device validation. |
-| iOS/macOS | Explicit button animation and shorter fallback implemented; swipe springs and Reduce Motion retained. No Swift compiler or Xcode in this orb, so no native build, UI test or device validation. The reported snap is not reproduced on a physical device here. |
+| Android | Button timing updated; the latest swipe-release curves and member-drawer button spring retained. `:app:compileDebugKotlin` cannot configure because the Android SDK is absent. No Kotlin compilation, native rendering or physical-device validation. |
+| iOS/macOS | Explicit button animation and shorter fallback implemented; the latest swipe-release curves and Reduce Motion retained. No Swift compiler or Xcode in this orb, so no native build, UI test or device validation. The reported snap is not reproduced on a physical device here. |
 | Rust desktop | Fmt, application-package Clippy (`--all-targets --no-deps -- -D warnings`) and the debug build pass; 403 application tests pass with 12 existing device/audio tests ignored. The test and app executables were linked with LLVM (`cargo rustc --tests -- -Clink-arg=-fuse-ld=lld` and `cargo rustc --bin caper-desktop -- -Clink-arg=-fuse-ld=lld`) after the default linker exceeded the orb's memory limit. Inspected a 390px Linux/Xvfb window: chat, Browse, intermediate return slide and settled chat. This is not macOS/Windows or mobile-device acceptance. |
 | Services | No API, gateway, infrastructure, secrets/configuration or database changes. No deployment performed. |
 
@@ -6117,3 +6194,119 @@ mobile Safari/Chrome, verify Back and channel return animate, swipes still track
 and settle, drafts survive, and Reduce Motion switches instantly. Roll back web
 to the previous image; native rollback requires a corrected higher-build-number
 release. No data rollback is needed.
+
+## Swipe release finish (October 11, 2026)
+
+Browse/conversation and phone member-drawer swipes now settle from the held pose
+with a velocity-matched, non-overshooting curve on web, Android and Apple. A held
+or slow release keeps a 320ms finish instead of shortening it with the remaining
+distance; a flick keeps a bounded 160–320ms finish. The initial speed cannot exceed
+three times the remaining distance divided by the finish duration. Halfway/fling
+commit rules, reduced motion, and button-triggered animations are unchanged.
+Rust desktop has no equivalent touch-swipe release path and is unchanged.
+
+In the unchanged Chromium implementation, a held drag released about 71% across
+the travel moved 68% of its remaining distance in its first 33ms. With the new
+curve it moved 8% in the same interval and landed at rest after 320ms.
+
+Run the focused regression beside the disposable fixture and Vite:
+
+```bash
+node scripts/test-navigation-release.mjs
+# Override NAVIGATION_TEST_WEB_URL / NAVIGATION_TEST_API_URL for nondefault ports.
+# Optional NAVIGATION_TEST_ARTIFACTS captures 2x images and release recordings.
+```
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (565 tests). Chromium with real CDP touch input and verified coarse-pointer media covers held commits both ways, below-halfway cancellation, flicks both ways, member-drawer releases, retained composer draft and reduced motion. Rendered 390px fixture states inspected. This is not Safari or physical-device acceptance. |
+| Android | Release calculation updated. `./gradlew :app:compileDebugKotlin` stops at configuration because the Android SDK is absent; no Kotlin build or device rendering was verified. |
+| Apple iOS/macOS | Shared swipe implementation updated. No Swift compiler or Xcode in this orb; no native build, simulator or physical-device validation. |
+| Containers/live | No Docker daemon; production web build checked directly. No backend, database, infrastructure or secret/configuration changes. No deployment performed. |
+
+Web and native releases can roll out independently after merge. Before native
+distribution, verify slow/held/fast drags at 51%, 70% and near the edge in both
+directions, below-halfway cancellation, Members and Reduce Motion on supported
+devices. Roll back web to its previous image; native rollback requires a corrected
+higher-build-number release. No data rollback is needed.
+
+## Space and channel unread indicators (October 11, 2026)
+
+Web (desktop/mobile), Android, iOS/macOS and Rust desktop show a light dot on
+spaces with unread messages or direct mentions. A selected space keeps its dot
+until its other unread channels are viewed. Joined channel rows also show dots.
+The top-right unread dot and bottom-right mute badge can coexist: notification
+levels, pauses, OS permission and mutes do not hide space/channel unread activity.
+DM behavior is unchanged. This is message activity, not a new invitation alert,
+mention counter or notification inbox.
+
+`GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
+`lastSeq` values. Joined channels count other unblocked, active authors' main
+messages and broadcast replies. Accessible unjoined channels and non-broadcast
+thread replies count direct personal mentions only; forwarded mention metadata
+does not notify. Space membership, private grants and soft removals constrain
+every result. Edits, reactions and pins alone do not create unread messages.
+
+`POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`.
+Read positions are saved per account/channel, advance monotonically, and are
+capped to the channel's head. Only a loaded foreground conversation acknowledges
+its committed cursor; prefetch, background views, mobile Browse and older search
+windows do not read newer messages. Reading one channel never clears another.
+Snapshots refresh on launch/foreground and every 15 seconds; web and macOS also
+refresh when their notification feed delivers activity. Failed reads retry;
+account/request revisions fence late responses. Reads from another client appear
+on the next refresh. Historical messages start unread until viewed: there is no
+backfill asserting that existing users have seen them.
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres test exercises the actual unread/read routes: own/blocked authors, private grants, unjoined and thread mentions, broadcast replies, forwarded mention exclusion, channel-specific clearing, monotonic reads, future-cursor clamping and revoked membership. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass. Inspected labelled local-fixture desktop/mobile Browse and all-read renders. Browser checks cover prefetch, stale snapshots, newer messages during pending reads, denied OS permission, hidden mobile chat, failed-read retry and older search windows. Fixtures are not multi-device or production acceptance. |
+| Rust desktop | 405 tests pass (12 device/audio tests ignored), formatting/Clippy and debug build pass. Inspected the labelled Linux unread fixture: selected space, muted space and muted channel dots remain separate from selection/mute badges. This is not Windows, live account or physical-device acceptance. |
+| Android | Implementation updated; Gradle compile/tests/lint stop at project configuration because Android SDK location is missing. No Kotlin compilation, native render or device acceptance. |
+| iOS/macOS | Implementation updated; no Swift compiler or Xcode in this orb. No Swift typecheck, XCTest, native render or device acceptance. |
+| Containers/services | Docker daemon unavailable; web production build validated directly. No shared database writes, deployment, release or live SFU/device validation. Initial overlapping checks exhausted orb memory and timed out; isolated reruns passed. |
+
+**Deployment order.**
+
+1. No infrastructure apply, new secret/configuration, Valkey or SFU state change
+   is needed. Keep existing database/migration credentials and the established
+   single API replica. Merging does not deploy anything. Wait for immutable
+   images for the merged revision and set `MERGED_SHA` to that full revision.
+2. Deploy API first. Normal startup applies
+   `202610110001_channel_reads.sql` with `MIGRATION_DATABASE_URL` and grants
+   SELECT/INSERT/UPDATE on the retained `channel_reads` table to the runtime
+   role. No manual shared SQL, backfill or migration job is required:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+3. The gateway protocol and queries are unchanged; no gateway rollout is needed.
+   Old clients remain compatible. After API readiness, web and native releases
+   can deploy independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+4. Compile/test Apple and Android on supported hosts before distributing the
+   clients. Verify multi-account and multi-device reads, desktop/phone navigation,
+   muted spaces, denied OS permission, offline/reconnect, private access removal
+   and another unread channel in the selected space. After native acceptance:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+5. Verify new messages add a dot and opening the last unread channel removes it
+   on another client within 15 seconds. Roll back web to the previous known-good
+   image using the same deployment command; native rollback requires a corrected
+   higher-build-number release. Prefer a forward API fix. Any API rollback build
+   must retain the applied migration ledger; do not roll SQLx images back across
+   this migration or delete read positions. No shared migration, deployment,
+   provider change or release was executed during development.

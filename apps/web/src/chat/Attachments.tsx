@@ -357,15 +357,22 @@ export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment
                 <strong title={draft.name}>{draft.name}</strong>
                 <small>
                   {draft.error ??
-                    (draft.attachment
-                      ? draft.storedSize !== undefined && draft.storedSize < draft.sourceSize
-                        ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}`
-                        : formatBytes(draft.storedSize ?? draft.sourceSize)
-                      : draft.storedSize === undefined
-                        ? draft.compressing !== undefined
-                          ? `Compressing… ${Math.round(draft.compressing * 100)}%`
-                          : "Preparing…"
-                        : `Uploading… ${Math.round(draft.progress * 100)}%`)}
+                    (draft.attachment ? (
+                      <>
+                        {draft.storedSize !== undefined && draft.storedSize < draft.sourceSize && (
+                          <span className="chat-draft-source-size">{formatBytes(draft.sourceSize)} → </span>
+                        )}
+                        {formatBytes(draft.storedSize ?? draft.sourceSize)}
+                      </>
+                    ) : draft.storedSize === undefined ? (
+                      draft.compressing !== undefined ? (
+                        `Compressing… ${Math.round(draft.compressing * 100)}%`
+                      ) : (
+                        "Preparing…"
+                      )
+                    ) : (
+                      `Uploading… ${Math.round(draft.progress * 100)}%`
+                    ))}
                 </small>
               </span>
             </>

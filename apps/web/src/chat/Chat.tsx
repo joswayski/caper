@@ -41,6 +41,7 @@ import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandid
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
+import type { Space } from "../spaces/client.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -163,6 +164,7 @@ export default function Chat({
   direct = false,
   directPeerId,
   onReadCursor,
+  readActive = true,
   initialHistory,
   initialHistoryError,
   showTitle = false,
@@ -180,6 +182,7 @@ export default function Chat({
   mentionMembers,
   mentionDirectory = [],
   onMessagePerson,
+  profileSpaces,
   onOpenForward,
   focusMessage,
 }: {
@@ -193,6 +196,7 @@ export default function Chat({
   direct?: boolean;
   directPeerId?: string;
   onReadCursor?: (seq: string) => void;
+  readActive?: boolean;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
   showTitle?: boolean;
@@ -210,6 +214,7 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
+  profileSpaces?: Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
 }) {
@@ -534,12 +539,18 @@ export default function Chat({
   readCallback.current = onReadCursor;
   useEffect(() => {
     const read = () => {
-      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(readCursor);
+      if (readActive && state.phase === "ready" && !state.hasNewer && document.visibilityState === "visible")
+        readCallback.current?.(readCursor);
     };
     read();
     document.addEventListener("visibilitychange", read);
-    return () => document.removeEventListener("visibilitychange", read);
-  }, [state.phase, readCursor, channelId]);
+    // Retry a failed acknowledgement even if no new message arrives.
+    const timer = setInterval(read, 15_000);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
 
   // The composer resizes itself; keep the conversation pinned to the newest
   // message when it already was. Read the position before resizing, not a
@@ -1710,6 +1721,15 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
+            spaces={profileSpaces}
+            onBlock={
+              onBlockAuthor &&
+              ((author) => {
+                setMentionCard(undefined);
+                setShowPins(false);
+                onBlockAuthor(author);
+              })
+            }
           />
         )}
 

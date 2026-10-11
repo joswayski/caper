@@ -387,15 +387,15 @@ final class CaperParityUITests: XCTestCase {
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
-                       "The composer must meet the keyboard without an extra bottom margin")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
+                       "The composer must keep 12 points of breathing room above the keyboard")
         capture("composer-empty-keyboard", app: app)
 
         let short = "Compact draft"
         composer.typeText(short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
         let multiline = "\nSecond line\nThird line"
@@ -404,7 +404,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
         XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-multiline-keyboard", app: app)
 
         let overflow = String(repeating: "\nmore", count: 16)
@@ -413,7 +413,7 @@ final class CaperParityUITests: XCTestCase {
                        "Scrolling must retain lines beyond the visible height")
         XCTAssertEqual(composer.frame.height, 174, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
@@ -435,7 +435,7 @@ final class CaperParityUITests: XCTestCase {
         capture("composer-keyboard-dismissed", app: app)
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-keyboard-reopened", app: app)
     }
 
@@ -503,8 +503,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
-                       "Thread controls must meet the keyboard without an extra bottom margin")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
+                       "Thread controls must keep the same 12-point keyboard spacing")
         capture("thread-composer-single-line-keyboard", app: app)
 
         let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),

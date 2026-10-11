@@ -1,6 +1,8 @@
 package chat.caper.android
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -14,6 +16,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.ui.*
+import chat.caper.android.model.AppUiState
+import chat.caper.android.model.BlockedAccount
+import kotlinx.coroutines.launch
 
 /**
  * The card a person's @mention pill opens: on phones, a bottom sheet in the
@@ -24,13 +29,26 @@ import chat.caper.android.ui.*
 @Composable internal fun MentionCardSheet(
     card: MentionCard,
     message: (done: () -> Unit, failed: (String) -> Unit) -> Unit,
+    state: AppUiState? = null,
+    viewModel: CaperViewModel? = null,
     onDismiss: () -> Unit,
 ) {
-    var opening by remember(card) { mutableStateOf(false) }
+    var pending by remember(card) { mutableStateOf<String?>(null) }
     var error by remember(card) { mutableStateOf<String?>(null) }
+    var choosingSpace by remember(card.id) { mutableStateOf(false) }
+    var invited by remember(card.id) { mutableStateOf(emptySet<String>()) }
+    var status by remember(card.id) { mutableStateOf<String?>(null) }
+    var confirmBlock by remember(card.id) { mutableStateOf(false) }
+    val id = card.id
+    val blocked = id != null && state?.blockedIds?.contains(id) == true
+    val accountId = state?.account?.id
+    val ownedSpaces = state?.spaces.orEmpty().filter { space ->
+        accountId != null && space.ownerId == accountId && !space.demo
+    }
+    val scope = rememberCoroutineScope()
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
         Column(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp).semantics { paneTitle = card.title },
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 24.dp).semantics { paneTitle = card.title },
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId)
@@ -42,17 +60,50 @@ import chat.caper.android.ui.*
                 card.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
             if (card.self) Text("You", color = TextMuted, fontSize = 13.sp)
-            else if (card.username != null) {
-                Button(
+            else {
+                if (!blocked && card.username != null) Button(
                     {
-                        opening = true
+                        pending = "message"
                         error = null
-                        message({ opening = false; onDismiss() }, { opening = false; error = it })
+                        message({ pending = null; onDismiss() }, { pending = null; error = it })
                     },
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = !opening, shape = MaterialTheme.shapes.small,
-                ) { Text(if (opening) "Opening…" else "Message") }
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small,
+                ) { Text(if (pending == "message") "Opening…" else "Message") }
+                if (!blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null) {
+                    OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        enabled = pending == null, shape = MaterialTheme.shapes.small) { Text("Invite to space") }
+                    if (choosingSpace) Column(Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState())) {
+                        ownedSpaces.forEach { space ->
+                            OutlinedButton({
+                                pending = space.id; error = null; status = null
+                                viewModel.inviteToSpace(space.id, card.username, {
+                                    pending = null; invited = invited + space.id
+                                    status = "Invitation sent to ${space.name}."
+                                }, { pending = null; error = it })
+                            }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null && space.id !in invited,
+                                shape = MaterialTheme.shapes.small) { Text(if (pending == space.id) "Sending…" else space.name + if (space.id in invited) " · Invited" else "") }
+                        }
+                    }
+                }
+                if (id != null && viewModel != null && state?.account != null) OutlinedButton({
+                    if (!blocked) confirmBlock = true
+                    else {
+                        pending = "unblock"; error = null
+                        scope.launch {
+                            viewModel.unblock(id, failed = { error = it }).join()
+                            pending = null
+                        }
+                    }
+                }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small) {
+                    Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block", color = ErrorText)
+                }
+                status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
                 error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             }
         }
     }
+    if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
+        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId),
+        viewModel, { confirmBlock = false },
+    )
 }

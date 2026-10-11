@@ -45,6 +45,11 @@ class CaperApi(
     )
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
+    suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
+    suspend fun markChannelRead(token: String, space: String, channel: String, seq: String) {
+        require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
+    }
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
     suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
     suspend fun people(token: String): PeopleList = get("/api/people", token)
