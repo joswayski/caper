@@ -1520,8 +1520,10 @@
   background: none;
   cursor: pointer;
 }
-.chat-attach:hover:not(:disabled) {
-  color: var(--text);
+@media (hover: hover) {
+  .chat-attach:hover:not(:disabled) {
+    color: var(--text);
+  }
 }
 .chat-attach:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -1573,11 +1575,15 @@ button.chat-draft-preview,
 a.chat-draft-preview {
   cursor: pointer;
 }
-button.chat-draft-preview:hover strong,
-a.chat-draft-preview:hover strong,
 button.chat-draft-preview:focus-visible strong,
 a.chat-draft-preview:focus-visible strong {
   text-decoration: underline;
+}
+@media (hover: hover) {
+  button.chat-draft-preview:hover strong,
+  a.chat-draft-preview:hover strong {
+    text-decoration: underline;
+  }
 }
 .chat-draft-preview:focus-visible {
   outline: none;
@@ -1650,9 +1656,11 @@ a.chat-draft-preview:focus-visible strong {
   background: transparent;
   cursor: pointer;
 }
-.chat-draft-remove:hover {
-  color: var(--text);
-  background: var(--surface-composer);
+@media (hover: hover) {
+  .chat-draft-remove:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
 }
 .chat-attachments {
   display: flex;
@@ -1721,8 +1729,10 @@ a.chat-draft-preview:focus-visible strong {
   background: var(--surface-raised);
   text-decoration: none;
 }
-a.chat-file:hover {
-  border-color: var(--text-muted);
+@media (hover: hover) {
+  a.chat-file:hover {
+    border-color: var(--text-muted);
+  }
 }
 .chat-file span {
   display: grid;
@@ -2307,9 +2317,13 @@ a.chat-file:hover {
   touch-action: none;
   cursor: col-resize;
 }
-.chat-thread-resize:hover,
 .chat-thread-resize:focus-visible {
   border-left: 2px solid var(--terracotta);
+}
+@media (hover: hover) {
+  .chat-thread-resize:hover {
+    border-left: 2px solid var(--terracotta);
+  }
 }
 .chat-thread-panel .chat-thread-resize:focus-visible {
   outline: none;

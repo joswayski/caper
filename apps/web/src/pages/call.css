@@ -46,7 +46,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -54,7 +54,7 @@
 @media (hover: hover) {
   .voice-error button:hover {
     color: var(--text);
-    background: var(--surface-composer);
+    background: var(--surface-hover);
   }
 }
 .voice-error svg {
@@ -120,7 +120,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: var(--surface-composer);
   cursor: pointer;
@@ -159,7 +159,7 @@
   height: 32px;
   padding: 0 4px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius);
   color: var(--text);
   background: transparent;
   text-align: left;
@@ -206,7 +206,7 @@
   width: 28px;
   height: 32px;
   border: 0;
-  border-radius: 4px 0 0 4px;
+  border-radius: var(--radius) 0 0 var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -221,7 +221,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -257,7 +257,7 @@
 }
 .device-menu .call-settings-trigger {
   width: 16px;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
 }
 .device-menu .call-settings-trigger svg {
   width: 12px;
@@ -358,7 +358,9 @@
   touch-action: none;
   cursor: col-resize;
 }
-.channel-sidebar-resize:focus-visible {
+/* No colored line on hover or drag (#265); keyboard focus keeps a neutral
+   outline. The panel scope outranks the later .call-page focus ring. */
+.people-panel > .channel-sidebar-resize:focus-visible {
   outline: 1px solid var(--text-muted);
   outline-offset: -2px;
 }
@@ -978,13 +980,23 @@
   background: var(--blackout);
 }
 .mic-comparison article.latest {
+  position: relative;
   border-color: #53633f;
+}
+/* The glow pulses on a composited layer: animating opacity, unlike box-shadow,
+   does not repaint every frame for as long as the dialog stays open. */
+.mic-comparison article.latest::after {
+  position: absolute;
+  inset: -1px;
+  content: "";
+  border-radius: inherit;
   box-shadow: 0 0 18px rgb(99 122 67 / 0.24);
+  pointer-events: none;
   animation: enhanced-glow 2.4s ease-in-out infinite alternate;
 }
 @keyframes enhanced-glow {
   to {
-    box-shadow: 0 0 10px rgb(99 122 67 / 0.12);
+    opacity: 0.45;
   }
 }
 .mic-comparison article > div {
@@ -1049,7 +1061,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  border-radius: 4px;
+  border-radius: var(--radius);
 }
 .call-account .voice-icon-button.active {
   color: var(--terracotta-bright);
@@ -1327,7 +1339,7 @@
   .recording-clock i {
     animation: none;
   }
-  .mic-comparison article.latest {
+  .mic-comparison article.latest::after {
     animation: none;
   }
 }
@@ -1467,7 +1479,7 @@
 }
 @media (hover: hover) {
   .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .channel-line .channel-select,
@@ -1512,7 +1524,7 @@
   margin: 0 -4px;
   padding: 0 4px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font: inherit;
@@ -1552,13 +1564,13 @@
 .channel-join.voice-button:focus-visible {
   border-color: var(--border);
   color: var(--text);
-  background: var(--surface-raised);
+  background: var(--surface-hover);
 }
 @media (hover: hover) {
   .channel-join.voice-button:hover:not([aria-disabled="true"]) {
     border-color: var(--border);
     color: var(--text);
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .voice-leave > svg {
@@ -1572,7 +1584,7 @@
 @media (hover: hover) {
   .voice-stack:hover {
     color: var(--text);
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .voice-stack > svg {
@@ -1688,11 +1700,11 @@
 .voice-occupants .participant {
   gap: 8px;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 @media (hover: hover) {
   .voice-occupants .participant:hover {
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .voice-occupants .participant {
