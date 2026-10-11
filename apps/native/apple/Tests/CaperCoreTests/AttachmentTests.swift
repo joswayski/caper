@@ -1488,14 +1488,28 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
-    func testReadyDraftRemovalCancelsUploadAndExpiredSendRestoresOnlyText() async throws {
+    func testReadyDraftRemovalCancelsAndUnavailableSendReuploadsWithoutLosingText() async throws {
+        try await checkUnavailableRecovery(failRenewal: false)
+        try await checkUnavailableRecovery(failRenewal: true)
+    }
+
+    @MainActor
+    private func checkUnavailableRecovery(failRenewal: Bool) async throws {
+        AttachmentURLProtocol.reset()
         let base = composerHandler()
         AttachmentURLProtocol.handler = { request, body in
             if request.url?.path.hasSuffix("/cancel") == true { return (204, Data()) }
-            if request.httpMethod == "POST", request.url?.path.hasSuffix("/messages") == true {
-                return (409, Data(#"{"code":"attachment_unavailable","error":"Files expired. Edit and attach again."}"#.utf8))
+            let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }.count
+            if request.httpMethod == "POST", request.url?.path.hasSuffix("/messages") == true, sends == 1 {
+                return (409, Data(#"{"code":"attachment_unavailable","error":"must remain invisible"}"#.utf8))
             }
-            return try base(request, body)
+            if failRenewal, request.httpMethod == "PUT", AttachmentURLProtocol.requests.filter({ $0.method == "PUT" }).count == 3 {
+                return (503, Data())
+            }
+            var original = request
+            if let url = request.url { original.url = URL(string: url.absoluteString.replacingOccurrences(of: "Asset0000010", with: "Asset0000009")) }
+            let (status, data) = try base(original, body)
+            return (status, sends > 0 ? Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: "Asset0000009", with: "Asset0000010").utf8) : data)
         }
         let chat = ChatModel(api: client())
         await chat.open(channelID: channelID, displayName: "Me")
@@ -1513,13 +1527,24 @@ final class AttachmentTests: XCTestCase {
         await waitUntil("ready again") { chat.attachmentDrafts.first?.attachment != nil }
         chat.draft = "keep this message"
         await chat.send()
-        XCTAssertTrue(chat.sendRejected)
-        XCTAssertEqual(chat.error, "Files expired. Edit and attach again.")
-        XCTAssertTrue(chat.discardRejected(edit: true))
-        XCTAssertEqual(chat.draft, "keep this message")
+        if failRenewal {
+            XCTAssertFalse(chat.sendRejected)
+            XCTAssertTrue(chat.sendUploadFailed)
+            XCTAssertEqual(chat.error, "Failed to upload.")
+            XCTAssertEqual(chat.pendingMessage?.text, "keep this message")
+            chat.draft = "keep this message" // Same text, but a new draft.
+            await chat.send()
+            XCTAssertEqual(chat.draft, "keep this message")
+        }
+        XCTAssertNil(chat.error)
+        XCTAssertFalse(chat.sendUploadFailed)
         XCTAssertNil(chat.pendingMessage)
-        XCTAssertTrue(chat.attachmentDrafts.isEmpty, "Edit cannot restore expired IDs")
-        await waitUntil("cancel rejected") { AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/cancel") }.count == 2 }
+        XCTAssertEqual(chat.messages.first?.content.text, "keep this message")
+        let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }.compactMap { json($0.body) }
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertNotEqual(sends[0]["clientMessageId"] as? String, sends[1]["clientMessageId"] as? String)
+        XCTAssertEqual(sends[1]["attachmentIds"] as? [String], ["Asset0000010"])
+        XCTAssertTrue(AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.allSatisfy { $0.body == Data("hello".utf8) })
         await chat.stop()
     }
 

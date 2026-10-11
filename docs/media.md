@@ -1282,12 +1282,26 @@ An API loop (approximately every minute, idempotent across replicas):
   absence. Full-sweep latency and scan cost grow with retained history; no finite
   cutoff is safe without a provider-enforced bound on late writes.
 
-An open draft does not extend the 24-hour lifetime. Send enforces it even before
-cleanup runs and returns 409 `attachment_unavailable` with instructions to Edit
-and attach the files again. Edit preserves text without restoring stale IDs;
-users reselect the files, producing new reservations. Other newly composed text
-or files and unknown-outcome retries are not discarded. No durable attachment
-drafts, automatic re-upload, or new expiry-renewal protocol is introduced.
+An open draft does not extend the server's 24-hour lifetime. All clients retain
+the local prepared file and preview until removal or delivery confirmation.
+On focus/foreground or Send, uploads at least 23 hours old are silently uploaded
+again, leaving a one-hour margin. Desktop retains an owned copy rather than
+re-reading a picked path that may change. Concurrent triggers share the active
+upload; successful files in a partially failed batch are reused on Retry.
+
+Send enforces expiry even before cleanup and returns 409 `attachment_unavailable`.
+Clients treat this as a definitive refusal, silently re-upload and send with a
+new message UUID and attachment IDs. Recovery is bounded to one replacement
+cycle per send attempt. A failed upload shows only **Failed to upload.** with
+**Retry**, preserving the pending message and any newly composed draft; returning
+to the app also retries upload failures. No expiry or reselect explanation is
+shown. A timeout still means an unknown send outcome: retry the original command
+first, never cancel or replace its files until acceptance or a definitive refusal.
+
+This retains bytes only for the current open conversation/session, not durable
+attachment drafts across app restarts, page reloads or conversation switches.
+No new lifetime-renewal endpoint or schema is introduced. Replacement uploads
+reserve quota normally; cancelled bytes remain charged until purge succeeds.
 
 History marks deleted attachments `unavailable` without URLs. No user-facing
 sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
@@ -1298,8 +1312,8 @@ the owner's assets when that flow lands.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres attachment test passes with fake S3: owner-only/idempotent cancellation, sent-file protection, Send/removal races, expiry before purge, accepted-send retries after 24 hours, quota held across delete failures, late PUT reconciliation and multi-batch sweep progress. Not live R2 acceptance. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (569 tests). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, expired Send, text-preserving Edit, fresh-ID reselection and no cancellation of sent files. Both ready and expired states inspected; not Safari or a physical phone. |
-| Rust desktop | 410 tests pass, 12 device/audio tests ignored; formatting and Clippy pass. Includes rendered Edit recovery and failed-upload cancellation. Not Windows or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (572 tests). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, silent focus/Send renewal after 24 hours, failed renewal and chip Retry, preserved same-text newer drafts, identical uploaded bytes and no cancellation of sent files. Ready, pending failure/Retry and chip failure/Retry states inspected; not live R2, Safari or a physical phone. |
+| Rust desktop | 411 tests pass, 12 device/audio tests ignored; formatting, Clippy and Linux build pass. Includes silent replacement/Retry, preserved newer drafts and a loopback upload test that changes the picked file between uploads to verify retained bytes. Inspected the labelled Linux `parity-attachments` fixture with ready/uploading/failed chips and Retry. Not Windows or physical-device acceptance. |
 | Android | Implementation and tests updated. Gradle stops at configuration because Android SDK location is missing; no Kotlin compilation, tests, native render or device acceptance. |
 | iOS/macOS | Implementation and XCTest updated; no Swift compiler or Xcode in this orb, so no typecheck, tests, native render or device acceptance. |
 | Containers/services | Docker daemon unavailable; web production build and Rust compilation validated directly. No deployment, shared SQL, live R2 or SFU changes. Initial overlapping builds exhausted orb memory; bounded reruns passed. |
@@ -1339,14 +1353,17 @@ the owner's assets when that flow lands.
 
 4. Verify a removed, unsent file and its preview leave R2 and stop counting toward
    usage after cleanup (allow for its 25-row batches/retries). Sent files must
-   remain accessible. Verify a draft older than 24 hours explains expiry, Edit
-   keeps the text, reselection sends successfully, and offline send retries do not
-   cancel accepted attachments. These live/device checks remain outstanding.
+   remain accessible. Leave a draft open for over 24 hours: focus/Send must
+   silently re-upload and send without expiry UI. Interrupt a renewal, verify
+   only Failed to upload/Retry appears, then restore connectivity and Retry.
+   Text, bytes and newer drafts must survive; unknown send retries must retain
+   their original IDs and never cancel accepted attachments. These live/device
+   checks remain outstanding.
 5. Roll back API/web to their prior known-good image SHAs using the same deploy
    commands; there is no new schema to undo. New clients tolerate a missing cancel
    route and fall back to expiry. An API rollback loses reconciliation and the
-   clearer expiry response; it cannot restore already-purged unsent bytes. Native
-   rollback requires a corrected higher-build-number release.
+   typed refusal needed for silent Send recovery; it cannot restore already-purged
+   unsent bytes. Native rollback requires a corrected higher-build-number release.
 
 ### Configuration
 

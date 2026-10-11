@@ -200,6 +200,7 @@ pub enum Command {
         token: String,
         channel: String,
         path: PathBuf,
+        prepared: Option<Arc<crate::uploads::Prepared>>,
         settings: crate::compress::Compression,
         cancel: Arc<AtomicBool>,
     },
@@ -669,6 +670,7 @@ pub enum Event {
 }
 
 pub enum UploadUpdate {
+    Retained(Arc<crate::uploads::Prepared>),
     Prepared {
         name: String,
         kind: crate::model::AttachmentKind,
@@ -1118,6 +1120,7 @@ fn upload_file(
     token: &str,
     channel: &str,
     path: &std::path::Path,
+    retained: Option<Arc<crate::uploads::Prepared>>,
     settings: &crate::compress::Compression,
     cancel: Arc<AtomicBool>,
     events: &Sender<Event>,
@@ -1146,15 +1149,35 @@ fn upload_file(
             update(UploadUpdate::Compressing(fraction));
         }
     };
-    let mut prepared =
-        match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel) {
-            Ok(prepared) => prepared,
-            Err(message) => {
-                update(UploadUpdate::Finished(Err(
-                    crate::uploads::UploadError::new(message),
-                )));
-                return;
+    let prepared =
+        if let Some(prepared) = retained {
+            prepared
+        } else {
+            let mut prepared =
+                match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel)
+                    .and_then(|mut prepared| {
+                        prepared.retain_file()?;
+                        Ok(prepared)
+                    }) {
+                    Ok(prepared) => prepared,
+                    Err(message) => {
+                        update(UploadUpdate::Finished(Err(
+                            crate::uploads::UploadError::new(message),
+                        )));
+                        return;
+                    }
+                };
+            if let Some(image) = prepared.thumbnail.take() {
+                update(UploadUpdate::Thumbnail(
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    ),
+                ));
             }
+            let prepared = Arc::new(prepared);
+            update(UploadUpdate::Retained(prepared.clone()));
+            prepared
         };
     update(UploadUpdate::Prepared {
         name: prepared.name.clone(),
@@ -1162,14 +1185,6 @@ fn upload_file(
         source_size: prepared.source_size,
         stored_size: prepared.size,
     });
-    if let Some(image) = prepared.thumbnail.take() {
-        update(UploadUpdate::Thumbnail(
-            egui::ColorImage::from_rgba_unmultiplied(
-                [image.width() as usize, image.height() as usize],
-                image.as_raw(),
-            ),
-        ));
-    }
     // Whole-percent steps keep the event queue small for large files.
     let progress: Arc<dyn Fn(f32) + Send + Sync> = {
         let events = events.clone();
@@ -1195,7 +1210,14 @@ fn upload_file(
             }
         })
     };
-    let result = crate::uploads::upload(api, token, channel, prepared, progress, cancel);
+    let result = crate::uploads::upload(
+        api,
+        token,
+        channel,
+        prepared.as_ref().clone(),
+        progress,
+        cancel,
+    );
     update(UploadUpdate::Finished(result));
 }
 
@@ -1212,11 +1234,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             channel,
             path,
+            prepared,
             settings,
             cancel,
         } => {
             upload_file(
-                api, key, &token, &channel, &path, &settings, cancel, events, context,
+                api, key, &token, &channel, &path, prepared, &settings, cancel, events, context,
             );
             return;
         }

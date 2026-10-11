@@ -1561,6 +1561,8 @@
   color: var(--text-muted);
 }
 .chat-drafts li[data-error] {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  width: min(290px, 100%);
   border-color: #8a4334;
 }
 .chat-draft-preview {
@@ -1650,6 +1652,14 @@ a.chat-draft-preview:focus-visible strong {
 }
 .chat-drafts progress::-moz-progress-bar {
   background: var(--terracotta);
+}
+.chat-draft-retry {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 6px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
 }
 .chat-draft-remove {
   width: 24px;

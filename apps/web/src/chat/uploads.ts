@@ -1,5 +1,5 @@
 import type { ChatAttachment } from "./types.ts";
-import { compressionSettings, type CompressionSettings, type PreparedFile } from "./prepare.ts";
+import { compressionSettings, prepareFile, type CompressionSettings, type PreparedFile } from "./prepare.ts";
 
 export const MAX_ATTACHMENTS = 10;
 /** Waits between `/complete` attempts while the upload is not visible yet (409). */
@@ -36,6 +36,101 @@ export class UploadError extends Error {
   constructor(message: string, storageFull = false) {
     super(message);
     this.storageFull = storageFull;
+  }
+}
+
+export interface UploadState {
+  name: string;
+  sourceSize: number;
+  storedSize?: number;
+  compressing?: number;
+  progress: number;
+  error?: string;
+  attachment?: ChatAttachment;
+}
+
+/** Own the local bytes until removal or send confirmation. Focus, Send and Retry
+ * share one upload, and renew well before the server's 24-hour unsent lifetime. */
+export class AttachmentUpload {
+  state: UploadState;
+  private file?: File;
+  private prepared?: PreparedFile;
+  private completedAt?: number;
+  private pending?: Promise<ChatAttachment>;
+  private controller = new AbortController();
+
+  constructor(
+    private channelId: string,
+    file: File,
+    private settings: CompressionSettings,
+    private changed: (state: UploadState) => void,
+    private transport: UploadTransport = browserTransport,
+    private now: () => number = Date.now,
+  ) {
+    this.file = file;
+    this.state = { name: file.name, sourceSize: file.size, progress: 0 };
+  }
+
+  get stale() {
+    return (
+      !!this.state.attachment &&
+      (this.completedAt === undefined || this.now() - this.completedAt >= 23 * 60 * 60 * 1_000)
+    );
+  }
+
+  invalidate() {
+    this.completedAt = undefined;
+  }
+
+  ensure(): Promise<ChatAttachment> {
+    if (this.pending) return this.pending;
+    if (this.state.attachment && !this.stale) return Promise.resolve(this.state.attachment);
+    this.pending = this.upload().finally(() => {
+      this.pending = undefined;
+    });
+    return this.pending;
+  }
+
+  release(cancel = false) {
+    this.controller.abort();
+    if (cancel && this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    this.file = undefined;
+    this.prepared = undefined;
+  }
+
+  private update(change: Partial<UploadState>) {
+    this.state = { ...this.state, ...change };
+    this.changed(this.state);
+  }
+
+  private async upload(): Promise<ChatAttachment> {
+    const signal = this.controller.signal;
+    signal.throwIfAborted();
+    if (this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    this.update({ attachment: undefined, error: undefined, progress: 0 });
+    try {
+      this.prepared ??= await prepareFile(
+        this.file!,
+        this.settings,
+        (compressing) => this.update({ compressing }),
+        signal,
+      );
+      signal.throwIfAborted();
+      this.update({ name: this.prepared.name, storedSize: this.prepared.blob.size, compressing: undefined });
+      const attachment = await uploadPrepared(
+        this.channelId,
+        this.prepared,
+        this.transport,
+        (progress) => this.update({ progress }),
+        signal,
+      );
+      this.completedAt = this.now();
+      this.update({ attachment, progress: 1 });
+      return attachment;
+    } catch (error) {
+      if (!signal.aborted) this.update({ error: "Failed to upload." });
+      throw error;
+    }
   }
 }
 

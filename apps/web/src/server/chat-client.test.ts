@@ -9,6 +9,8 @@ import {
 } from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
+import { AttachmentUpload, type UploadTransport } from "../chat/uploads.ts";
+import { DEFAULT_COMPRESSION } from "../chat/prepare.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -953,29 +955,118 @@ test("file-only messages send attachment IDs, keep local previews while pending,
   assert.equal(f.state.messages[0].content.attachments?.[0].url, "https://cdn.test/original/f1?exp=1&sig=s");
 });
 
-test("expired attachment rejection preserves text for Edit without reusing files or cancelling uncertain sends", async (t) => {
+function retainedUploads() {
+  const files = new Map<string, { id: string; kind: "file"; contentType: string; name: string; size: number }>();
+  const cancelled: string[] = [];
+  const bodies: string[] = [];
+  let fail = false;
+  const transport: UploadTransport = {
+    fetch: async (input, init) => {
+      const path = String(input);
+      if (path === "/api/assets") {
+        const body = JSON.parse(String(init?.body));
+        const id = `asset${files.size + 1}`;
+        files.set(id, { id, kind: "file", name: body.filename, contentType: body.contentType, size: body.byteSize });
+        return Response.json({ id, upload: { url: `https://storage.test/${id}`, headers: {} } });
+      }
+      const id = path.split("/").at(-2)!;
+      if (path.endsWith("/cancel")) {
+        cancelled.push(id);
+        return new Response(null, { status: 204 });
+      }
+      return Response.json(files.get(id));
+    },
+    put: async (_url, _headers, bytes) => {
+      const body = await bytes.text();
+      bodies.push(body);
+      if (fail && body === "second") {
+        fail = false;
+        throw new TypeError("offline");
+      }
+    },
+  };
+  return {
+    files,
+    cancelled,
+    bodies,
+    failNext: () => {
+      fail = true;
+    },
+    create: (name: string) =>
+      new AttachmentUpload(
+        "general",
+        new File([name], `${name}.txt`, { type: "text/plain" }),
+        DEFAULT_COMPRESSION,
+        () => {},
+        transport,
+      ),
+  };
+}
+
+test("unknown sends keep original IDs, then a definitive unavailable response silently reuploads and sends", async (t) => {
   const f = await sendingFixture(t);
-  const attachment = { id: "expired", kind: "file" as const, contentType: "text/plain", name: "notes.txt", size: 7 };
-  const send = f.client.send("keep my text", { attachments: [attachment] });
+  const files = retainedUploads();
+  const upload = files.create("original bytes");
+  const attachment = await upload.ensure();
+  const send = f.client.send("keep my text", { attachments: [attachment], uploads: [upload] });
   f.posts[0].reject(new TypeError("offline"));
   assert.equal(await send, false);
   assert.equal(f.client.discardRejected(), undefined);
-  assert.deepEqual(f.cancelled, []);
-  const retry = f.client.send("keep my text");
-  assert.deepEqual(f.posts[1].body.attachmentIds, ["expired"]);
+  assert.deepEqual(files.cancelled, []);
+  const retry = f.client.send("a different next draft");
+  assert.deepEqual(f.posts[1].body, f.posts[0].body);
   f.posts[1].resolve(
-    Response.json({ code: "attachment_unavailable", error: "Files expired. Edit and attach again." }, { status: 409 }),
+    Response.json({ code: "attachment_unavailable", error: "server detail must stay invisible" }, { status: 409 }),
   );
-  assert.equal(await retry, false);
-  assert.equal(f.state.sendRejected, true);
-  assert.match(f.state.sendError!, /attach again/);
-  const text = f.client.discardRejected();
-  assert.equal(text, "keep my text");
-  assert.deepEqual(f.cancelled, ["/api/assets/expired/cancel"]);
-  const reselected = f.client.send(text!, { attachments: [{ ...attachment, id: "fresh" }] });
-  assert.deepEqual(f.posts[2].body.attachmentIds, ["fresh"]);
+  await tick();
+  assert.equal(f.posts.length, 3);
+  assert.notEqual(f.posts[2].body.clientMessageId, f.posts[0].body.clientMessageId);
+  assert.deepEqual(f.posts[2].body.attachmentIds, ["asset2"]);
+  assert.equal(f.posts[2].body.text, "keep my text");
+  assert.equal(f.state.sendError, undefined);
+  assert.deepEqual(files.bodies, ["original bytes", "original bytes"]);
   f.posts[2].resolve(Response.json(committed(f.posts[2].body, "1")));
-  assert.equal(await reselected, true);
+  assert.equal(await retry, true);
+  assert.deepEqual(files.cancelled, ["asset1"], "confirmed files are not cancelled");
+});
+
+test("failed renewal keeps the pending message for Retry and reuses successful files in a partial batch", async (t) => {
+  const f = await sendingFixture(t);
+  const files = retainedUploads();
+  const uploads = [files.create("first"), files.create("second")];
+  const attachments = await Promise.all(uploads.map((upload) => upload.ensure()));
+  files.failNext();
+  const sending = f.client.send("original text", { attachments, uploads });
+  f.posts[0].resolve(Response.json({ code: "attachment_unavailable" }, { status: 409 }));
+  assert.equal(await sending, false);
+  assert.equal(f.state.sendError, "Failed to upload.");
+  assert.equal(f.state.sendUploadFailed, true);
+  assert.equal(f.state.sendRejected, false);
+  const retry = f.client.send("new draft must not replace original");
+  await tick();
+  assert.equal(files.files.size, 5, "only the failed file is uploaded again");
+  assert.deepEqual(f.posts[1].body.attachmentIds, ["asset3", "asset5"]);
+  assert.equal(f.posts[1].body.text, "original text");
+  f.posts[1].resolve(Response.json(committed(f.posts[1].body, "1")));
+  assert.equal(await retry, true);
+  assert.deepEqual(files.bodies, ["first", "second", "first", "second", "second"]);
+});
+
+test("a late attachment refusal cannot renew confirmed files or poison the next send", async (t) => {
+  const f = await sendingFixture(t);
+  const files = retainedUploads();
+  const upload = files.create("first");
+  const sending = f.client.send("first", { attachments: [await upload.ensure()], uploads: [upload] });
+  f.sockets[0].message(committed(f.posts[0].body, "1"));
+  assert.equal(await sending, true);
+  f.posts[0].resolve(Response.json({ code: "attachment_unavailable" }, { status: 409 }));
+  await tick();
+  assert.equal(files.files.size, 1);
+  assert.deepEqual(files.cancelled, []);
+  const next = f.client.send("second");
+  assert.equal(f.posts.length, 2);
+  f.posts[1].resolve(Response.json(committed(f.posts[1].body, "2")));
+  assert.equal(await next, true);
 });
 
 test("WebSocket-first confirmation requires the sender and cannot be undone by a late failed HTTP response", async (t) => {

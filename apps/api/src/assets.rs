@@ -1053,11 +1053,8 @@ pub(crate) async fn attach(
         .map(|id| by_id.get(id.as_str()).map(|row| describe(row)))
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "One or more files expired or are unavailable. Edit this message and attach the files again.",
-            )
-            .with_code("attachment_unavailable")
+            ApiError::new(StatusCode::CONFLICT, "Failed to upload.")
+                .with_code("attachment_unavailable")
         })
 }
 
