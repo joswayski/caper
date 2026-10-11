@@ -1035,12 +1035,13 @@ private struct MediaViewerPage: View {
     let close: () -> Void
     @State private var zoomed = false
     @GestureState private var pull: CGFloat = 0
+    @State private var dismissalPull: CGFloat?
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             #if os(iOS)
-            .offset(y: pull)
+            .offset(y: dismissalPull ?? pull)
             // Global coordinates: the page itself moves with the finger.
             .simultaneousGesture(DragGesture(minimumDistance: 16, coordinateSpace: .global)
                 .updating($pull) { value, state, _ in
@@ -1048,7 +1049,11 @@ private struct MediaViewerPage: View {
                 }
                 .onEnded { value in
                     let downward = value.translation.height > abs(value.translation.width)
-                    if downward && (value.translation.height > 120 || value.predictedEndTranslation.height > 360) { close() }
+                    if downward && (value.translation.height > 120 || value.predictedEndTranslation.height > 360) {
+                        // GestureState resets at release; keep the file in place while the cover dismisses.
+                        dismissalPull = value.translation.height
+                        close()
+                    }
                 }, including: zoomed ? .subviews : .all)
             #endif
     }

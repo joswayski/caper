@@ -1204,6 +1204,22 @@ or a swipe down on phones). URLs come from each client's existing fresh-URL
 cache, and a refused load asks for one refresh. Audio and other files keep
 their inline behaviour; pending rows never open the viewer.
 
+The iPhone/iPad swipe-dismiss implementation retains the file's release offset
+while the full-screen cover dismisses. `GestureState` still resets short or
+canceled drags, but cannot snap a successfully dismissed file back to centre.
+The distance/fling thresholds, paging and zoom exclusions are unchanged.
+Validation (October 11, 2026): Swift 6.1.2 syntax parsing passed for iOS 17 and
+macOS 14. A temporary Swift harness executed the production release closure
+and offset expression with a simulated gesture-state reset: the old code
+failed all four successful-dismiss cases; the fix passed all ten cases,
+including threshold boundaries, horizontal/upward drags and cancellation.
+`npm run check` and all 565 repository tests passed. This is not SwiftUI
+typechecking or rendering: no Xcode or connected Apple runner was available.
+Before distributing the iOS update, check slow/held and fast downward releases,
+an already-offscreen file, short/canceled drags, paging, zoomed panning and
+Reduce Motion on iPhone/iPad. Other clients and services need no rollout;
+rollback requires a corrected higher-build-number iOS release.
+
 Desktop has no platform video player or AVIF decoder, so it ships a trimmed,
 static FFmpeg built from pinned sources by
 [joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop)
