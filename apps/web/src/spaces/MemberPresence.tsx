@@ -3,7 +3,8 @@ import { X } from "lucide-react";
 import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import { watchPresence } from "../gateway/client";
-import type { Member } from "./client";
+import type { Member, Space } from "./client";
+import type { ChatAuthor } from "../chat/types";
 import MentionCard, { type MentionCardTarget } from "../chat/MentionCard";
 import { mentionCardPerson } from "../chat/mentions";
 
@@ -17,6 +18,8 @@ export default function MemberPresence({
   demo,
   accountId,
   onMessagePerson,
+  onBlockAuthor,
+  profileSpaces,
   onClose,
 }: {
   spaceId: string;
@@ -24,6 +27,8 @@ export default function MemberPresence({
   demo?: boolean;
   accountId?: string;
   onMessagePerson: (username: string) => Promise<void>;
+  onBlockAuthor: (author: ChatAuthor) => void;
+  profileSpaces: Space[];
   onClose: () => void;
 }) {
   const [page, setPage] = useState(0);
@@ -120,6 +125,11 @@ export default function MemberPresence({
           key={profile.person.id}
           target={profile}
           onClose={() => setProfile(undefined)}
+          spaces={profileSpaces}
+          onBlock={(author) => {
+            setProfile(undefined);
+            onBlockAuthor(author);
+          }}
           onMessage={async (username) => {
             await onMessagePerson(username);
             onClose();

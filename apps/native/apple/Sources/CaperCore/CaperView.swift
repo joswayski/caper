@@ -3450,58 +3450,119 @@ private struct MentionCardView: View {
     @Bindable var model: AppModel
     let person: MentionCardPerson
     let close: () -> Void
-    @State private var opening = false
+    @State private var pending: String?
     @State private var error: String?
+    @State private var status: String?
+    @State private var choosingSpace = false
+    @State private var invited: Set<String> = []
+    @State private var blockTarget: BlockTarget?
+    private var blocked: Bool { model.blockedIDs.contains(person.id) }
+    private var ownedSpaces: [Space] { model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                    .accessibilityIdentifier("mention-card-title")
-                if let subtitle = person.subtitle {
-                    Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                        .accessibilityIdentifier("mention-card-username")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                        .accessibilityIdentifier("mention-card-title")
+                    if let subtitle = person.subtitle {
+                        Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                            .accessibilityIdentifier("mention-card-username")
+                    }
                 }
-            }
-            if person.isSelf {
-                Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                    .accessibilityIdentifier("mention-card-you")
-            } else if person.username != nil {
-                Button(opening ? "Opening…" : "Message") { Task { await message() } }
-                    .buttonStyle(CaperPrimaryButton())
-                    .disabled(opening)
-                    .accessibilityIdentifier("mention-card-message")
-                if let error {
-                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("mention-card-error")
+                if person.isSelf {
+                    Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("mention-card-you")
+                } else {
+                    if !blocked, person.username != nil {
+                        Button(pending == "message" ? "Opening…" : "Message") { Task { await message() } }
+                            .buttonStyle(CaperPrimaryButton())
+                            .disabled(pending != nil)
+                            .accessibilityIdentifier("mention-card-message")
+                    }
+                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                        Button("Invite to space") { choosingSpace.toggle() }
+                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                            .accessibilityIdentifier("mention-card-invite")
+                        if choosingSpace {
+                            VStack(spacing: 6) {
+                                ForEach(ownedSpaces) { space in
+                                    Button(pending == space.id ? "Sending…" : space.name + (invited.contains(space.id) ? " · Invited" : "")) {
+                                        Task { await invite(space) }
+                                    }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                        .disabled(pending != nil || invited.contains(space.id))
+                                }
+                            }.accessibilityLabel("Spaces you own")
+                        }
+                    }
+                    Button {
+                        if blocked { Task { await changeBlock(false) } }
+                        else { blockTarget = BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId) }
+                    } label: {
+                        Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
+                            .foregroundStyle(CaperTheme.terracottaBright)
+                    }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                        .accessibilityIdentifier("mention-card-block")
+                    if let status {
+                        Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("mention-card-status")
+                    }
+                    if let error {
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("mention-card-error")
+                    }
                 }
-            }
+            }.padding(16)
         }
-        .padding(16)
         #if os(macOS)
         // A fixed width keeps the popover's size independent of its content.
-        .frame(width: 280, alignment: .leading)
+        .frame(width: 280, height: person.isSelf ? 172 : choosingSpace ? 460 : blocked ? 210 : 320, alignment: .topLeading)
         .background(CaperTheme.surface)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .presentationDetents([.height(person.isSelf ? 196 : 268)])
+        .presentationDetents(person.isSelf ? [.height(196)] : [.height(380), .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
         #endif
+        .modifier(BlockConfirmation(target: $blockTarget, block: { _ in await changeBlock(true) }))
         // Contain, so this identifier does not replace each child's own.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mention-card")
     }
 
     private func message() async {
-        guard !opening, let username = person.username else { return }
-        opening = true; error = nil
-        defer { opening = false }
+        guard pending == nil, !blocked, let username = person.username else { return }
+        pending = "message"; error = nil
+        defer { pending = nil }
         do {
             if try await model.createDirectMessage(username: username) { close() }
             else { error = "Couldn’t open that conversation." }
+        } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func invite(_ space: Space) async {
+        guard pending == nil, !blocked, !invited.contains(space.id), let username = person.username else { return }
+        pending = space.id; error = nil; status = nil
+        defer { pending = nil }
+        do {
+            try await model.addSpaceMember(username: username, spaceID: space.id)
+            invited.insert(space.id)
+            status = "Invitation sent to \(space.name)."
+        } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func changeBlock(_ block: Bool) async {
+        guard pending == nil else { return }
+        pending = block ? "block" : "unblock"; error = nil
+        defer { pending = nil }
+        do {
+            if block {
+                try await model.block(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
+            } else { try await model.unblock(accountID: person.id) }
+            status = block ? "Blocked." : "Unblocked."
         } catch { self.error = FriendlyError.message(for: error) }
     }
 }

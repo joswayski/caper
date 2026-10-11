@@ -276,6 +276,12 @@ pub enum AccountOperation {
         blocked: bool,
         request: Option<String>,
     },
+    InviteToSpace {
+        space: Space,
+        username: String,
+        user: String,
+        request: u64,
+    },
     Accept(String),
     Decline(String),
     LoadPrivacy,
@@ -301,6 +307,12 @@ pub enum AccountResult {
         blocked: bool,
         request: Option<String>,
         result: Result<(), String>,
+    },
+    Invitation {
+        space: Space,
+        user: String,
+        request: u64,
+        result: Result<Member, String>,
     },
     Accepted {
         id: String,
@@ -1643,6 +1655,19 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
             result: api.set_block(token, &account.id, blocked).map_err(text),
             account,
             blocked,
+            request,
+        },
+        AccountOperation::InviteToSpace {
+            space,
+            username,
+            user,
+            request,
+        } => AccountResult::Invitation {
+            result: api
+                .add_member(token, &space.id, None, &username)
+                .map_err(text),
+            space,
+            user,
             request,
         },
         AccountOperation::Accept(id) => AccountResult::Accepted {

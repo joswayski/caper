@@ -30,7 +30,7 @@ import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
-import type { ChatMessage } from "../chat/types";
+import type { ChatAuthor, ChatMessage } from "../chat/types";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
@@ -2977,6 +2977,14 @@ export default function Spaces({
     setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     openDirect(conversation);
   };
+  const blockAuthor = (author: ChatAuthor) =>
+    setBlockTarget({
+      id: author.id,
+      username: "",
+      displayName: author.name,
+      avatarId: author.avatarId ?? undefined,
+    });
+  const profileSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
 
   return (
     <>
@@ -3034,14 +3042,7 @@ export default function Spaces({
             </p>
           ) : undefined
         }
-        onBlockAuthor={(author) =>
-          setBlockTarget({
-            id: author.id,
-            username: "",
-            displayName: author.name,
-            avatarId: author.avatarId ?? undefined,
-          })
-        }
+        onBlockAuthor={blockAuthor}
         initialAccount={account}
         initialHistory={
           directView
@@ -3067,6 +3068,7 @@ export default function Spaces({
           ...directs.map((conversation) => conversation.peer),
         ]}
         onMessagePerson={messagePerson}
+        profileSpaces={profileSpaces}
         onOpenForward={async (message) => {
           const revision = navigationRevision.current;
           const { source } = await forwardedConversation(message, AbortSignal.timeout(10_000));
@@ -3095,6 +3097,8 @@ export default function Spaces({
                   demo={detail.space.demo}
                   accountId={account?.id}
                   onMessagePerson={messagePerson}
+                  onBlockAuthor={blockAuthor}
+                  profileSpaces={profileSpaces}
                   onClose={onClose}
                 />
               )

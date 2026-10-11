@@ -1080,14 +1080,16 @@ public final class AppModel {
         await removeCurrentSpace(id: id)
     }
 
-    public func addSpaceMember(username: String) async throws {
-        guard let detail else { return }
+    public func addSpaceMember(username: String, spaceID: String? = nil) async throws {
+        guard let spaceID = spaceID ?? detail?.space.id else { return }
         if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         let attempt = generation
-        let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
-        guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        pendingMembers.removeAll { $0.id == member.id }
-        pendingMembers.append(member)
+        let member = try await api.addSpaceMember(spaceID: spaceID, username: username)
+        guard generation == attempt else { throw CancellationError() }
+        if self.detail?.space.id == spaceID {
+            pendingMembers.removeAll { $0.id == member.id }
+            pendingMembers.append(member)
+        }
     }
 
     public func loadSpaceInvitations() async throws {

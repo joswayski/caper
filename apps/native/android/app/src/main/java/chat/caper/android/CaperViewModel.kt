@@ -1926,6 +1926,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
         done()
     }
+    /** A profile invitation targets an owned space without changing the open conversation. */
+    fun inviteToSpace(spaceId: String, username: String, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        val current = mutable.value
+        check(current.spaces.any { it.id == spaceId && it.ownerId == current.account?.id && !it.demo }) { "Only space owners can invite people." }
+        val member = api.addSpaceMember(token, spaceId, username)
+        if (request != accountGeneration) return@accountRequest
+        if (mutable.value.selectedSpace?.space?.id == spaceId)
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+        done()
+    }
     fun loadSpaceInvitations() = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)

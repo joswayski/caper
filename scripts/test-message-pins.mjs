@@ -82,6 +82,13 @@ try {
   await control({ reset: true });
   const initial = await history();
   const root = initial.messages[0];
+  const ownedResponse = await fetch(`${api}/api/spaces`, {
+    method: "POST",
+    headers: { authorization: "Bearer fixture-owner-token", "content-type": "application/json" },
+    body: JSON.stringify({ name: "Profile invitations" }),
+  });
+  assert.equal(ownedResponse.status, 201);
+  const ownedSpace = await ownedResponse.json();
 
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
@@ -122,11 +129,98 @@ try {
   checkProfile("Fixture Owner", "fixture_owner");
   assert.equal(evaluate('document.querySelector(".chat-mention-card-self").textContent'), "You");
   assert.equal(evaluate('!!document.querySelector(".chat-mention-card-message")'), false);
+  assert.equal(evaluate('document.querySelector(".chat-mention-card").querySelectorAll("button").length'), 0);
   closeProfile();
   action("Show member list");
   browser("click", memberMaya);
   checkProfile("Maya", "maya");
   screenshot("profile-member-desktop");
+  action("Invite to space");
+  assert.deepEqual(
+    evaluate('[...document.querySelectorAll(".chat-profile-spaces button > span")].map(e => e.textContent)'),
+    ["Fixture Studio", "Profile invitations"],
+    "only owned, non-demo spaces are destinations",
+  );
+  action("Fixture Studio");
+  wait('!!document.querySelector(".chat-mention-card [role=alert]")');
+  assert.equal(
+    evaluate('document.querySelector(".chat-mention-card [role=alert]").textContent.includes("already")'),
+    true,
+  );
+  await control({
+    failure: {
+      path: `/api/spaces/${ownedSpace.id}/members`,
+      method: "POST",
+      status: 429,
+      error: "TEST FIXTURE: invitation limit. Try again.",
+    },
+  });
+  action("Profile invitations");
+  wait('document.querySelector(".chat-mention-card [role=alert]")?.textContent.includes("invitation limit")');
+  screenshot("profile-invite-error");
+  action("Profile invitations");
+  wait(
+    'document.querySelector(".chat-mention-card [role=status]")?.textContent === "Invitation sent to Profile invitations."',
+  );
+  assert.equal(evaluate('document.querySelector(".chat-profile-spaces li:last-child button").disabled'), true);
+  assert.equal(evaluate('document.querySelector("#chat-heading").textContent.includes("general")'), true);
+  const readSpace = async (suffix) => {
+    const response = await fetch(`${api}/api/spaces/${ownedSpace.id}${suffix}`, {
+      headers: { authorization: "Bearer fixture-owner-token" },
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.equal(
+    (await readSpace("/invitations")).members.some((m) => m.id === "member000001"),
+    true,
+  );
+  assert.equal(
+    (await readSpace("/members")).members.some((m) => m.id === "member000001"),
+    false,
+    "inviting does not grant membership",
+  );
+  screenshot("profile-invite-sent");
+  action("Block");
+  wait('!!document.querySelector(".delete-confirmation")');
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-mention-card")'),
+    false,
+    "one modal owns focus during confirmation",
+  );
+  action("Cancel");
+  browser("click", memberMaya);
+  checkProfile("Maya", "maya");
+  assert.equal(
+    evaluate('document.querySelector(".chat-profile-block").textContent'),
+    "Block",
+    "cancel leaves the person unblocked",
+  );
+  action("Block");
+  wait('!!document.querySelector(".delete-confirmation")');
+  action("Block");
+  wait('!document.querySelector(".delete-confirmation") && !!document.querySelector(".chat-blocked-run")');
+  browser("click", memberMaya);
+  checkProfile("Maya", "maya");
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-mention-card button")].map(e => e.textContent)'), [
+    "Unblock",
+  ]);
+  screenshot("profile-blocked-desktop");
+  await control({
+    failure: {
+      path: "/api/blocks/member000001",
+      method: "DELETE",
+      status: 503,
+      error: "TEST FIXTURE: unblock unavailable.",
+    },
+  });
+  action("Unblock");
+  wait('document.querySelector(".chat-mention-card [role=alert]")?.textContent.includes("unblock unavailable")');
+  action("Unblock");
+  wait(
+    'document.querySelector(".chat-profile-block")?.textContent === "Block" && !document.querySelector(".chat-blocked-run")',
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card-message")'), true);
   closeProfile();
   // The disposable fixture's DM-creation endpoint supports Alex, not Maya.
   browser("click", '.member-profile-trigger[aria-label="Open profile for Alex"]');
@@ -143,6 +237,8 @@ try {
   checkProfile("Maya", "maya");
   assert.equal(evaluate('!!document.querySelector(".chat-mention-card-drawer")'), true);
   screenshot("profile-author-narrow");
+  action("Invite to space");
+  screenshot("profile-invite-narrow");
   closeProfile();
   action("Show member list");
   wait('document.querySelector("#space-member-list")?.getAnimations().every(a => a.playState !== "running")');
@@ -372,7 +468,7 @@ try {
     `document.querySelector('.chat-thread-panel')?.textContent.includes('Sent from pinned thread context') && !document.querySelector('.chat-thread-panel')?.textContent.includes('Load newer replies')`,
   );
   console.log(
-    "PASS: author avatars/names and member rows open profiles; keyboard activation/focus return; self profile; member Message opens the correct DM; desktop popovers/narrow sheets; pinned author distinct from pinner; icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu optimistic unpin before server echo; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
+    "PASS: profile owned-space picker; invitation refusal/retry and pending membership without navigation; block cancel/confirm and collapsed text; unblock failure/retry restores profile actions; author avatars/names and member rows open profiles; keyboard activation/focus return; self profile; member Message opens the correct DM; desktop popovers/narrow sheets; pinned author distinct from pinner; icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu optimistic unpin before server echo; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
   );
 } catch (error) {
   console.error(browser("snapshot", "-i").snapshot);
