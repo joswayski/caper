@@ -167,12 +167,10 @@ async fn persist_forward(
     }
     // Mentions in the note are highlighted and open profile cards like any
     // message's. The forward notifies as a message; its note's mentions don't.
-    let content = with_mentions(
-        &mut tx,
-        content,
-        &mentions::parse(&input.text, destination.space_id.is_some()),
-    )
-    .await?;
+    let mut found = mentions::parse(&input.text, destination.space_id.is_some());
+    // A note can't report anything, so its @feedback stays plain text.
+    found.retain(|mention| *mention != Mention::Feedback);
+    let content = with_mentions(&mut tx, content, &found).await?;
     let head: i64 = sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id=$1")
         .bind(destination.id)
         .fetch_one(&mut *tx)

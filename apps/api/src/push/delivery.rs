@@ -58,12 +58,8 @@ struct Claimed {
 impl Claimed {
     fn notifies(&self) -> bool {
         use expansion::{Kind, Preferences};
-        let kind = match self.kind.as_str() {
-            "direct.message" => Kind::DirectMessage,
-            "channel.message" => Kind::ChannelMessage,
-            "mention.user" => Kind::MentionUser,
-            "mention.everyone" => Kind::MentionEveryone,
-            _ => return false,
+        let Some(kind) = Kind::parse(&self.kind) else {
+            return false;
         };
         let level = |value: &Option<String>| value.as_deref().and_then(Level::parse);
         expansion::notifies(
@@ -152,7 +148,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                      AND ((b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
                          OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
-                 AND CASE WHEN ch.space_id IS NULL THEN
+                 AND (CASE WHEN ch.space_id IS NULL THEN
                      EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
                          AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
                          AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
@@ -161,9 +157,12 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                      AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)
                      AND (NOT ch.private OR s.owner_id=n.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
                          WHERE cm.channel_id=ch.id AND cm.user_id=n.user_id AND cm.deleted_at IS NULL))
-                     AND (n.kind='mention.user' OR EXISTS(SELECT 1 FROM public.channel_joins cj
+                     AND (n.kind IN ('mention.user','feedback') OR EXISTS(SELECT 1 FROM public.channel_joins cj
                          WHERE cj.channel_id=ch.id AND cj.user_id=n.user_id AND cj.deleted_at IS NULL))
-                 END) AS recipient_eligible,
+                 END
+                 -- The feedback team, visiting where it was asked for.
+                 OR (n.kind='feedback' AND (s.id IS NULL OR NOT s.demo)
+                     AND public.feedback_access(ch.id,n.user_id)))) AS recipient_eligible,
                 ns.default_level AS account_level, COALESCE(ns.paused_until > now(), false) AS paused,
                 co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,

@@ -88,7 +88,7 @@ final class MentionAutocompleteTests: XCTestCase {
 
     func testSpecialsFollowMembersAndKeepTheirSlotsInTheCapOfSix() {
         XCTAssertEqual(names("@"), ["alice", "alicia", "bob", "malice", "everyone", "here"],
-                       "an empty query lists members alphabetically, capped to leave room for both specials")
+                       "an empty query lists members alphabetically, capped to leave room for both specials; @feedback needs a letter")
         XCTAssertEqual(names("@e"), ["alice", "malice", "zed", "everyone"])
         XCTAssertEqual(names("@HER"), ["here"])
         let many = (0..<10).map { Member(id: "User0000000\($0)", username: "user\($0)", displayName: "User \($0)", owner: false) }
@@ -104,11 +104,16 @@ final class MentionAutocompleteTests: XCTestCase {
         let direct = MentionSource.direct(peer: peer, people: nil, accountID: selfID)
         XCTAssertEqual(names("@", direct), ["pat"])
         XCTAssertEqual(names("@doe", direct), ["pat"])
-        XCTAssertEqual(names("@every", direct), [], "specials are plain text in DMs")
+        XCTAssertEqual(names("@every", direct), [], "@everyone/@here are plain text in DMs")
         let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"), people: nil, accountID: selfID)
-        XCTAssertEqual(notes, .empty, "nobody to mention in self-notes before people load")
-        XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false, source: notes))
-        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID), .empty)
+        XCTAssertEqual(notes, MentionSource(members: [], specials: false, feedback: true),
+                       "nobody to mention in self-notes before people load")
+        XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false, source: notes),
+                     "a bare @ in self-notes opens no popup")
+        XCTAssertEqual(names("@f", notes), ["feedback"])
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID).members, [])
+        XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false, source: .empty),
+                     "nothing to suggest opens no popup")
     }
 
     func testDirectMessagesSuggestEveryoneFromPeopleWithoutSpecials() {
@@ -121,7 +126,8 @@ final class MentionAutocompleteTests: XCTestCase {
         let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
         let direct = MentionSource.direct(peer: peer, people: people, accountID: selfID)
         XCTAssertFalse(direct.specials)
-        XCTAssertEqual(names("@", direct), ["alex", "pat", "sam"], "people beyond the peer, never yourself, no specials")
+        XCTAssertEqual(names("@", direct), ["alex", "pat", "sam"],
+                       "people beyond the peer, never yourself, no @everyone/@here")
         XCTAssertEqual(names("@stone", direct), ["alex"], "same display-name ranking as space channels")
         XCTAssertEqual(names("@every", direct), [], "@everyone/@here stay space-only")
         XCTAssertEqual(names("@her", direct), [])
@@ -134,7 +140,7 @@ final class MentionAutocompleteTests: XCTestCase {
         let newer = MentionSource.direct(peer: DirectMessagePeer(id: "New000000001", username: "newcomer", displayName: "New"),
                                          people: people, accountID: selfID)
         XCTAssertEqual(names("@new", newer), ["newcomer"], "a conversation newer than the list still offers its peer")
-        XCTAssertEqual(MentionSource.direct(peer: nil, people: [], accountID: selfID), .empty)
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: [], accountID: selfID).members, [])
         let many = (0..<10).map { Person(id: "User0000000\($0)", username: "user\($0)", displayName: "User \($0)") }
         XCTAssertEqual(names("@", .direct(peer: nil, people: many, accountID: selfID)).count, 6, "same cap of six")
     }

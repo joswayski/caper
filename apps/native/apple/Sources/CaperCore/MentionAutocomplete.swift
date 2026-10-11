@@ -1,9 +1,9 @@
 import Foundation
 
-/// A composer `@` suggestion: a person, or the `everyone`/`here` specials
-/// offered only in space channels.
+/// A composer `@` suggestion: a person, the `everyone`/`here` specials
+/// offered only in space channels, or `feedback`, offered in every conversation.
 struct MentionCandidate: Equatable, Identifiable, Sendable {
-    enum Kind: Equatable, Sendable { case member, everyone, here }
+    enum Kind: Equatable, Sendable { case member, everyone, here, feedback }
     let kind: Kind
     /// The user's external id, or the special's name.
     let id: String
@@ -17,6 +17,9 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
                                            displayName: "Everyone in this channel")
     static let here = MentionCandidate(kind: .here, id: "here", username: "here",
                                        displayName: "Everyone online in this channel")
+    /// Asks the Caper team to read this conversation; its label says so up front.
+    static let feedback = MentionCandidate(kind: .feedback, id: "feedback", username: "feedback",
+                                           displayName: "Caper team · can read and reply here")
 
     static func member(id: String, username: String, displayName: String, avatarId: Int? = nil) -> MentionCandidate {
         MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId)
@@ -26,9 +29,13 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
 /// Who the composer may suggest in the open conversation.
 struct MentionSource: Equatable, Sendable {
     var members: [MentionCandidate]
+    /// `everyone` and `here`: space channels only.
     var specials: Bool
+    /// `feedback`: every conversation (channels, threads, DMs, notes, visits).
+    var feedback: Bool = true
 
-    static let empty = MentionSource(members: [], specials: false)
+    /// Nothing to suggest at all.
+    static let empty = MentionSource(members: [], specials: false, feedback: false)
 
     /// A space channel: the members from `GET /api/spaces/{space}` (empty
     /// until loaded) except the signed-in account, then `everyone`/`here`.
@@ -40,8 +47,8 @@ struct MentionSource: Equatable, Sendable {
 
     /// Any DM, self-notes included: everyone from `GET /api/people` once it
     /// has loaded (plus the DM peer if that list predates the conversation);
-    /// until then only the other participant, so nobody in self-notes. Never
-    /// the specials.
+    /// until then only the other participant, so nobody in self-notes (only
+    /// `@feedback` once typed). Never `everyone`/`here`.
     static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?) -> MentionSource {
         var members = (people ?? []).filter { $0.id != accountID }.map {
             MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
@@ -49,7 +56,33 @@ struct MentionSource: Equatable, Sendable {
         if let peer, peer.id != accountID, !members.contains(where: { $0.id == peer.id }) {
             members.append(.member(id: peer.id, username: peer.username, displayName: peer.displayName))
         }
-        return members.isEmpty ? .empty : MentionSource(members: members, specials: false)
+        return MentionSource(members: members, specials: false)
+    }
+
+    /// A feedback visit has no member list: the reporter, then people who
+    /// already appear in the loaded messages (authors `GET /api/people` can
+    /// name, and resolved `@` mentions), never yourself; plus `@feedback`.
+    static func visit(reporter: FeedbackReport.Reporter?, messages: [ChatMessage], people: [Person]?, accountID: String?) -> MentionSource {
+        var members: [MentionCandidate] = []
+        func add(_ candidate: MentionCandidate) {
+            guard candidate.id != accountID, !candidate.username.isEmpty, !members.contains(where: { $0.id == candidate.id }) else { return }
+            members.append(candidate)
+        }
+        let known = Dictionary((people ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func person(_ id: String) -> MentionCandidate? {
+            known[id].map { MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId) }
+        }
+        if let reporter {
+            add(.member(id: reporter.id, username: reporter.username, displayName: reporter.displayName, avatarId: reporter.avatarId))
+        }
+        for message in messages {
+            if !message.author.isGuest, let author = person(message.author.id) { add(author) }
+            for mention in message.content.mentions {
+                guard case let .user(id, username) = mention else { continue }
+                add(person(id) ?? .member(id: id, username: username, displayName: username))
+            }
+        }
+        return MentionSource(members: members, specials: false)
     }
 }
 
@@ -79,7 +112,7 @@ struct MentionSegment: Equatable {
     let text: String
     let highlighted: Bool
     /// A highlighted person (`user` entry), which opens the mention card;
-    /// nil for plain text and the `@everyone`/`@here` pills.
+    /// nil for plain text and the `@everyone`/`@here`/`@feedback` pills.
     var user: MentionPill? = nil
 }
 
@@ -97,6 +130,10 @@ struct MentionPill: Equatable, Hashable, Identifiable, Sendable {
 enum MentionAutocomplete {
     static let maximumNameLength = 32
     static let maximumChoices = 6
+    /// `@feedback` and `@caper` both ask the Caper team (the server's `FEEDBACK_ALIASES`).
+    static let feedbackAliases = ["feedback", "caper"]
+
+    static func isFeedbackAlias(_ name: String) -> Bool { feedbackAliases.contains(name.lowercased()) }
 
     static func isNameScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
@@ -141,11 +178,14 @@ enum MentionAutocomplete {
     /// Members ranked 0 (exact username), 1 (username prefix), 2 (display name
     /// or one of its space-separated words starts with the query), 3 (username
     /// contains it), ties by username; an empty query puts every member at 1.
-    /// Matching specials (`everyone`, then `here`) follow the members and keep
-    /// their slots within the cap of six.
+    /// Matching specials (`everyone`, `here`, then `feedback`) follow the
+    /// members and keep their slots within the cap of six. `feedback` needs a
+    /// non-empty query that starts either alias, `feedback` or `caper`.
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
-        let specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
+        var specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
+        // Only once something is typed: a bare `@` stays about people.
+        if source.feedback, !query.isEmpty, feedbackAliases.contains(where: { $0.hasPrefix(query) }) { specials.append(.feedback) }
         let members = source.members.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
             let username = candidate.username.lowercased()
             let displayName = candidate.displayName.lowercased()
@@ -207,17 +247,24 @@ enum MentionAutocomplete {
     }
 
     /// A token is highlighted only when `content.mentions` resolves it:
-    /// `everyone`/`here` need their entry, other names a `user` entry with that
-    /// username. Unresolved names stay plain text.
+    /// `everyone`/`here` need their entry, every `@feedback`/`@caper` the
+    /// `feedback` entry, other names a `user` entry with that username.
+    /// Unresolved names stay plain text.
     static func isHighlighted(name: String, mentions: [MessageMention]) -> Bool {
         let name = name.lowercased()
         return mentions.contains { mention in
             switch mention {
             case .everyone: return name == "everyone"
             case .here: return name == "here"
+            case .feedback: return isFeedbackAlias(name)
             case let .user(_, username): return username.lowercased() == name
             }
         }
+    }
+
+    /// The message asked the Caper team (shows "Caper team notified").
+    static func asksFeedback(_ message: ChatMessage) -> Bool {
+        message.content.mentions.contains(.feedback)
     }
 
     /// `text` split into plain and highlighted runs; concatenating them
@@ -231,8 +278,10 @@ enum MentionAutocomplete {
             if cursor < token.range.lowerBound {
                 segments.append(MentionSegment(text: string(scalars[cursor..<token.range.lowerBound]), highlighted: false))
             }
+            // `@feedback`/`@caper` pills open no profile card.
+            let feedback = isFeedbackAlias(token.name) && mentions.contains(.feedback)
             segments.append(MentionSegment(text: string(scalars[token.range]), highlighted: true,
-                                           user: user(named: token.name, in: mentions)))
+                                           user: feedback ? nil : user(named: token.name, in: mentions)))
             cursor = token.range.upperBound
         }
         if cursor < scalars.endIndex {
@@ -266,6 +315,7 @@ enum MentionAutocomplete {
             switch mention {
             case let .user(id, _): return id == currentUserID
             case .everyone, .here: return message.author.id != currentUserID
+            case .feedback: return false
             }
         }
     }

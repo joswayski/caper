@@ -11,6 +11,7 @@ mod daily_icon;
 mod edits;
 mod effects;
 mod emoji;
+mod feedback;
 mod ffmpeg;
 mod forwarding;
 mod gateway;
@@ -793,6 +794,22 @@ struct CaperApp {
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
     open_after_refresh: Option<String>,
+    /// The Caper team's inbox (`feedbackTeam` accounts only), and whether it
+    /// covers the conversation pane.
+    feedback: feedback::Inbox,
+    feedback_open: bool,
+    /// A report or notification is opening its conversation by id; the
+    /// navigation for that channel consumes it.
+    visit_request: Option<feedback::VisitRequest>,
+    /// The open conversation, read as the Caper team without being a member.
+    /// It is DM-shaped (`selected_direct` is its channel): no space, pins,
+    /// typing, voice, settings or read markers.
+    visit: Option<feedback::Visit>,
+    /// Once history around the first anchor lands, the report's thread opens.
+    report_thread: Option<(String, feedback::ThreadFocus)>,
+    /// A member's own space channel reopens the normal way; this navigation
+    /// then lands on the report.
+    report_focus: Option<(u64, feedback::VisitTarget)>,
 }
 
 impl CaperApp {
@@ -982,6 +999,12 @@ impl CaperApp {
             file_picker: None,
             local_media: Vec::new(),
             open_after_refresh: None,
+            feedback: feedback::Inbox::default(),
+            feedback_open: false,
+            visit_request: None,
+            visit: None,
+            report_thread: None,
+            report_focus: None,
         };
         if let Some(name) = fixture.filter(|name| name.starts_with("parity-update")) {
             app.updates = updates::Updates::preview(updates::Available {
@@ -1061,6 +1084,7 @@ impl CaperApp {
                             id: "fixture-owner".into(),
                             name: "Fixture Owner".into(),
                             is_guest: false,
+                            admin: false,
                             avatar_id: Some(0),
                         },
                     });
@@ -1137,6 +1161,61 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid mentions fixture");
+                } else if name.starts_with("parity-feedback") {
+                    // A feedback team member, with labelled sample reports as
+                    // `GET /api/feedback` answers them.
+                    if let Some(account) = &mut app.account {
+                        account.feedback_team = true;
+                    }
+                    let channel = app.selected_channel.clone().expect("fixture channel");
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    messages[1].content.text =
+                        "@feedback TEST FIXTURE: uploads stall at 90% on hotel Wi-Fi.".into();
+                    messages[1].content.mentions = vec![model::Mention {
+                        kind: "feedback".into(),
+                        id: None,
+                        username: None,
+                    }];
+                    messages[3].author.admin = true;
+                    let report = |id: &str, root: &str, text: &str, answered: bool| {
+                        serde_json::json!({
+                            "id": id, "messageId": id, "threadRootId": root,
+                            "createdAt": chrono::Utc::now().to_rfc3339(), "text": text,
+                            "attachments": if text.is_empty() { 2 } else { 0 },
+                            "reporter": {"id": "fixture-maya", "username": "maya",
+                                         "displayName": "TEST FIXTURE Maya", "avatarId": 15},
+                            "channel": {"id": channel, "name": "general", "direct": false},
+                            "space": {"id": "space0000001", "name": "Fixture Studio"},
+                            "replyCount": u8::from(answered), "answered": answered
+                        })
+                    };
+                    let page: feedback::Page = serde_json::from_value(serde_json::json!({
+                        "reports": [
+                            report(&messages[1].id, &messages[1].id, &messages[1].content.text, false),
+                            report("fixture-report-2", "fixture-report-2", "", true),
+                        ],
+                        "cursor": null
+                    }))
+                    .expect("valid feedback fixture");
+                    if let Some((request, _)) = app.feedback.start(false) {
+                        app.feedback.finish(request, Ok(page));
+                    }
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid feedback fixture");
+                    if name == "parity-feedback-visit" {
+                        app.selected_direct = Some(channel.clone());
+                        app.visit = Some(feedback::Visit {
+                            channel,
+                            name: "general".into(),
+                            direct: false,
+                            title: "#general · Fixture Studio".into(),
+                            reporter: None,
+                            origin: feedback::Origin::Inbox,
+                        });
+                    } else {
+                        app.feedback_open = true;
+                    }
                 } else if name.starts_with("parity-edits") {
                     let mut message = app.timeline.messages().nth(1).unwrap().clone();
                     let original = message.clone();
@@ -1265,6 +1344,7 @@ impl CaperApp {
                             avatar_id: Some(avatar),
                             name: author_name.into(),
                             is_guest: false,
+                            admin: false,
                         };
                         message.content.text = text.into();
                         message.seq = "1".into();
@@ -1494,6 +1574,7 @@ impl CaperApp {
                                 avatar_id: Some(15),
                                 name: "Maya".into(),
                                 is_guest: false,
+                                admin: false,
                             },
                             typing: true,
                             revision: 1,
@@ -1690,6 +1771,7 @@ impl CaperApp {
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
+            feedback_team: false,
         });
         let channels = vec![
             channel.clone(),
@@ -1788,6 +1870,7 @@ impl CaperApp {
                     avatar_id: Some(index as i32),
                     name: name.into(),
                     is_guest: false,
+                    admin: false,
                 },
                 content: Content {
                     version: 1,
@@ -1840,6 +1923,7 @@ impl CaperApp {
                 id: "fixture-owner".into(),
                 name: "Fixture Owner".into(),
                 is_guest: false,
+                admin: false,
                 avatar_id: Some(0),
             },
         });
@@ -2103,21 +2187,41 @@ impl CaperApp {
                     self.worker.focus();
                     self.dialog = None;
                     self.navigation_open = false;
-                    if let Some(id) = alert.conversation_id {
-                        // A new DM may arrive before the periodic conversation list.
-                        self.navigate(NavigationTarget {
-                            space: None,
-                            channel: Some(id),
-                        });
-                        self.refresh_directs();
-                    } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
-                    {
-                        self.navigate(NavigationTarget {
-                            space: Some(space),
-                            channel: Some(channel),
-                        });
+                    let known = alert.conversation_id.as_ref().map_or_else(
+                        || {
+                            alert.space_id.as_ref().is_some_and(|space| {
+                                self.spaces.iter().any(|item| &item.id == space)
+                            })
+                        },
+                        |id| self.directs.iter().any(|direct| &direct.id == id),
+                    );
+                    match alert.route(self.feedback_team(), known) {
+                        // As the Caper team, at the report and in its thread.
+                        Some(os_notifications::Route::Visit(target)) => {
+                            self.open_report(target, false);
+                        }
+                        Some(os_notifications::Route::Direct(id)) => {
+                            // A new DM may arrive before the periodic conversation list.
+                            self.navigate(NavigationTarget {
+                                space: None,
+                                channel: Some(id),
+                            });
+                            self.refresh_directs();
+                        }
+                        Some(os_notifications::Route::Channel { space, channel }) => {
+                            self.navigate(NavigationTarget {
+                                space: Some(space),
+                                channel: Some(channel),
+                            });
+                        }
+                        None => {}
                     }
                 }
+                Event::FeedbackLoaded {
+                    epoch,
+                    request,
+                    result,
+                } if epoch == self.account_epoch => self.feedback.finish(request, result),
                 Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
                     if self.unread_refresh_due.is_none() {
                         self.unread_refresh_due = Some(Instant::now() + Duration::from_secs(1));
@@ -2353,7 +2457,20 @@ impl CaperApp {
                     && self.selected_channel.as_deref() == Some(&channel) =>
                 {
                     self.context_loading = false;
+                    let main = root.is_none() && !newer;
                     self.accept_context(root, &anchor, newer, result);
+                    // A report lands in its thread once the history around it is in.
+                    if main
+                        && self.selected_channel.is_some()
+                        && let Some((_, thread)) = self
+                            .report_thread
+                            .take_if(|(expected, _)| *expected == anchor)
+                    {
+                        match thread.anchor {
+                            Some(reply) => self.load_context(Some(thread.root), reply, false),
+                            None => self.open_thread(thread.root),
+                        }
+                    }
                 }
                 Event::ThreadLoaded {
                     generation,
@@ -2814,6 +2931,11 @@ impl CaperApp {
         self.privacy_saving = false;
         self.privacy_error = None;
         self.notifications = notifications::Notifications::default();
+        self.feedback = feedback::Inbox::default();
+        self.feedback_open = false;
+        self.visit_request = None;
+        self.visit = None;
+        self.report_focus = None;
     }
 
     fn is_blocked(&self, account: &str) -> bool {
@@ -2830,6 +2952,133 @@ impl CaperApp {
             .collect()
     }
 
+    /// On the Caper feedback team (`feedbackTeam` on the account).
+    fn feedback_team(&self) -> bool {
+        self.account
+            .as_ref()
+            .is_some_and(|account| account.feedback_team)
+    }
+
+    /// The open conversation when it is a feedback visit.
+    fn visiting(&self) -> Option<&feedback::Visit> {
+        self.visit.as_ref().filter(|visit| {
+            self.selected_direct.as_deref() == Some(visit.channel.as_str())
+                && self.selected_channel.as_deref() == Some(visit.channel.as_str())
+        })
+    }
+
+    /// The open conversation is a DM (a visited one included), named after
+    /// people rather than `#channel`.
+    fn conversation_is_direct(&self) -> bool {
+        self.selected_direct.is_some() && self.visiting().is_none_or(|visit| visit.direct)
+    }
+
+    /// Shows the inbox over the conversation pane and refreshes it.
+    fn open_feedback(&mut self) {
+        if !self.feedback_team() {
+            return;
+        }
+        self.feedback_open = true;
+        self.navigation_open = false;
+        self.showing_pins = false;
+        self.mention_card = None;
+        self.load_feedback(false);
+    }
+
+    fn load_feedback(&mut self, more: bool) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team()) else {
+            return;
+        };
+        if let Some((request, before)) = self.feedback.start(more) {
+            self.worker.send(Command::LoadFeedback {
+                epoch: self.account_epoch,
+                request,
+                token,
+                before,
+            });
+        }
+    }
+
+    /// Where Back returns from a visit opened now.
+    fn report_origin(&self) -> feedback::Origin {
+        if let Some(visit) = self.visiting() {
+            return visit.origin.clone();
+        }
+        match &self.selected_channel {
+            Some(channel) => feedback::Origin::Conversation {
+                space: if self.selected_direct.as_ref() == Some(channel) {
+                    None
+                } else {
+                    self.selected_space.clone()
+                },
+                channel: channel.clone(),
+            },
+            None => feedback::Origin::Nowhere,
+        }
+    }
+
+    /// Opens a report's conversation by channel id, even one outside the
+    /// space and DM lists, at the report and in its thread.
+    fn open_report(&mut self, target: feedback::VisitTarget, from_inbox: bool) {
+        if self.token.is_none() {
+            return;
+        }
+        let origin = if from_inbox {
+            feedback::Origin::Inbox
+        } else {
+            self.report_origin()
+        };
+        self.feedback_open = false;
+        self.navigation_open = false;
+        if self.selected_channel.as_deref() == Some(target.channel.as_str())
+            && !self.opening
+            && self.navigation_error.is_none()
+        {
+            // Already open, as a visit or as a member: land on the report.
+            if self.visiting().is_some()
+                && let Some(visit) = &mut self.visit
+            {
+                visit.origin = origin;
+                if target.reporter.is_some() {
+                    visit.reporter.clone_from(&target.reporter);
+                }
+            }
+            self.focus_report(&target);
+            return;
+        }
+        let channel = target.channel.clone();
+        self.visit_request = Some(feedback::VisitRequest { target, origin });
+        self.navigate(NavigationTarget {
+            space: None,
+            channel: Some(channel),
+        });
+    }
+
+    /// History around the report, then its thread.
+    fn focus_report(&mut self, target: &feedback::VisitTarget) {
+        let (anchor, thread) = target.plan();
+        self.report_thread = thread.map(|thread| (anchor.clone(), thread));
+        self.showing_pins = false;
+        self.load_context(None, anchor, false);
+    }
+
+    /// Back from a visit: the inbox, or the conversation a notification
+    /// interrupted.
+    fn leave_visit(&mut self) {
+        let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) else {
+            return;
+        };
+        match origin {
+            feedback::Origin::Conversation { space, channel } => {
+                self.navigate(NavigationTarget {
+                    space,
+                    channel: Some(channel),
+                });
+            }
+            feedback::Origin::Inbox | feedback::Origin::Nowhere => self.open_feedback(),
+        }
+    }
+
     fn selected_direct_conversation(&self) -> Option<&model::DirectConversation> {
         let id = self.selected_direct.as_ref()?;
         self.directs.iter().find(|direct| &direct.id == id)
@@ -2837,6 +3086,9 @@ impl CaperApp {
 
     /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
     fn empty_conversation_note(&self) -> String {
+        if self.visiting().is_some() {
+            return feedback::BANNER.to_owned();
+        }
         match self.selected_direct_conversation() {
             Some(direct) => format!(
                 "Only you and {} can read this conversation.",
@@ -3510,8 +3762,9 @@ impl CaperApp {
     }
 
     /// Narrow Browse slides over the conversation, which is then not being read.
+    /// The feedback inbox covers it too.
     fn browse_covers_conversation(&self) -> bool {
-        self.narrow_layout && self.navigation_open
+        (self.narrow_layout && self.navigation_open) || self.feedback_open
     }
 
     fn mark_selected_direct_read(&mut self) {
@@ -3524,8 +3777,9 @@ impl CaperApp {
         {
             return;
         }
-        // Reading a request must not look like engaging with it.
-        if self.selected_request().is_some() {
+        // Reading a request must not look like engaging with it, and a
+        // visit has no read marker to move.
+        if self.selected_request().is_some() || self.visiting().is_some() {
             return;
         }
         if let (Some(id), Some(token)) = (self.selected_direct.clone(), self.token.clone()) {
@@ -3670,6 +3924,17 @@ impl CaperApp {
     }
 
     fn navigate(&mut self, target: NavigationTarget) {
+        // Any conversation replaces the feedback inbox; only the visit's own
+        // navigation keeps its request.
+        self.feedback_open = false;
+        if target.space.is_some()
+            || self
+                .visit_request
+                .as_ref()
+                .is_none_or(|request| target.channel.as_ref() != Some(&request.target.channel))
+        {
+            self.visit_request = None;
+        }
         // Another conversation's media never stays open over it.
         self.viewer = None;
         self.forwarding.cancel_conversation();
@@ -3735,6 +4000,10 @@ impl CaperApp {
 
     fn prepare_navigation(&mut self, cache_target: navigation::Target) {
         self.navigation_prefetch = None;
+        let visit = cache_target.space.is_none()
+            && self.visit_request.as_ref().is_some_and(|request| {
+                cache_target.channel.as_ref() == Some(&request.target.channel)
+            });
         let prefetched = self
             .navigation_cache
             .take_prefetch(&cache_target, Instant::now());
@@ -3744,6 +4013,8 @@ impl CaperApp {
                 read.history
             })
         });
+        // A visit always reads fresh: its cache entry may predate the report.
+        let cached = cached.filter(|_| !visit);
         self.worker.send(Command::PrepareNavigation {
             generation: self.generation,
             navigation: self.navigation,
@@ -3752,6 +4023,7 @@ impl CaperApp {
             channel: cache_target.channel,
             name: self.identity_name(),
             cached,
+            visit,
         });
     }
 
@@ -3850,6 +4122,7 @@ impl CaperApp {
                 has_more: self.has_more,
                 space,
                 channel: place,
+                visitor: false,
             },
         );
     }
@@ -3877,13 +4150,36 @@ impl CaperApp {
         }
         self.opening = false;
         self.restoring = None;
+        // `navigate` drops a request for any other target.
+        let visit_request = self.visit_request.take();
+        let report_focus = self
+            .report_focus
+            .take()
+            .filter(|(request, _)| *request == navigation)
+            .map(|(_, target)| target);
         match result {
             Ok(prepared) => {
                 let forward_focus = self.forward_focus.take();
-                let direct = prepared
-                    .conversation
-                    .as_ref()
-                    .is_some_and(|(history, _)| history.space.id.is_empty());
+                let history = prepared.conversation.as_ref().map(|(history, _)| history);
+                let visitor =
+                    visit_request.is_some() && history.is_some_and(|history| history.visitor);
+                // The team member is in this space channel: open it the
+                // normal way, then land on the report.
+                if let Some(request) = &visit_request
+                    && !visitor
+                    && let Some(history) = history.filter(|history| !history.space.id.is_empty())
+                {
+                    let target = NavigationTarget {
+                        space: Some(history.space.id.clone()),
+                        channel: Some(history.channel.id.clone()),
+                    };
+                    let focus = request.target.clone();
+                    self.navigate(target);
+                    self.report_focus = Some((self.navigation, focus));
+                    return;
+                }
+                // A visit is DM-shaped: it never changes the open space.
+                let direct = visitor || history.is_some_and(|history| history.space.id.is_empty());
                 self.remember_conversation();
                 let space_changed = !direct
                     && self.selected_space.as_deref()
@@ -3912,11 +4208,14 @@ impl CaperApp {
                         .map(|detail| detail.space.id.clone());
                     self.detail = prepared.detail;
                 }
+                self.visit = None;
                 if let Some((history, session)) = prepared.conversation {
                     let channel = history.channel.id.clone();
                     if direct {
                         self.selected_direct = Some(channel.clone());
-                        if let Some(token) = self.token.clone() {
+                        if visitor && let Some(request) = visit_request.clone() {
+                            self.visit = Some(feedback::Visit::new(request, &history));
+                        } else if let Some(token) = self.token.clone() {
                             self.worker.send(Command::LoadPeople {
                                 generation: self.generation,
                                 token,
@@ -3931,6 +4230,11 @@ impl CaperApp {
                     && self.selected_channel.as_deref() == Some(&source.message.channel_id)
                 {
                     self.load_context(source.message.thread_root_id, source.message.id, false);
+                }
+                if let Some(target) = report_focus.or(visit_request.map(|request| request.target))
+                    && self.selected_channel.as_deref() == Some(target.channel.as_str())
+                {
+                    self.focus_report(&target);
                 }
             }
             Err(error) => {
@@ -4490,6 +4794,10 @@ impl CaperApp {
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
                     self.focused_message = None;
+                    // A reply can answer a report.
+                    if self.visiting().is_some() {
+                        self.load_feedback(false);
+                    }
                     if root.is_none() && self.has_newer {
                         self.reload_channel();
                     } else if self.thread_view.as_ref().is_some_and(|thread| {
@@ -4648,6 +4956,7 @@ impl CaperApp {
         self.has_newer = false;
         self.context_loading = false;
         self.forward_focus = None;
+        self.report_thread = None;
         self.focused_message = None;
         self.scroll_to_target = false;
         self.timeline = Timeline::default();
@@ -5120,7 +5429,8 @@ impl CaperApp {
     }
 
     fn set_typing(&mut self, typing: bool) {
-        if self.typing_sent == typing {
+        // Visitors never show as typing.
+        if self.typing_sent == typing || self.visiting().is_some() {
             return;
         }
         let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
@@ -5891,7 +6201,11 @@ impl eframe::App for CaperApp {
             }
         }
         self.worker.showing(
-            if self.foreground && !self.navigation_open && self.dialog.is_none() {
+            if self.foreground
+                && !self.navigation_open
+                && !self.feedback_open
+                && self.dialog.is_none()
+            {
                 self.selected_channel.as_deref()
             } else {
                 None
@@ -7770,6 +8084,24 @@ impl CaperApp {
                     }
                 });
             });
+            // The Caper team's inbox sits with the DMs, for team members only.
+            if self.feedback_team() {
+                let active = self.feedback_open || self.visiting().is_some();
+                ui.horizontal(|ui| {
+                    let (response, _) = channel_button(
+                        ui,
+                        egui::vec2(ui.available_width() - 18.0, 28.0),
+                        "Feedback",
+                        Some(NavIcon::Speech),
+                        active,
+                        RowExtras::default(),
+                    );
+                    if response.clicked() {
+                        self.open_feedback();
+                    }
+                });
+                ui.add_space(2.0);
+            }
             self.request_navigation(ui);
             let self_direct = self
                 .directs
@@ -9566,7 +9898,7 @@ impl CaperApp {
                 ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, RAISED));
             }
             if response.clicked() {
-                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false }, &response, true);
+                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false, admin: false }, &response, true);
             }
         }
         if page_count > 1 {
@@ -9669,7 +10001,119 @@ impl CaperApp {
         });
     }
 
+    /// The Caper team's inbox over the conversation pane: newest reports
+    /// first, each opening its conversation as a visit.
+    fn feedback_inbox(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        let mut open = None;
+        egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let heading = egui::TopBottomPanel::top("feedback-heading")
+                .exact_height(54.0)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(CONVERSATION)
+                        .inner_margin(egui::Margin::symmetric(18, 8)),
+                )
+                .show_inside(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 38.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
+                                self.navigation_open = true;
+                            }
+                            ui.label(RichText::new("Feedback").size(13.76));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if secondary_button(ui, "Refresh", !self.feedback.loading)
+                                        .clicked()
+                                    {
+                                        self.load_feedback(false);
+                                    }
+                                },
+                            );
+                        },
+                    );
+                });
+            ui.painter().hline(
+                heading.response.rect.x_range(),
+                heading.response.rect.bottom(),
+                Stroke::new(1.0, BORDER),
+            );
+            egui::ScrollArea::vertical()
+                .id_salt("feedback-inbox")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(6.0);
+                    if self.feedback.reports.is_empty() {
+                        if let Some(error) = self.feedback.error.clone() {
+                            chat_state(ui, 2, |ui| {
+                                ui.label(RichText::new(error).color(MUTED));
+                                ui.add_space(10.0);
+                                if secondary_button(ui, "Try again", true).clicked() {
+                                    self.load_feedback(false);
+                                }
+                            });
+                        } else if !self.feedback.loaded {
+                            message_skeleton(ui);
+                        } else {
+                            chat_state(ui, 2, |ui| {
+                                ui.label("No feedback yet.");
+                                ui.label(
+                                    RichText::new(
+                                        "Messages that mention @feedback anywhere appear here.",
+                                    )
+                                    .color(MUTED),
+                                );
+                            });
+                        }
+                        return;
+                    }
+                    let now = chrono::Utc::now();
+                    for report in self.feedback.reports.clone() {
+                        if feedback_row(ui, &report, now).clicked() {
+                            open = Some(report.target());
+                        }
+                    }
+                    if let Some(error) = self.feedback.error.clone() {
+                        history_row(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(ERROR, error);
+                                if ui.small_button("Retry").clicked() {
+                                    self.load_feedback(self.feedback.cursor.is_some());
+                                }
+                            });
+                        });
+                    }
+                    if self.feedback.cursor.is_some()
+                        && history_row(ui, |ui| {
+                            centered_history_button(
+                                ui,
+                                "Load older feedback",
+                                !self.feedback.loading_more,
+                            )
+                        })
+                        .clicked()
+                    {
+                        self.load_feedback(true);
+                    }
+                    ui.add_space(12.0);
+                });
+        });
+        if let Some(target) = open {
+            self.open_report(target, true);
+        }
+    }
+
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        if self.feedback_open && self.feedback_team() {
+            self.feedback_inbox(ui, narrow);
+            return;
+        }
         // Web closes the thread on Escape unless something open takes it.
         // These may close earlier in this pass without consuming the key.
         let escape_taken = self.reaction_picker.is_some()
@@ -9720,7 +10164,7 @@ impl CaperApp {
         let window = thread.window;
         let error = thread.error.clone();
         // DMs are named after the other person, without a channel `#`.
-        let direct = self.selected_direct.is_some();
+        let direct = self.conversation_is_direct();
         let (conversation, broadcast_label) = if direct {
             (
                 format!("with {}", self.channel_name()),
@@ -9779,6 +10223,10 @@ impl CaperApp {
             heading.response.rect.bottom(),
             Stroke::new(1.0, BORDER),
         );
+        // A narrow window shows only the thread, so it carries the banner.
+        if self.narrow_layout && self.visiting().is_some() {
+            visit_banner(ui, "thread-visit-banner");
+        }
         // Inset like the channel composer, on the panel's own surface.
         let composer_frame = egui::Frame::new()
             .fill(CONVERSATION)
@@ -9965,9 +10413,12 @@ impl CaperApp {
                                 self.navigation_open = true;
                             }
                             let direct = self.selected_direct.as_ref().and_then(|id| self.directs.iter().find(|item| &item.id == id));
-                            ui.label(RichText::new(match direct {
-                                Some(item) => item.peer.display_name.clone(),
-                                None => format!("# {}", self.channel_name()),
+                            let visit = self.visiting().map(|visit| visit.title.clone());
+                            ui.label(RichText::new(match (direct, visit) {
+                                // "#plans · Studio", or "Alice & Bob".
+                                (_, Some(title)) => title,
+                                (Some(item), None) => item.peer.display_name.clone(),
+                                (None, None) => format!("# {}", self.channel_name()),
                             }).size(13.76));
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
@@ -9989,6 +10440,17 @@ impl CaperApp {
                                     {
                                         if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                         else { self.members_visible = !self.members_visible; }
+                                    }
+                                    // Visitors get no pins, members, join, block or settings.
+                                    if let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) {
+                                        let back = match origin {
+                                            feedback::Origin::Conversation { .. } => "Close",
+                                            feedback::Origin::Inbox | feedback::Origin::Nowhere => "Back to feedback",
+                                        };
+                                        if secondary_button(ui, back, true).clicked() {
+                                            self.leave_visit();
+                                        }
+                                        return;
                                     }
                                     if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
@@ -10026,6 +10488,9 @@ impl CaperApp {
                 heading.response.rect.bottom(),
                 Stroke::new(1.0, BORDER),
             );
+            if self.visiting().is_some() {
+                visit_banner(ui, "visit-banner");
+            }
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
@@ -10128,7 +10593,7 @@ impl CaperApp {
                         ui.add_space(8.0);
                     }
                     let before = self.draft.clone();
-                    let placeholder = if self.selected_direct.is_some() {
+                    let placeholder = if self.conversation_is_direct() {
                         format!("Message {}", self.channel_name())
                     } else {
                         format!("Message #{}", self.channel_name())
@@ -10238,10 +10703,12 @@ impl CaperApp {
                         .inner_margin(egui::Margin::symmetric(18, 2)),
                 )
                 .show_inside(ui, |ui| {
+                    // Visitors see no typing indicators.
+                    let visiting = self.visiting().is_some();
                     let names: Vec<_> = self
                         .typers
                         .values()
-                        .filter(|typer| typer.typing)
+                        .filter(|typer| typer.typing && !visiting)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
@@ -10386,7 +10853,7 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
+                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -10804,11 +11271,13 @@ impl CaperApp {
             let opened = row.contains_pointer()
                 && !body.link_hovered
                 && ui.input(|i| i.pointer.secondary_clicked());
+            // Visitors can't forward out of (or into) a visited conversation.
+            let forwardable = self.visiting().is_none();
             egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
-                    if ui.button("Forward message").clicked() {
+                    if forwardable && ui.button("Forward message").clicked() {
                         self.forwarding.picker(
                             &self.worker,
                             self.generation,
@@ -11049,7 +11518,9 @@ impl CaperApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("Forward message").clicked()
+                    let visiting = self.visiting().is_some();
+                    if !visiting
+                        && ui.button("Forward message").clicked()
                         && let Some(token) = self.token.clone()
                     {
                         self.forwarding.picker(
@@ -11075,12 +11546,13 @@ impl CaperApp {
                         self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
                         ui.close();
                     }
-                    if ui
-                        .add_enabled(
-                            !self.pending_pins.contains(&message.id),
-                            egui::Button::new(if active { "Unpin" } else { "Pin" }),
-                        )
-                        .clicked()
+                    if !visiting
+                        && ui
+                            .add_enabled(
+                                !self.pending_pins.contains(&message.id),
+                                egui::Button::new(if active { "Unpin" } else { "Pin" }),
+                            )
+                            .clicked()
                     {
                         self.set_pin(message, !active);
                         ui.close();
@@ -11113,6 +11585,14 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
+                // Below a message that asked the team (`@feedback`/`@caper`).
+                if mentions::notifies_team(&message.content.mentions) {
+                    ui.label(
+                        RichText::new(mentions::FEEDBACK_NOTICE)
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                }
                 // An empty row would still take a 36px line under every
                 // message, doubling the gaps between them.
                 if !reactions.is_empty() {
@@ -12345,6 +12825,9 @@ impl CaperApp {
     }
 
     fn channel_name(&self) -> &str {
+        if let Some(visit) = self.visiting() {
+            return &visit.name;
+        }
         if let Some(id) = &self.selected_direct {
             return self
                 .directs
@@ -12547,13 +13030,60 @@ impl CaperApp {
         inserted
     }
 
-    /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
-    /// Space channels use the members already loaded by
-    /// `GET /api/spaces/{space}` (none yet leaves only the specials). Any DM,
-    /// self-notes included, uses `GET /api/people`; until that loads, or if it
-    /// never does, a DM offers its other participant (self-notes: nobody).
-    fn mention_people(&self) -> (Vec<mentions::Person>, bool) {
+    /// Who `@` can suggest, never yourself, and which specials apply:
+    /// `everyone`/`here` in space channels, `feedback` everywhere. Space
+    /// channels use the members already loaded by `GET /api/spaces/{space}`
+    /// (none yet leaves only the specials). Any DM, self-notes included, uses
+    /// `GET /api/people`; until that loads, or if it never does, a DM offers
+    /// its other participant (self-notes: nobody). A visited conversation has
+    /// no member list: the reporter and loaded authors whose username is known.
+    fn mention_people(&self) -> (Vec<mentions::Person>, mentions::Specials) {
         let me = self.account.as_ref().map(|account| account.id.as_str());
+        let direct = mentions::Specials {
+            channel: false,
+            feedback: true,
+        };
+        if let Some(visit) = self.visiting() {
+            let authors: BTreeSet<&str> = self
+                .timeline
+                .messages()
+                .map(|message| message.author.id.as_str())
+                .collect();
+            let mut people: Vec<mentions::Person> = Vec::new();
+            let known = self
+                .people
+                .iter()
+                .flatten()
+                .filter(|person| authors.contains(person.id.as_str()))
+                .map(|person| {
+                    (
+                        &person.id,
+                        &person.username,
+                        &person.display_name,
+                        person.avatar_id,
+                    )
+                });
+            let reporter = visit.reporter.as_ref().map(|person| {
+                (
+                    &person.id,
+                    &person.username,
+                    &person.display_name,
+                    person.avatar_id,
+                )
+            });
+            for (id, username, display_name, avatar_id) in reporter.into_iter().chain(known) {
+                if Some(id.as_str()) != me
+                    && !people.iter().any(|person| &person.username == username)
+                {
+                    people.push(mentions::Person {
+                        username: username.clone(),
+                        display_name: display_name.clone(),
+                        avatar_id,
+                    });
+                }
+            }
+            return (people, direct);
+        }
         if let Some(id) = &self.selected_direct {
             let known = self.people.as_deref().unwrap_or_default();
             // The peer also covers a DM opened after the list was fetched.
@@ -12579,7 +13109,7 @@ impl CaperApp {
                     avatar_id: person.avatar_id,
                 })
                 .collect();
-            return (people, false);
+            return (people, direct);
         }
         let people = self
             .detail
@@ -12597,7 +13127,13 @@ impl CaperApp {
                     })
                     .collect()
             });
-        (people, true)
+        (
+            people,
+            mentions::Specials {
+                channel: true,
+                feedback: true,
+            },
+        )
     }
 
     /// A person pill's card data from what is already loaded.
@@ -15000,6 +15536,162 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
+/// Marks a Caper admin's message in the pin gold with a soft glow. The
+/// server stamps `author.admin`, so a look-alike display name can't claim it.
+fn admin_badge(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(PIN_GOLD.gamma_multiply(0.1))
+        .stroke(Stroke::new(1.0, PIN_GOLD.gamma_multiply(0.55)))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(4, 1))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: 8,
+            spread: 0,
+            color: PIN_GOLD.gamma_multiply(0.24),
+        })
+        .show(ui, |ui| {
+            ui.label(RichText::new("ADMIN").size(9.0).strong().color(PIN_GOLD))
+        });
+}
+
+/// One inbox row: the reporter, where they wrote, a preview, the age and a
+/// quiet status ("Waiting" in terracotta).
+fn feedback_row(
+    ui: &mut egui::Ui,
+    report: &feedback::Report,
+    now: chrono::DateTime<chrono::Utc>,
+) -> egui::Response {
+    let tint = ui.painter().add(egui::Shape::Noop);
+    let width = ui.available_width();
+    let shown = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(18, 10))
+        .show(ui, |ui| {
+            ui.set_width(width - 36.0);
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 3.0);
+            ui.horizontal_top(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                paint_avatar(
+                    ui,
+                    rect,
+                    &report.reporter.display_name,
+                    report.reporter.avatar_id,
+                );
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(bold(&report.reporter.display_name).size(13.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(feedback::relative_time(&report.created_at, now))
+                                    .size(10.0)
+                                    .color(MUTED),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(report.place()).size(11.0).color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                    let preview = report.preview();
+                    if !preview.is_empty() {
+                        ui.add(
+                            egui::Label::new(RichText::new(preview).size(13.5).color(MESSAGE_TEXT))
+                                .truncate(),
+                        );
+                    }
+                    let waiting = !report.answered;
+                    let replies = match report.reply_count {
+                        0 => String::new(),
+                        1 => " · 1 reply".into(),
+                        count => format!(" · {count} replies"),
+                    };
+                    let mut status = egui::text::LayoutJob::default();
+                    status.append(
+                        report.status(),
+                        0.0,
+                        egui::TextFormat::simple(
+                            egui::FontId::new(
+                                11.0,
+                                egui::FontFamily::Name("Satoshi Medium".into()),
+                            ),
+                            if waiting { TERRACOTTA_BRIGHT } else { MUTED },
+                        ),
+                    );
+                    status.append(
+                        &replies,
+                        0.0,
+                        egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED),
+                    );
+                    ui.label(status);
+                });
+            });
+        });
+    let rect = shown.response.rect;
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with(("feedback-report", &report.id)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!(
+                "{}, {}, {}",
+                report.reporter.display_name,
+                report.place(),
+                report.status()
+            ),
+        )
+    });
+    if response.hovered() || response.has_focus() {
+        ui.painter().set(
+            tint,
+            egui::Shape::rect_filled(rect.shrink2(egui::vec2(8.0, 1.0)), 8.0, RAISED),
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink2(egui::vec2(8.0, 1.0)),
+            8.0,
+            Stroke::new(1.0, TERRACOTTA_BRIGHT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response
+}
+
+/// The slim neutral line over a visited conversation.
+fn visit_banner(ui: &mut egui::Ui, id: &'static str) {
+    let banner = egui::TopBottomPanel::top(id)
+        .exact_height(28.0)
+        .show_separator_line(false)
+        .frame(
+            egui::Frame::new()
+                .fill(CONVERSATION)
+                .inner_margin(egui::Margin::symmetric(18, 0)),
+        )
+        .show_inside(ui, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(feedback::BANNER).size(11.5).color(MUTED))
+                        .truncate(),
+                );
+            });
+        });
+    ui.painter().hline(
+        banner.response.rect.x_range(),
+        banner.response.rect.bottom(),
+        Stroke::new(1.0, BORDER),
+    );
+}
+
 /// A message row: avatar, then the name and time above the body. A grouped
 /// row (`grouped` is its short time, like "9:42") continues the row above
 /// instead: no avatar or header, 2px top padding, and the avatar column stays
@@ -15099,6 +15791,9 @@ fn message_row<R>(
                                     );
                                 }
                                 profile_response(ui, name);
+                            }
+                            if author.admin {
+                                admin_badge(ui);
                             }
                             if author.is_guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
@@ -15668,7 +16363,10 @@ fn mention_suggestion(
         }
         mentions::Candidate::Everyone => ("@everyone".into(), "Everyone in this channel".into()),
         mentions::Candidate::Here => ("@here".into(), "Everyone online in this channel".into()),
+        mentions::Candidate::Feedback => ("@feedback".into(), mentions::FEEDBACK_LABEL.into()),
     };
+    // The team's row says what tagging means in full, on a second line.
+    let feedback = matches!(candidate, mentions::Candidate::Feedback);
     let mut text = egui::text::LayoutJob::default();
     text.append(
         &title,
@@ -15680,8 +16378,12 @@ fn mention_suggestion(
     );
     // Smaller secondary text keeps the specials' descriptions inside 260px.
     text.append(
-        &format!(" {detail}"),
-        4.0,
+        &if feedback {
+            format!("\n{detail}")
+        } else {
+            format!(" {detail}")
+        },
+        if feedback { 0.0 } else { 4.0 },
         egui::TextFormat {
             valign: egui::Align::Center,
             ..egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED)
@@ -15690,7 +16392,11 @@ fn mention_suggestion(
     let slot = egui::Id::new("mention-suggestion-avatar").with(candidate.name());
     let row = egui::Button::new((egui::Atom::custom(slot, egui::vec2(24.0, 24.0)), text))
         .min_size(egui::vec2(width, 44.0))
-        .truncate()
+        .wrap_mode(if feedback {
+            egui::TextWrapMode::Wrap
+        } else {
+            egui::TextWrapMode::Truncate
+        })
         .stroke(Stroke::NONE)
         .fill(fill)
         .atom_ui(ui);
@@ -15699,7 +16405,9 @@ fn mention_suggestion(
             mentions::Candidate::Person(person) => {
                 paint_avatar(ui, rect, &person.display_name, person.avatar_id);
             }
-            mentions::Candidate::Everyone | mentions::Candidate::Here => {
+            mentions::Candidate::Everyone
+            | mentions::Candidate::Here
+            | mentions::Candidate::Feedback => {
                 ui.painter()
                     .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
                 ui.painter().text(
@@ -18097,6 +18805,7 @@ mod tests {
                 avatar_id: None,
                 name: "Maya".into(),
                 is_guest: false,
+                admin: false,
             },
             typing: true,
             revision: "1".into(),
@@ -21668,6 +22377,7 @@ mod tests {
             pinned_messages: Vec::new(),
             cursor: "0".into(),
             has_more: false,
+            visitor: false,
         };
         app.accept_channel(history, Err("Chat is unavailable.".into()), false, &channel);
         let output = render(&mut app, &context, vec![]);
@@ -22766,8 +23476,9 @@ mod tests {
         let (events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         // The fixture previews `GET /api/people`: space members and DM peers.
-        assert_eq!(names(&app, ""), ["alex", "maya"]);
-        assert!(names(&app, "every").is_empty(), "no specials in DMs");
+        assert_eq!(names(&app, ""), ["alex", "maya"], "a bare @ lists people");
+        assert!(names(&app, "every").is_empty(), "no everyone/here in DMs");
+        assert_eq!(names(&app, "cap"), ["feedback"], "the team, in DMs too");
         app.people = None;
         assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
 
@@ -22820,15 +23531,185 @@ mod tests {
             names(&app, "").is_empty(),
             "self-notes suggests nobody before people load"
         );
+        assert_eq!(names(&app, "fe"), ["feedback"], "personal notes too");
 
         app.selected_direct = None;
         app.selected_channel = Some("chan00000001".into());
         assert_eq!(names(&app, ""), ["alex", "maya", "everyone", "here"]);
+        assert_eq!(names(&app, "f"), ["feedback"]);
         app.detail = None;
         assert_eq!(
             names(&app, ""),
             ["everyone", "here"],
             "only specials until members load"
+        );
+
+        // A visit has no member list: the reporter and known authors.
+        let channel = "chan00000009".to_owned();
+        app.selected_channel = Some(channel.clone());
+        app.selected_direct = Some(channel.clone());
+        app.visit = Some(crate::feedback::Visit {
+            channel,
+            name: "plans".into(),
+            direct: false,
+            title: "#plans · Studio".into(),
+            reporter: Some(crate::feedback::Reporter {
+                id: "fixture-zoe".into(),
+                username: "zoe".into(),
+                display_name: "Zoe".into(),
+                avatar_id: None,
+            }),
+            origin: crate::feedback::Origin::Inbox,
+        });
+        assert_eq!(names(&app, ""), ["zoe"]);
+        assert_eq!(names(&app, "c"), ["feedback"]);
+        assert!(
+            names(&app, "here").is_empty(),
+            "no everyone/here in a visit"
+        );
+    }
+
+    fn fixture(name: &str) -> (egui::Context, CaperApp) {
+        let context = egui::Context::default();
+        let app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some(name),
+        );
+        (context, app)
+    }
+
+    #[test]
+    fn feedback_inbox_lists_reports_and_opens_one_as_a_visit() {
+        let (context, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in [
+            "Feedback",
+            "TEST FIXTURE Maya",
+            "#general · Fixture Studio",
+            "Waiting",
+            "Answered",
+            "Sent 2 files",
+            "@feedback TEST FIXTURE: uploads stall at 90% on hotel Wi-Fi.",
+        ] {
+            assert!(
+                labels.iter().any(|text| text.contains(label)),
+                "{label}: {labels:?}"
+            );
+        }
+        assert!(app.browse_covers_conversation(), "no reads under the inbox");
+        let report = app.feedback.reports[0].clone();
+        click_at(&mut app, &context, text_position(&output, &report.text));
+        assert!(!app.feedback_open, "a report replaces the inbox");
+        // The fixture already shows that channel: land on the report and
+        // then open its own thread.
+        assert_eq!(
+            app.report_thread,
+            Some((
+                report.message_id.clone(),
+                crate::feedback::ThreadFocus {
+                    root: report.thread_root_id.clone(),
+                    anchor: None
+                }
+            ))
+        );
+        assert!(app.context_loading);
+
+        // Another conversation opens by id as a visit request.
+        let mut other = report.target();
+        other.channel = "chan00000042".into();
+        app.open_feedback();
+        app.open_report(other.clone(), true);
+        assert_eq!(
+            app.visit_request
+                .as_ref()
+                .map(|request| (&request.target, &request.origin)),
+            Some((&other, &crate::feedback::Origin::Inbox))
+        );
+        assert!(app.opening);
+        // Any other navigation drops it.
+        app.select_channel("chan00000001".into(), false);
+        assert!(app.visit_request.is_none());
+    }
+
+    #[test]
+    fn visits_hide_member_only_controls_and_show_the_team_banner() {
+        let (context, mut app) = fixture("parity-feedback-visit");
+        app.token = Some("fixture-only-token".into());
+        app.foreground = true;
+        assert!(app.visiting().is_some());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in [
+            crate::feedback::BANNER,
+            "#general · Fixture Studio",
+            "Back to feedback",
+            mentions::FEEDBACK_NOTICE,
+            "ADMIN",
+        ] {
+            assert!(labels.contains(&label), "{label}: {labels:?}");
+        }
+        assert!(!labels.contains(&"Join channel"), "{labels:?}");
+        assert_eq!(app.channel_name(), "general");
+        assert!(
+            !app.conversation_is_direct(),
+            "a visited channel keeps its #"
+        );
+        assert!(app.selected_is_joined(), "visitors can reply");
+        app.set_typing(true);
+        assert!(!app.typing_sent, "visitors never send typing");
+        assert_eq!(
+            app.empty_conversation_note(),
+            crate::feedback::BANNER,
+            "never a DM's privacy note"
+        );
+        click_at(
+            &mut app,
+            &context,
+            text_position(&output, "Back to feedback"),
+        );
+        assert!(app.feedback_open, "Back returns to the inbox");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Waiting"));
+    }
+
+    #[test]
+    fn feedback_notifications_open_a_visit_for_the_team() {
+        let (_, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let alert: crate::os_notifications::Alert = serde_json::from_value(serde_json::json!({
+            "kind": "feedback", "messageId": "msg000000002", "threadRootId": "msg000000001",
+            "title": "Alice · Feedback", "body": "@feedback help",
+            "createdAt": "2026-10-11T19:00:00Z", "conversationId": "dm0000000077"
+        }))
+        .unwrap();
+        events
+            .send(crate::worker::Event::OpenNotification {
+                epoch: app.account_epoch,
+                alert,
+            })
+            .unwrap();
+        app.receive();
+        assert!(!app.feedback_open);
+        let request = app.visit_request.clone().expect("a visit opens");
+        assert_eq!(request.target.channel, "dm0000000077");
+        assert_eq!(request.target.message, "msg000000002");
+        assert_eq!(request.target.thread.as_deref(), Some("msg000000001"));
+        assert!(matches!(
+            request.origin,
+            crate::feedback::Origin::Conversation { space: Some(_), .. }
+        ));
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref()),
+            Some("dm0000000077")
         );
     }
 
@@ -24792,6 +25673,7 @@ mod tests {
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
+            feedback_team: false,
         }
     }
 
@@ -24817,6 +25699,7 @@ mod tests {
                 id: channel.into(),
                 name: channel.into(),
             },
+            visitor: false,
         }
     }
 
@@ -24828,6 +25711,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
         }
     }
@@ -26574,6 +27458,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
             content: Content {
                 version: 1,
@@ -26618,6 +27503,7 @@ mod tests {
                 avatar_id: None,
                 name: "Self".into(),
                 is_guest: false,
+                admin: false,
             },
         });
         let author = Author {
@@ -26625,6 +27511,7 @@ mod tests {
             avatar_id: None,
             name: "Other".into(),
             is_guest: false,
+            admin: false,
         };
         let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
             generation: 1,

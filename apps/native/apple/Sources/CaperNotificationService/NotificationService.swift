@@ -73,7 +73,8 @@ final class NotificationService: UNNotificationServiceExtension {
             // Caper has no separate group artwork: show the actual sender.
             intent.setImage(avatar, forParameterNamed: \.speakableGroupName)
         }
-        metadata.mentionsCurrentUser = data["kind"] as? String == "mention.user"
+        // `@feedback` reaches the team like a direct mention.
+        metadata.mentionsCurrentUser = ["mention.user", "feedback"].contains(data["kind"] as? String ?? "")
         intent.donationMetadata = metadata
         return intent
     }

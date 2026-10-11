@@ -51,8 +51,8 @@ public enum CaperTheme {
             case .onboarding: ProfileView(model: model)
             case .ready:
                 if model.restoringWorkspace { LoadingView() }
-                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen && model.spacesLoaded { FirstSpaceView(model: model) }
-                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && model.visit == nil && !model.navigationOpen && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && model.visit == nil && !model.navigationOpen, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
                 else { WorkspaceView(model: model) }
             }
         }
@@ -464,7 +464,7 @@ private struct WorkspaceView: View {
                     }.padding(12).background(CaperTheme.surface)
                 }
                 // Phones slide the conversation fully over Browse; wider windows show both.
-                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
+                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil || model.visit != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
                 let travel = geometry.size.width + 48
@@ -473,7 +473,7 @@ private struct WorkspaceView: View {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
-                                .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: { slide(open: false) }))
+                                .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), navigate: { slide(open: false) }))
                             ChannelSidebar(
                                 model: model,
                                 sheet: $sheet,
@@ -544,14 +544,14 @@ private struct WorkspaceView: View {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
                                         }
                                     }
                                 }
@@ -569,7 +569,7 @@ private struct WorkspaceView: View {
                             ConversationStage(model: model, narrow: true, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
-                            if model.selectedDirectMessageID == nil {
+                            if model.selectedDirectMessageID == nil && model.visit == nil {
                                 MembersOverlay(model: model, shows: membersVisible && !model.previewingChannel,
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
@@ -876,7 +876,10 @@ private struct ChannelSidebar: View {
             NotificationErrorRow(model: model)
 
             ScrollView {
-                if narrow && model.showingMessageRequests && model.account != nil {
+                if narrow && model.showingFeedback && model.isFeedbackTeam {
+                    // Phones push the feedback inbox in place of the channel list.
+                    FeedbackInboxList(model: model, pushed: true)
+                } else if narrow && model.showingMessageRequests && model.account != nil {
                     // Phones push the requests list in place of the channel list.
                     MessageRequestsList(model: model, pushed: true)
                 } else {
@@ -1007,6 +1010,12 @@ private struct ChannelSidebar: View {
                         .onHover { directHeadingHovered = $0 }
                         #endif
                         VStack(spacing: 2) {
+                            if model.isFeedbackTeam {
+                                FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
+                                if !narrow && model.showingFeedback {
+                                    FeedbackInboxList(model: model, pushed: false)
+                                }
+                            }
                             if !model.messageRequests.isEmpty {
                                 MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
                                 if !narrow && model.showingMessageRequests {
@@ -1059,13 +1068,14 @@ private struct ChannelSidebar: View {
                 }
                 }
             }
+            .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
             if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
                 Divider().overlay(CaperTheme.border)
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
-        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
@@ -2022,7 +2032,7 @@ private struct ConversationStage: View {
     let membersVisible: Bool
     let toggleMembers: () -> Void
     var body: some View {
-        if model.selectedChannelID == nil && model.selectedDirectMessageID == nil {
+        if model.selectedChannelID == nil && model.selectedDirectMessageID == nil && model.visit == nil {
             VStack(spacing: 8) {
                 // Wider windows already show Browse beside this, where the button did nothing.
                 if narrow { Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(CaperSecondaryButton()) }
@@ -2122,8 +2132,9 @@ private struct ChatView: View {
     @State private var revealedBlocked: Set<String> = []
 
     /// Channels offer the member list; phones only once the channel is joined.
+    /// A feedback visit has none.
     private var membersAvailable: Bool {
-        model.selectedDirectMessageID == nil && !(narrow && model.previewingChannel)
+        model.selectedDirectMessageID == nil && model.visit == nil && !(narrow && model.previewingChannel)
     }
     /// The open 1:1 DM, not personal notes.
     private var peerConversation: DirectMessageConversation? {
@@ -2301,6 +2312,12 @@ private struct ChatView: View {
                         .accessibilityLabel("Direct message with \(chat.channelName)")
                         .accessibilityHint("Open channel menu")
                         .accessibilityIdentifier("selected-channel-name")
+                } else if let visit = model.visit {
+                    // "#plans · Studio" or "Alice & Bob", from the visited history.
+                    Text(FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: visit.direct))
+                        .font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                        .accessibilityLabel("Visiting \(FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: visit.direct))")
+                        .accessibilityIdentifier("selected-channel-name")
                 } else {
                     Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                         .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
@@ -2313,9 +2330,12 @@ private struct ChatView: View {
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
-                    .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
-                    .accessibilityIdentifier("channel-pins")
+                // Visitors never see or change pins.
+                if model.visit == nil {
+                    Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
+                        .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
+                        .accessibilityIdentifier("channel-pins")
+                }
                 // Right of Pins on every width, as on web.
                 if membersAvailable {
                     Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
@@ -2328,6 +2348,13 @@ private struct ChatView: View {
                         .contentShape(Rectangle()).modifier(ControlHover())
                         .help("Conversation options").accessibilityLabel("Conversation options")
                         .accessibilityIdentifier("dm-options")
+                }
+                // Wider layouts close a visit back to the conversation before it;
+                // phones go back to Browse, where the inbox stays open.
+                if !narrow, model.visit != nil {
+                    Button { Task { await model.closeVisit() } } label: { CaperIcon(name: "x", size: 20) }
+                        .buttonStyle(SidebarIconButton()).help("Close").accessibilityLabel("Close conversation")
+                        .accessibilityIdentifier("feedback-visit-close")
                 }
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
@@ -2482,7 +2509,7 @@ private struct ChatView: View {
                 }.font(CaperTheme.font(11)).padding(10)
             }
             HStack(spacing: 7) {
-                if !chat.typingNames.isEmpty {
+                if !chat.typingNames.isEmpty && model.visit == nil {
                     TypingDots()
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                 }
@@ -2524,6 +2551,7 @@ private struct ChatView: View {
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { VStack(alignment: .leading, spacing: 8) {
+            if model.visit != nil { VisitBanner() }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
             }
@@ -2595,7 +2623,7 @@ private struct ChatView: View {
             CaperTheme.conversation.ignoresSafeArea()
         }
             // Uploads are optional server configuration; recheck per conversation.
-            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkUploadAvailability() }
             #if os(macOS)
             .dropDestination(for: URL.self) { urls, _ in
                 guard chat.canAttach else { return false }
@@ -2637,6 +2665,7 @@ private struct ChatView: View {
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                                     canReact: chat.canInteract,
                                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
+                                    showsPin: !chat.visitor,
                                     togglePin: {
                                         reactionMessage = nil
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
@@ -2684,6 +2713,9 @@ private struct ChatView: View {
             .onChange(of: model.selectedDirectMessageID) { _, _ in
                 reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil; olderAnchor = nil
             }
+            .onChange(of: model.visit?.channelID) { _, _ in
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil; olderAnchor = nil
+            }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -2693,9 +2725,13 @@ private struct ChatView: View {
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
     /// returned them (only the specials until loaded), or in a DM everyone from
-    /// `GET /api/people` (the DM's other participant until that loads). The
-    /// signed-in account is never suggested.
+    /// `GET /api/people` (the DM's other participant until that loads); in a
+    /// feedback visit, the reporter and people in the loaded messages. The
+    /// signed-in account is never suggested; `@feedback` is offered everywhere.
     private var mentionSource: MentionSource {
+        if let visit = model.visit {
+            return .visit(reporter: visit.reporter, messages: chat.messages, people: model.people, accountID: viewerID)
+        }
         if let id = model.selectedDirectMessageID {
             return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
         }
@@ -2784,7 +2820,7 @@ private struct NativeThreadView: View {
         }
     }
     /// DMs are named after the other person, without a channel `#`.
-    private var direct: Bool { model.selectedDirectMessageID != nil }
+    private var direct: Bool { model.selectedDirectMessageID != nil || model.visit?.direct == true }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -2874,6 +2910,7 @@ private struct NativeThreadView: View {
             }
             if chat.isPreview { Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
+                if model.visit != nil { VisitBanner() }
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError {
                     // As under the channel's composer.
@@ -2913,6 +2950,7 @@ private struct NativeThreadView: View {
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
                     canReact: chat.canInteract,
                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
+                    showsPin: !chat.visitor,
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
                     reply: nil,
                     // The conversation's forward sheet is under this cover on iPhone; the thread presents its own.
@@ -3104,6 +3142,7 @@ private struct MessageRow: View {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         authorProfile { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
+                        if message.author.isAdmin { AdminBadge() }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                         if edited { editedMarker }
@@ -3130,6 +3169,10 @@ private struct MessageRow: View {
                 }
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
+                }
+                if MentionAutocomplete.asksFeedback(message) {
+                    Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("feedback-notified-\(message.id)")
                 }
                 ForwardCardView(message: message) {
                     Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
@@ -3251,9 +3294,11 @@ private struct MessageRow: View {
         if chat.canEdit(message) { Button("Edit message") { editing = true } }
         if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
         if let reaction = message.reactions?.first { Button("View reactions") { reactors.show(message.id, reaction.emoji) } }
-        Button(message.pin == nil ? "Pin message" : "Unpin message") {
-            Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-        }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
+        if !chat.visitor {
+            Button(message.pin == nil ? "Pin message" : "Unpin message") {
+                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+            }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
+        }
         Button("Copy text") { copy(message.content.text) }
         Button("Copy message ID") { copy(message.id) }
         if canBlockAuthor {
@@ -4018,6 +4063,8 @@ private struct MessageActionsSheet: View {
     @State private var history = false
     let canReact: Bool
     let canPin: Bool
+    /// False in a feedback visit, where pins are not offered at all.
+    var showsPin = true
     let togglePin: () -> Void
     let reply: (() -> Void)?
     let canForward: Bool
@@ -4040,7 +4087,7 @@ private struct MessageActionsSheet: View {
 
     /// Fits every offered action without scrolling.
     private var actionsHeight: CGFloat {
-        var height: CGFloat = 286
+        var height: CGFloat = showsPin ? 286 : 242
         if reply != nil { height += 44 }
         if canForward { height += 50 }
         if chat.canEdit(message) { height += 44 }
@@ -4091,18 +4138,22 @@ private struct MessageActionsSheet: View {
                 }.accessibilityIdentifier("message-action-view-reactions")
                 Divider()
             }
-            Button(action: togglePin) {
-                Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            }.disabled(!canPin)
+            if showsPin {
+                Button(action: togglePin) {
+                    Label(message.pin == nil ? "Pin message" : "Unpin message", systemImage: message.pin == nil ? "pin" : "pin.slash")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }.disabled(!canPin)
+            }
             if let reply {
-                Divider()
+                if showsPin { Divider() }
                 Button(action: reply) {
                     Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
+            // Earlier rows end with their own divider; without Pin, the middle
+            // rows only separate each other.
             if canForward {
-                Divider()
+                if showsPin || reply != nil { Divider() }
                 Button {
                     forwardRequested = true
                     dismiss()
@@ -4110,7 +4161,7 @@ private struct MessageActionsSheet: View {
                     Label("Forward message", systemImage: "arrowshape.turn.up.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
-            Divider()
+            if showsPin || reply != nil || canForward { Divider() }
             Button {
                 UIPasteboard.general.string = message.content.text
                 dismiss()
@@ -4582,6 +4633,197 @@ private struct MessageRequestsRow: View {
             .accessibilityValue("\(count) \(count == 1 ? "request" : "requests")")
             .accessibilityHint(narrow ? "Opens the list of requests" : model.showingMessageRequests ? "Collapses the list" : "Expands the list")
             .accessibilityIdentifier("message-requests")
+    }
+}
+
+/// "Feedback" for the feedback team, at the top of the DM section, with the
+/// count of loaded reports still waiting for a team reply.
+private struct FeedbackRow: View {
+    @Bindable var model: AppModel
+    let narrow: Bool
+    let rowHeight: CGFloat
+    var body: some View {
+        let waiting = FeedbackInbox.waitingCount(model.feedbackReports)
+        Button {
+            // Phones push the inbox; sidebars expand it in place.
+            if narrow { model.showingFeedback = true } else { model.showingFeedback.toggle() }
+        } label: {
+            HStack(spacing: 9) {
+                CaperIcon(name: "chevron-down", size: 14)
+                    .rotationEffect(.degrees(!narrow && model.showingFeedback ? 0 : -90))
+                    .animation(.easeOut(duration: 0.15), value: model.showingFeedback)
+                    .frame(width: 24)
+                Text(FeedbackInbox.title).lineLimit(1)
+                Spacer()
+                if waiting > 0 {
+                    Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
+                        .background(CaperTheme.raised, in: Capsule())
+                        .overlay(Capsule().stroke(CaperTheme.border))
+                }
+            }.font(CaperTheme.font(13, weight: .medium))
+                .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
+                .padding(.horizontal, 9).frame(height: rowHeight)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHover())
+            .accessibilityLabel(FeedbackInbox.title)
+            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
+            .accessibilityIdentifier("feedback-inbox")
+    }
+}
+
+/// Pull to refresh for the pushed feedback inbox on phones.
+private struct FeedbackPullToRefresh: ViewModifier {
+    let enabled: Bool
+    let refresh: () async -> Void
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(iOS)
+        if enabled { content.refreshable { await refresh() } } else { content }
+        #else
+        content
+        #endif
+    }
+}
+
+/// The feedback team's inbox: nested under its row in a sidebar, or a pushed
+/// page in Browse on narrow layouts. Newest first; a row visits its
+/// conversation at the reported message, with its thread open.
+private struct FeedbackInboxList: View {
+    @Bindable var model: AppModel
+    let pushed: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if pushed {
+                HStack(spacing: 6) {
+                    Button { model.showingFeedback = false } label: {
+                        HStack(spacing: 4) {
+                            CaperIcon(name: "arrow-left", size: 16)
+                            Text("Direct messages")
+                        }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).accessibilityIdentifier("feedback-back")
+                    Spacer()
+                }
+                Text(FeedbackInbox.title).font(CaperTheme.font(15, weight: .bold)).padding(.bottom, 4)
+                Text(FeedbackInbox.subtitle)
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(.bottom, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = model.feedbackError {
+                HStack(spacing: 8) {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    Button("Retry") { Task { await model.refreshFeedback() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
+                        .disabled(model.feedbackLoading)
+                        .accessibilityIdentifier("feedback-retry")
+                }.padding(.vertical, 6)
+            }
+            if model.feedbackReports.isEmpty {
+                if !model.feedbackLoaded && model.feedbackLoading {
+                    Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                } else if model.feedbackLoaded {
+                    Text(FeedbackInbox.empty).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                }
+            }
+            // Relative times stay current while the inbox is open.
+            TimelineView(.everyMinute) { context in
+                VStack(spacing: 2) {
+                    ForEach(model.feedbackReports) { report in
+                        FeedbackReportRow(model: model, report: report, pushed: pushed, now: context.date)
+                    }
+                }
+            }
+            if model.feedbackCursor != nil {
+                Button(model.feedbackLoading ? "Loading…" : "Load older feedback") { Task { await model.loadMoreFeedback() } }
+                    .buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                    .frame(minHeight: 32).contentShape(Rectangle()).modifier(ControlHover())
+                    .disabled(model.feedbackLoading)
+                    .accessibilityIdentifier("feedback-load-older")
+            }
+        }
+        .padding(.horizontal, pushed ? 16 : 0).padding(.leading, pushed ? 0 : 16)
+        .padding(.vertical, pushed ? 8 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Refreshed each time it opens.
+        .task { await model.refreshFeedback() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("feedback-list")
+    }
+}
+
+/// One report: who asked, where, what, when, and whether the team answered.
+private struct FeedbackReportRow: View {
+    @Bindable var model: AppModel
+    let report: FeedbackReport
+    let pushed: Bool
+    let now: Date
+    private var selected: Bool { model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId }
+    var body: some View {
+        let preview = FeedbackInbox.preview(report)
+        Button { Task { await model.openFeedback(report) } } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Avatar(name: report.reporter.displayName, size: pushed ? 32 : 22, avatarID: report.reporter.avatarId)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(report.reporter.displayName).font(CaperTheme.font(13, weight: .medium))
+                            .foregroundStyle(CaperTheme.text).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(FeedbackInbox.relativeTime(report.createdAt, now: now)).font(CaperTheme.font(10))
+                            .foregroundStyle(CaperTheme.muted).fixedSize()
+                    }
+                    Text(FeedbackInbox.location(report)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                    if !preview.isEmpty {
+                        Text(preview).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text).lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Text(FeedbackInbox.status(report)).font(CaperTheme.font(10, weight: .bold))
+                        .foregroundStyle(report.answered ? CaperTheme.muted : CaperTheme.terracottaBright)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #endif
+            .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHover())
+            .accessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now))
+            .accessibilityValue(selected ? "Selected" : "")
+            .accessibilityIdentifier("feedback-report-\(report.id)")
+    }
+}
+
+/// "Visiting as the Caper team — everyone here sees your replies." Neutral
+/// chrome above a visit's composers.
+private struct VisitBanner: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(FeedbackInbox.banner).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("feedback-visit-banner")
+    }
+}
+
+/// Marks a Caper admin's (feedback team member's) message, in the pin gold
+/// with a soft glow. The server stamps it, so a look-alike name can't claim it.
+struct AdminBadge: View {
+    var body: some View {
+        Text("ADMIN").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.pinGold)
+            .padding(.horizontal, 5)
+            .background(CaperTheme.pinGold.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.pinGold.opacity(0.55)))
+            .shadow(color: CaperTheme.pinGold.opacity(0.45), radius: 4)
+            .accessibilityLabel("Admin")
     }
 }
 

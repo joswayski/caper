@@ -4,6 +4,8 @@ export interface Account {
   username: string | null;
   displayName: string | null;
   debugEnabled?: boolean;
+  /** On the Caper feedback team: sees the feedback inbox and can visit reported conversations. */
+  feedbackTeam?: boolean;
 }
 
 export function normalizeUsername(value: string) {

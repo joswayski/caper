@@ -230,19 +230,22 @@ async fn block_state(
     channel: i64,
     user: i64,
 ) -> Result<(bool, bool, bool), ApiError> {
-    sqlx::query_as(
+    // Someone outside the conversation got here through feedback access: no
+    // blocks apply to them, and their reply never accepts a request.
+    let state = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=peer AND b.deleted_at IS NULL),
                 EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=peer AND b.blocked_id=$2 AND b.deleted_at IS NULL),
                 pending_for_you
          FROM (SELECT CASE WHEN low_user_id=$2 THEN high_user_id ELSE low_user_id END AS peer,
                       accepted_at IS NULL AND requested_by<>$2 AS pending_for_you
-               FROM public.direct_conversations WHERE channel_id=$1) d",
+               FROM public.direct_conversations WHERE channel_id=$1 AND $2 IN (low_user_id,high_user_id)) d",
     )
     .bind(channel)
     .bind(user)
-    .fetch_one(connection)
+    .fetch_optional(connection)
     .await
-    .map_err(|_| chat::unavailable())
+    .map_err(|_| chat::unavailable())?;
+    Ok(state.unwrap_or((false, false, false)))
 }
 
 fn refuse_blocked(you_blocked: bool, they_blocked: bool) -> Result<(), ApiError> {

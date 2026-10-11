@@ -37,8 +37,16 @@ import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
-import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
+import {
+  feedbackAliases,
+  mentionCardPerson,
+  mentionSegments,
+  mentionsAccount,
+  reportsFeedback,
+  type MentionCandidate,
+} from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
+import AdminBadge from "./AdminBadge.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import type { Space } from "../spaces/client.ts";
@@ -51,6 +59,9 @@ function timeLabel(value: string, formatter: Intl.DateTimeFormat) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? "" : formatter.format(date);
 }
+
+/** Where to open a conversation: a loaded message or just its identity (a notification, a feedback report). */
+export type FocusTarget = Pick<GeneralChatHistory["messages"][number], "id" | "channelId" | "threadRootId">;
 
 interface HistoryContext {
   hasMore: boolean;
@@ -185,6 +196,9 @@ export default function Chat({
   profileSpaces,
   onOpenForward,
   focusMessage,
+  focusThread = false,
+  visitor = false,
+  onSent,
 }: {
   name: string;
   signedIn: boolean;
@@ -216,7 +230,13 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
   profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
-  focusMessage?: GeneralChatHistory["messages"][number];
+  focusMessage?: FocusTarget;
+  /** Also open a focused channel message's own thread, where replies to it belong. */
+  focusThread?: boolean;
+  /** Reading as the Caper team without having joined: no typing indicator or pins. */
+  visitor?: boolean;
+  /** After one of the viewer's messages (or thread replies) is accepted. */
+  onSent?: () => void;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   useEffect(() => {
@@ -467,9 +487,9 @@ export default function Chat({
   // that page's last group (losing its name and time) and loses its date
   // divider. Remember the top visible message so it can be held in place.
   const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined);
-  const goToMessage = async (message: GeneralChatHistory["messages"][number]) => {
+  const goToMessage = async (message: FocusTarget) => {
     const client = clientRef.current;
-    if (!client || jumping) return;
+    if (!client || jumping) return false;
     setJumping(message.id);
     setJumpError(undefined);
     setActionTarget(undefined);
@@ -483,6 +503,7 @@ export default function Chat({
           setListWindow((window) => window + 1);
           setScrollTarget(message.id);
         }
+        return true;
       } else if (clientRef.current === client) setJumpError("Message could not be loaded. Try again.");
     } catch (error) {
       if (clientRef.current === client)
@@ -490,6 +511,7 @@ export default function Chat({
     } finally {
       if (clientRef.current === client) setJumping(undefined);
     }
+    return false;
   };
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
@@ -561,7 +583,12 @@ export default function Chat({
     const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
     if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
   }, []);
-  const setTyping = useCallback((active: boolean) => clientRef.current?.setTyping(active), []);
+  const setTyping = useCallback(
+    (active: boolean) => {
+      if (!visitor) clientRef.current?.setTyping(active);
+    },
+    [visitor],
+  );
 
   useEffect(() => {
     let firstMessageId: string | undefined;
@@ -610,9 +637,7 @@ export default function Chat({
     };
   }, [channelId]);
 
-  const handledFocus = useRef<{ client: ChatClient; message: GeneralChatHistory["messages"][number] } | undefined>(
-    undefined,
-  );
+  const handledFocus = useRef<{ client: ChatClient; message: FocusTarget } | undefined>(undefined);
   useEffect(() => {
     if (!focusMessage) {
       handledFocus.current = undefined;
@@ -628,8 +653,19 @@ export default function Chat({
     )
       return;
     handledFocus.current = { client, message: focusMessage };
-    void goToMessage(focusMessage);
+    void goToMessage(focusMessage).then((found) => {
+      if (found && focusThread && !focusMessage.threadRootId && clientRef.current === client)
+        openThread(focusMessage.id);
+    });
   }, [focusMessage, state.phase, state.channelId, jumping]);
+
+  const sentCallback = useRef(onSent);
+  sentCallback.current = onSent;
+  const lastPending = useRef(state.pendingSend);
+  useEffect(() => {
+    if (lastPending.current && !state.pendingSend) sentCallback.current?.();
+    lastPending.current = state.pendingSend;
+  }, [state.pendingSend]);
 
   const blockedIdsRef = useRef(blockedIds);
   useEffect(() => {
@@ -1167,6 +1203,7 @@ export default function Chat({
             <div>
               <header className={grouped ? "sr-only" : undefined}>
                 {grouped ? <strong>{author?.name ?? name}</strong> : authorName(author)}
+                {author?.admin && <AdminBadge />}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}
@@ -1190,7 +1227,15 @@ export default function Chat({
                         const user = segment.user;
                         if (!user)
                           return (
-                            <span key={part} className="chat-mention">
+                            <span
+                              key={part}
+                              className="chat-mention"
+                              title={
+                                feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
+                                  ? "Asks the Caper team to look at this conversation"
+                                  : undefined
+                              }
+                            >
                               {segment.text}
                             </span>
                           );
@@ -1228,6 +1273,9 @@ export default function Chat({
                 onExpired={pending ? undefined : refreshUrls}
                 onView={"content" in message ? viewFile(message.id) : undefined}
               />
+              {"content" in message && reportsFeedback(message) && (
+                <p className="chat-feedback-note">Caper team notified</p>
+              )}
               {"content" in message && (
                 <>
                   <ForwardCard
@@ -1439,6 +1487,7 @@ export default function Chat({
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
             {direct ? "" : "# "}
             {channelName}
+            {visitor && !direct && <span className="chat-channel-space"> · {state.spaceName}</span>}
           </h2>
           {pinsToggle}
           {headerActions}
@@ -1757,7 +1806,7 @@ export default function Chat({
             target={actionTarget}
             authorId={viewerId}
             canReact={!readOnly && !!state.author}
-            canPin={!readOnly && !!state.author}
+            canPin={!readOnly && !visitor && !!state.author}
             pinning={pinning.has(actionMessage.id)}
             onReact={react}
             onPin={pin}

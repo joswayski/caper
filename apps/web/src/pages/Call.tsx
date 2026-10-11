@@ -39,7 +39,7 @@ import {
   setSystemSoundsEnabled,
   subscribeSystemSounds,
 } from "../audio/effects";
-import Chat from "../chat/Chat";
+import Chat, { type FocusTarget } from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { MentionCandidate } from "../chat/mentions";
 import type { Space } from "../spaces/client";
@@ -419,6 +419,8 @@ interface CallProps {
     direct?: boolean;
     directPeerId?: string;
     joined?: boolean;
+    /** A feedback team member reading without having joined: no voice of its own. */
+    visitor?: boolean;
   };
   /**
    * Shown in place of the conversation when no channel is open (a space with no
@@ -460,7 +462,11 @@ interface CallProps {
   onMessagePerson?: (username: string) => Promise<void>;
   profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
-  focusMessage?: GeneralChatHistory["messages"][number];
+  focusMessage?: FocusTarget;
+  /** Also open the focused message's own thread (a feedback report's replies live there). */
+  focusThread?: boolean;
+  /** After the viewer's message is accepted. */
+  onSent?: () => void;
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -493,6 +499,8 @@ export default function Call({
   profileSpaces,
   onOpenForward,
   focusMessage,
+  focusThread,
+  onSent,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -559,7 +567,7 @@ export default function Call({
   const demo = channel?.demo ?? space?.demo;
   // DMs and a space without a joined channel have no voice of their own; the
   // space's joined channels still do.
-  const voiceless = !!channel?.direct || stage !== undefined;
+  const voiceless = !!channel?.direct || !!channel?.visitor || stage !== undefined;
   const mediaChannelId = voiceless ? voiceChannels?.[0]?.id : channel?.id;
   const mediaRoot =
     mediaChannelId && !demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";
@@ -1649,6 +1657,9 @@ export default function Call({
               profileSpaces={profileSpaces}
               onOpenForward={onOpenForward}
               focusMessage={focusMessage}
+              focusThread={focusThread}
+              onSent={onSent}
+              visitor={!!channel?.visitor}
               channelId={channel?.id}
               channelName={channel?.name}
               initialHistory={initialHistory}

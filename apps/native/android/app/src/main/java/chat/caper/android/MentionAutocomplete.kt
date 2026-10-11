@@ -18,7 +18,7 @@ internal data class MentionToken(val start: Int, val end: Int, val query: String
 /** A person or special name the composer can suggest after `@`. */
 internal data class MentionCandidate(
     val username: String,
-    /** The display name for people; the muted description for `@everyone`/`@here`. */
+    /** The display name for people; the muted description for `@everyone`/`@here`/`@feedback`. */
     val label: String,
     val special: Boolean = false,
     val avatarId: Int? = null,
@@ -28,6 +28,16 @@ internal val mentionSpecials = listOf(
     MentionCandidate("everyone", "Everyone in this channel", special = true),
     MentionCandidate("here", "Everyone online in this channel", special = true),
 )
+
+/**
+ * `@feedback` asks the Caper team to read the conversation and reply in it. It is offered in
+ * every conversation (channels, threads, DMs and your notes) when the query starts `feedback`
+ * or `caper` (the server's other name for it), and always inserts `@feedback `.
+ */
+internal val mentionFeedback = MentionCandidate("feedback", "Caper team · can read and reply here", special = true)
+
+/** The names that ask the Caper team to look, as the server reads them. */
+internal val FEEDBACK_NAMES = setOf("feedback", "caper")
 
 internal fun Char.isMentionNameChar(): Boolean =
     this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_'
@@ -50,32 +60,64 @@ internal fun mentionToken(value: TextFieldValue): MentionToken? {
 /**
  * Who the composer may suggest: the space's members (excluding you) plus the
  * specials in a space channel; in a DM, everyone from `GET /api/people`,
- * falling back to the other participant until that list loads.
+ * falling back to the other participant until that list loads. A visit has no
+ * member list: the reporter and people the loaded messages name. [feedback]
+ * offers `@feedback` (signed-in accounts, every conversation).
  */
-internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean)
+internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean, val feedback: Boolean = false)
 
 internal fun mentionSource(state: AppUiState): MentionSource {
     val channel = state.selectedChannel ?: return MentionSource(emptyList(), false)
     val self = state.account?.id ?: state.chatAuthorId
+    val feedback = state.account != null
+    state.visit?.let { return MentionSource(visitMentionPeople(state, self), false, feedback) }
     if (channel.direct) {
         val people = state.people?.filter { it.id != self }?.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }
             ?: listOfNotNull(state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
                 ?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) })
-        return MentionSource(people, false)
+        return MentionSource(people, false, feedback)
     }
     // Members not loaded yet (or another space's): only the specials.
     val members = state.selectedSpace?.takeIf { detail -> detail.space.id == channel.spaceId || detail.channels.any { it.id == channel.id } }?.members.orEmpty()
-    return MentionSource(members.filter { it.id != self }.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }, true)
+    return MentionSource(members.filter { it.id != self }.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }, true, feedback)
+}
+
+/**
+ * A visit's people, without a member list: the reporter, then accounts the loaded messages
+ * @mention, then authors whose usernames you already know (`/api/people`, DM peers). Never you.
+ */
+internal fun visitMentionPeople(state: AppUiState, self: String?): List<MentionCandidate> {
+    val authors = state.messages.map { it.author }.filter { !it.isGuest }.associateBy { it.id }
+    val known = state.people.orEmpty().associateBy { it.id }
+    val peers = state.directConversations.associate { it.peer.id to it.peer }
+    val people = linkedMapOf<String, MentionCandidate>()
+    fun add(id: String?, username: String?, name: String?, avatarId: Int?) {
+        if (username.isNullOrEmpty() || id == self || username.lowercase(Locale.ROOT) in FEEDBACK_NAMES) return
+        val key = id ?: "@${username.lowercase(Locale.ROOT)}"
+        if (key !in people) people[key] = MentionCandidate(username, name ?: username, avatarId = avatarId)
+    }
+    state.visit?.reporter?.let { add(it.id, it.username, it.displayName, it.avatarId) }
+    state.messages.flatMap { it.content.mentions }.filter { it.type == "user" }.forEach { mention ->
+        val author = mention.id?.let(authors::get)
+        add(mention.id, mention.username, author?.name, author?.avatarId)
+    }
+    authors.values.forEach { author ->
+        val username = known[author.id]?.username ?: peers[author.id]?.username
+        add(author.id, username, author.name, author.avatarId)
+    }
+    return people.values.toList()
 }
 
 /**
  * Members ranked exact username, username prefix, display-name word prefix,
- * then username substring (ties by username), followed by matching specials.
+ * then username substring (ties by username), followed by matching specials
+ * (`@everyone`, `@here`, then `@feedback` once something is typed, which `caper` also finds).
  * Specials keep their slots within [limit].
  */
 internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int = 6): List<MentionCandidate> {
     val needle = query.lowercase(Locale.ROOT)
-    val specials = if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) }.take(limit) else emptyList()
+    val specials = ((if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) } else emptyList()) +
+        listOfNotNull(mentionFeedback.takeIf { source.feedback && needle.isNotEmpty() && FEEDBACK_NAMES.any { name -> name.startsWith(needle) } })).take(limit)
     val people = source.people.mapNotNull { person ->
         val username = person.username.lowercase(Locale.ROOT)
         val display = person.label.lowercase(Locale.ROOT)
@@ -117,24 +159,29 @@ internal fun mentionSpans(text: String): List<MentionSpan> {
     return spans
 }
 
-/** Tokens the server resolved: specials with their entry, users by username. Unknown types are ignored. */
+/**
+ * Tokens the server resolved: specials with their entry (every `@feedback` and `@caper` with a
+ * `feedback` entry), users by username. Unknown types are ignored.
+ */
 internal fun highlightedMentions(text: String, mentions: List<MessageMention>): List<MentionSpan> {
     if (mentions.isEmpty()) return emptyList()
     val everyone = mentions.any { it.type == "everyone" }
     val here = mentions.any { it.type == "here" }
+    val feedback = mentions.any { it.type == "feedback" }
     val users = mentions.filter { it.type == "user" }.mapNotNull { it.username?.lowercase(Locale.ROOT) }.toSet()
     return mentionSpans(text).filter { span ->
         when (span.name) {
             "everyone" -> everyone
             "here" -> here
+            in FEEDBACK_NAMES -> feedback
             else -> span.name in users
         }
     }
 }
 
-/** The `user` entry behind a highlighted pill; null for `@everyone`/`@here`, which open nothing. */
+/** The `user` entry behind a highlighted pill; null for `@everyone`/`@here`/`@feedback`/`@caper`, which open nothing. */
 internal fun mentionedUser(span: MentionSpan, mentions: List<MessageMention>): MessageMention? =
-    if (span.name == "everyone" || span.name == "here") null
+    if (span.name == "everyone" || span.name == "here" || span.name in FEEDBACK_NAMES) null
     else mentions.firstOrNull { it.type == "user" && it.username?.lowercase(Locale.ROOT) == span.name }
 
 /** The mention card for a tagged person, from data already loaded (no network call). */

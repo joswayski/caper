@@ -154,6 +154,10 @@ import chat.caper.android.data.resendSecondsLeft
 import chat.caper.android.data.mainDirects
 import chat.caper.android.data.messageRequests
 import chat.caper.android.data.withFreshUrls
+import chat.caper.android.data.ADMIN_BADGE
+import chat.caper.android.data.CAPER_TEAM_NOTIFIED
+import chat.caper.android.data.notifiesCaperTeam
+import chat.caper.android.data.visitTitle
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
 import chat.caper.android.ui.*
@@ -204,6 +208,9 @@ class MainActivity : ComponentActivity() {
             intent.getStringExtra(CaperNotifications.EXTRA_CONVERSATION_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_SPACE_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_CHANNEL_ID),
+            intent.getStringExtra(CaperNotifications.EXTRA_KIND),
+            intent.getStringExtra(CaperNotifications.EXTRA_MESSAGE_ID),
+            intent.getStringExtra(CaperNotifications.EXTRA_THREAD_ROOT_ID),
         )
     }
 
@@ -297,7 +304,7 @@ internal data class VoiceJoinIntent(
                     if (state.restoring) BrandLoading()
                     // Web's first-space page: an account with no spaces names one.
                     else if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
-                        state.spaces.none { !it.demo } && state.selectedDirectId == null && !navigationOpen)
+                        state.spaces.none { !it.demo } && state.selectedDirectId == null && state.visit == null && !state.feedbackShown && !navigationOpen)
                         FirstSpaceScreen(state, viewModel) { navigationOpen = true }
                     else HomeScreen(
                         state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
@@ -468,7 +475,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
                     // The member list slides over the conversation the same way, from the trailing edge.
-                    val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null
+                    val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null
                     val members = rememberBrowseDrawer(membersShown)
                     LaunchedEffect(membersShown) { if (!members.dragging) members.settle(membersShown) }
                     val membersInView by remember { derivedStateOf { members.progress.value > 0f } }
@@ -478,7 +485,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             // Leaves room for the account bar, which rises over the conversation.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
-                                Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null)) {
+                                Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
@@ -489,7 +496,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
                                 .browseDrag(members, direction = -1f, travel = { membersTravel }) { membersVisible = it }
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
-                                conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
+                                conversationState.SaveableStateProvider(state.selectedChannel?.id ?: if (state.feedbackShown) "feedback" else "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
                                 }
                                 // Composed while shown or sliding; it moves with the conversation over Browse.
@@ -523,10 +530,10 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
-                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
+                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
                     } else {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
-                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
+                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
             }
@@ -993,6 +1000,20 @@ private fun Modifier.browseDrag(
             }
             if (state.account != null) {
                 HorizontalDivider(color = Border)
+                // Feedback team only: the `@feedback` inbox, beside the DMs.
+                if (state.account.feedbackTeam) {
+                    val feedbackSelected = state.feedbackShown || state.visit != null
+                    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                        .background(if (feedbackSelected) TerracottaWash else Color.Transparent)
+                        .clickable(role = Role.Button) { viewModel.openFeedbackInbox(); closeNavigation?.invoke() }
+                        .semantics { if (feedbackSelected) selected = true }
+                        .padding(horizontal = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
+                        Spacer(Modifier.width(9.dp))
+                        Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                }
                 val invitePeople = owner && detail?.space?.demo == false
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -1461,7 +1482,17 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     modifier: Modifier = Modifier, openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
-    if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
+    if (channel == null) {
+        // Feedback team: the inbox takes the conversation's place.
+        if (state.feedbackShown) FeedbackInbox(state, viewModel, narrow, openNavigation, modifier.fillMaxHeight())
+        else EmptyChannel(state, narrow, show, openNavigation, modifier)
+        return
+    }
+    // A feedback visit: the normal conversation without pins, members, typing or joining, and Back returns to the inbox.
+    val visit = state.visit
+    // Back leaves a visit for the inbox, unless phone Browse is showing (Back closes that first).
+    val browse = LocalBrowseDrawer.current
+    BackHandler(enabled = visit != null && (browse == null || browse.progress.targetValue == 0f)) { viewModel.closeVisit() }
     var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) {
         viewModel.drafts[channel.id].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
     }
@@ -1486,9 +1517,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
         Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp)
             .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
+            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined && visit == null),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
+            if (visit != null) IconButton(viewModel::closeVisit, Modifier.size(48.dp)) {
+                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Feedback", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+            } else if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }
             // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
@@ -1503,12 +1536,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
                         onClick = { channelMenuOpen = false; toggleBlock() })
                 }
-            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
+            } else Text(when {
+                visit != null -> visitTitle(visit).ifEmpty { "Feedback" }
+                channel.direct -> channel.name
+                else -> "# ${channel.name}"
+            }, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (visit == null) IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
             }
             // Right of Pins on every width, and the same size, as on web.
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
+            if (!channel.direct && joined && visit == null) IconButton(toggleMembers, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                     Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
             }
@@ -1519,6 +1556,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
         HorizontalDivider(color = Border)
+        if (visit?.visitor == true) VisitBanner()
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
             Text(buildAnnotatedString {
@@ -1555,7 +1593,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
             // A left swipe opens the member list, as a right one opens Browse.
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
+            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined && visit == null),
             listState = timelineState, follow = timelineFollow) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)
@@ -1575,7 +1613,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
             }
         }
-        if (joined) TypingLine(state.typingAuthors)
+        if (joined && visit == null) TypingLine(state.typingAuthors)
         if (joined) HorizontalDivider(color = Border)
         val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
         // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
@@ -1755,7 +1793,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
         } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        // `@feedback`'s description says what tagging means, so it gets its own lines.
+        if (candidate == mentionFeedback) Column(Modifier.padding(vertical = 6.dp)) {
+            Text(primary, color = Text, fontSize = 13.sp, maxLines = 1)
+            Text(secondary, color = TextMuted, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        } else Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(primary, Modifier.weight(1f, fill = false), color = Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(secondary, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -1934,7 +1976,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 } else {
                     Text("No messages yet.", color = TextMuted)
                     val name = state.selectedChannel?.name.orEmpty()
-                    Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
+                    if (state.visit == null) Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
                 }
             }
         } }
@@ -2197,6 +2239,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
+        // `@feedback`/`@caper`: the server told the Caper team, who can read and reply here.
+        if (notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
         ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
@@ -2279,7 +2323,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
                     }
-                    if (canReact) {
+                    // Visits have no pins.
+                    if (canReact && state.visit == null) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
                         HorizontalDivider(color = Border)
@@ -2431,6 +2476,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
     openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
     openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
+    admin = message.author.admin,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2441,6 +2487,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
     grouped: Boolean = false,
     openAuthor: (() -> Unit)? = null,
+    /** A feedback team member's message (`author.admin`): an ADMIN badge after the name. */
+    admin: Boolean = false,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -2457,7 +2505,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
             Modifier.width(34.dp).clearAndSetSemantics {
-                contentDescription = listOfNotNull(author, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
+                contentDescription = listOfNotNull(author, ADMIN_BADGE.takeIf { admin }, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
             },
             contentAlignment = Alignment.TopCenter,
         ) {
@@ -2468,6 +2516,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
                 // A long name gives way first, so the time and tags stay whole.
                 Text(author, Modifier.weight(1f, fill = false).then(profile), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (admin) { Spacer(Modifier.width(7.dp)); AdminBadge() }
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }

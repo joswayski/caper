@@ -126,6 +126,8 @@ pub(crate) struct Alert {
     pub sender_id: String,
     pub sender_avatar_id: Option<i16>,
     pub attachment: Option<Attachment>,
+    /// The thread a reply belongs to, so a notification opens it there.
+    pub thread_root_id: Option<String>,
 }
 
 /// One existing upload object, never a notification-specific stored rendition.
@@ -149,6 +151,7 @@ impl Alert {
         text: &str,
     ) -> Self {
         let title = match &conversation {
+            _ if kind == "feedback" => format!("{sender} · Feedback"),
             Conversation::Direct { .. } => sender.to_owned(),
             Conversation::Channel { title, .. } => format!("{sender} · {title}"),
         };
@@ -162,11 +165,13 @@ impl Alert {
             sender_id: sender_id.to_owned(),
             sender_avatar_id: sender_avatar_id.filter(|id| (0..800).contains(id)),
             attachment: None,
+            thread_root_id: None,
         }
     }
 
     /// Call only after recipient authorization and preparing notification content.
     pub(crate) fn with_content(mut self, message: &Value, cdn: Option<&CdnSigner>) -> Self {
+        self.thread_root_id = message["threadRootId"].as_str().map(str::to_owned);
         let files: Vec<&Value> = [
             "/content/attachments",
             "/forward/message/content/attachments",

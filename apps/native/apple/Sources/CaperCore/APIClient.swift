@@ -186,6 +186,15 @@ public actor APIClient {
     public func markDirectMessageRead(id: String, seq: String) async throws {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
+    /// The feedback team's inbox, newest first; 404 for everyone else.
+    public func feedbackReports(before: String? = nil) async throws -> FeedbackReportsPage {
+        var path = "api/feedback"
+        if let before {
+            guard (try? Sequence.compare(before, "0")) != nil else { throw APIError(status: 400, message: "Invalid cursor.") }
+            path += "?before=\(before)"
+        }
+        return try await request(path)
+    }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
     public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
         let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))

@@ -13,9 +13,12 @@ internal val pushChannels = listOf(
     MENTIONS_CHANNEL to "Mentions",
 )
 
-/** Mentions use their own channel; every other kind, known or not, is a plain DM or channel message. */
+/**
+ * Mentions use their own channel, and so does `feedback` (a report for the Caper team, which is
+ * treated like a direct mention); every other kind, known or not, is a plain DM or channel message.
+ */
 internal fun notificationChannelFor(kind: String, direct: Boolean): String = when (kind) {
-    "mention.user", "mention.everyone" -> MENTIONS_CHANNEL
+    "mention.user", "mention.everyone", "feedback" -> MENTIONS_CHANNEL
     else -> if (direct) DIRECT_MESSAGES_CHANNEL else CHANNEL_MESSAGES_CHANNEL
 }
 
@@ -37,6 +40,8 @@ internal data class PushPayload(
     /** `#channel (Space)` for a channel; null for a DM. */
     val conversationTitle: String?,
     val attachment: PushAttachment? = null,
+    /** The thread the message replies in, when it is a thread reply (any kind). */
+    val threadRootId: String? = null,
 ) {
     val direct: Boolean get() = conversationId != null
 
@@ -80,6 +85,7 @@ internal data class PushPayload(
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
                 attachment = PushAttachment.parse(data),
+                threadRootId = value("threadRootId")?.takeIf(messageIdPattern::matches),
             )
         }
 

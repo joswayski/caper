@@ -77,6 +77,27 @@ export function readDirectConversation(id: string, seq: string) {
   return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
 }
 
+/** One `@feedback`, for the team's inbox. Replies belong in `threadRootId` (the message itself when top-level). */
+export interface FeedbackReport {
+  id: string;
+  messageId: string;
+  threadRootId: string;
+  createdAt: string;
+  text: string;
+  attachments: number;
+  reporter: Person;
+  channel: { id: string; name: string; direct: boolean };
+  space: { id: string; name: string } | null;
+  replyCount: number;
+  answered: boolean;
+}
+
+export function listFeedback(before?: string) {
+  return request<{ reports: FeedbackReport[]; cursor: string | null }>(
+    `/api/feedback${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+  );
+}
+
 export interface UnreadSpace {
   id: string;
   channels: { id: string; lastSeq: string }[];

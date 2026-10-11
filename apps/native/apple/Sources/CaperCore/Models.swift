@@ -10,6 +10,11 @@ public struct Account: Codable, Equatable, Sendable {
     public var displayName: String?
     public var debugEnabled: Bool?
     public var avatarId: Int? = nil
+    /// `true` for Caper's feedback team, who get the Feedback inbox. Absent for
+    /// everyone else.
+    public var feedbackTeam: Bool? = nil
+
+    public var isFeedbackTeam: Bool { feedbackTeam == true }
 }
 
 public struct Inviter: Codable, Equatable, Sendable {
@@ -259,6 +264,11 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     public let name: String
     public let isGuest: Bool
     public var avatarId: Int? = nil
+    /// Sent by a Caper feedback team member, stamped by the server at send
+    /// time. Missing means not an admin.
+    public var admin: Bool? = nil
+
+    public var isAdmin: Bool { admin == true }
 }
 
 /// One `content.mentions` entry, as resolved by the server on send.
@@ -266,6 +276,8 @@ public enum MessageMention: Codable, Equatable, Hashable, Sendable {
     case user(id: String, username: String)
     case everyone
     case here
+    /// `@feedback` or `@caper`: the Caper team was asked to look at this conversation.
+    case feedback
 
     private enum Keys: String, CodingKey { case type, id, username }
 
@@ -276,6 +288,7 @@ public enum MessageMention: Codable, Equatable, Hashable, Sendable {
         case "user": self = .user(id: try values.decode(String.self, forKey: .id), username: try values.decode(String.self, forKey: .username))
         case "everyone": self = .everyone
         case "here": self = .here
+        case "feedback": self = .feedback
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: values, debugDescription: "Unknown mention type \(type)")
         }
     }
@@ -289,6 +302,7 @@ public enum MessageMention: Codable, Equatable, Hashable, Sendable {
             try values.encode(username, forKey: .username)
         case .everyone: try values.encode("everyone", forKey: .type)
         case .here: try values.encode("here", forKey: .type)
+        case .feedback: try values.encode("feedback", forKey: .type)
         }
     }
 }
@@ -461,6 +475,8 @@ public struct ThreadHistory: Codable, Sendable {
     public let cursor: String
     public let hasMore: Bool
     public let hasNewer: Bool?
+    /// The viewer reads this conversation as a feedback team visitor, not a member.
+    public var visitor: Bool? = nil
 }
 public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let id: String
@@ -698,11 +714,15 @@ public struct ChatHistory: Codable, Sendable {
     public let cursor: String
     public let hasMore: Bool
     public let hasNewer: Bool
+    /// The viewer is a feedback team member reading a conversation they are
+    /// not a member of (`"visitor": true`). Missing means a member.
+    public let visitor: Bool
 
-    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore, hasNewer }
-    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool, hasNewer: Bool = false) {
+    private enum CodingKeys: String, CodingKey { case space, channel, messages, pinnedMessages, cursor, hasMore, hasNewer, visitor }
+    public init(space: HistoryIdentity?, channel: HistoryIdentity?, messages: [ChatMessage], pinnedMessages: [ChatMessage] = [], cursor: String, hasMore: Bool, hasNewer: Bool = false,
+                visitor: Bool = false) {
         self.space = space; self.channel = channel; self.messages = messages; self.pinnedMessages = pinnedMessages
-        self.cursor = cursor; self.hasMore = hasMore; self.hasNewer = hasNewer
+        self.cursor = cursor; self.hasMore = hasMore; self.hasNewer = hasNewer; self.visitor = visitor
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -713,6 +733,7 @@ public struct ChatHistory: Codable, Sendable {
         cursor = try values.decode(String.self, forKey: .cursor)
         hasMore = try values.decode(Bool.self, forKey: .hasMore)
         hasNewer = try values.decodeIfPresent(Bool.self, forKey: .hasNewer) ?? false
+        visitor = (try? values.decodeIfPresent(Bool.self, forKey: .visitor)) ?? false
     }
 }
 

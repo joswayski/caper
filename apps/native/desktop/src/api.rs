@@ -146,6 +146,20 @@ impl Api {
         self.request(Method::GET, "api/dms", Some(token), None, None)
     }
 
+    /// `GET /api/feedback[?before=<cursor>]`: the Caper team's inbox, newest
+    /// first. Everyone else gets 404.
+    pub fn feedback(
+        &self,
+        token: &str,
+        before: Option<&str>,
+    ) -> Result<crate::feedback::Page, ApiError> {
+        let path = before.map_or_else(
+            || "api/feedback".to_owned(),
+            |cursor| format!("api/feedback?before={cursor}"),
+        );
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
     pub fn people(&self, token: &str) -> Result<People, ApiError> {
         self.request(Method::GET, "api/people", Some(token), None, None)
     }

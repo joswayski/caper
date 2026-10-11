@@ -134,7 +134,14 @@ macro_rules! channel_access_sql {
          JOIN public.direct_conversations d ON d.channel_id=c.id
          JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
          WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
-           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL"
+           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL
+         UNION ALL
+         -- The feedback team reads (and replies) where it was asked to, but
+         -- never joins: no voice, typing or forwarding into the conversation.
+         SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND NOT $3
+           AND (s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)
+         LIMIT 1"
     };
 }
 

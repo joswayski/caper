@@ -38,10 +38,20 @@ export interface MessageNotification {
   conversationId?: string;
   spaceId?: string;
   channelId?: string;
+  kind?: string;
+  /** The thread a reply belongs to. */
+  threadRootId?: string;
 }
 
 export function notificationLocation(event: MessageNotification) {
   const id = /^[A-Za-z0-9]{12}$/;
+  const message = /^[A-Za-z0-9]{15}$/;
+  // The feedback team visits the conversation in place, at the report's thread.
+  const visit = event.conversationId ?? event.channelId;
+  if (event.kind === "feedback" && visit && id.test(visit) && message.test(event.messageId)) {
+    const root = event.threadRootId && message.test(event.threadRootId) ? event.threadRootId : event.messageId;
+    return `/spaces?feedback=${visit}&message=${event.messageId}&thread=${root}`;
+  }
   if (event.conversationId && id.test(event.conversationId)) return `/spaces?dm=${event.conversationId}`;
   if (event.spaceId && event.channelId && id.test(event.spaceId) && id.test(event.channelId))
     return `/spaces?space=${event.spaceId}&channel=${event.channelId}`;

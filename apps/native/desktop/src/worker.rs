@@ -38,6 +38,13 @@ pub enum Command {
         token: String,
         space: Option<String>,
     },
+    /// `GET /api/feedback`: the Caper team's inbox (`before` pages older).
+    LoadFeedback {
+        epoch: u64,
+        request: u64,
+        token: String,
+        before: Option<String>,
+    },
     /// `GET /api/people`, for `@` suggestions in DMs.
     LoadPeople {
         generation: u64,
@@ -99,6 +106,9 @@ pub enum Command {
         channel: Option<String>,
         name: String,
         cached: Option<History>,
+        /// Open `channel` by id even when it is a space channel outside the
+        /// lists: the Caper team visiting a feedback report.
+        visit: bool,
     },
     PrefetchNavigation {
         generation: u64,
@@ -503,6 +513,11 @@ pub enum Event {
         /// listed, or unreadable (the list still applies).
         result: Result<(Spaces, Option<SpaceDetail>), String>,
     },
+    FeedbackLoaded {
+        epoch: u64,
+        request: u64,
+        result: Result<crate::feedback::Page, String>,
+    },
     PeopleLoaded {
         generation: u64,
         result: Result<Vec<Person>, String>,
@@ -735,6 +750,7 @@ fn prepare_navigation(
     channel: Option<&str>,
     name: &str,
     cached: Option<History>,
+    visit: bool,
 ) -> Result<PreparedNavigation, LoadError> {
     let detail = space
         .map(|space| api.space(token.unwrap_or_default(), space))
@@ -789,12 +805,13 @@ fn prepare_navigation(
         }
     } else if let Some(id) = channel.filter(|_| space.is_none()) {
         let history = match cached
-            .filter(|history| history.space.id.is_empty() && history.channel.id == id)
+            .filter(|history| !visit && history.space.id.is_empty() && history.channel.id == id)
         {
             Some(history) => history,
             None => api.history(token, id, None)?,
         };
-        if !history.space.id.is_empty() || history.channel.id != id {
+        // A visit may land in a space channel; the app decides how to show it.
+        if (!visit && !history.space.id.is_empty()) || history.channel.id != id {
             return Err(LoadError {
                 message: "Caper returned another conversation.".into(),
                 access_denied: false,
@@ -1237,6 +1254,18 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map(|value| value.conversations)
                 .map_err(|error| error.to_string()),
         },
+        Command::LoadFeedback {
+            epoch,
+            request,
+            token,
+            before,
+        } => Event::FeedbackLoaded {
+            epoch,
+            request,
+            result: api
+                .feedback(&token, before.as_deref())
+                .map_err(|error| error.to_string()),
+        },
         Command::LoadPeople { generation, token } => Event::PeopleLoaded {
             generation,
             result: api
@@ -1408,6 +1437,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             name,
             cached,
+            visit,
         } => Event::NavigationPrepared {
             generation,
             navigation,
@@ -1418,6 +1448,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 channel.as_deref(),
                 &name,
                 cached,
+                visit,
             ),
         },
         Command::PrefetchNavigation {
@@ -1997,6 +2028,7 @@ mod tests {
             Some("second"),
             "User",
             None,
+            false,
         )
         .unwrap();
         assert_eq!(prepared.detail.unwrap().space.id, "s");
@@ -2010,6 +2042,7 @@ mod tests {
             Some("revoked"),
             "User",
             Some(warm),
+            false,
         )
         .err()
         .unwrap();
@@ -2021,6 +2054,136 @@ mod tests {
             speculative.err().unwrap().access_denied,
             "an explicit revoked target must not fall back to the first channel"
         );
+        worker.join().unwrap();
+    }
+
+    /// A tiny HTTP server answering each expected request line in order.
+    fn serve(
+        exchanges: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (crate::api::Api, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (path, status, body) in exchanges {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (api, worker)
+    }
+
+    #[test]
+    fn visits_open_a_space_channel_by_id_and_other_navigation_still_refuses_it() {
+        let channel = r#"{"space":{"id":"space0000001","name":"Studio"},"channel":{"id":"chan00000001","name":"plans"},"messages":[],"pinnedMessages":[],"cursor":"4","hasMore":false,"visitor":true}"#;
+        let session =
+            r#"{"token":"chat","author":{"id":"u","name":"Jose","isGuest":false,"admin":true}}"#;
+        let (api, worker) = serve(vec![
+            (
+                "GET /api/chat/channels/chan00000001/messages",
+                "200 OK",
+                channel,
+            ),
+            ("POST /api/chat/session", "200 OK", session),
+            (
+                "GET /api/chat/channels/chan00000001/messages",
+                "200 OK",
+                channel,
+            ),
+        ]);
+        let prepared = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("chan00000001"),
+            "Jose",
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(prepared.detail.is_none());
+        let (history, session) = prepared.conversation.unwrap();
+        assert!(history.visitor);
+        assert_eq!(history.space.name, "Studio");
+        assert!(
+            session.unwrap().author.admin,
+            "visitors still get a chat session"
+        );
+        let refused = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("chan00000001"),
+            "Jose",
+            None,
+            false,
+        );
+        assert_eq!(
+            refused.err().unwrap().message,
+            "Caper returned another conversation."
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn feedback_pages_load_with_the_account_bearer_and_their_cursor() {
+        let page = r#"{"reports":[{"id":"m2","messageId":"m2","threadRootId":"m1","createdAt":"2026-10-11T19:00:00Z","text":"@feedback hi","attachments":0,"reporter":{"id":"u1","username":"alice","displayName":"Alice","avatarId":3},"channel":{"id":"c1","name":"general","direct":false},"space":{"id":"s1","name":"Studio"},"replyCount":1,"answered":false}],"cursor":"41"}"#;
+        let (api, worker) = serve(vec![
+            ("GET /api/feedback", "200 OK", page),
+            (
+                "GET /api/feedback?before=41",
+                "200 OK",
+                r#"{"reports":[],"cursor":null}"#,
+            ),
+            (
+                "GET /api/feedback",
+                "404 Not Found",
+                r#"{"error":"not found"}"#,
+            ),
+        ]);
+        let (events, receiver) = std::sync::mpsc::channel();
+        for before in [None, Some("41".to_owned()), None] {
+            super::execute(
+                &api,
+                super::Command::LoadFeedback {
+                    epoch: 2,
+                    request: 5,
+                    token: "account".into(),
+                    before,
+                },
+                &events,
+                &eframe::egui::Context::default(),
+            );
+        }
+        let mut results = receiver.try_iter().map(|event| match event {
+            super::Event::FeedbackLoaded {
+                epoch: 2,
+                request: 5,
+                result,
+            } => result,
+            _ => panic!("expected feedback"),
+        });
+        let first = results.next().unwrap().unwrap();
+        assert_eq!(first.reports[0].place(), "#general · Studio");
+        assert_eq!(first.cursor.as_deref(), Some("41"));
+        let last = results.next().unwrap().unwrap();
+        assert!(last.reports.is_empty() && last.cursor.is_none());
+        assert!(results.next().unwrap().is_err(), "not on the team");
         worker.join().unwrap();
     }
 
@@ -2106,6 +2269,7 @@ mod tests {
             Some("dm0000000001"),
             "User",
             read.history,
+            false,
         )
         .unwrap();
         let mut retained = first.conversation.unwrap().0;
@@ -2117,6 +2281,7 @@ mod tests {
             Some("dm0000000001"),
             "User",
             Some(retained),
+            false,
         )
         .unwrap();
         assert!(revisited.detail.is_none());

@@ -13,6 +13,10 @@ pub struct Account {
     pub display_name: Option<String>,
     #[serde(default)]
     pub debug_enabled: bool,
+    /// On the Caper feedback team: `GET /api/account/me` sends `true`, and
+    /// omits it for everyone else. Shows the Feedback inbox.
+    #[serde(default)]
+    pub feedback_team: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -282,6 +286,11 @@ pub struct Author {
     pub avatar_id: Option<i32>,
     pub name: String,
     pub is_guest: bool,
+    /// A Caper admin (feedback team member) wrote it, stamped by the server
+    /// at send time, so a look-alike display name can't claim it. Old servers
+    /// omit it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -467,8 +476,9 @@ fn tolerant_attachments<'de, D: serde::Deserializer<'de>>(
         .unwrap_or_default())
 }
 
-/// A `content.mentions` entry: `user` (with `id`/`username`), `everyone` or
-/// `here`. Other types are future additions; readers ignore them.
+/// A `content.mentions` entry: `user` (with `id`/`username`), `everyone`,
+/// `here` or `feedback` (the message asked the Caper team, written `@feedback`
+/// or `@caper`). Other types are future additions; readers ignore them.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Mention {
     #[serde(rename = "type")]
@@ -963,8 +973,13 @@ pub struct History {
     pub pinned_messages: Vec<Message>,
     pub cursor: String,
     pub has_more: bool,
+    /// A direct message has `space.id` `""` and `space.name` "Direct messages".
     pub space: HistoryPlace,
     pub channel: HistoryPlace,
+    /// The viewer reads as the Caper team without being a member: a
+    /// conversation where someone asked for feedback. Members never get it.
+    #[serde(default)]
+    pub visitor: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1831,6 +1846,7 @@ mod tests {
                 avatar_id: None,
                 name: "A".into(),
                 is_guest: false,
+                admin: false,
             },
             content: Content {
                 version: 1,

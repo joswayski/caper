@@ -69,6 +69,11 @@ class CaperApi(
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
     }
+    /** Feedback team only (404 for everyone else): `@feedback` reports, newest first, 50 per page. */
+    suspend fun feedback(token: String, before: String? = null): FeedbackReports {
+        val cursor = before?.let { requireNotNull(validFeedbackCursor(it)) { "Invalid cursor." } }
+        return get("/api/feedback" + (cursor?.let { "?before=$it" } ?: ""), token)
+    }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
     /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */
     suspend fun registerPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "POST", token, pushDevice(deviceToken, appId)) }

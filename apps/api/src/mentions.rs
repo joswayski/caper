@@ -2,6 +2,10 @@
 //! after whitespace or after `(`, `[` or `{`, followed by 1–32 ASCII word
 //! characters. Names compare case-insensitively.
 
+/// Names that ask the Caper team to look at a conversation. Both are reserved
+/// usernames, so they never shadow a person.
+pub(crate) const FEEDBACK_ALIASES: [&str; 2] = ["feedback", "caper"];
+
 /// Distinct user names resolved per message; later names stay plain text.
 pub(crate) const MAX_USER_MENTIONS: usize = 20;
 const MAX_NAME: usize = 32;
@@ -11,6 +15,8 @@ pub(crate) enum Mention {
     User(String),
     Everyone,
     Here,
+    /// `@feedback` or `@caper`, anywhere: reports the message to the team.
+    Feedback,
 }
 
 /// Mentions in first-appearance order without duplicates. `everyone`/`here`
@@ -43,6 +49,7 @@ pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
             "everyone" if specials => Mention::Everyone,
             "here" if specials => Mention::Here,
             "everyone" | "here" => continue,
+            _ if FEEDBACK_ALIASES.contains(&name.as_str()) => Mention::Feedback,
             _ if name.len() >= 3 => Mention::User(name),
             _ => continue,
         };
@@ -115,6 +122,22 @@ mod tests {
             [Mention::Here, Mention::Everyone, user("bob")]
         );
         assert_eq!(parse("@everyone @here @bob", false), [user("bob")]);
+    }
+
+    #[test]
+    fn feedback_aliases_work_everywhere_once() {
+        for specials in [true, false] {
+            assert_eq!(
+                parse("@Feedback @bob @caper @feedback", specials),
+                [Mention::Feedback, user("bob")]
+            );
+        }
+        assert!(parse("feedback@caper.chat", true).is_empty());
+        assert_eq!(parse("@feedbacks", true), [user("feedbacks")]);
+        let reserved = crate::accounts::ReservedUsernames::default();
+        for alias in FEEDBACK_ALIASES {
+            assert!(reserved.contains(alias), "{alias} must stay reserved");
+        }
     }
 
     #[test]

@@ -56,9 +56,15 @@ Per committed message (edits never notify; demo spaces and guests never do):
    `mentions`.
 5. One `notifications` row per recipient, and one delivery per active device on
    an advertised platform whose session is still valid.
+6. **`@feedback`/`@caper`** (`feedback`): every feedback team member except the
+   author, wherever it was written, including channels they aren't in, DMs and
+   thread replies. Like `mention.user`, it ignores mutes. A team member who only
+   visits the conversation through feedback access hears about nothing else
+   there, except being @named, which also arrives as `feedback` so that it
+   opens the visit view. See [Feedback](media.md#feedback-in-place).
 
-Kinds are `direct.message`, `channel.message`, `mention.user` and
-`mention.everyone`. Clients treat unknown kinds as a generic message.
+Kinds are `direct.message`, `channel.message`, `mention.user`,
+`mention.everyone` and `feedback`. Clients treat unknown kinds as a generic message.
 
 ### Phone hold (`mobile = whenInactive`)
 
@@ -101,7 +107,9 @@ offers the phone's platform, the app turns push on, unless the account turned
 
 ### Content and payloads
 
-- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
+- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`;
+  `feedback` → `Sender · Feedback`.
+- Every payload whose message is a thread reply also carries `threadRootId`.
 - Body: the message text, trimmed, cut to 180 characters including a final `…`;
   empty text with attachments → `Sent a photo`, `Sent a video`, `Sent an audio
   file`, `Sent a file: filename`, or `Sent N files`. Empty text without files

@@ -67,6 +67,24 @@ public final class AppModel {
     @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
     /// A tapped push that arrived before spaces loaded; opened in their place.
     @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
+    /// The feedback team's inbox (`GET /api/feedback`), newest first.
+    public private(set) var feedbackReports: [FeedbackReport] = []
+    /// `?before=` for the next page; nil when everything is listed.
+    public private(set) var feedbackCursor: String?
+    public private(set) var feedbackLoading = false
+    public private(set) var feedbackLoaded = false
+    public private(set) var feedbackError: String?
+    @ObservationIgnored private var feedbackRequest = 0
+    /// The inbox is open: a pushed page in Browse on narrow layouts, an
+    /// expanded sidebar section otherwise.
+    public var showingFeedback = false
+    /// A conversation the feedback team is visiting without joining it. It is
+    /// open while no channel or DM is selected, and any other navigation ends it.
+    public private(set) var visit: FeedbackVisit? { didSet { if visit?.channelID != oldValue?.channelID { removeShownNotifications() } } }
+    /// What closing the visit returns to on wider layouts.
+    @ObservationIgnored private var visitReturn: (spaceID: String?, channelID: String?, directMessageID: String?)?
+    /// Shows the Feedback inbox and opens feedback notifications as visits.
+    public var isFeedbackTeam: Bool { account?.isFeedbackTeam == true }
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
@@ -170,6 +188,11 @@ public final class AppModel {
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
+        // A reply from the team can answer a report: refresh the inbox's status.
+        chatModel.onMessageSent = { [weak self] in
+            guard let self, self.isFeedbackTeam, self.visit != nil || self.feedbackLoaded else { return }
+            Task { await self.refreshFeedback() }
+        }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
@@ -296,6 +319,7 @@ public final class AppModel {
         directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
+        clearFeedbackState()
         clearNotificationState()
         spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
@@ -355,6 +379,9 @@ public final class AppModel {
             }
             if case let .direct(conversationID)? = route, self.generation == attempt {
                 await self.openDirectMessage(id: conversationID)
+            }
+            if case let .feedback(target)? = route, self.generation == attempt {
+                await self.openFeedback(target)
             }
         }
     }
@@ -496,6 +523,7 @@ public final class AppModel {
             await presence.stop(); await voicePresence.stop()
             guard generation == attempt, navigationGeneration == navigation, navigationCacheEpoch == epoch else { return }
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
+            visit = nil; visitReturn = nil; chat.visitor = false
             navigationOpen = false
             Task { [weak self] in await self?.refreshPeople() }
             // An incoming request opens read-only: no chat session, no composer,
@@ -703,7 +731,7 @@ public final class AppModel {
 
     /// Android clears the open conversation's notifications; so does iOS.
     private func removeShownNotifications() {
-        guard foreground, account != nil, let id = selectedDirectMessageID ?? selectedChannelID else { return }
+        guard foreground, account != nil, let id = selectedDirectMessageID ?? selectedChannelID ?? visit?.channelID else { return }
         removeDeliveredNotifications?(id)
     }
 
@@ -790,6 +818,7 @@ public final class AppModel {
         Task { [weak self] in await self?.refreshBlocks() }
         // After sign-in (every path starts here), like the block list.
         Task { [weak self] in await self?.loadNotificationSettings() }
+        if isFeedbackTeam { Task { [weak self] in await self?.refreshFeedback() } }
         directMessageRefreshTask = Task { [weak self] in
             // Sign-in has just loaded the spaces; membership waits for the next pass.
             var reconcile = false
@@ -995,6 +1024,7 @@ public final class AppModel {
             selectedSpaceID = space.id
             selectedDirectMessageID = nil
             selectedChannelID = channel?.id
+            visit = nil; visitReturn = nil; chat.visitor = false
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
             navigationOpen = false
@@ -1031,6 +1061,7 @@ public final class AppModel {
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
                 if !spaceVerified { detail = nil; selectedSpaceID = nil }
                 selectedChannelID = nil
+                if visit != nil { visit = nil; visitReturn = nil; chat.visitor = false }
                 if voice.isActive(spaceID: space.id), !spaceVerified || channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
                 await chat.stop()
                 if !spaceVerified { await presence.stop(); await voicePresence.stop() }
@@ -1058,7 +1089,8 @@ public final class AppModel {
         lastChannelBySpace = lastChannelBySpace.filter { visited[navigationKey(spaceID: $0.key, channelID: $0.value)] != nil }
     }
     private func rememberCurrentNavigation() {
-        guard let snapshot = chat.currentSnapshot(), snapshot.hasNewer != true else { return }
+        // A visited conversation is never a space's or the DM list's to restore.
+        guard visit == nil, let snapshot = chat.currentSnapshot(), snapshot.hasNewer != true else { return }
         if let id = selectedDirectMessageID, snapshot.channel?.id == id, snapshot.space?.id == "" {
             guard directMessages.contains(where: { $0.id == id }) else { return }
             remember(PreparedNavigation(detail: nil, channelID: id, history: snapshot))
@@ -1361,7 +1393,8 @@ public final class AppModel {
     }
 
     private func removeCurrentSpace(id: String) async {
-        let directMessageOpen = selectedDirectMessageID != nil
+        // A DM or a feedback visit stays open when the space behind it goes.
+        let directMessageOpen = selectedDirectMessageID != nil || visit != nil
         generation += 1
         voiceJoinGeneration += 1
         pendingVoiceChannelID = nil
@@ -1599,7 +1632,8 @@ extension AppModel {
 
     /// Whether a push's conversation is the one open now.
     public func isShowing(_ route: NotificationRoute) -> Bool {
-        route.isOpen(spaceID: selectedSpaceID, channelID: selectedChannelID, directMessageID: selectedDirectMessageID)
+        route.isOpen(spaceID: selectedSpaceID, channelID: selectedChannelID, directMessageID: selectedDirectMessageID,
+                     visitChannelID: visit?.channelID)
     }
 
     /// Opens a tapped push's channel or DM. Before spaces load, it waits and
@@ -1613,6 +1647,7 @@ extension AppModel {
         switch route {
         case let .direct(conversationID): await openDirectMessage(id: conversationID)
         case let .channel(spaceID, channelID): await openChannel(spaceID: spaceID, channelID: channelID)
+        case let .feedback(target): await openFeedback(target)
         }
     }
 
@@ -1697,6 +1732,149 @@ extension AppModel {
         notificationsLoadedAt = nil; notificationChangesInFlight = 0
         accountNotificationRevisions = [:]; overrideRevisions = [:]
         pendingNotificationRoute = nil
+    }
+}
+
+// MARK: Feedback
+
+extension AppModel {
+    /// The inbox's first page, replacing what is listed. On open, on pull to
+    /// refresh, after a team reply and when a `feedback` notification arrives.
+    public func refreshFeedback() async {
+        guard account != nil, isFeedbackTeam else { return }
+        await loadFeedback(before: nil)
+    }
+
+    /// The next 50 older reports.
+    public func loadMoreFeedback() async {
+        guard account != nil, isFeedbackTeam, !feedbackLoading, let cursor = feedbackCursor else { return }
+        await loadFeedback(before: cursor)
+    }
+
+    /// A live `feedback` notification: a new report is waiting.
+    public func feedbackNotificationArrived() {
+        guard isFeedbackTeam else { return }
+        Task { [weak self] in await self?.refreshFeedback() }
+    }
+
+    private func loadFeedback(before: String?) async {
+        let attempt = generation
+        feedbackRequest += 1
+        let request = feedbackRequest
+        feedbackLoading = true
+        defer { if generation == attempt, feedbackRequest == request { feedbackLoading = false } }
+        do {
+            let page = try await api.feedbackReports(before: before)
+            guard generation == attempt, feedbackRequest == request, account != nil else { return }
+            feedbackReports = before == nil ? page.reports : FeedbackInbox.merging(feedbackReports, page.reports)
+            feedbackCursor = page.cursor
+            feedbackLoaded = true; feedbackError = nil
+        } catch is CancellationError {} catch {
+            guard generation == attempt, feedbackRequest == request else { return }
+            if (error as? APIError)?.status == 404 {
+                // No longer on the team: the inbox goes away.
+                account?.feedbackTeam = nil
+                feedbackReports = []; feedbackCursor = nil; feedbackLoaded = false; feedbackError = nil
+                showingFeedback = false
+                return
+            }
+            feedbackError = FeedbackInbox.loadFailed
+        }
+    }
+
+    /// Opens an inbox row's conversation.
+    public func openFeedback(_ report: FeedbackReport) async {
+        await openFeedback(report.target)
+    }
+
+    /// Opens a reported conversation around the reported message, with its
+    /// thread open so replies land there by default. A conversation you
+    /// belong to (no `visitor` flag) that your lists hold opens the normal
+    /// way; anything else opens as a visit, without joining.
+    public func openFeedback(_ target: FeedbackTarget) async {
+        guard account != nil else { return }
+        directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
+        rememberCurrentNavigation()
+        let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        navigationTarget = nil; navigationError = nil
+        openingSpaceID = nil; openingChannelID = nil
+        do {
+            // The thread root is in the timeline; a reply is not.
+            let history = try await api.history(channelID: target.channelID, around: target.rootID)
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            guard history.channel?.id == target.channelID else {
+                throw APIError(status: 502, message: "Caper returned another conversation.")
+            }
+            let direct = history.channel?.direct == true || history.space?.id == ""
+            if !history.visitor {
+                if direct, let conversation = directMessages.first(where: { $0.id == target.channelID }) {
+                    await select(directMessage: conversation)
+                    guard generation == attempt, selectedDirectMessageID == target.channelID, chat.channelID == target.channelID else { return }
+                    await focusFeedback(target)
+                    return
+                }
+                if !direct, let spaceID = history.space?.id, let space = spaces.first(where: { $0.id == spaceID }) {
+                    await navigate(space: space, channelID: target.channelID)
+                    guard generation == attempt, selectedChannelID == target.channelID, chat.channelID == target.channelID else { return }
+                    await focusFeedback(target)
+                    return
+                }
+            }
+            // Presence and voice rosters stay with the space shown in Browse;
+            // a visit has no member list, voice, pins or read markers.
+            if visit == nil {
+                visitReturn = (selectedSpaceID, selectedChannelID, selectedDirectMessageID)
+            }
+            visit = FeedbackVisit(channelID: target.channelID, spaceID: direct ? "" : history.space?.id ?? "",
+                                  spaceName: history.space?.name ?? "", channelName: history.channel?.name ?? "",
+                                  direct: direct, reportID: target.messageID, reporter: target.reporter)
+            selectedDirectMessageID = nil; selectedChannelID = nil
+            navigationOpen = false
+            Task { [weak self] in await self?.refreshPeople() }
+            chat.directPeerID = nil; chat.visitor = true
+            await chat.open(history: history, displayName: account?.displayName ?? "")
+            guard generation == attempt, navigationGeneration == navigation, visit?.channelID == target.channelID,
+                  chat.channelID == target.channelID else { return }
+            await focusFeedback(target)
+        } catch is CancellationError {} catch {
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            navigationError = FriendlyError.message(for: error)
+        }
+    }
+
+    /// Opens the report's thread (around the reply, if it is one) and marks the reported message.
+    private func focusFeedback(_ target: FeedbackTarget) async {
+        await chat.openThread(target.rootID, around: target.isReply ? target.messageID : nil)
+        guard chat.channelID == target.channelID else { return }
+        chat.focusedMessageID = target.messageID
+        chat.focusRevision += 1
+    }
+
+    /// Closes the visit on wider layouts, back to the conversation shown before it.
+    public func closeVisit() async {
+        guard visit != nil else { return }
+        let back = visitReturn
+        if let id = back?.directMessageID, let conversation = directMessages.first(where: { $0.id == id }) {
+            await select(directMessage: conversation)
+            if selectedDirectMessageID == id { return }
+        } else if let spaceID = back?.spaceID ?? selectedSpaceID, let space = spaces.first(where: { $0.id == spaceID }) {
+            await navigate(space: space, channelID: back?.channelID)
+            if visit == nil { return }
+        }
+        // Nothing to return to (or it failed to open): an empty stage.
+        guard visit != nil else { return }
+        navigationGeneration += 1
+        visit = nil; visitReturn = nil; chat.visitor = false
+        await chat.stop()
+    }
+
+    private func clearFeedbackState() {
+        feedbackRequest += 1
+        feedbackReports = []; feedbackCursor = nil; feedbackLoading = false; feedbackLoaded = false; feedbackError = nil
+        showingFeedback = false
+        visit = nil; visitReturn = nil; chat.visitor = false
     }
 }
 
@@ -1822,6 +2000,12 @@ public final class ChatModel {
     /// The other person in the open DM, kept by `AppModel`. Blocking them stops
     /// reactions, pins and edits as well as sending; the server refuses them too.
     public var directPeerID: String?
+    /// The open conversation is a feedback visit (kept by `AppModel`). Visitors
+    /// send, react and edit their own messages, but never pin or take part in
+    /// typing indicators, which the server refuses them.
+    public var visitor = false
+    /// After the server confirms a sent message or reply.
+    @ObservationIgnored public var onMessageSent: (() -> Void)?
     /// Reacting, pinning and editing need a chat session (not a preview), and
     /// never reach someone you blocked.
     public var canInteract: Bool {
@@ -2389,6 +2573,7 @@ public final class ChatModel {
                 throw APIError(status: 502, message: "The chat service returned an invalid message.")
             }
             merge([message]); delivery.confirmHTTP(id: command.id)
+            onMessageSent?()
         } catch {
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
@@ -2518,7 +2703,7 @@ public final class ChatModel {
     }
 
     public func setPin(messageID: String, active: Bool) async {
-        guard !isPreview, let channelID, let session, !pendingPins.contains(messageID) else { return }
+        guard !isPreview, !visitor, let channelID, let session, !pendingPins.contains(messageID) else { return }
         guard let message = (messages + pinnedMessages).first(where: { $0.id == messageID }) else { return }
         pendingPins.insert(messageID); pinErrors[messageID] = nil
         failedPinActions[messageID] = nil
@@ -3118,7 +3303,7 @@ public final class ChatModel {
     }
 
     private func flushTyping() {
-        guard let channelID, let session else { return }
+        guard !visitor, let channelID, let session else { return }
         let active = typingActive
         if !active && !typingSent { return }
         if active && typingSent && Date().timeIntervalSince(typingSentAt) < 0.5 { return }
@@ -3138,7 +3323,7 @@ public final class ChatModel {
     }
 
     private func receiveTyping(author: ChatAuthor, typing: Bool, revision: String) {
-        guard author.id != session?.author.id, (try? Sequence.compare(revision, "0")) != nil else { return }
+        guard !visitor, author.id != session?.author.id, (try? Sequence.compare(revision, "0")) != nil else { return }
         if let previous = typers[author.id], (try? Sequence.compare(revision, previous.revision)) != .orderedDescending { return }
         guard typers[author.id] != nil || typers.count < 64 else { return }
         typers[author.id] = (author, typing, revision, Date().addingTimeInterval(6))

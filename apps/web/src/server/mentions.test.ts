@@ -8,6 +8,7 @@ import {
   mentionSuggestions,
   mentionToken,
   mentionsAccount,
+  reportsFeedback,
   type MentionCandidate,
 } from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
@@ -137,4 +138,25 @@ test("pinner profiles match IDs, use canonical identities, and preserve unknown 
     self: false,
   });
   assert.equal(mentionCardPerson(author, [], "pinner").self, true);
+});
+
+test("@feedback is suggested everywhere once typed, for either alias, and renders as a pill", () => {
+  const names = (query: string, specials = true) => mentionSuggestions(members, query, specials).map(mentionName);
+  assert.deepEqual(names("feed", false), ["feedback"]);
+  assert.deepEqual(names("cap"), ["feedback"]);
+  assert.deepEqual(names("c", false), ["cal", "feedback"]);
+  assert.ok(!names("").includes("feedback"), "a bare @ stays about people");
+  const text = "@Feedback uploads fail, @caper @feedbacks";
+  const segments = mentionSegments(text, [{ type: "feedback" }]);
+  assert.deepEqual(
+    segments.filter((segment) => segment.mention).map((segment) => [segment.text, segment.user]),
+    [
+      ["@Feedback", undefined],
+      ["@caper", undefined],
+    ],
+  );
+  assert.deepEqual(mentionSegments(text, []), [{ text, mention: false }], "unreported text stays plain");
+  const message = { content: { mentions: [{ type: "feedback" }] } } as unknown as ChatMessage;
+  assert.ok(reportsFeedback(message));
+  assert.ok(!reportsFeedback({ content: {} } as unknown as ChatMessage));
 });

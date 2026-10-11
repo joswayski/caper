@@ -8,7 +8,9 @@ export interface MentionCandidate {
   avatarId?: number | null;
 }
 
-export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: "everyone" | "here" };
+export type MentionSuggestion =
+  | { kind: "member"; member: MentionCandidate }
+  | { kind: "everyone" | "here" | "feedback" };
 
 export interface MentionToken {
   start: number;
@@ -35,13 +37,19 @@ export function mentionToken(text: string, start: number, end = start): MentionT
 export const specialMentionLabels = {
   everyone: "Everyone in this channel",
   here: "Everyone online in this channel",
+  feedback: "Caper team · can read and reply here",
 } as const;
+
+/** `@feedback` and `@caper` both ask the Caper team to look; reserved usernames, never people. */
+export const feedbackAliases = ["feedback", "caper"] as const;
 
 export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
   const needle = query.toLowerCase();
-  const special = specials
+  const special: MentionSuggestion[] = specials
     ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
     : [];
+  // Offered everywhere, once something is typed, so a bare `@` stays about people.
+  if (needle && feedbackAliases.some((alias) => alias.startsWith(needle))) special.push({ kind: "feedback" });
   const ranked = members
     .flatMap((member) => {
       const username = member.username.toLowerCase();
@@ -105,6 +113,7 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
     if (mention.type === "user" && typeof mention.username === "string" && typeof mention.id === "string") {
       resolved.set(mention.username.toLowerCase(), { id: mention.id, username: mention.username });
     } else if (mention.type === "everyone" || mention.type === "here") resolved.set(mention.type, undefined);
+    else if (mention.type === "feedback") for (const alias of feedbackAliases) resolved.set(alias, undefined);
   }
   if (!resolved.size) return [{ text, mention: false }];
   const segments: MentionSegment[] = [];
@@ -130,6 +139,11 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
   }
   if (plainStart < text.length) segments.push({ text: text.slice(plainStart), mention: false });
   return segments;
+}
+
+/** The author asked the Caper team to look at this message (the server recorded a report). */
+export function reportsFeedback(message: ChatMessage) {
+  return mentionList(message.content.mentions).some((mention) => mention.type === "feedback");
 }
 
 /** Highlights a message that names the reader, or `@everyone`/`@here` from someone else. */

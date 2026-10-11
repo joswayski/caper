@@ -5,6 +5,7 @@ import chat.caper.android.model.Channel
 import chat.caper.android.model.Member
 import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceDetail
+import chat.caper.android.model.VisitUi
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -37,6 +38,11 @@ class SpaceNavigationTest {
         assertFalse(showsSpace(shown.copy(selectedDirectId = "direct000001"), detail.space.id))
         // A space still opening (no channel yet) can be chosen again.
         assertFalse(showsSpace(shown.copy(selectedChannel = null), detail.space.id))
+        // A feedback visit (even of this space's channel) or the inbox is left for the space or channel.
+        val visit = VisitUi(design.id, detail.space.id, "Studio", "design", direct = false)
+        assertFalse(showsChannel(shown.copy(visit = visit), design))
+        assertFalse(showsSpace(shown.copy(visit = visit), detail.space.id))
+        assertFalse(showsSpace(shown.copy(feedbackShown = true), detail.space.id))
     }
 
     @Test fun `invites are checked before they are sent`() {

@@ -17,6 +17,8 @@ pub(super) enum Kind {
     ChannelMessage,
     MentionUser,
     MentionEveryone,
+    /// `@feedback`, for every feedback team member.
+    Feedback,
 }
 
 impl Kind {
@@ -26,7 +28,20 @@ impl Kind {
             Self::ChannelMessage => "channel.message",
             Self::MentionUser => "mention.user",
             Self::MentionEveryone => "mention.everyone",
+            Self::Feedback => "feedback",
         }
+    }
+
+    pub(super) fn parse(name: &str) -> Option<Self> {
+        [
+            Self::DirectMessage,
+            Self::ChannelMessage,
+            Self::MentionUser,
+            Self::MentionEveryone,
+            Self::Feedback,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == name)
     }
 }
 
@@ -43,12 +58,15 @@ pub(super) struct Preferences {
 }
 
 /// Resolution steps 1–4: account off or paused, then mutes (which a direct
-/// @mention ignores), then the first set level of channel, space and account.
+/// @mention or @feedback ignores), then the first set level of channel, space
+/// and account.
 pub(super) fn notifies(kind: Kind, preferences: &Preferences) -> bool {
     if preferences.account == Some(Level::Nothing) || preferences.paused {
         return false;
     }
-    if (preferences.channel_muted || preferences.space_muted) && kind != Kind::MentionUser {
+    if (preferences.channel_muted || preferences.space_muted)
+        && !matches!(kind, Kind::MentionUser | Kind::Feedback)
+    {
         return false;
     }
     if kind == Kind::DirectMessage {
@@ -82,6 +100,11 @@ struct Candidate {
     /// Joined the channel (always true for DMs). Joining is consent to
     /// receive, so only joined readers hear about ordinary messages.
     joined: bool,
+    /// On the feedback team. Visitors (team members who only have feedback
+    /// access) hear about @feedback and their own @mentions, both as
+    /// `feedback`, and nothing else.
+    team: bool,
+    visitor: bool,
     account_level: Option<String>,
     paused: bool,
     mobile: String,
@@ -117,6 +140,7 @@ struct Mentions {
     users: HashSet<String>,
     everyone: bool,
     here: bool,
+    feedback: bool,
 }
 
 impl Mentions {
@@ -131,6 +155,7 @@ impl Mentions {
                 }
                 Some("everyone") => mentions.everyone = true,
                 Some("here") => mentions.here = true,
+                Some("feedback") => mentions.feedback = true,
                 _ => {}
             }
         }
@@ -285,11 +310,12 @@ async fn resolve(
     presence_required: bool,
 ) -> Result<Vec<Recipient>, ()> {
     // DMs: the other participant of an accepted conversation (not personal
-    // notes) unless either blocked the other. Channels: every reader except
+    // notes) unless either blocked the other. Feedback team members visit
+    // conversations that asked for them; they are also candidates there. Channels: every reader except
     // the author and anyone who blocked them; readers who haven't joined
     // hear only about messages that @mention them by name.
     let candidates: Vec<Candidate> = sqlx::query_as(
-        "WITH candidates AS (
+        "WITH members AS (
              SELECT u.id, true AS joined FROM public.direct_conversations d
              JOIN public.users u ON u.id = CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END
              WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.low_user_id<>d.high_user_id
@@ -307,8 +333,20 @@ async fn resolve(
                AND (NOT c.private OR s.owner_id=u.id OR EXISTS(SELECT 1 FROM public.channel_members cm
                    WHERE cm.channel_id=c.id AND cm.user_id=u.id AND cm.deleted_at IS NULL))
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
-                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL))
-         SELECT u.id, u.external_id, candidates.joined, ns.default_level AS account_level,
+                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL)),
+         visitors AS (
+             SELECT t.user_id AS id, false AS joined FROM public.feedback_team t
+             JOIN public.users u ON u.id=t.user_id
+             WHERE t.deleted_at IS NULL AND u.deleted_at IS NULL AND t.user_id<>$3
+               AND t.user_id NOT IN (SELECT id FROM members) AND public.feedback_access($1, t.user_id)
+               AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
+                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL)),
+         candidates AS (
+             SELECT id, joined, false AS visitor FROM members
+             UNION ALL SELECT id, joined, true AS visitor FROM visitors)
+         SELECT u.id, u.external_id, candidates.joined, candidates.visitor,
+                EXISTS(SELECT 1 FROM public.feedback_team t WHERE t.user_id=u.id AND t.deleted_at IS NULL) AS team,
+                ns.default_level AS account_level,
                 COALESCE(ns.paused_until > now(), false) AS paused,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile,
                 co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
@@ -330,7 +368,15 @@ async fn resolve(
     let mut here = Vec::new();
     for candidate in candidates {
         let preferences = candidate.preferences();
-        let kind = if source.space_id.is_none() {
+        let kind = if mentions.feedback && candidate.team {
+            Kind::Feedback
+        } else if candidate.visitor {
+            // Named where they only visit: still feedback, so it opens there.
+            if !mentions.users.contains(&candidate.external_id) {
+                continue;
+            }
+            Kind::Feedback
+        } else if source.space_id.is_none() {
             Kind::DirectMessage
         } else if mentions.users.contains(&candidate.external_id) {
             Kind::MentionUser
