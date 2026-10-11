@@ -263,8 +263,11 @@ emits a clearly labelled test alert, never a live provider send.
   sandbox use separate keys. FCM uses an OAuth token from the service account's
   RS256 assertion, cached until 5 minutes before it expires. Signing uses
   `aws-lc-rs`, already the process's Rustls crypto provider.
-- Finished deliveries and expanded jobs are pruned after 7 days. Devices are
-  revoked, never deleted; settings and overrides are updated in place.
+- Finished deliveries and expanded jobs are pruned after 7 days. Every 10
+  minutes a separate task deletes them oldest first in 5,000-row batches through
+  partial indexes, up to 100,000 rows per table per pass (about 14 million a
+  day), without delaying delivery. Devices are revoked, never deleted; settings
+  and overrides are updated in place.
 - Expansion/pruning run in every API replica when `CHAT_ENABLED` supplies
   Postgres and Valkey. `NOTIFICATIONS_ENABLED` gates phone delivery and platform
   advertisement only. Bad credentials disable that platform with

@@ -503,15 +503,18 @@ pub(crate) fn start(
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+    // Pruning runs beside delivery so a large backlog never delays a send.
+    let pruning = workers.pool.clone();
     tokio::spawn(async move {
-        let mut pruned: Option<tokio::time::Instant> = None;
+        loop {
+            delivery::prune(&pruning).await;
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
+    tokio::spawn(async move {
         loop {
             // Never race a batch against a timer: cancelling one mid-send
             // could deliver a notification twice.
-            if pruned.is_none_or(|at| at.elapsed() >= Duration::from_secs(600)) {
-                delivery::prune(&workers.pool).await;
-                pruned = Some(tokio::time::Instant::now());
-            }
             match if workers.push.enabled() {
                 delivery::deliver_pending(&workers).await
             } else {
