@@ -97,18 +97,22 @@ export default function ThreadPanel({
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
   const windowStart = state.thread?.windowStart;
   const windowEnd = state.thread?.windowEnd;
-  const replies = useMemo(
-    () =>
-      rootId
-        ? state.messages.filter(
-            (message) =>
-              message.threadRootId === rootId &&
-              (!windowStart || sequence(message.seq) >= sequence(windowStart)) &&
-              (!windowEnd || sequence(message.seq) <= sequence(windowEnd)),
-          )
-        : [],
-    [state.messages, rootId, windowStart, windowEnd],
-  );
+  const previousReplies = useRef<ChatMessage[]>([]);
+  const replies = useMemo(() => {
+    const next = rootId
+      ? state.messages.filter(
+          (message) =>
+            message.threadRootId === rootId &&
+            (!windowStart || sequence(message.seq) >= sequence(windowStart)) &&
+            (!windowEnd || sequence(message.seq) <= sequence(windowEnd)),
+        )
+      : [];
+    // Timeline rows are immutable, so keep the array when no reply changed: unrelated
+    // channel events then neither re-render the replies nor force a follow layout read.
+    const previous = previousReplies.current;
+    if (next.length === previous.length && next.every((message, index) => message === previous[index])) return previous;
+    return (previousReplies.current = next);
+  }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
@@ -168,7 +172,8 @@ export default function ThreadPanel({
     if (!rootId) return;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     olderAnchor.current = undefined;
-    follow.current = true;
+    // A cached "go to message" page keeps the reader at that reply.
+    follow.current = !state.thread?.focusMessageId;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
       // Escape closes the innermost layer first: a menu, popover or dialog
@@ -209,11 +214,10 @@ export default function ThreadPanel({
   }, [state.thread?.focusMessageId]);
   // Reactions grow an existing reply (or the root) without changing its ID.
   const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  // Runs before the follow effect so a focused reply is not first scrolled past.
+  // The focus stays through paging, so scrolling back to the bottom (or
+  // sending) is what resumes following.
   useLayoutEffect(() => {
-    if (scroll.current && follow.current && !state.thread?.hasNewer && !state.thread?.focusMessageId)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
-  useEffect(() => {
     const id = state.thread?.focusMessageId;
     if (!id || state.thread?.loading) return;
     follow.current = false;
@@ -222,6 +226,10 @@ export default function ThreadPanel({
     );
     return () => cancelAnimationFrame(frame);
   }, [state.thread?.focusMessageId, state.thread?.loading]);
+  useLayoutEffect(() => {
+    if (scroll.current && follow.current && !state.thread?.hasNewer)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
     if (state.thread?.loadingOlder || !olderAnchor.current || !scroll.current) return;
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;

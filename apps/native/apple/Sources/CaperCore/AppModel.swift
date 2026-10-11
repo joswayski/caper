@@ -530,9 +530,13 @@ public final class AppModel {
             }
             if chat.channelID != source.message.channelId {
                 if let spaceID = source.spaceId {
-                    let detail = try await api.space(spaceID)
-                    guard generation == attempt, navigationGeneration == navigation else { return false }
-                    await navigate(space: detail.space, channelID: source.message.channelId)
+                    // navigate(space:) rechecks membership itself; fetch only a space this list lacks.
+                    let space: Space
+                    if let known = spaces.first(where: { $0.id == spaceID }) { space = known } else {
+                        space = try await api.space(spaceID).space
+                        guard generation == attempt, navigationGeneration == navigation else { return false }
+                    }
+                    await navigate(space: space, channelID: source.message.channelId)
                 } else {
                     let conversations = try await api.directMessages()
                     guard generation == attempt, navigationGeneration == navigation else { return false }
@@ -1739,6 +1743,8 @@ public final class ChatModel {
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays disabled.
     public private(set) var uploadsEnabled = false
+    /// A usage check has answered, so a disabled control is unavailable rather than still checking.
+    public private(set) var uploadsChecked = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
     public private(set) var attachmentDrafts: [AttachmentDraft] = []
@@ -1747,6 +1753,11 @@ public final class ChatModel {
     /// Composer-level attachment message, such as the 10-file limit.
     public var attachmentNotice: String?
     public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
+    /// Every client's wording for a disabled attach control: checking while
+    /// usage or the conversation loads, otherwise unavailable.
+    public var attachUnavailableReason: String {
+        (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
+    }
     /// The send control's enabled state: text or uploaded files, nothing still uploading.
     public var canSubmit: Bool {
         if sending || delivery.rejected { return false }
@@ -2943,6 +2954,8 @@ public final class ChatModel {
     /// Uploads are optional server configuration; only a successful usage
     /// response enables the attach control.
     public func checkUploadAvailability() async {
+        // A cancelled check (switching conversations) is superseded, not an answer.
+        defer { if !Task.isCancelled { uploadsChecked = true } }
         do {
             let usage = try await api.assetUsage()
             attachmentCompression = usage.compression

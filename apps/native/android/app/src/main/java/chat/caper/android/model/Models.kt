@@ -448,6 +448,8 @@ data class AppUiState(
     val chatAuthorId: String? = null,
     /** `GET /api/assets/usage` succeeded: show the attach control. */
     val uploadsEnabled: Boolean = false,
+    /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
+    val uploadsChecked: Boolean = false,
     val drafts: List<DraftAttachmentUi> = emptyList(),
     val attachmentError: String? = null,
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */

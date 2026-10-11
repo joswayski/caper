@@ -806,6 +806,19 @@ export default function Chat({
       listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [state.pendingSend?.clientMessageId]);
 
+  // An updated row that keeps the list height never reaches totalListHeightChanged.
+  // Drop the follow intent once Virtuoso has measured it (its ResizeObserver
+  // defers size updates by a frame), so a later scrollbar drag is not snapped back.
+  useLayoutEffect(() => {
+    if (!followUpdatedRows.current) return;
+    let frames = 3;
+    let frame = requestAnimationFrame(function settle() {
+      if (--frames) frame = requestAnimationFrame(settle);
+      else followUpdatedRows.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [state.channelMessages]);
+
   const loadOlder = () => {
     void clientRef.current?.loadOlder();
   };
@@ -1655,6 +1668,10 @@ export default function Chat({
                 onTouchMove={() => {
                   followUpdatedRows.current = false;
                 }}
+                // Covers scrollbar drags, which send no wheel or touch events.
+                onPointerDown={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
                   followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
@@ -1877,12 +1894,11 @@ export default function Chat({
                 signedIn || drafts.length
                   ? {
                       enabled: canAttach,
+                      // Like every client: checking while settings or the conversation load, else unavailable.
                       disabledReason:
-                        compression === undefined
-                          ? "Checking file uploads…"
-                          : compression === null
-                            ? "File uploads are unavailable"
-                            : "Waiting for the conversation…",
+                        compression === null || state.phase === "error" || readOnly || !signedIn
+                          ? "File uploads are unavailable"
+                          : "Checking file uploads…",
                       drafts,
                       error: attachError,
                       onAdd: addFiles,

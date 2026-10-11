@@ -69,6 +69,9 @@ const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
+const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
+/// `--pin-wash`: pin gold at 6%.
+const PIN_WASH: Color32 = Color32::from_rgba_unmultiplied_const(228, 199, 106, 15);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;
@@ -777,6 +780,8 @@ struct CaperApp {
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
+    /// A usage check is in flight, so a disabled Attach is still checking.
+    uploads_pending: bool,
     draft_files: Vec<DraftUpload>,
     draft_keys: u64,
     media: attachments::Media,
@@ -968,6 +973,7 @@ impl CaperApp {
             uploads: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
+            uploads_pending: false,
             draft_files: Vec::new(),
             draft_keys: 0,
             media,
@@ -2487,6 +2493,7 @@ impl CaperApp {
                 }
                 Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
                     self.uploads = settings;
+                    self.uploads_pending = false;
                 }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
@@ -2702,6 +2709,7 @@ impl CaperApp {
         self.token = Some(token);
         self.uploads = None;
         self.uploads_checked = None;
+        self.uploads_pending = false;
         self.check_uploads();
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -3601,6 +3609,7 @@ impl CaperApp {
             return;
         }
         self.uploads_checked = Some(Instant::now());
+        self.uploads_pending = true;
         self.worker.send(Command::AssetUsage { token });
     }
 
@@ -4689,6 +4698,7 @@ impl CaperApp {
         self.reset_account_state();
         self.uploads = None;
         self.uploads_checked = None;
+        self.uploads_pending = false;
         self.media.clear();
         self.viewer = None;
         self.attachment_progress.clear();
@@ -4925,6 +4935,22 @@ impl CaperApp {
             && self.session.is_some()
             && self.selected_is_joined()
             && !self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+    }
+
+    /// Why Attach is disabled, worded as on every client: checking while upload
+    /// settings or the conversation load, otherwise unavailable.
+    fn attach_unavailable_reason(&self) -> &'static str {
+        let unavailable = self.token.is_none()
+            || !self.selected_is_joined()
+            || self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+            || (self.uploads.is_none() && self.uploads_checked.is_some() && !self.uploads_pending)
+            || self.session_error.is_some()
+            || self.load_error.is_some();
+        if unavailable {
+            "File uploads are unavailable"
+        } else {
+            "Checking file uploads…"
+        }
     }
 
     fn pick_files(&mut self, context: &egui::Context) {
@@ -10005,6 +10031,7 @@ impl CaperApp {
             let attach = self.can_attach();
             // Reserve the attach button before upload settings or the session arrive.
             let attach_width = 40.0;
+            let attach_unavailable = self.attach_unavailable_reason();
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
@@ -10144,7 +10171,13 @@ impl CaperApp {
                                     let button = ui
                                         .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
                                         .inner
-                                        .on_disabled_hover_text(if full { "You can attach up to 10 files." } else { "File uploads are not ready" });
+                                        .on_disabled_hover_text(if !attach {
+                                            attach_unavailable.to_owned()
+                                        } else if full {
+                                            format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS)
+                                        } else {
+                                            "Attach files".to_owned()
+                                        });
                                     pick = button.clicked();
                                 });
                                 editor_area(ui, &mut self.draft)

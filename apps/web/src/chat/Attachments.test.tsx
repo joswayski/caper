@@ -4,8 +4,8 @@ import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./At
 import Composer from "./Composer.tsx";
 import type { ChatAttachment } from "./types.ts";
 
-test.each([false, true])("the attachment slot stays present while availability changes to %s", (enabled) => {
-  const markup = renderToStaticMarkup(
+const attachButton = (enabled: boolean, drafts: DraftAttachment[] = []) =>
+  renderToStaticMarkup(
     <Composer
       channelName="general"
       direct={false}
@@ -20,17 +20,32 @@ test.each([false, true])("the attachment slot stays present while availability c
       attachments={{
         enabled,
         disabledReason: "File uploads are unavailable",
-        drafts: [],
+        drafts,
         onAdd: () => {},
         onRemove: () => {},
       }}
     />,
   );
+
+test.each([false, true])("the attachment slot stays present while availability changes to %s", (enabled) => {
+  const markup = attachButton(enabled);
   expect(markup).toContain('data-attach="true"');
   const attach = markup.match(/<button[^>]*aria-label="Attach files"[^>]*>/)?.[0];
   expect(attach).toBeDefined();
   expect(attach!.includes('disabled=""')).toBe(!enabled);
   expect(attach).toContain(`title="${enabled ? "Attach files" : "File uploads are unavailable"}"`);
+});
+
+test("a full tray explains the attachment limit", () => {
+  const drafts = Array.from({ length: 10 }, (_, index) => ({
+    key: `${index}`,
+    name: "a.txt",
+    sourceSize: 1,
+    progress: 0,
+  }));
+  const attach = attachButton(true, drafts).match(/<button[^>]*aria-label="Attach files"[^>]*>/)?.[0];
+  expect(attach).toContain('disabled=""');
+  expect(attach).toContain('title="You can attach up to 10 files."');
 });
 
 const file = (id: string, name: string, overrides: Partial<ChatAttachment>): ChatAttachment => ({

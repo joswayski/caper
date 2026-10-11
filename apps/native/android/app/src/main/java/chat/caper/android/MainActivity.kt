@@ -1623,10 +1623,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         // Reserve the icon inside the field while uploads/session become ready.
                         // Read-only previews and locked DMs have no composer.
                         leadingIcon = {
-                            AttachButton(
-                                state.uploadsEnabled && state.chatAuthorId != null && state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
-                                viewModel::addAttachments,
-                            )
+                            AttachButton(attachDisabledReason(state), viewModel::addAttachments)
                         },
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
@@ -1862,7 +1859,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
-        reactions = messages.lastOrNull()?.reactions.orEmpty(),
+        reactions = messages.takeLast(FOLLOW_REACTION_ROWS).map { it.reactions },
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -2049,13 +2046,17 @@ internal class TimelineFollow(var settled: Boolean = false) {
 
 /**
  * One composition of a message list: its row keys, your pending send, paging state, whether it shows a historical
- * context window rather than the newest messages, and the Go to message revision whose target it contains.
+ * context window rather than the newest messages, the Go to message revision whose target it contains, and the
+ * reactions on the last [FOLLOW_REACTION_ROWS] messages.
  */
 internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
-    val reactions: List<MessageReaction> = emptyList(),
+    val reactions: List<List<MessageReaction>> = emptyList(),
 )
+
+/** Recent rows whose reaction chips can grow the bottom of the list: more than a screen of short messages. */
+internal const val FOLLOW_REACTION_ROWS = 20
 
 /**
  * Web's timeline following, as the `(index, offset)` to request (or null to stay), updating [follow]. A Go to
@@ -2526,15 +2527,27 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
+/**
+ * Why Attach is disabled, or null when it can be used, worded as on every client: checking while upload settings
+ * or the conversation load, unavailable once either fails, and the attachment limit.
+ */
+internal fun attachDisabledReason(state: AppUiState): String? = when {
+    (state.uploadsChecked && !state.uploadsEnabled) || state.messagesError != null || state.sessionError != null -> "File uploads are unavailable"
+    !state.uploadsEnabled || state.chatAuthorId == null || state.messagesLoading -> "Checking file uploads…"
+    state.drafts.size >= AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
+    else -> null
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
-@Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
+@Composable private fun AttachButton(disabledReason: String?, add: (List<android.net.Uri>) -> Unit) {
+    val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
     Box {
         IconButton({ open = true }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
-            if (!enabled) stateDescription = "File uploads are not ready or the attachment limit has been reached"
+            if (disabledReason != null) stateDescription = disabledReason
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }

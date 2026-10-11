@@ -1530,6 +1530,10 @@ struct AttachmentPickerButton: View {
     @State private var photoItems: [PhotosPickerItem] = []
 
     private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentDrafts.count) }
+    /// Why the control is disabled, worded as on every client.
+    private var disabledReason: String? {
+        !chat.canAttach ? chat.attachUnavailableReason : remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
+    }
 
     var body: some View {
         Menu {
@@ -1546,9 +1550,9 @@ struct AttachmentPickerButton: View {
         .fixedSize()
         .disabled(!chat.canAttach || remaining == 0)
         .opacity(chat.canAttach ? 1 : 0.4)
-        .help(!chat.canAttach ? "File uploads are not ready" : remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : "Attach files")
+        .help(disabledReason ?? "Attach files")
         .accessibilityLabel("Attach files")
-        .accessibilityValue(chat.canAttach ? "" : "File uploads are not ready")
+        .accessibilityValue(disabledReason ?? "")
         .accessibilityIdentifier("attach-files-button")
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
