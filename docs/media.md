@@ -6327,8 +6327,10 @@ Read positions are saved per account/channel, advance monotonically, and are
 capped to the channel's head. Only a loaded foreground conversation acknowledges
 its committed cursor; prefetch, background views, mobile Browse and older search
 windows do not read newer messages. Reading one channel never clears another.
-Snapshots refresh on launch/foreground and every 15 seconds; web and macOS also
-refresh when their notification feed delivers activity. Failed reads retry;
+Snapshots refresh on launch/foreground and every 15 seconds; every client also
+refreshes about a second after live notification activity (one request per
+burst). Mentions in unjoined channels show a dot in Browse channels lists. Browse
+only stops reads on narrow layouts, for channels and DMs alike. Failed reads retry;
 account/request revisions fence late responses. Reads from another client appear
 on the next refresh. Historical messages start unread until viewed: there is no
 backfill asserting that existing users have seen them.
