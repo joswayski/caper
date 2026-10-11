@@ -109,7 +109,7 @@ class Slide implements BrowseDrag {
   constructor(
     private readonly opening: boolean,
     private readonly update: (open: boolean) => void,
-    interactive: boolean,
+    private readonly interactive: boolean,
   ) {
     const root = document.documentElement;
     const room = (this.room = document.querySelector<HTMLElement>(ROOM));
@@ -192,8 +192,9 @@ class Slide implements BrowseDrag {
     const { commit, velocity } = this.released!;
     const distance = Math.abs((commit ? 1 : 0) - this.progress),
       speed = commit ? velocity : -velocity;
-    const timing =
-      speed > 0
+    const timing = !this.interactive
+      ? { duration: 220, easing: SETTLE.easing }
+      : speed > 0
         ? { duration: Math.min(SETTLE.duration, Math.max(160, (3 * distance) / speed)), easing: RELEASE_EASING }
         : { duration: Math.max(160, SETTLE.duration * distance), easing: SETTLE.easing };
     try {

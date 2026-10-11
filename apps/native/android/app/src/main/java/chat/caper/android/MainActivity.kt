@@ -16,6 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -461,7 +462,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 if (narrow) {
                     val drawer = rememberBrowseDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
-                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen, quick = true) }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
@@ -550,12 +551,14 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
     }
 
-    /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float = 0f) {
+    /** Buttons use a quick slide; swipes carry on at `velocity` (progress per second). */
+    fun settle(open: Boolean, velocity: Float = 0f, quick: Boolean = false) {
         val target = if (open) 1f else 0f
         if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+            progress.animateTo(target,
+                if (quick) tween(220, easing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f))
+                else spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
         }
     }
 }

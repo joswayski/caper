@@ -458,12 +458,38 @@ try {
   assert.equal(browsing(), false);
   browser("click", ".member-list-close");
   drawerGone();
-  browser("click", ".navigation-toggle");
-  settled();
+  // Check the moving frames, not just the destination: a snap also opens Browse.
+  const buttonSlide = (selector, opening) => {
+    const result = evaluate(`(async () => {
+      const pseudo = "::view-transition-${opening ? "old" : "new"}(browse-room)";
+      const travel = document.querySelector(".spaces-room").getBoundingClientRect().width + 48;
+      const positions = [];
+      let duration;
+      document.querySelector(${JSON.stringify(selector)}).click();
+      for (let frame = 0; frame < 120; frame++) {
+        await new Promise(requestAnimationFrame);
+        const animation = document.getAnimations().find(a => a.effect?.pseudoElement === pseudo);
+        if (animation) {
+          duration = animation.effect.getTiming().duration;
+          positions.push(new DOMMatrixReadOnly(getComputedStyle(document.documentElement, pseudo).transform).m41);
+        }
+        if (!document.documentElement.dataset.browseTransition) break;
+      }
+      return { duration, positions, travel };
+    })()`);
+    assert.equal(result.duration, 220, "Button slides are quicker than the 320ms swipe settle");
+    assert.ok(
+      result.positions.some((x) => x > 1 && x < result.travel - 1),
+      "Button navigation must show intermediate positions",
+    );
+    const movement = result.positions.at(-1) - result.positions[0];
+    assert.ok(opening ? movement > 1 : movement < -1, "The conversation must slide in the requested direction");
+    settled();
+  };
+  buttonSlide(".navigation-toggle", true);
   assert.equal(browsing(), true, "Back button must open Browse");
   assert.equal(evaluate('!!document.querySelector(".browse-peek")'), false, "No conversation edge stays in view");
-  browser("click", '.channel-select[aria-current="page"]');
-  settled();
+  buttonSlide('.channel-select[aria-current="page"]', false);
   assert.equal(browsing(), false);
 
   // Reduced motion keeps the instant switch and its quick-swipe threshold.

@@ -6251,7 +6251,7 @@ impl CaperApp {
                     let uncovered = context.animate_bool_with_time_and_easing(
                         egui::Id::new("browse-slide"),
                         self.navigation_open,
-                        0.3,
+                        0.22,
                         egui::emath::easing::cubic_out,
                     );
                     if uncovered > 0.0 {
