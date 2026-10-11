@@ -2429,9 +2429,15 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
+    // TalkBack keeps reading the name; the click label names the action.
     val profile = if (openAuthor == null) Modifier else Modifier
         .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
-        .semantics { contentDescription = "Open profile for $author" }
+    // A round ripple and a 48dp touch target that spills into the row's padding,
+    // so the layout still matches grouped rows. TalkBack uses the name instead.
+    val avatarProfile = if (openAuthor == null) Modifier else Modifier
+        .size(34.dp).wrapContentSize(unbounded = true).minimumInteractiveComponentSize()
+        .clearAndSetSemantics {}.clip(CircleShape)
+        .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
     Row(Modifier.fillMaxWidth().hoverable(hover).padding(start = 18.dp, end = 18.dp, top = if (grouped) 2.dp else 10.dp, bottom = 10.dp)) {
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
@@ -2441,7 +2447,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             contentAlignment = Alignment.TopCenter,
         ) {
             if (hovered) Text(shortTimeLabel(createdAt), color = TextMuted, fontSize = 10.sp, lineHeight = 21.sp, maxLines = 1, softWrap = false)
-        } else Avatar(author, 34.dp, modifier = profile, avatarId = avatarId)
+        } else Avatar(author, 34.dp, modifier = avatarProfile, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
