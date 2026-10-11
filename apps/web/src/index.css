@@ -80,22 +80,15 @@
   width: min(1520px, calc(100% - 80px));
   margin-inline: auto;
 }
+/* Both headers share the room's edges so navigation never shifts the logo. */
 .site-header,
 .call-header {
-  width: min(1520px, calc(100% - 80px));
+  width: min(1400px, calc(100% - 56px));
   min-height: 88px;
   margin-inline: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-/* The signed-in header shares the room's width, so the wordmark lines up with
-   the room's left edge instead of floating 40px inside it. */
-.call-header {
-  width: min(1400px, calc(100% - 56px));
-}
-.site-header > .wordmark {
-  margin-left: clamp(0px, 2vw, 32px);
 }
 .site-header-actions {
   min-width: 0;
@@ -564,9 +557,6 @@
 /* Below the expand breakpoint (LiveWindow EXPAND_MIN_WIDTH) the window stacks
    under the copy and opens as a full-screen sheet. */
 @media (max-width: 1023px) {
-  .site-header > .wordmark {
-    margin-left: 0;
-  }
   .latest-changes {
     padding-left: 0;
   }
@@ -616,6 +606,7 @@
 }
 
 @media (max-width: 760px) {
+  .site-header,
   .call-header {
     width: calc(100% - 24px);
   }
@@ -630,8 +621,7 @@
   .page {
     overflow: visible;
   }
-  .shell,
-  .site-header {
+  .shell {
     width: min(100% - 36px, 1200px);
   }
   .site-header,
