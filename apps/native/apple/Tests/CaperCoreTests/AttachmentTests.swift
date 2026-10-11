@@ -431,9 +431,17 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(draft.statusLabel, "Uploading… 42%")
         draft.storedSize = 146_432
         draft.attachment = ChatAttachment(id: "A", kind: .image, contentType: "image/webp", name: "shot.webp", size: 146_432)
+        #if os(iOS)
+        XCTAssertEqual(draft.statusLabel, "143 KB")
+        #else
         XCTAssertEqual(draft.statusLabel, "1.6 MB → 143 KB")
+        #endif
         draft.storedSize = 1_677_722
         XCTAssertEqual(draft.statusLabel, "1.6 MB", "no arrow when nothing was saved")
+        draft.storedSize = 2_097_152
+        XCTAssertEqual(draft.statusLabel, "2.0 MB", "show the stored size even if conversion made the file larger")
+        draft.storedSize = nil
+        XCTAssertEqual(draft.statusLabel, "1.6 MB", "restored files can fall back to their source size")
         draft.error = "You’ve used all of your file storage."
         XCTAssertEqual(draft.statusLabel, "You’ve used all of your file storage.")
     }

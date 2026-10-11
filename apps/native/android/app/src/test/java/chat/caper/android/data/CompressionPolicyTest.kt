@@ -185,10 +185,11 @@ class CompressionPolicyTest {
         assertNull("HDR alone is no reason to transcode", AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 6_000, hdr = true), defaults, true))
     }
 
-    @Test fun `size labels show the compression saving`() {
-        assertEquals("1.6 MB → 143 KB", AttachmentPolicy.sizeLabel(1_677_722, 146_432))
+    @Test fun `size labels show only the final upload size`() {
+        assertEquals("143 KB", AttachmentPolicy.sizeLabel(1_677_722, 146_432))
         assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, 146_432))
         assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, null))
+        assertEquals("1.5 KB", AttachmentPolicy.sizeLabel(512, 1536))
     }
 
     @Test fun `animated webp and apng are detected so they upload unchanged`() {
