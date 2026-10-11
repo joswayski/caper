@@ -46,7 +46,7 @@ internal fun groupsWithPrevious(
     zoneId: ZoneId = ZoneId.systemDefault(),
 ): Boolean = groupsWithPrevious(
     previous, current.author.id, current.createdAt, current.threadRootId,
-    threadContext = !inThread && current.threadRootId != null, jumpTarget, zoneId,
+    threadContext = current.replyTo != null || !inThread && current.threadRootId != null, jumpTarget, zoneId,
 )
 
 private fun instant(value: String): Instant? = runCatching { Instant.parse(value) }.getOrNull()

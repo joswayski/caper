@@ -316,7 +316,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sharedMessage = (message) => {
     const shared = clone(message);
     if (shared.threadRootId) delete shared.thread;
-    for (const key of ["threadRootId", "broadcast", "pin", "pinSeq", "forward", "forwardSeq"]) delete shared[key];
+    for (const key of ["threadRootId", "broadcast", "pin", "pinSeq", "forward", "forwardSeq", "replyTo"])
+      delete shared[key];
     return shared;
   };
   const snapshot = (source) => ({
@@ -1162,6 +1163,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             return previous.token === request.headers["x-caper-chat-token"] &&
               previous.text === body.text &&
               previous.message.threadRootId === body.threadRootId &&
+              previous.message.replyTo?.id === body.replyToId &&
               (previous.message.broadcast ?? false) === (body.broadcast ?? false)
               ? json(response, 200, previous.message)
               : reject(response, 409, "Message ID already used.");
@@ -1170,6 +1172,17 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             : undefined;
           if (body.threadRootId && !root) return reject(response, 404, "Thread not found.");
           if (body.broadcast && !root) return reject(response, 400, "Only replies can broadcast.");
+          const target =
+            body.replyToId === undefined
+              ? undefined
+              : messages.find(
+                  (message) =>
+                    message.id === body.replyToId &&
+                    (root
+                      ? message.id === root.id || message.threadRootId === root.id
+                      : !message.threadRootId || message.broadcast),
+                );
+          if (body.replyToId !== undefined && !target) return reject(response, 404, "Message not found.");
           const mentions = mentionsFor(channel, body.text);
           const message = {
             id: randomUUID().replaceAll("-", "").slice(0, 15),
@@ -1180,6 +1193,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             createdAt: new Date().toISOString(),
             clientMessageId,
           };
+          if (target)
+            message.replyTo = {
+              id: target.id,
+              author: clone(target.author),
+              text: [...(target.content.text || (target.forward ? "Forwarded message" : ""))].slice(0, 200).join(""),
+              hasAttachments: !!target.content.attachments?.length,
+              ...(target.threadRootId ? { threadRootId: target.threadRootId } : {}),
+            };
           if (root) {
             const participants = [...(root.thread?.participants ?? [])];
             const index = participants.findIndex((person) => person.id === who.id);

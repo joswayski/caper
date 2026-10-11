@@ -6,7 +6,8 @@ import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
-import { sequence, type ChatMessage } from "./types.ts";
+import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
+import { ReplyContext, ReplyDraft } from "./Replies.tsx";
 
 const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
@@ -21,6 +22,9 @@ export default function ThreadPanel({
   readOnly,
   mentionPeople,
   specialMentions,
+  replyTo,
+  onReplyChange,
+  blockedIds,
   renderMessage,
   onClose,
 }: {
@@ -32,6 +36,9 @@ export default function ThreadPanel({
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
+  replyTo?: ChatReplyReference;
+  onReplyChange: (reference?: ChatReplyReference) => void;
+  blockedIds: ReadonlySet<string>;
   renderMessage: (
     index: number,
     message: ChatMessage,
@@ -250,7 +257,7 @@ export default function ThreadPanel({
   const submit = async () => {
     if (!client || readOnly || blocked || sending || state.sendRejected) return;
     try {
-      await client.send(pending?.text ?? draft.text, { threadRootId: rootId, broadcast: draft.broadcast });
+      await client.send(pending?.text ?? draft.text, { threadRootId: rootId, broadcast: draft.broadcast, replyTo });
       follow.current = true;
     } catch (error) {
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
@@ -400,6 +407,13 @@ export default function ThreadPanel({
         )}
         {pending && (
           <article className="chat-message chat-message-pending">
+            {pending.replyTo && (
+              <ReplyContext
+                reference={pending.replyTo}
+                hidden={blockedIds.has(pending.replyTo.author.id) && pending.replyTo.author.id !== state.author?.id}
+                onOpen={() => void client?.loadMessageContext({ ...pending.replyTo!, channelId: state.channelId! })}
+              />
+            )}
             <div className="chat-avatar">
               <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
             </div>
@@ -419,6 +433,13 @@ export default function ThreadPanel({
           </p>
         ) : (
           <>
+            {replyTo && (
+              <ReplyDraft
+                reference={replyTo}
+                hidden={blockedIds.has(replyTo.author.id) && replyTo.author.id !== state.author?.id}
+                onCancel={() => onReplyChange(undefined)}
+              />
+            )}
             {state.sessionError && (
               <p className="chat-inline-error" role="alert">
                 {state.sessionError}{" "}
@@ -442,6 +463,7 @@ export default function ThreadPanel({
                       disabled={!!draft.text}
                       onClick={() => {
                         const broadcast = pending.broadcast ?? false;
+                        onReplyChange(pending.replyTo);
                         const text = client?.discardRejected();
                         if (text !== undefined) update({ text, broadcast });
                       }}

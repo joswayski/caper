@@ -2201,6 +2201,43 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   assert.equal(f.client.snapshotHistory()?.cursor, "1");
 });
 
+test("inline replies freeze their target on retry, stay in the channel and confirm only matching references", async (t) => {
+  const f = await sendingFixture(t);
+  const parent = committed({ clientMessageId: "parent", text: "Earlier message" }, "1");
+  f.sockets[0].message(parent);
+  const replyTo = { id: parent.id, author: parent.author, text: parent.content.text, hasAttachments: false };
+  const bodies: Array<Record<string, unknown>> = [];
+  let fail = true;
+  let echoed = replyTo;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (fail) return Response.json({ error: "temporary" }, { status: 503 });
+    return Response.json({ ...committed(body, "2"), replyTo: echoed });
+  });
+  assert.equal(await f.client.send("New reply", { replyTo }), false);
+  assert.equal(bodies[0].replyToId, parent.id);
+  assert.equal(bodies[0].threadRootId, undefined);
+  assert.equal(f.state.pendingSend?.replyTo?.id, parent.id);
+  fail = false;
+  echoed = { ...replyTo, id: "wrong-target" };
+  assert.equal(await f.client.send("Changed draft"), false);
+  assert.equal(f.state.pendingSend?.replyTo?.id, parent.id);
+  assert.equal(f.state.messages.length, 1);
+  echoed = replyTo;
+  assert.equal(await f.client.send("Changed draft", { replyTo: { ...replyTo, id: "other" } }), true);
+  assert.deepEqual(bodies[1], bodies[0]);
+  assert.deepEqual(bodies[2], bodies[0]);
+  assert.deepEqual(
+    f.state.channelMessages?.map((message) => message.content.text),
+    ["Earlier message", "New reply"],
+  );
+  assert.equal(f.state.messages[0].thread, undefined);
+  const reply = f.state.messages[1];
+  f.sockets[0].message(reply);
+  assert.equal(f.state.messages.length, 2);
+});
+
 test("duplicate delivery and local edits preserve unchanged message references", async (t) => {
   const f = await sendingFixture(t);
   const first = committed({ clientMessageId: "first", text: "First" }, "1");

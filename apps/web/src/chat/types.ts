@@ -109,6 +109,15 @@ export interface MessageVersion {
   createdAt: string;
 }
 
+/** Bounded, non-recursive context captured when a reply is sent. */
+export interface ChatReplyReference {
+  id: string;
+  author: ChatAuthor;
+  text: string;
+  hasAttachments: boolean;
+  threadRootId?: string;
+}
+
 export interface ChatMessage {
   id: string;
   channelId: string;
@@ -131,6 +140,7 @@ export interface ChatMessage {
   revision?: number;
   editedAt?: string;
   editSeq?: string;
+  replyTo?: ChatReplyReference;
 }
 
 export interface ChatHistory {
@@ -203,6 +213,16 @@ export function isChatMessage(value: unknown): value is ChatMessage {
       (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq))) &&
     ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined)) &&
     (message.threadRootId === undefined || (typeof message.threadRootId === "string" && !!message.threadRootId)) &&
+    (message.replyTo === undefined ||
+      (!!message.replyTo &&
+        typeof message.replyTo.id === "string" &&
+        !!message.replyTo.id &&
+        isChatAuthor(message.replyTo.author) &&
+        typeof message.replyTo.text === "string" &&
+        Array.from(message.replyTo.text).length <= 200 &&
+        typeof message.replyTo.hasAttachments === "boolean" &&
+        (message.replyTo.threadRootId === undefined ||
+          (typeof message.replyTo.threadRootId === "string" && !!message.replyTo.threadRootId)))) &&
     (message.broadcast === undefined ||
       (typeof message.broadcast === "boolean" && (!message.broadcast || !!message.threadRootId))) &&
     (message.thread === undefined || isChatThreadSummary(message.thread)) &&

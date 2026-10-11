@@ -258,13 +258,19 @@ final class ProtocolTests: XCTestCase {
 
     func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() {
         var delivery = ChatDeliveryState(cursor: "41")
-        let command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, makeID: { "stable" })
+        let source = MessageReply(message: ChatMessage(id: "quoted", channelId: "channel", seq: "1",
+            author: ChatAuthor(id: "source-author", name: "Source", isGuest: false),
+            content: ChatContent(version: 1, type: "text", text: "earlier"),
+            createdAt: "2026-10-06T00:00:00Z", clientMessageId: "old"))
+        let command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, replyTo: source, makeID: { "stable" })
         XCTAssertEqual(delivery.begin(text: "edited", threadRootId: "other", broadcast: false), command)
         var reply = ChatMessage(id: "reply", channelId: "channel", seq: "42",
             author: ChatAuthor(id: "author", name: "Author", isGuest: false),
             content: ChatContent(version: 1, type: "text", text: "original"),
             createdAt: "2026-10-06T00:00:00Z", clientMessageId: command.id,
             threadRootId: "root", broadcast: true)
+        XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
+        reply.replyTo = source
         XCTAssertTrue(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
         reply.broadcast = false
         XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))

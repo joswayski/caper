@@ -38,7 +38,7 @@ async fn request(
 
 #[test]
 fn shared_reply_never_grants_parent_or_sibling_access() {
-    let original = json!({"id":"reply","clientMessageId":"retry","threadRootId":"private-root","broadcast":true,"thread":{"replyCount":20},"pin":{"author":"private"},"pinSeq":"8","forward":{"message":{"text":"private"}},"forwardSeq":"9","content":{"text":"shared"},"revision":4,"reactions":[{"emoji":"👀","authorIds":["alice"]}]});
+    let original = json!({"id":"reply","clientMessageId":"retry","threadRootId":"private-root","broadcast":true,"thread":{"replyCount":20},"pin":{"author":"private"},"pinSeq":"8","forward":{"message":{"text":"private"}},"forwardSeq":"9","replyTo":{"id":"private-quote","text":"private"},"content":{"text":"shared"},"revision":4,"reactions":[{"emoji":"👀","authorIds":["alice"]}]});
     let shared = shared_message(original);
     assert_eq!(shared["content"]["text"], "shared");
     assert_eq!(shared["revision"], 4);
@@ -47,6 +47,7 @@ fn shared_reply_never_grants_parent_or_sibling_access() {
     assert!(shared.get("thread").is_none());
     assert!(shared.get("pin").is_none());
     assert!(shared.get("forward").is_none());
+    assert!(shared.get("replyTo").is_none());
 }
 
 #[sqlx::test(migrations = "./migrations")]

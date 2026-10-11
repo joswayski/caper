@@ -550,6 +550,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         &[shot_id.clone(), doc_id.clone()],
         None,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -569,7 +570,8 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             "again",
             std::slice::from_ref(&doc_id),
             None,
-            false
+            false,
+            None
         )
         .await
         .unwrap_err()
@@ -585,7 +587,8 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             "",
             &[],
             None,
-            false
+            false,
+            None
         )
         .await
         .unwrap_err()

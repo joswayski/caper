@@ -222,6 +222,7 @@ struct PendingSend {
     rejection: Option<String>,
     thread_root_id: Option<String>,
     broadcast: bool,
+    reply_to: Option<model::MessageReply>,
 }
 
 impl PendingSend {
@@ -236,6 +237,7 @@ impl PendingSend {
                 rejection: None,
                 thread_root_id: None,
                 broadcast: false,
+                reply_to: None,
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -246,6 +248,7 @@ impl PendingSend {
                 rejection: None,
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
+                reply_to: pending.reply_to.clone(),
             },
         )
     }
@@ -255,6 +258,8 @@ impl PendingSend {
             && message.author.id == author
             && self.thread_root_id == message.thread_root_id
             && self.broadcast == message.broadcast
+            && self.reply_to.as_ref().map(|reply| &reply.id)
+                == message.reply_to.as_ref().map(|reply| &reply.id)
     }
 }
 
@@ -688,6 +693,7 @@ struct CaperApp {
     thread_request: u64,
     thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
+    reply_targets: BTreeMap<String, model::MessageReply>,
     thread_only_rows: BTreeSet<String>,
     reaction_picker: Option<String>,
     reaction_search: String,
@@ -905,6 +911,7 @@ impl CaperApp {
             thread_request: 0,
             thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
+            reply_targets: BTreeMap::new(),
             thread_only_rows: BTreeSet::new(),
             reaction_picker: None,
             reaction_search: String::new(),
@@ -1090,6 +1097,26 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name == "parity-replies" {
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: messages[0].author.clone(),
+                    });
+                    messages[2].reply_to = Some(model::MessageReply::from_message(&messages[1]));
+                    messages[2].content.text =
+                        "TEST FIXTURE — A reply is its own message in the conversation.".into();
+                    messages[3].reply_to = Some(model::MessageReply::from_message(&messages[2]));
+                    messages[3].content.text =
+                        "TEST FIXTURE — This reply can be replied to, too.".into();
+                    app.reply_targets.insert(
+                        "channel".into(),
+                        model::MessageReply::from_message(&messages[3]),
+                    );
+                    app.draft = "TEST FIXTURE — Following up on that reply.".into();
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid reply fixture");
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
                 } else if name.starts_with("parity-file-drop") {
@@ -1817,6 +1844,7 @@ impl CaperApp {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                reply_to: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
@@ -4024,6 +4052,7 @@ impl CaperApp {
         self.thread_request += 1;
         self.thread_pages.clear();
         self.thread_drafts.clear();
+        self.reply_targets.clear();
         self.thread_only_rows.clear();
         self.older_armed = false;
         self.older_anchor = None;
@@ -4557,6 +4586,7 @@ impl CaperApp {
             let timeline = std::mem::take(&mut self.timeline);
             let thread = self.thread_view.take();
             let thread_drafts = std::mem::take(&mut self.thread_drafts);
+            let reply_targets = std::mem::take(&mut self.reply_targets);
             let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
             let window = self.context_window;
@@ -4571,6 +4601,7 @@ impl CaperApp {
             self.timeline = timeline;
             self.thread_view = thread;
             self.thread_drafts = thread_drafts;
+            self.reply_targets = reply_targets;
             self.thread_only_rows = rows;
             self.has_more = has_more;
             self.context_window = window;
@@ -4666,6 +4697,7 @@ impl CaperApp {
         self.thread_request += 1;
         self.thread_pages.clear();
         self.thread_drafts.clear();
+        self.reply_targets.clear();
         self.thread_only_rows.clear();
         self.forwarding.close();
         self.older_armed = false;
@@ -4898,6 +4930,9 @@ impl CaperApp {
         if self.pending.is_none() {
             pending.thread_root_id = root.clone();
             pending.broadcast = broadcast;
+            pending.reply_to = self
+                .reply_targets
+                .remove(root.as_deref().unwrap_or("channel"));
         }
         let id = pending.id.clone();
         let attachment_ids: Vec<String> = pending
@@ -4924,6 +4959,7 @@ impl CaperApp {
         }
         let thread_root_id = pending.thread_root_id.clone();
         let broadcast = pending.broadcast;
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
         self.pending = Some(pending);
         self.error = None;
         self.set_typing(false);
@@ -4937,6 +4973,7 @@ impl CaperApp {
             attachment_ids,
             thread_root_id,
             broadcast,
+            reply_to_id,
         });
     }
 
@@ -8088,8 +8125,11 @@ impl CaperApp {
             let count = range.len();
             let draw = |app: &mut Self, ui: &mut egui::Ui| {
                 for message in &messages[range] {
-                    let current =
-                        grouping::Row::new(&message.author.id, &message.created_at, false);
+                    let current = grouping::Row::new(
+                        &message.author.id,
+                        &message.created_at,
+                        message.reply_to.is_some(),
+                    );
                     let grouped = grouping::grouped(previous.as_ref(), &current);
                     // Nothing groups under a highlighted jump target.
                     previous =
@@ -9829,14 +9869,19 @@ impl CaperApp {
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
+                self.reply_draft(ui, &root);
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
+                    if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference); }
                     ui.label(&pending.text);
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
                             if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
-                                && let Some(text) = self.discard_rejected() { self.thread_drafts.entry(root.clone()).or_default().0 = text; }
+                                && let Some(rejected) = self.take_rejected() {
+                                    self.thread_drafts.entry(root.clone()).or_default().0 = rejected.text;
+                                    if let Some(reference) = rejected.reply_to { self.reply_targets.insert(root.clone(), reference); }
+                                }
                             if ui.button("Dismiss").clicked() { self.discard_rejected(); }
                         });
                     } else if !pending.sending {
@@ -10169,6 +10214,7 @@ impl CaperApp {
                         self.draft_chips(ui);
                         ui.add_space(8.0);
                     }
+                    self.reply_draft(ui, "channel");
                     let before = self.draft.clone();
                     let placeholder = if self.selected_direct.is_some() {
                         format!("Message {}", self.channel_name())
@@ -10394,7 +10440,7 @@ impl CaperApp {
                                 previous = None;
                             }
                             // A "Replied to a thread" broadcast keeps its header.
-                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some());
+                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some() || message.reply_to.is_some());
                             let grouped = grouping::grouped(previous.as_ref(), &current);
                             // Nothing groups under a highlighted jump target.
                             previous = (app.focused_message.as_deref() != Some(&message.id)).then_some(current);
@@ -10427,7 +10473,8 @@ impl CaperApp {
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
-                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
+                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
+                        if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference); }
                         message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
@@ -10444,6 +10491,7 @@ impl CaperApp {
                                         .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
                                         && let Some(rejected) = self.take_rejected() {
                                         self.draft = rejected.text;
+                                        if let Some(reference) = rejected.reply_to { self.reply_targets.insert("channel".into(), reference); }
                                         self.restore_drafts(rejected.attachments);
                                         ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
                                     }
@@ -10629,6 +10677,96 @@ impl CaperApp {
 
     /// A timeline or thread row; `grouped` rows continue the row above
     /// (see `grouping`).
+    fn reply_context(&mut self, ui: &mut egui::Ui, reference: &model::MessageReply) {
+        let blocked = self.is_blocked(&reference.author.id);
+        let label = if blocked {
+            "↪ Blocked message".into()
+        } else {
+            format!(
+                "↪ {} · {}{}",
+                reference.author.name,
+                reference.text.replace('\n', " "),
+                if reference.has_attachments {
+                    " · Attachment"
+                } else {
+                    ""
+                }
+            )
+        };
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 62,
+                right: 18,
+                top: 4,
+                bottom: 0,
+            })
+            .show(ui, |ui| {
+                if ui
+                    .add_enabled(
+                        !blocked && !self.context_loading,
+                        egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
+                            .frame(false)
+                            .truncate(),
+                    )
+                    .on_hover_text("Go to replied message")
+                    .clicked()
+                {
+                    self.showing_pins = false;
+                    self.load_context(
+                        reference.thread_root_id.clone(),
+                        reference.id.clone(),
+                        false,
+                    );
+                }
+            });
+    }
+
+    fn reply_draft(&mut self, ui: &mut egui::Ui, key: &str) {
+        if let Some(reference) = self.reply_targets.get(key).cloned() {
+            ui.horizontal(|ui| {
+                let name = if self.is_blocked(&reference.author.id) {
+                    "Blocked message"
+                } else {
+                    &reference.author.name
+                };
+                ui.label(
+                    RichText::new(format!("Replying to {name}"))
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                if ui
+                    .add(egui::Button::new("Cancel reply").min_size(egui::vec2(0.0, 44.0)))
+                    .clicked()
+                {
+                    self.reply_targets.remove(key);
+                }
+            });
+        }
+    }
+
+    fn select_reply(&mut self, context: &egui::Context, message: &model::Message, in_thread: bool) {
+        let root = if in_thread || !message.is_channel_message() {
+            message
+                .thread_root_id
+                .clone()
+                .or_else(|| self.thread_view.as_ref().map(|thread| thread.root.clone()))
+        } else {
+            None
+        };
+        let key = root.as_deref().unwrap_or("channel").to_owned();
+        self.reply_targets
+            .insert(key, model::MessageReply::from_message(message));
+        self.showing_pins = false;
+        if let Some(root) = &root {
+            self.open_thread(root.clone());
+        }
+        let id = root.map_or_else(
+            || egui::Id::new("message-composer"),
+            |root| egui::Id::new(("thread-draft", root)),
+        );
+        context.memory_mut(|memory| memory.request_focus(id));
+    }
+
     fn message(
         &mut self,
         ui: &mut egui::Ui,
@@ -10649,6 +10787,7 @@ impl CaperApp {
     ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
+        let grouped = grouped && message.reply_to.is_none();
         let plain_time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
@@ -10680,6 +10819,7 @@ impl CaperApp {
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
         let mut view_thread = None;
+        let mut actions_y = None;
         // The row's background; its files below are drawn on the same fill.
         let fill = if !in_thread
             && self
@@ -10695,6 +10835,10 @@ impl CaperApp {
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
+            if let Some(reference) = &message.reply_to {
+                self.reply_context(ui, reference);
+                actions_y = Some(ui.cursor().top());
+            }
             if in_pins && let Some(pin) = pinned {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -10838,6 +10982,16 @@ impl CaperApp {
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
+                    if ui
+                        .add_enabled(
+                            can_react && self.pending.is_none(),
+                            egui::Button::new("Reply"),
+                        )
+                        .clicked()
+                    {
+                        self.select_reply(ui.ctx(), message, in_thread);
+                        ui.close();
+                    }
                     if ui.button("Forward message").clicked() {
                         self.forwarding.picker(
                             &self.worker,
@@ -10923,7 +11077,7 @@ impl CaperApp {
             let actions_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     message_rect.right() - action_width - 18.0,
-                    message_rect.top() + 4.0,
+                    actions_y.unwrap_or(message_rect.top()) + 4.0,
                 ),
                 egui::vec2(action_width, 24.0),
             );
@@ -11079,6 +11233,13 @@ impl CaperApp {
                         }
                     });
                     ui.separator();
+                    if ui
+                        .add_enabled(self.pending.is_none(), egui::Button::new("Reply"))
+                        .clicked()
+                    {
+                        self.select_reply(ui.ctx(), message, in_thread);
+                        ui.close();
+                    }
                     if ui.button("Forward message").clicked()
                         && let Some(token) = self.token.clone()
                     {
@@ -26684,12 +26845,26 @@ mod tests {
             thread: None,
             forward: None,
             forward_seq: None,
+            reply_to: None,
             revision: 1,
             edited_at: None,
             edit_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
+        let source = model::MessageReply::from_message(&message);
+        let mut quoted = pending.clone();
+        quoted.reply_to = Some(source.clone());
+        assert_eq!(
+            PendingSend::prepare(Some(&quoted), "edited", Vec::new()).reply_to,
+            Some(source.clone())
+        );
+        assert!(!quoted.confirmed_by(&message, "author"));
+        let mut delivered = message.clone();
+        delivered.reply_to = Some(source);
+        assert!(quoted.confirmed_by(&delivered, "author"));
+        delivered.reply_to.as_mut().unwrap().id = "wrong-target".into();
+        assert!(!quoted.confirmed_by(&delivered, "author"));
     }
 
     #[test]
@@ -26774,6 +26949,7 @@ mod tests {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                reply_to: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,

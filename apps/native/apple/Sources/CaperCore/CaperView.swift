@@ -2398,7 +2398,7 @@ private struct ChatView: View {
                                     ChatDateDivider(createdAt: pending.createdAt)
                                 }
                                 PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, grouped: grouping.pendingGrouped,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, chat: chat, grouped: grouping.pendingGrouped,
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
@@ -2526,6 +2526,7 @@ private struct ChatView: View {
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { VStack(alignment: .leading, spacing: 8) {
+            if let reference = chat.replyTargets["channel"] { NativeReplyDraft(reference: reference, chat: chat, root: "channel") }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
             }
@@ -2859,10 +2860,10 @@ private struct NativeThreadView: View {
                         }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = threadPending {
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
+                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty, chat: chat,
                                 grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
-                                edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
+                                edit: { _ = chat.discardRejected(edit: true) }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
@@ -2894,6 +2895,7 @@ private struct NativeThreadView: View {
             }
             if chat.isPreview { Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
+                if let root = chat.threadRootID, let reference = chat.replyTargets[root] { NativeReplyDraft(reference: reference, chat: chat, root: root) }
                 if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
                 if let error = chat.sessionError {
                     // As under the channel's composer.
@@ -2942,7 +2944,7 @@ private struct NativeThreadView: View {
                     canReact: chat.canInteract,
                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                     togglePin: { reactionMessage = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: nil,
+                    reply: nil, inThread: true,
                     // The conversation's forward sheet is under this cover on iPhone; the thread presents its own.
                     canForward: chat.canForward, forward: { forwardMessage = message },
                     quickReaction: { emoji in
@@ -3100,6 +3102,7 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
+            if let reference = message.replyTo { NativeReplyContext(reference: reference, chat: chat) }
             if inPins, let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
@@ -3242,7 +3245,7 @@ private struct MessageRow: View {
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || replyFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 18).padding(.top, 6)
+                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : 28)
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.
@@ -3275,6 +3278,7 @@ private struct MessageRow: View {
                 .disabled(!chat.canInteract)
         }
         Divider()
+        Button("Reply") { chat.reply(to: message, inThread: inThread && !inPins) }.disabled(!chat.canInteract || chat.pendingMessage != nil)
         if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
         if chat.canEdit(message) { Button("Edit message") { editing = true } }
         if message.forward == nil && (message.revision ?? 1) > 1 { Button("View edit history") { history = true } }
@@ -4083,6 +4087,7 @@ private struct MessageActionsSheet: View {
     let canPin: Bool
     let togglePin: () -> Void
     let reply: (() -> Void)?
+    var inThread = false
     let canForward: Bool
     let forward: () -> Void
     let quickReaction: (String) -> Void
@@ -4137,6 +4142,11 @@ private struct MessageActionsSheet: View {
 
     private var actionList: some View {
         VStack(spacing: 0) {
+            Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                chat.reply(to: message, inThread: inThread)
+                dismiss()
+            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).disabled(!chat.canInteract || chat.pendingMessage != nil)
+            Divider()
             if chat.canEdit(message) {
                 Button("Edit message", systemImage: "pencil") { editing = true }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 Divider()
@@ -4333,6 +4343,8 @@ private struct PinnedMessagesView: View {
             .popover(item: $actionTarget) { message in ReactionPicker { emoji in actionTarget = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } } }
             #endif
             .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
+            .onChange(of: chat.replyTargets) { _, _ in actionTarget = nil; close() }
+            .onChange(of: chat.focusRevision) { _, _ in close() }
             #if os(iOS)
             .modifier(MediaViewerHost())
             #else
@@ -4433,13 +4445,50 @@ private struct ReactionPicker: View {
     }
 }
 
+private struct NativeReplyContext: View {
+    let reference: MessageReply
+    @Bindable var chat: ChatModel
+    private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
+    var body: some View {
+        Button { Task { _ = await chat.goToReply(reference) } } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.up.left").frame(width: 34)
+                if hidden { Text("Blocked message") }
+                else {
+                    Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
+                    Text(reference.author.name).fontWeight(.bold)
+                    Text(reference.text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : reference.text)
+                    if reference.hasAttachments { Image(systemName: "paperclip") }
+                }
+            }.lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            .accessibilityLabel(hidden ? "Go to blocked message" : "Go to message from \(reference.author.name)")
+    }
+}
+
+private struct NativeReplyDraft: View {
+    let reference: MessageReply
+    @Bindable var chat: ChatModel
+    let root: String
+    var body: some View {
+        HStack {
+            Text("Replying to \(chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID ? "blocked message" : reference.author.name)")
+                .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Button("Cancel reply") { chat.replyTargets[root] = nil }.buttonStyle(.plain).frame(minHeight: 44)
+        }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+    }
+}
+
 private struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
     let rejected: Bool; let canEdit: Bool
+    var chat: ChatModel? = nil
     /// Under the author's own previous row: no avatar or name, as `MessageRow`.
     var grouped = false
     let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+        if let reference = pending.replyTo, let chat { NativeReplyContext(reference: reference, chat: chat) }
         HStack(alignment: .top, spacing: 10) {
             if grouped {
                 // Keep the avatar column empty; a clear name still reaches VoiceOver.
@@ -4472,6 +4521,7 @@ private struct PendingMessageRow: View {
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
                 }
             }
+        }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, 10)
             .accessibilityElement(children: .contain)

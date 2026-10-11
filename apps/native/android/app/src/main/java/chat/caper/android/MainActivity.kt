@@ -1437,7 +1437,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
                 if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
+                    TextButton({ viewModel.discardPending(restoreReply = true)?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
                     TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
                 } else TextButton(::send, shape = MaterialTheme.shapes.small) { Text("Retry send") }
             }
@@ -1446,6 +1446,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(12.dp)) {
+            state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
@@ -1618,6 +1619,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
             else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
+                state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
                 state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
                     pending.threadRootId?.let { root ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1938,6 +1940,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
                         openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
+                        openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId)) {} },
                         openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
@@ -1962,7 +1965,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 // Your unsent message joins your run like a sent one.
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
-                    pending.threadRootId, jumpTarget = state.focusedMessageId)
+                    pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
+                pending.replyTo?.let { ReplyContext(it, state) }
                 MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
@@ -1994,6 +1998,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
             onReply = if (inThread) null else ({ actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) }),
+            onReplyMessage = if (state.canParticipate && state.pendingMessage == null) ({ actionTarget = null; viewModel.replyTo(presented, inThread) }) else null,
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
@@ -2218,6 +2223,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: (MessageMention) -> Unit = {},
     openAuthor: ((ChatAuthor) -> Unit)? = null,
+    openReference: ((MessageReply) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
     openActions: (ChatMessage) -> Unit,
@@ -2231,6 +2237,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }) {
+        message.replyTo?.let { reference -> ReplyContext(reference, state, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
             onClick = {},
@@ -2278,6 +2285,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
     onReply: (() -> Unit)? = null,
+    onReplyMessage: (() -> Unit)? = null,
     forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
@@ -2324,6 +2332,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
                         HorizontalDivider(color = Border)
                     }
+                    onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
                     onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
                     onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
                     if (message.forward == null && message.revision > 1) onHistory?.let { SheetAction("View edit history", onClick = it); HorizontalDivider(color = Border) }
@@ -2383,6 +2392,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
+                    openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), close) },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
@@ -2411,6 +2421,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             openPicker = { actionTarget = null; pickerTarget = current },
             setPin = { id, active -> actionTarget = null; viewModel.setPin(id, active) },
             onReply = { actionTarget = null; close(); viewModel.openThread(current.threadRootId ?: current.id) },
+            onReplyMessage = { actionTarget = null; close(); viewModel.replyTo(current) },
             forward = { actionTarget = null; forwardTarget = current },
             onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,
             onHistory = { actionTarget = null; historyTarget = current })
@@ -2457,6 +2468,26 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
+@Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
+    val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
+    val text = if (hidden) "Blocked message" else "${reference.author.name} · ${reference.text.ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }}"
+    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "Go to replied message", onClick = onOpen)
+    Row(Modifier.fillMaxWidth().then(action).padding(start = 32.dp, end = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("↳", color = TextMuted, fontSize = 14.sp)
+        Spacer(Modifier.width(16.dp))
+        if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
+        Text(text, color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {
+    val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
+    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
+        Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        TextButton(onCancel, shape = MaterialTheme.shapes.small) { Text("Cancel reply") }
+    }
+}
+
 /** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },

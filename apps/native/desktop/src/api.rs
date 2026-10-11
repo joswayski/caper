@@ -655,6 +655,7 @@ impl Api {
         text: &str,
         attachment_ids: &[String],
         thread: (Option<&str>, bool),
+        reply_to_id: Option<&str>,
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
         // Ids join the idempotency hash; the key is present only with files.
@@ -664,6 +665,9 @@ impl Api {
         if let Some(root) = thread.0 {
             body["threadRootId"] = json!(root);
             body["broadcast"] = json!(thread.1);
+        }
+        if let Some(id) = reply_to_id {
+            body["replyToId"] = json!(id);
         }
         self.request(
             Method::POST,

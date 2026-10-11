@@ -3,6 +3,7 @@ package chat.caper.android.data
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.ChatContent
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.MessageReply
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -50,10 +51,13 @@ class PendingSendTrackerTest {
 
     @Test fun `reply retries freeze destination and broadcast and reject mismatched confirmation`() {
         val tracker = PendingSendTracker()
-        val first = tracker.begin("channel", author(), "original", threadRootId = "root", broadcast = true) {}
+        val source = MessageReply("quoted", author(), "earlier", false, null)
+        val first = tracker.begin("channel", author(), "original", threadRootId = "root", broadcast = true, replyTo = source) {}
         val retry = tracker.begin("channel", author(), "edited", threadRootId = "different", broadcast = false) {}
         assertEquals(first, retry)
-        val reply = message(first.id.toString()).copy(threadRootId = "root", broadcast = true)
+        val reply = message(first.id.toString()).copy(threadRootId = "root", broadcast = true, replyTo = source)
+        assertNull(tracker.confirm(reply.copy(replyTo = null)))
+        assertNull(tracker.confirm(reply.copy(replyTo = source.copy(id = "wrong-target"))))
         assertNull(tracker.confirm(reply.copy(threadRootId = "different")))
         assertNull(tracker.confirm(reply.copy(broadcast = false)))
         assertNotNull(tracker.confirm(reply))

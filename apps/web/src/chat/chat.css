@@ -483,6 +483,103 @@
   gap: 10px;
   padding: 10px 18px;
 }
+.chat-reply-context,
+.chat-reply-draft {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.chat-reply-context {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-bottom: -5px;
+  padding: 0 0 0 13px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-message:has(> .chat-reply-context)
+  > div
+  > :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread) {
+  margin-top: calc(0.75rem * 1.4 + 8px);
+}
+.chat-pinned-message:has(> .chat-reply-context) > .chat-message-actions-trigger {
+  margin-top: calc(0.75rem * 1.4 + 10px);
+}
+.chat-reply-context > svg,
+.chat-reply-draft > svg,
+.chat-reply-avatar {
+  flex-shrink: 0;
+}
+.chat-reply-context > svg:first-child {
+  margin-right: 10px;
+}
+.chat-reply-avatar,
+.chat-reply-avatar img {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+.chat-reply-context strong {
+  flex-shrink: 0;
+  max-width: 35%;
+  color: var(--text);
+}
+.chat-reply-context > span:last-of-type,
+.chat-reply-context strong,
+.chat-reply-draft-excerpt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-reply-context:hover > span,
+.chat-reply-context:focus-visible > span {
+  color: var(--text);
+}
+.chat-reply-context:focus-visible,
+.chat-reply-draft button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-reply-draft {
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border-left: 2px solid var(--terracotta);
+}
+.chat-reply-draft > span:first-of-type {
+  flex-shrink: 0;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-reply-draft button {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .chat-reply-draft-excerpt {
+    display: none;
+  }
+  .chat-reply-draft button {
+    width: 44px;
+    height: 44px;
+  }
+}
 @media (hover: hover) {
   .chat-message:hover {
     background: rgb(255 255 255 / 2%);

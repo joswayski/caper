@@ -211,7 +211,14 @@ fn shared_message(mut message: Value) -> Value {
         if object.remove("threadRootId").is_some() {
             object.remove("thread");
         }
-        for key in ["broadcast", "pin", "pinSeq", "forward", "forwardSeq"] {
+        for key in [
+            "broadcast",
+            "pin",
+            "pinSeq",
+            "forward",
+            "forwardSeq",
+            "replyTo",
+        ] {
             object.remove(key);
         }
     }

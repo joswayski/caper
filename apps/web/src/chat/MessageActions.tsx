@@ -22,6 +22,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Reply,
   SmilePlus,
   Users,
   X,
@@ -67,6 +68,7 @@ export default function MessageActions({
   onCopied,
   onViewReactions,
   onReply,
+  onReplyMessage,
   onEdit,
   onHistory,
   block,
@@ -86,6 +88,7 @@ export default function MessageActions({
   onCopied: (status: string) => void;
   onViewReactions: (emoji: string) => void;
   onReply?: () => void;
+  onReplyMessage?: () => void;
   onEdit: () => void;
   onHistory: () => void;
   /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
@@ -215,6 +218,12 @@ export default function MessageActions({
               </div>
             )}
             <div className="chat-copy-actions">
+              {onReplyMessage && (
+                <button type="button" onClick={onReplyMessage}>
+                  <Reply size={16} aria-hidden="true" />
+                  Reply
+                </button>
+              )}
               {onReply && (
                 <button type="button" onClick={onReply}>
                   <MessageSquare size={16} aria-hidden="true" />

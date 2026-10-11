@@ -268,7 +268,9 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val revision: Int = 1,
     val editedAt: String? = null,
     val editSeq: String? = null,
+    val replyTo: MessageReply? = null,
 )
+@Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null)
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 @Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false)
 data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,
@@ -439,6 +441,7 @@ data class AppUiState(
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
+    val replyTargets: Map<String, MessageReply> = emptyMap(),
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),
@@ -518,6 +521,7 @@ data class PendingMessageUi(
     val broadcast: Boolean = false,
     /** Uploaded files with local `file://` copies until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
+    val replyTo: MessageReply? = null,
 )
 
 /** A file in the composer: preparing (compressing), uploading, ready to send, or failed. */

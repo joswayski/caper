@@ -523,6 +523,185 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
         .validate()
         .is_err()
     );
+
+    // Inline replies are ordinary channel messages, including replies to replies.
+    // They do not move the source or increment its thread summary.
+    let key = Uuid::new_v4();
+    let reply = send_message(
+        &pool,
+        channel,
+        "bob",
+        key,
+        "inline reply",
+        &[],
+        None,
+        false,
+        Some(root),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["seq"], "193");
+    assert!(reply.get("threadRootId").is_none());
+    assert!(reply.get("thread").is_none());
+    assert_eq!(
+        reply["replyTo"],
+        json!({"id":root,"author":{"id":"alice","name":"alice","isGuest":false,"avatarId":31},"text":"parent","hasAttachments":false})
+    );
+    assert_eq!(
+        send_message(
+            &pool,
+            channel,
+            "bob",
+            key,
+            "inline reply",
+            &[],
+            None,
+            false,
+            Some(root)
+        )
+        .await
+        .unwrap(),
+        reply
+    );
+    for target in [None, Some(other)] {
+        assert_eq!(
+            send_message(
+                &pool,
+                channel,
+                "bob",
+                key,
+                "inline reply",
+                &[],
+                None,
+                false,
+                target
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::CONFLICT
+        );
+    }
+    let nested = send_message(
+        &pool,
+        channel,
+        "alice",
+        Uuid::new_v4(),
+        "reply to a reply",
+        &[],
+        None,
+        false,
+        reply["id"].as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(nested["replyTo"]["id"], reply["id"]);
+    assert!(nested["replyTo"].get("replyTo").is_none());
+    let own_thread = persist_message(
+        &pool,
+        channel,
+        "bob",
+        Uuid::new_v4(),
+        "thread on an inline reply",
+        reply["id"].as_str(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(own_thread["threadRootId"], reply["id"]);
+    let history = history_page(&pool, channel, None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(
+        history["messages"].as_array().unwrap().last().unwrap()["id"],
+        nested["id"]
+    );
+    let original = conversation_page(&pool, channel, None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(original["root"]["seq"], "1");
+    assert_eq!(original["root"]["thread"]["replyCount"], 93);
+    for (destination, target) in [
+        ("other-channel", root),
+        (channel, one["id"].as_str().unwrap()),
+        (channel, "missing"),
+    ] {
+        assert_eq!(
+            send_message(
+                &pool,
+                destination,
+                "alice",
+                Uuid::new_v4(),
+                "invalid reply",
+                &[],
+                None,
+                false,
+                Some(target)
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // In-thread references are scoped to that thread, including its root.
+    let quoted = send_message(
+        &pool,
+        channel,
+        "alice",
+        Uuid::new_v4(),
+        "in thread",
+        &[],
+        Some(root),
+        false,
+        one["id"].as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(quoted["replyTo"]["threadRootId"], root);
+    assert_eq!(
+        send_message(
+            &pool,
+            channel,
+            "alice",
+            Uuid::new_v4(),
+            "wrong thread",
+            &[],
+            Some(other),
+            false,
+            one["id"].as_str()
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let long_source = persist(
+        &pool,
+        channel,
+        "alice",
+        Uuid::new_v4(),
+        &format!("{}🙂🚀", "a".repeat(199)),
+    )
+    .await
+    .unwrap();
+    let quoted = send_message(
+        &pool,
+        channel,
+        "bob",
+        Uuid::new_v4(),
+        "bounded quote",
+        &[],
+        None,
+        false,
+        long_source["id"].as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(quoted["replyTo"]["text"], format!("{}🙂", "a".repeat(199)));
+    let event: Value = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND seq=$2")
+        .bind(channel).bind(quoted["seq"].as_str().unwrap().parse::<i64>().unwrap()).fetch_one(&pool).await.unwrap();
+    assert_eq!(event["message"]["replyTo"], quoted["replyTo"]);
 }
 
 #[tokio::test]

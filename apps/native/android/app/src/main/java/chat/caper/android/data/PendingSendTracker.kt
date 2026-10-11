@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.MessageReply
 import java.util.UUID
 
 internal data class PendingSend(
@@ -14,6 +15,7 @@ internal data class PendingSend(
     val attachmentIds: List<String> = emptyList(),
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
+    val replyTo: MessageReply? = null,
 )
 
 /** Retains an idempotency key only while the server outcome is unknown. */
@@ -22,10 +24,10 @@ internal class PendingSendTracker {
 
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
-        threadRootId: String? = null, broadcast: Boolean = false, confirmed: () -> Unit,
+        threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null, confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast).also { pending = it }
+            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
     fun retrying(channel: String, author: ChatAuthor): PendingSend? =
@@ -34,6 +36,7 @@ internal class PendingSendTracker {
     fun confirm(message: ChatMessage): PendingSend? = pending?.takeIf {
         it.id.toString() == message.clientMessageId && it.channel == message.channelId &&
             it.threadRootId == message.threadRootId && it.broadcast == message.broadcast &&
+            it.replyTo?.id == message.replyTo?.id &&
             it.author.id == message.author.id && it.author.isGuest == message.author.isGuest
     }?.also { pending = null }
 

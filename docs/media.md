@@ -6512,3 +6512,80 @@ Follow-ups to full-surface swipes and swipe release timing:
    usual release commands for the merged revision. Roll back web to the previous
    image; native rollback requires a corrected higher-build-number release. No
    data rollback is needed.
+
+## Discord-style message replies (October 11, 2026)
+
+**Reply** sends an ordinary recent message with a compact source author/excerpt.
+The original stays in place; quoting it does not change its sequence or thread
+count. A reply can itself be replied to, edited, reacted to, pinned, forwarded,
+or have its own thread. **Reply in thread** remains a separate action. Channel
+composers retain their normal attachment support; thread composers remain
+text-only. Replying does not implicitly mention or ping the source author.
+
+`POST /api/chat/channels/:id/messages` accepts optional `replyToId`, independent
+of `threadRootId` and `broadcast`. The API resolves it within the authorized,
+locked channel. Channel replies can quote top-level/broadcast messages; thread
+replies can quote that thread's root or messages. Missing, cross-channel or
+out-of-thread targets return 404. Retries bind the target ID as well as the
+existing command identity; changing it returns 409.
+
+The optional `replyTo` message field contains `{id, author, text,
+hasAttachments, threadRootId?}`. It is a send-time snapshot with at most 200
+Unicode scalars, no recursive quotes, resolved mentions or media URLs. Source
+edits do not rewrite existing quotes. Clicking a quote loads the source through
+the existing authorized history path. Clients hide the quoted name/excerpt for
+blocked authors. Forward projections remove the quote to avoid sharing source
+conversation context with another audience. Normal outbox/gateway delivery and
+push rules are unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, Unicode truncation and transactional outbox snapshots. Low-memory builds use one job and zero debug information. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 572 tests across 55 files. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Existing `scripts/test-message-threads.mjs` passes. Inspected desktop, 390px and 320px Chromium renders with touch emulation and `(pointer: coarse)` verified; not Safari or physical-device acceptance. |
+| Rust desktop | 414 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture and hovered controls. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
+| Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
+| iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
+| Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |
+
+**Deployment order.**
+
+1. No infrastructure apply, new secrets/configuration, database migration or
+   backfill is required. Quotes persist in the existing message JSON payload.
+   Keep the established API replica/Valkey configuration. Merging deploys
+   nothing. Set `MERGED_SHA` to the full merged revision and wait for that
+   revision's immutable API/web images.
+2. Deploy the API before releasing clients that send `replyToId`:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+3. No gateway, SFU or TURN rollout is required; existing gateway delivery passes
+   the optional field unchanged. Older clients remain compatible but do not
+   display reply context. After API readiness, web and native releases can
+   deploy independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+4. Compile/test Android and Apple on supported hosts before distributing native
+   clients. Verify multi-account replies in spaces and DMs, replies to replies,
+   own threads, attachments, offline retry, source navigation, blocking and
+   private access removal. After native acceptance:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+5. Verify HTTP/gateway replay preserve one reply and its quote without moving
+   the original or changing its thread count. Roll back web with the same
+   deployment command using the previous image SHA. Native corrections need a
+   higher-build-number release. Keep a reply-capable API while updated clients
+   remain installed: older APIs ignore `replyToId` and lose quote context on new
+   sends. Prefer a forward API fix. Do not delete persisted quotes or messages;
+   no data rollback is required.
