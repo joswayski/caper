@@ -307,15 +307,28 @@ class HighlightsTests(unittest.TestCase):
         self.seed(platforms=PLATFORMS[1:])
         ios = self.commit("Improve iPhone controls", {"apps/native/apple/Sources/CaperIOS/Controls.swift": "iphone()"})
         mac = self.commit("Improve Mac updater", {"apps/native/apple/Sources/CaperMacOS/AppUpdater.swift": "update()"})
+        updater = self.commit("Improve signed update feedback", {"apps/native/updater/src/main.rs": "check();"})
         newest = self.commit("Improve server persistence", {"apps/api/src/persist.rs": "persist();"})
         before = copy.deepcopy(self.github.feeds)
-        for evidence, platform in ((ios, "macos"), (mac, "ios"), (newest, "windows")):
+        for evidence, platform in (
+            (ios, "macos"),
+            (mac, "ios"),
+            (updater, "ios"),
+            (updater, "android"),
+            (newest, "windows"),
+        ):
             with self.subTest(platform=platform):
                 self.response = {"highlights": [highlight([evidence], [platform])]}
                 with self.assertRaises(notes.GenerationError):
                     self.generate(newest, "native")
                 self.assertEqual(self.github.feeds, before)
                 self.assertFalse(self.output.exists())
+        self.response = {"highlights": [highlight([updater], ["macos", "windows", "linux"])]}
+        result = self.generate(newest, "native")
+        for platform in PLATFORMS[1:]:
+            self.assertEqual(
+                len(result[platform]["releases"][-1]["highlights"]), int(platform in {"macos", "windows", "linux"})
+            )
 
     def test_invalid_schema_evidence_and_text_fail_before_any_publication(self):
         self.seed()

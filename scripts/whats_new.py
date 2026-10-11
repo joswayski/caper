@@ -219,7 +219,9 @@ def path_platforms(path):
         if "/CaperMacOS/" in path or re.search(r"(?:Mac|macOS)", Path(path).name):
             return {"macos"}
         return {"ios", "macos"}
-    if path.startswith(("apps/native/desktop/", "apps/native/updater/")):
+    if path.startswith("apps/native/updater/"):
+        return {"macos", "windows", "linux"}
+    if path.startswith("apps/native/desktop/"):
         return {"windows", "linux"}
     return set()  # Server-only changes may provide context, never platform eligibility.
 
