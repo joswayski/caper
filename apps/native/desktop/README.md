@@ -116,6 +116,14 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
+- Feedback conversations with the Caper team (`feedback: true` in
+  `GET /api/dms`; older servers omit it) show a muted "Feedback" tag in their
+  DM row and never offer Block/Unblock (header or message actions), request
+  bars, blocked composers or "Waiting for" notices. An empty one reads "The
+  Caper team reads and replies here. Mention @feedback anywhere to send a
+  message or its thread here." Composers, thread composers included, suggest
+  `@feedback` ("Send to the Caper team") after matching people in channels and
+  DMs, but not inside a feedback conversation. The server does the forwarding.
 - Notification controls govern phone push and local desktop notifications.
   The space menu and each channel's options menu set
   **Notifications** (Default, All messages, Only @mentions, Nothing) and

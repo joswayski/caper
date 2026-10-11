@@ -74,7 +74,7 @@ async fn locked_channel(
                  AND (NOT $3 OR EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL)))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))))",
+                    WHERE d.channel_id=c.id AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))))",
     )
     .bind(row.0)
     .bind(user)
@@ -175,7 +175,12 @@ async fn persist_edit(
         .execute(&mut *tx).await.map_err(database_error)?;
     // Edited text is re-resolved like a new message, so added or removed
     // `@mentions` follow the latest revision.
-    let content = with_mentions(&mut tx, content, &mentions::parse(text, !direct)).await?;
+    let (content, team_mentioned) =
+        with_mentions(&mut tx, content, &mentions::parse(text, !direct)).await?;
+    // Adding `@feedback` in an edit reports the message once, like sending it.
+    if let (true, Some(user)) = (team_mentioned, user) {
+        super::feedback::enqueue(&mut tx, message_id, user, channel_id).await?;
+    }
     let now = Utc::now();
     payload["content"] = content;
     payload["revision"] = json!(revision + 1);

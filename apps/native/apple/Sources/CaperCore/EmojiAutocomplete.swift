@@ -170,7 +170,7 @@ struct ComposerSuggestionsView: View {
                                         .frame(width: 24, height: 24)
                                 }
                                 // Member: display name, then a muted @username.
-                                // Special: @everyone/@here, then its muted description.
+                                // Special: @everyone/@here/@feedback, then its muted description.
                                 HStack(spacing: 6) {
                                     Text(member ? candidate.displayName : "@\(candidate.username)")
                                         .font(CaperTheme.font(13, weight: .medium)).lineLimit(1)

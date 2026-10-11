@@ -101,6 +101,12 @@ pub struct DirectConversation {
     /// You blocked the peer (they are never told). Old servers omit it.
     #[serde(default)]
     pub blocked: bool,
+    /// A feedback conversation with the Caper team. Yours has the team account
+    /// as `peer`; feedback team members also see everyone else's, with the
+    /// person who sent it as `peer`. Never a request or blocked. Old servers
+    /// omit it.
+    #[serde(default)]
+    pub feedback: bool,
 }
 
 /// `GET /api/blocks` entry: an account you blocked.
@@ -3004,7 +3010,45 @@ mod tests {
             "old servers omit status"
         );
         assert!(!direct.blocked, "old servers omit blocked");
+        assert!(!direct.feedback, "old servers omit feedback");
         assert_eq!(direct.peer.avatar_id, None);
+    }
+
+    #[test]
+    fn feedback_conversations_decode_and_default_to_ordinary_dms() {
+        let parsed: DirectConversations = serde_json::from_value(serde_json::json!({
+            "conversations": [
+                {"id": "dm0000000007", "peer": {"id": "team00000001", "username": "caper",
+                 "displayName": "Caper", "avatarId": 1},
+                 "lastSeq": "3", "readSeq": "3", "status": "accepted", "blocked": false,
+                 "feedback": true},
+                {"id": "dm0000000008", "peer": {"id": "p1", "username": "maya", "displayName": "Maya"},
+                 "lastSeq": "0", "readSeq": "0", "status": "accepted", "blocked": false,
+                 "feedback": false},
+                {"id": "dm0000000009", "peer": {"id": "p2", "username": "sam", "displayName": "Sam"},
+                 "lastSeq": "0", "readSeq": "0"}
+            ]
+        }))
+        .unwrap();
+        let flags: Vec<_> = parsed
+            .conversations
+            .iter()
+            .map(|direct| (direct.id.as_str(), direct.feedback))
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                ("dm0000000007", true),
+                ("dm0000000008", false),
+                ("dm0000000009", false),
+            ],
+            "present true, present false, and absent (older servers)"
+        );
+        let team = &parsed.conversations[0];
+        assert_eq!(
+            (team.peer.username.as_str(), team.status, team.blocked),
+            ("caper", DirectStatus::Accepted, false)
+        );
     }
 
     #[test]

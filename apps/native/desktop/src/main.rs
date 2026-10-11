@@ -1067,6 +1067,7 @@ impl CaperApp {
                             read_seq: "1".into(),
                             status,
                             blocked: false,
+                            feedback: false,
                         };
                     let maya = model::BlockedAccount {
                         id: "fixture-maya".into(),
@@ -1154,6 +1155,7 @@ impl CaperApp {
                         read_seq: "2".into(),
                         status: model::DirectStatus::Accepted,
                         blocked: false,
+                        feedback: false,
                     }];
                     let mut messages: Vec<_> = app.timeline.messages().take(2).cloned().collect();
                     for message in &mut messages {
@@ -1209,6 +1211,7 @@ impl CaperApp {
                         read_seq: "1".into(),
                         status: model::DirectStatus::Accepted,
                         blocked: false,
+                        feedback: false,
                     };
                     app.directs = vec![
                         direct("dm0000000001", "fixture-maya", "Maya"),
@@ -2621,6 +2624,18 @@ impl CaperApp {
             .is_some_and(|blocks| blocks.iter().any(|blocked| blocked.id == account))
     }
 
+    /// Whether a block closes `direct`. Never a feedback conversation: the
+    /// server keeps it open even when a team member blocked the person.
+    fn direct_blocked(&self, direct: &model::DirectConversation) -> bool {
+        !direct.feedback && (direct.blocked || self.is_blocked(&direct.peer.id))
+    }
+
+    /// The open conversation is a feedback conversation with the Caper team.
+    fn selected_feedback(&self) -> bool {
+        self.selected_direct_conversation()
+            .is_some_and(|direct| direct.feedback)
+    }
+
     fn blocked_ids(&self) -> BTreeSet<String> {
         self.blocks
             .iter()
@@ -2637,6 +2652,7 @@ impl CaperApp {
     /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
     fn empty_conversation_note(&self) -> String {
         match self.selected_direct_conversation() {
+            Some(direct) if direct.feedback => FEEDBACK_NOTE.to_owned(),
             Some(direct) => format!(
                 "Only you and {} can read this conversation.",
                 direct.peer.display_name
@@ -2648,10 +2664,11 @@ impl CaperApp {
         }
     }
 
-    /// The open conversation when it is an incoming message request.
+    /// The open conversation when it is an incoming message request. A
+    /// feedback conversation never is.
     fn selected_request(&self) -> Option<&model::DirectConversation> {
         self.selected_direct_conversation()
-            .filter(|direct| direct.status == model::DirectStatus::Incoming)
+            .filter(|direct| direct.status == model::DirectStatus::Incoming && !direct.feedback)
     }
 
     fn incoming_requests(&self) -> Vec<model::DirectConversation> {
@@ -2663,9 +2680,10 @@ impl CaperApp {
     }
 
     /// Someone else's signed-in account behind a message, for Block/Unblock.
+    /// Feedback conversations offer neither.
     fn blockable_author(&self, author: &Author) -> Option<model::BlockedAccount> {
         let me = self.account.as_ref().map(|account| account.id.as_str());
-        if author.is_guest || Some(author.id.as_str()) == me {
+        if author.is_guest || Some(author.id.as_str()) == me || self.selected_feedback() {
             return None;
         }
         let username = self
@@ -3287,7 +3305,7 @@ impl CaperApp {
             return self.selected_request().is_none()
                 && self
                     .selected_direct_conversation()
-                    .is_none_or(|direct| !(direct.blocked || self.is_blocked(&direct.peer.id)));
+                    .is_none_or(|direct| !self.direct_blocked(direct));
         }
         self.selected_channel.as_ref().is_some_and(|id| {
             self.detail.as_ref().is_some_and(|detail| {
@@ -7071,6 +7089,7 @@ impl CaperApp {
                                     RowExtras {
                                         muted,
                                         duration: duration.as_deref(),
+                                        tag: None,
                                         menu,
                                     },
                                 );
@@ -7301,6 +7320,7 @@ impl CaperApp {
                         RowExtras {
                             muted,
                             duration: None,
+                            tag: direct.feedback.then_some("Feedback"),
                             menu: Some(RowMenu {
                                 label: format!(
                                     "Conversation options for {}",
@@ -9140,7 +9160,7 @@ impl CaperApp {
         let read_only = !self.selected_is_joined()
             || self
                 .selected_direct_conversation()
-                .is_some_and(|direct| direct.blocked || self.is_blocked(&direct.peer.id));
+                .is_some_and(|direct| self.direct_blocked(direct));
         ui.set_min_height(ui.available_height());
         ui.spacing_mut().item_spacing.y = 0.0;
         let heading = egui::TopBottomPanel::top("thread-heading")
@@ -9407,8 +9427,10 @@ impl CaperApp {
                                         }
                                     } else if let Some(direct) = self.selected_direct_conversation().cloned()
                                         && self.account.as_ref().is_some_and(|account| account.id != direct.peer.id)
+                                        && !direct.feedback
                                     {
-                                        // 1:1 DMs only; personal notes have no peer to block.
+                                        // 1:1 DMs only; personal notes have no peer to block,
+                                        // and the Caper team's conversations can't be blocked.
                                         let blocked = direct.blocked || self.is_blocked(&direct.peer.id);
                                         let account = Self::peer_account(&direct.peer);
                                         if secondary_button(ui, if blocked { "Unblock" } else { "Block" }, !self.block_busy).clicked() {
@@ -9470,8 +9492,10 @@ impl CaperApp {
                     let me = self.account.as_ref().map(|account| account.id.clone());
                     if let Some(direct) = self.selected_direct_conversation().cloned()
                         && Some(&direct.peer.id) != me.as_ref()
+                        && !direct.feedback
                     {
                         // A request is read-only until accepted; a block replaces the composer.
+                        // Feedback conversations are neither, whatever your block list says.
                         if direct.status == model::DirectStatus::Incoming {
                             self.request_bar(ui, &direct);
                             return;
@@ -11955,12 +11979,13 @@ impl CaperApp {
         inserted
     }
 
-    /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
-    /// Space channels use the members already loaded by
+    /// Who `@` can suggest, never yourself, and which specials apply:
+    /// `everyone`/`here` in space channels, `feedback` everywhere except a
+    /// feedback conversation. Space channels use the members already loaded by
     /// `GET /api/spaces/{space}` (none yet leaves only the specials). Any DM,
     /// self-notes included, uses `GET /api/people`; until that loads, or if it
     /// never does, a DM offers its other participant (self-notes: nobody).
-    fn mention_people(&self) -> (Vec<mentions::Person>, bool) {
+    fn mention_people(&self) -> (Vec<mentions::Person>, mentions::Specials) {
         let me = self.account.as_ref().map(|account| account.id.as_str());
         if let Some(id) = &self.selected_direct {
             let known = self.people.as_deref().unwrap_or_default();
@@ -11987,7 +12012,17 @@ impl CaperApp {
                     avatar_id: person.avatar_id,
                 })
                 .collect();
-            return (people, false);
+            let feedback = self
+                .directs
+                .iter()
+                .any(|direct| &direct.id == id && direct.feedback);
+            return (
+                people,
+                mentions::Specials {
+                    channel: false,
+                    feedback: !feedback,
+                },
+            );
         }
         let people = self
             .detail
@@ -12005,7 +12040,13 @@ impl CaperApp {
                     })
                     .collect()
             });
-        (people, true)
+        (
+            people,
+            mentions::Specials {
+                channel: true,
+                feedback: true,
+            },
+        )
     }
 
     /// A person pill's card data from what is already loaded.
@@ -12153,11 +12194,14 @@ impl CaperApp {
 
     /// **Message** opens the existing DM with this person, or creates one by
     /// username through the same request as the Open conversation dialog.
+    /// Feedback conversations never match by peer: a team member's list holds
+    /// other people's, and the server answers the team's username (or
+    /// `feedback`) with your own.
     fn message_from_card(&mut self, entry: &model::Mention, username: &str) {
         if let Some(direct) = self
             .directs
             .iter()
-            .find(|direct| entry.id.as_deref() == Some(direct.peer.id.as_str()))
+            .find(|direct| !direct.feedback && entry.id.as_deref() == Some(direct.peer.id.as_str()))
             .cloned()
         {
             self.select_direct(direct);
@@ -13945,6 +13989,9 @@ struct RowExtras<'a> {
     /// "Muted until 5:00 PM".
     muted: Option<String>,
     duration: Option<&'a str>,
+    /// A small muted tag after the name, like the self row's "you": DM rows
+    /// mark feedback conversations "Feedback".
+    tag: Option<&'a str>,
     menu: Option<RowMenu<'a>>,
 }
 
@@ -13978,7 +14025,9 @@ fn channel_button(
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             active,
-            name,
+            extras
+                .tag
+                .map_or_else(|| name.to_owned(), |tag| format!("{name} {tag}")),
         )
     });
     if active || response.hovered() || response.has_focus() {
@@ -14053,22 +14102,33 @@ fn channel_button(
         muted_indicator(ui, bell, response.id.with("muted"), label);
         name_right -= 20.0;
     }
-    // Long names end in "…" rather than a letter cut in half.
-    let label = truncated_galley(
-        ui,
-        name,
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-        color,
-        name_right - rect.left() - 32.0,
-    );
-    ui.painter().galley(
-        egui::pos2(
-            rect.left() + 32.0,
-            rect.center().y - 1.0 - label.size().y / 2.0,
-        ),
-        label,
-        color,
-    );
+    let name_font = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into()));
+    if let Some(tag) = extras.tag {
+        // As the self row's "you": a long name gives way to the whole tag.
+        paint_row_name(
+            ui,
+            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
+            name_right - rect.left() - 32.0,
+            (name, name_font, color),
+            (
+                tag,
+                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                dim(MUTED),
+            ),
+            true,
+        );
+    } else {
+        // Long names end in "…" rather than a letter cut in half.
+        let label = truncated_galley(ui, name, name_font, color, name_right - rect.left() - 32.0);
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + 32.0,
+                rect.center().y - 1.0 - label.size().y / 2.0,
+            ),
+            label,
+            color,
+        );
+    }
     let mut opened = false;
     if let Some(menu) = extras.menu {
         let row_hovered = ui.rect_contains_pointer(rect);
@@ -14687,6 +14747,10 @@ fn rich_text(
 /// Web's confirmation after inviting someone to a space or a private channel.
 const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
 
+/// Under "No messages yet." in a feedback conversation, for the person and
+/// the team alike.
+const FEEDBACK_NOTE: &str = "The Caper team reads and replies here. Mention @feedback anywhere to send a message or its thread here.";
+
 /// Web's check before inviting: someone already a member or already invited.
 fn invite_error(
     username: &str,
@@ -14829,6 +14893,7 @@ fn mention_suggestion(
         }
         mentions::Candidate::Everyone => ("@everyone".into(), "Everyone in this channel".into()),
         mentions::Candidate::Here => ("@here".into(), "Everyone online in this channel".into()),
+        mentions::Candidate::Feedback => ("@feedback".into(), "Send to the Caper team".into()),
     };
     let mut text = egui::text::LayoutJob::default();
     text.append(
@@ -14860,7 +14925,9 @@ fn mention_suggestion(
             mentions::Candidate::Person(person) => {
                 paint_avatar(ui, rect, &person.display_name, person.avatar_id);
             }
-            mentions::Candidate::Everyone | mentions::Candidate::Here => {
+            mentions::Candidate::Everyone
+            | mentions::Candidate::Here
+            | mentions::Candidate::Feedback => {
                 ui.painter()
                     .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
                 ui.painter().text(
@@ -17108,6 +17175,7 @@ mod tests {
             read_seq: "0".into(),
             status: model::DirectStatus::Incoming,
             blocked: false,
+            feedback: false,
         });
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -20789,6 +20857,7 @@ mod tests {
             "Maya @maya",
             "@everyone Everyone in this channel",
             "@here Everyone online in this channel",
+            "@feedback Send to the Caper team",
         ] {
             assert!(labels.iter().any(|label| label == row), "{row}: {labels:?}");
         }
@@ -20819,6 +20888,12 @@ mod tests {
         render(&mut app, &context, press(egui::Key::ArrowDown));
         render(&mut app, &context, press(egui::Key::Tab));
         assert_eq!(app.draft, "(@everyone ");
+
+        place_caret(&context, "thoughts @fee|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.draft, "thoughts @feedback ");
+        assert!(app.pending.is_none(), "Accepting @feedback must not send");
 
         place_caret(&context, "mail bob@ma|", &mut app);
         render(&mut app, &context, vec![]);
@@ -21644,10 +21719,24 @@ mod tests {
         let (events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         // The fixture previews `GET /api/people`: space members and DM peers.
-        assert_eq!(names(&app, ""), ["alex", "maya"]);
-        assert!(names(&app, "every").is_empty(), "no specials in DMs");
+        assert_eq!(names(&app, ""), ["alex", "maya", "feedback"]);
+        assert!(names(&app, "every").is_empty(), "no everyone/here in DMs");
+        assert!(names(&app, "her").is_empty(), "no everyone/here in DMs");
+        assert_eq!(names(&app, "fe"), ["feedback"], "the team, in DMs too");
+        app.directs[0].feedback = true;
+        assert_eq!(
+            names(&app, ""),
+            ["alex", "maya"],
+            "never inside a feedback conversation"
+        );
+        assert!(names(&app, "fe").is_empty());
+        app.directs[0].feedback = false;
         app.people = None;
-        assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
+        assert_eq!(
+            names(&app, ""),
+            ["maya", "feedback"],
+            "the peer until people load"
+        );
 
         let person = |id: &str, username: &str| model::Person {
             id: id.into(),
@@ -21666,7 +21755,11 @@ mod tests {
             ))
             .unwrap();
         app.receive();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "people beyond the peer");
+        assert_eq!(
+            names(&app, ""),
+            ["maya", "sam", "feedback"],
+            "people beyond the peer"
+        );
         assert_eq!(names(&app, "SA"), ["sam"]);
         events
             .send(loaded(app.generation - 1, Ok(Vec::new())))
@@ -21677,7 +21770,7 @@ mod tests {
         app.receive();
         assert_eq!(
             names(&app, ""),
-            ["maya", "sam"],
+            ["maya", "sam", "feedback"],
             "stale or failed refreshes keep the list"
         );
         app.directs[0].peer = model::DirectPeer {
@@ -21688,24 +21781,33 @@ mod tests {
         };
         assert_eq!(
             names(&app, ""),
-            ["maya", "newbie", "sam"],
+            ["maya", "newbie", "sam", "feedback"],
             "a DM newer than the list still offers its peer"
         );
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "self-notes uses people");
+        assert_eq!(
+            names(&app, ""),
+            ["maya", "sam", "feedback"],
+            "self-notes uses people"
+        );
         app.people = None;
-        assert!(
-            names(&app, "").is_empty(),
-            "self-notes suggests nobody before people load"
+        assert_eq!(
+            names(&app, ""),
+            ["feedback"],
+            "self-notes suggests only the team before people load"
         );
 
         app.selected_direct = None;
         app.selected_channel = Some("chan00000001".into());
-        assert_eq!(names(&app, ""), ["alex", "maya", "everyone", "here"]);
+        assert_eq!(
+            names(&app, ""),
+            ["alex", "maya", "everyone", "here", "feedback"]
+        );
+        assert_eq!(names(&app, "f"), ["feedback"]);
         app.detail = None;
         assert_eq!(
             names(&app, ""),
-            ["everyone", "here"],
+            ["everyone", "here", "feedback"],
             "only specials until members load"
         );
     }
@@ -21974,6 +22076,7 @@ mod tests {
             read_seq: "0".into(),
             status: model::DirectStatus::Accepted,
             blocked: false,
+            feedback: false,
         };
         app.directs.push(existing.clone());
         render(&mut app, &context, vec![]);
@@ -22099,6 +22202,22 @@ mod tests {
         let context = egui::Context::default();
         let mut app = CaperApp::new(&context, api, Some("parity-mentions"));
         app.token = Some("account-token".into());
+        // A feedback team member also lists Alex's feedback conversation;
+        // that is not a DM with Alex.
+        app.directs.push(model::DirectConversation {
+            id: "dm0000000007".into(),
+            peer: model::DirectPeer {
+                id: "fixture-alex".into(),
+                username: "alex".into(),
+                display_name: "Alex".into(),
+                avatar_id: None,
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+            status: model::DirectStatus::Accepted,
+            blocked: false,
+            feedback: true,
+        });
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         click_at(
@@ -23771,6 +23890,7 @@ mod tests {
             read_seq: "2".into(),
             status: model::DirectStatus::Accepted,
             blocked: false,
+            feedback: false,
         };
         app.directs = vec![self_direct.clone()];
         assert_eq!(
@@ -23828,6 +23948,7 @@ mod tests {
             read_seq: "0".into(),
             status: model::DirectStatus::Accepted,
             blocked: false,
+            feedback: false,
         };
         events
             .send(crate::worker::Event::DirectCreated {
@@ -25740,6 +25861,7 @@ mod tests {
             read_seq: "1".into(),
             status: model::DirectStatus::Accepted,
             blocked: false,
+            feedback: false,
         }];
         app.mark_selected_direct_read();
         assert_eq!(

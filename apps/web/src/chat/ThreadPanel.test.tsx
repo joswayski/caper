@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import ThreadPanel from "./ThreadPanel.tsx";
 import { initialChatView, type ThreadViewState } from "./client.ts";
+import { specialMentionsFor } from "./mentions.ts";
 import type { ChatMessage } from "./types.ts";
 
 const root: ChatMessage = {
@@ -30,7 +31,7 @@ function render(
       channelName={channelName}
       direct={direct}
       readOnly={readOnly}
-      specialMentions
+      specialMentions={specialMentionsFor({ direct, feedback: false })}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
       onClose={() => {}}
     />,

@@ -4,7 +4,7 @@ import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
-import type { MentionCandidate } from "./mentions.ts";
+import { specialMentionsFor, type MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 
 /** Files picked for the next message; the conversation owns their uploads. */
@@ -31,6 +31,8 @@ interface ComposerProps {
   /** Keeps unsent text for this conversation across channel and DM switches. */
   draftKey?: string;
   direct: boolean;
+  /** A DM with the Caper team, where `@feedback` isn't suggested. */
+  feedback?: boolean;
   disabled: boolean;
   identityReady: boolean;
   sending: boolean;
@@ -62,6 +64,7 @@ export default function Composer({
   channelName,
   draftKey,
   direct,
+  feedback = false,
   disabled,
   identityReady,
   sending,
@@ -85,7 +88,7 @@ export default function Composer({
     draft,
     input: composerRef,
     people,
-    specialMentions: !direct,
+    specialMentions: specialMentionsFor({ direct, feedback }),
     onInsert: (value) => {
       setDraft(value);
       setValidationError(undefined);

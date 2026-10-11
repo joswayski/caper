@@ -152,6 +152,12 @@ impl Alert {
         }
     }
 
+    /// Feedback conversations read `Name · Feedback`, for the team and the
+    /// person alike, so a reply from the team is recognizable.
+    pub(crate) fn feedback_title(sender: &str) -> String {
+        format!("{sender} · Feedback")
+    }
+
     /// The conversation or channel ID: APNs `thread-id`, FCM `collapse_key`.
     pub(crate) fn thread(&self) -> &str {
         match &self.conversation {

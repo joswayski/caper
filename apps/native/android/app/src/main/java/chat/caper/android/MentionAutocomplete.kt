@@ -18,7 +18,7 @@ internal data class MentionToken(val start: Int, val end: Int, val query: String
 /** A person or special name the composer can suggest after `@`. */
 internal data class MentionCandidate(
     val username: String,
-    /** The display name for people; the muted description for `@everyone`/`@here`. */
+    /** The display name for people; the muted description for `@everyone`/`@here`/`@feedback`. */
     val label: String,
     val special: Boolean = false,
     val avatarId: Int? = null,
@@ -28,6 +28,13 @@ internal val mentionSpecials = listOf(
     MentionCandidate("everyone", "Everyone in this channel", special = true),
     MentionCandidate("here", "Everyone online in this channel", special = true),
 )
+
+/**
+ * `@feedback` forwards the message (or its thread) to your feedback conversation with the
+ * Caper team. Unlike `@everyone`/`@here` it is offered in DMs too, but never inside a
+ * feedback conversation. The server's other team aliases are not suggested.
+ */
+internal val mentionFeedback = MentionCandidate("feedback", "Send to the Caper team", special = true)
 
 internal fun Char.isMentionNameChar(): Boolean =
     this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_'
@@ -50,32 +57,34 @@ internal fun mentionToken(value: TextFieldValue): MentionToken? {
 /**
  * Who the composer may suggest: the space's members (excluding you) plus the
  * specials in a space channel; in a DM, everyone from `GET /api/people`,
- * falling back to the other participant until that list loads.
+ * falling back to the other participant until that list loads. [feedback]
+ * offers `@feedback` (everywhere except a feedback conversation).
  */
-internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean)
+internal data class MentionSource(val people: List<MentionCandidate>, val specials: Boolean, val feedback: Boolean = false)
 
 internal fun mentionSource(state: AppUiState): MentionSource {
     val channel = state.selectedChannel ?: return MentionSource(emptyList(), false)
     val self = state.account?.id ?: state.chatAuthorId
     if (channel.direct) {
+        val conversation = state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }
         val people = state.people?.filter { it.id != self }?.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }
-            ?: listOfNotNull(state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
-                ?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) })
-        return MentionSource(people, false)
+            ?: listOfNotNull(conversation?.peer?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) })
+        return MentionSource(people, false, feedback = conversation?.feedback != true)
     }
     // Members not loaded yet (or another space's): only the specials.
     val members = state.selectedSpace?.takeIf { detail -> detail.space.id == channel.spaceId || detail.channels.any { it.id == channel.id } }?.members.orEmpty()
-    return MentionSource(members.filter { it.id != self }.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }, true)
+    return MentionSource(members.filter { it.id != self }.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }, true, feedback = true)
 }
 
 /**
  * Members ranked exact username, username prefix, display-name word prefix,
- * then username substring (ties by username), followed by matching specials.
- * Specials keep their slots within [limit].
+ * then username substring (ties by username), followed by matching specials
+ * (`@everyone`, `@here`, then `@feedback`). Specials keep their slots within [limit].
  */
 internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int = 6): List<MentionCandidate> {
     val needle = query.lowercase(Locale.ROOT)
-    val specials = if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) }.take(limit) else emptyList()
+    val offered = (if (source.specials) mentionSpecials else emptyList()) + listOfNotNull(mentionFeedback.takeIf { source.feedback })
+    val specials = offered.filter { it.username.startsWith(needle) }.take(limit)
     val people = source.people.mapNotNull { person ->
         val username = person.username.lowercase(Locale.ROOT)
         val display = person.label.lowercase(Locale.ROOT)

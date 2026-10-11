@@ -4,11 +4,14 @@ import {
   insertMention,
   mentionCardPerson,
   mentionName,
+  mentionOptionLabel,
   mentionSegments,
   mentionSuggestions,
   mentionToken,
   mentionsAccount,
+  specialMentionsFor,
   type MentionCandidate,
+  type SpecialMention,
 } from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
 
@@ -36,16 +39,41 @@ test("@ autocomplete uses the shared start rule and caret guards", () => {
   assert.deepEqual(mentionToken("🙂 @ma", 6), { start: 3, end: 6, query: "ma" }, "UTF-16 offsets");
 });
 
+const channel = specialMentionsFor({ direct: false, feedback: false });
+const direct = specialMentionsFor({ direct: true, feedback: false });
+const feedback = specialMentionsFor({ direct: true, feedback: true });
+
+test("@everyone and @here stay channel-only; @feedback is everywhere but its own conversation", () => {
+  assert.deepEqual(channel, ["everyone", "here", "feedback"], "space channels and their threads");
+  assert.deepEqual(direct, ["feedback"], "DMs, personal notes and their threads");
+  assert.deepEqual(feedback, [], "the feedback conversation and its threads");
+  assert.deepEqual(specialMentionsFor({ direct: false, feedback: true }), ["everyone", "here"]);
+});
+
 test("suggestions rank username, display name and contains; specials keep their slots", () => {
-  const names = (query: string, specials = true) => mentionSuggestions(members, query, specials).map(mentionName);
+  const names = (query: string, specials: readonly SpecialMention[] = channel) =>
+    mentionSuggestions(members, query, specials).map(mentionName);
   assert.deepEqual(names("maya"), ["maya", "sam_m", "zz_maya"]);
   assert.deepEqual(names("MA"), ["maya", "sam_m", "zz_maya"]);
   assert.deepEqual(names("e"), ["alfie", "bea", "everyone"]);
   assert.deepEqual(names("h"), ["here"]);
-  assert.deepEqual(names(""), ["alfie", "bea", "cal", "maya", "everyone", "here"]);
-  assert.deepEqual(names("", false), ["alfie", "bea", "cal", "maya", "mo", "sam_m"]);
-  assert.deepEqual(names("every", false), []);
-  assert.equal(names("").length, 6);
+  assert.deepEqual(names(""), ["alfie", "bea", "cal", "everyone", "here", "feedback"]);
+  assert.deepEqual(names("", direct), ["alfie", "bea", "cal", "maya", "mo", "feedback"]);
+  assert.deepEqual(names("", feedback), ["alfie", "bea", "cal", "maya", "mo", "sam_m"]);
+  assert.deepEqual(names("every", direct), []);
+  assert.deepEqual(names("h", direct), []);
+  assert.deepEqual(names("f"), ["alfie", "feedback"], "after matching people");
+  assert.deepEqual(names("FEED", direct), ["feedback"]);
+  assert.deepEqual(names("feed", feedback), []);
+  for (const specials of [channel, direct, feedback]) assert.equal(names("", specials).length, 6);
+});
+
+test("special suggestions read as their labels and never duplicate a person holding the name", () => {
+  assert.equal(mentionOptionLabel({ kind: "feedback" }), "Mention @feedback, send to the Caper team");
+  assert.equal(mentionOptionLabel({ kind: "here" }), "Mention @here, everyone online in this channel");
+  assert.equal(mentionOptionLabel({ kind: "member", member: members[0] }), "Mention Maya Lopez, @maya");
+  const team = { id: "u-team", username: "Feedback", displayName: "Caper" };
+  assert.deepEqual(mentionSuggestions([team], "feed", direct), [{ kind: "member", member: team }]);
 });
 
 test("insertion replaces the token, adds a space and enforces the limit", () => {

@@ -2,4 +2,5 @@
 export const directMessageErrors: Record<string, string> = {
   dm_not_accepted: "This person isn’t accepting direct messages.",
   dm_blocked: "You blocked this person. Unblock them to message them.",
+  team_account: "The Caper team can’t be blocked.",
 };

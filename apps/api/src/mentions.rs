@@ -6,6 +6,36 @@
 pub(crate) const MAX_USER_MENTIONS: usize = 20;
 const MAX_NAME: usize = 32;
 
+/// Reserved names that mean the Caper team. They resolve to the team account
+/// (whatever its own username), which sends the message to `@feedback`.
+pub(crate) const TEAM_ALIASES: &[&str] = &[
+    "feedback",
+    "caper",
+    "capers",
+    "caperchat",
+    "caper_feedback",
+    "caper_support",
+    "caper_team",
+    "support",
+    "team",
+    "staff",
+    "admin",
+    "admins",
+    "administrator",
+    "administrators",
+    "mod",
+    "mods",
+    "moderator",
+    "moderators",
+];
+
+/// Whether `name` (any case) means the Caper team.
+pub(crate) fn is_team_alias(name: &str) -> bool {
+    TEAM_ALIASES
+        .iter()
+        .any(|alias| alias.eq_ignore_ascii_case(name))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Mention {
     User(String),
@@ -13,11 +43,10 @@ pub(crate) enum Mention {
     Here,
 }
 
-/// Mentions in first-appearance order without duplicates. `everyone`/`here`
-/// are only special where `specials` is true (space channels).
-pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
+/// Every `@name` token as `(byte range including the @, lowercase name)`,
+/// in order. Names may be empty, too short or too long; `parse` filters them.
+fn tokens(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut found = Vec::new();
-    let mut users = 0;
     let mut previous: Option<char> = None;
     let mut chars = text.char_indices().peekable();
     while let Some((index, character)) = chars.next() {
@@ -37,7 +66,36 @@ pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
             previous = Some(next);
             chars.next();
         }
-        let name = text[name_start..name_end].to_ascii_lowercase();
+        found.push((
+            index..name_end,
+            text[name_start..name_end].to_ascii_lowercase(),
+        ));
+    }
+    found
+}
+
+/// Whether the text mentions the team and says nothing else: no other
+/// letters or digits, just the alias, spacing and punctuation.
+pub(crate) fn only_team_mentions(text: &str) -> bool {
+    let mut team = false;
+    let mut rest = 0;
+    let mut said = false;
+    for (range, name) in tokens(text) {
+        if name.len() <= MAX_NAME && is_team_alias(&name) {
+            team = true;
+            said |= text[rest..range.start].chars().any(char::is_alphanumeric);
+            rest = range.end;
+        }
+    }
+    team && !said && !text[rest..].chars().any(char::is_alphanumeric)
+}
+
+/// Mentions in first-appearance order without duplicates. `everyone`/`here`
+/// are only special where `specials` is true (space channels).
+pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
+    let mut found = Vec::new();
+    let mut users = 0;
+    for (_, name) in tokens(text) {
         let mention = match name.as_str() {
             _ if name.len() > MAX_NAME => continue,
             "everyone" if specials => Mention::Everyone,
@@ -115,6 +173,43 @@ mod tests {
             [Mention::Here, Mention::Everyone, user("bob")]
         );
         assert_eq!(parse("@everyone @here @bob", false), [user("bob")]);
+    }
+
+    #[test]
+    fn team_aliases_are_reserved_lowercase_mentionable_names() {
+        let reserved = crate::accounts::ReservedUsernames::default();
+        for alias in TEAM_ALIASES {
+            assert!(reserved.contains(alias), "{alias} must be reserved");
+            assert_eq!(parse(&format!("@{alias}"), true), [user(alias)]);
+        }
+        assert!(is_team_alias("Feedback"));
+        assert!(is_team_alias("ADMINS"));
+        assert!(!is_team_alias("everyone"));
+        assert!(!is_team_alias("jose"));
+    }
+
+    #[test]
+    fn only_team_mentions_ignores_spacing_and_punctuation() {
+        for bare in [
+            "@feedback",
+            " @Feedback! ",
+            "@admins @mods",
+            "(@caper) ^^",
+            "@team 👆",
+        ] {
+            assert!(only_team_mentions(bare), "{bare:?}");
+        }
+        for said in [
+            "@feedback uploads fail",
+            "this @feedback",
+            "@feedback @alice",
+            "@alice",
+            "feedback",
+            "x@feedback",
+            "",
+        ] {
+            assert!(!only_team_mentions(said), "{said:?}");
+        }
     }
 
     #[test]

@@ -3,6 +3,10 @@
 //! People who share a space can always start a DM. Anyone else's first DM is a
 //! message request: the recipient sees it under "Message requests" until they
 //! accept, decline or block, and their DM privacy setting can refuse it outright.
+//!
+//! A feedback conversation is the DM between someone and the Caper team
+//! account. It is always accepted, can't be blocked, and every active
+//! `feedback_team` member can read and answer it as themselves.
 use crate::{
     ApiError, AppState,
     auth::{Principal, random_id},
@@ -51,15 +55,22 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
 /// `status` is `accepted`, `outgoing` (you asked, they haven't accepted) or
 /// `incoming` (a request for you). Declined requests are hidden from the
 /// recipient only; the sender keeps seeing theirs as waiting.
+///
+/// `feedback` marks feedback conversations. Your own has the team account as
+/// its `peer`; feedback team members also see everyone else's, with the person
+/// who sent the feedback as the `peer`.
 pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
         "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
-                'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))
+                'blocked',d.feedback_user_id IS NULL AND EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL),
+                'feedback',d.feedback_user_id IS NOT NULL)
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
-         JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$1 THEN d.high_user_id ELSE d.low_user_id END
+         JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$1 THEN d.high_user_id WHEN d.high_user_id=$1 THEN d.low_user_id ELSE d.feedback_user_id END
          LEFT JOIN public.direct_reads r ON r.channel_id=c.id AND r.user_id=$1
-         WHERE $1 IN (d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
+         WHERE ($1 IN (d.low_user_id,d.high_user_id)
+                OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$1 AND ft.deleted_at IS NULL)))
+           AND c.deleted_at IS NULL AND u.deleted_at IS NULL
            AND (d.accepted_at IS NOT NULL OR d.requested_by=$1 OR d.declined_at IS NULL)
          ORDER BY COALESCE((SELECT max(m.created_at) FROM public.messages m WHERE m.channel_id=c.id),d.created_at) DESC,c.id DESC",
     ).bind(user).fetch_all(pool).await.map_err(|_| chat::unavailable())
@@ -146,9 +157,22 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
             "enter an exact username",
         ));
     }
-    let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE username=$1 AND display_name IS NOT NULL AND deleted_at IS NULL")
-        .bind(username).fetch_optional(pool).await.map_err(|_|chat::unavailable())?
-        .ok_or_else(||ApiError::new(StatusCode::NOT_FOUND,"account not found"))?;
+    // `@feedback`, `@admins` and the team account itself all open your
+    // feedback conversation, whatever your or the team's DM settings.
+    let peer: Option<(i64, bool)> = sqlx::query_as("SELECT id,team_account FROM public.users WHERE team_account AND $2 AND deleted_at IS NULL
+         UNION ALL SELECT id,team_account FROM public.users WHERE username=$1 AND display_name IS NOT NULL AND deleted_at IS NULL
+         ORDER BY 2 DESC LIMIT 1")
+        .bind(&username).bind(crate::mentions::is_team_alias(&username)).fetch_optional(pool).await.map_err(|_|chat::unavailable())?;
+    let (peer, team) =
+        peer.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "account not found"))?;
+    if team {
+        let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;
+        let (_, id) = feedback_conversation(&mut tx, user)
+            .await?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "account not found"))?;
+        tx.commit().await.map_err(|_| chat::unavailable())?;
+        return Ok(id);
+    }
     let low = user.min(peer);
     let high = user.max(peer);
     let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;
@@ -210,6 +234,52 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
     Ok(id)
 }
 
+/// The account's feedback conversation (channel id and external id), created
+/// on first use. `None` when there is no team account, or for the team account
+/// itself. Locks both accounts in the same order as starting any DM.
+pub(crate) async fn feedback_conversation(
+    connection: &mut sqlx::PgConnection,
+    user: i64,
+) -> Result<Option<(i64, String)>, ApiError> {
+    const EXISTING: &str = "SELECT c.id,c.external_id FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE d.feedback_user_id=$1";
+    if let Some(found) = sqlx::query_as(EXISTING)
+        .bind(user)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|_| chat::unavailable())?
+    {
+        return Ok(Some(found));
+    }
+    let team: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM public.users WHERE team_account AND deleted_at IS NULL")
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|_| chat::unavailable())?;
+    let Some(team) = team.filter(|team| *team != user) else {
+        return Ok(None);
+    };
+    let (low, high) = (user.min(team), user.max(team));
+    let locked: Vec<i64> = sqlx::query_scalar("SELECT id FROM public.users WHERE id IN ($1,$2) AND deleted_at IS NULL ORDER BY id FOR UPDATE")
+        .bind(low).bind(high).fetch_all(&mut *connection).await.map_err(|_|chat::unavailable())?;
+    if locked.len() != 2 {
+        return Ok(None);
+    }
+    if let Some(found) = sqlx::query_as(EXISTING)
+        .bind(user)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|_| chat::unavailable())?
+    {
+        return Ok(Some(found));
+    }
+    let id = random_id(12);
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels (external_id,name,private) VALUES ($1,'direct',true) RETURNING id")
+        .bind(&id).fetch_one(&mut *connection).await.map_err(|_|chat::unavailable())?;
+    sqlx::query("INSERT INTO public.direct_conversations (channel_id,low_user_id,high_user_id,feedback_user_id) VALUES ($1,$2,$3,$4)")
+        .bind(channel).bind(low).bind(high).bind(user).execute(&mut *connection).await.map_err(|_|chat::unavailable())?;
+    Ok(Some((channel, id)))
+}
+
 /// Accepts a request addressed to `user`. Returns false when there is none.
 async fn accept_request(
     connection: &mut sqlx::PgConnection,
@@ -223,6 +293,7 @@ async fn accept_request(
 
 /// Called with the channel row locked before a message is stored in a DM.
 /// Either side's block stops sending; the recipient replying accepts a request.
+/// Feedback conversations have neither.
 /// Whether `user` blocked the other person, whether they blocked `user`, and
 /// whether the conversation is a request still waiting on `user`.
 async fn block_state(
@@ -236,13 +307,15 @@ async fn block_state(
                 pending_for_you
          FROM (SELECT CASE WHEN low_user_id=$2 THEN high_user_id ELSE low_user_id END AS peer,
                       accepted_at IS NULL AND requested_by<>$2 AS pending_for_you
-               FROM public.direct_conversations WHERE channel_id=$1) d",
+               FROM public.direct_conversations WHERE channel_id=$1 AND feedback_user_id IS NULL) d",
     )
     .bind(channel)
     .bind(user)
-    .fetch_one(connection)
+    .fetch_optional(connection)
     .await
     .map_err(|_| chat::unavailable())
+    // Blocks never close a feedback conversation, and it is never a request.
+    .map(Option::unwrap_or_default)
 }
 
 fn refuse_blocked(you_blocked: bool, they_blocked: bool) -> Result<(), ApiError> {
@@ -363,8 +436,8 @@ async fn unblock(
 /// Idempotent. Blocking also declines any request they sent you.
 async fn set_block(pool: &PgPool, user: i64, target: &str, blocked: bool) -> Result<(), ApiError> {
     let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;
-    let target: i64 = sqlx::query_scalar(
-        "SELECT id FROM public.users WHERE external_id=$1 AND deleted_at IS NULL",
+    let (target, team): (i64, bool) = sqlx::query_as(
+        "SELECT id,team_account FROM public.users WHERE external_id=$1 AND deleted_at IS NULL",
     )
     .bind(target)
     .fetch_optional(&mut *tx)
@@ -376,6 +449,12 @@ async fn set_block(pool: &PgPool, user: i64, target: &str, blocked: bool) -> Res
             StatusCode::BAD_REQUEST,
             "you can't block yourself",
         ));
+    }
+    if team && blocked {
+        return Err(
+            ApiError::new(StatusCode::BAD_REQUEST, "the Caper team can't be blocked")
+                .with_code("team_account"),
+        );
     }
     // The same canonical lock order as creating a DM, so a block can't race a request.
     sqlx::query("SELECT id FROM public.users WHERE id IN ($1,$2) ORDER BY id FOR UPDATE")
@@ -479,7 +558,7 @@ async fn read(
 }
 
 async fn mark_read(pool: &PgPool, user: i64, conversation: &str, seq: i64) -> Result<(), ApiError> {
-    let result=sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) SELECT c.id,$2,LEAST($3,c.last_seq) FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE c.external_id=$1 AND $2 IN (d.low_user_id,d.high_user_id) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
+    let result=sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) SELECT c.id,$2,LEAST($3,c.last_seq) FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE c.external_id=$1 AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
         .bind(conversation).bind(user).bind(seq).execute(pool).await.map_err(|_|chat::unavailable())?;
     if result.rows_affected() == 0 {
         return Err(ApiError::new(

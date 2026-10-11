@@ -8,7 +8,10 @@ export interface MentionCandidate {
   avatarId?: number | null;
 }
 
-export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: "everyone" | "here" };
+/** Names suggested beside people: `everyone`/`here` notify a channel; `feedback` reaches the Caper team. */
+export type SpecialMention = "everyone" | "here" | "feedback";
+
+export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: SpecialMention };
 
 export interface MentionToken {
   start: number;
@@ -35,13 +38,28 @@ export function mentionToken(text: string, start: number, end = start): MentionT
 export const specialMentionLabels = {
   everyone: "Everyone in this channel",
   here: "Everyone online in this channel",
-} as const;
+  feedback: "Send to the Caper team",
+} as const satisfies Record<SpecialMention, string>;
 
-export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
+/**
+ * `@everyone` and `@here` belong to space channels and their threads.
+ * `@feedback` works everywhere, DMs and notes included, except inside the
+ * feedback conversation it would send to.
+ */
+export function specialMentionsFor({ direct, feedback }: { direct: boolean; feedback: boolean }): SpecialMention[] {
+  return [...(direct ? [] : (["everyone", "here"] as const)), ...(feedback ? [] : (["feedback"] as const))];
+}
+
+export function mentionSuggestions(
+  members: MentionCandidate[],
+  query: string,
+  specials: readonly SpecialMention[],
+): MentionSuggestion[] {
   const needle = query.toLowerCase();
+  // A person who holds the name (the team account may) is suggested as themselves.
   const special = specials
-    ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
-    : [];
+    .filter((name) => name.startsWith(needle) && !members.some((member) => member.username.toLowerCase() === name))
+    .map((kind) => ({ kind }));
   const ranked = members
     .flatMap((member) => {
       const username = member.username.toLowerCase();
@@ -67,6 +85,13 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
 
 export function mentionName(suggestion: MentionSuggestion) {
   return suggestion.kind === "member" ? suggestion.member.username : suggestion.kind;
+}
+
+/** A suggestion's accessible name, such as "Mention @feedback, send to the Caper team". */
+export function mentionOptionLabel(suggestion: MentionSuggestion) {
+  if (suggestion.kind === "member") return `Mention ${suggestion.member.displayName}, @${suggestion.member.username}`;
+  const label = specialMentionLabels[suggestion.kind];
+  return `Mention @${suggestion.kind}, ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
 }
 
 export function insertMention(text: string, token: MentionToken, name: string) {

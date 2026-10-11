@@ -15,6 +15,7 @@ struct Row {
     message_id: String,
     created_at: DateTime<Utc>,
     text: Option<String>,
+    feedback: bool,
     sender: String,
     sender_id: String,
     sender_avatar_id: Option<i16>,
@@ -67,7 +68,7 @@ impl Row {
                 id: self.channel_id.clone(),
             },
         };
-        let alert = Alert::new(
+        let mut alert = Alert::new(
             &self.kind,
             &self.message_id,
             conversation,
@@ -76,6 +77,9 @@ impl Row {
             self.sender_avatar_id,
             self.text.as_deref().unwrap_or_default(),
         );
+        if self.feedback {
+            alert.title = Alert::feedback_title(&self.sender);
+        }
         let mut event = json!({
             "type": "notification.created", "seq": self.id.to_string(),
             "kind": alert.kind, "messageId": alert.message_id, "title": alert.title,
@@ -109,7 +113,10 @@ pub(crate) async fn read(
 ) -> Result<Vec<(i64, Option<Value>)>, sqlx::Error> {
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT n.id,n.kind,m.external_id AS message_id,m.created_at,
-                m.payload->'content'->>'text' AS text,
+                CASE WHEN fd.channel_id IS NOT NULL AND COALESCE(m.payload->'content'->>'text','')=''
+                     THEN m.payload->'forward'->'message'->'content'->>'text'
+                     ELSE m.payload->'content'->>'text' END AS text,
+                fd.channel_id IS NOT NULL AS feedback,
                 COALESCE(author.display_name,'') AS sender,COALESCE(author.external_id,'') AS sender_id,
                 author.avatar_id AS sender_avatar_id,ch.external_id AS channel_id,ch.name AS channel_name,
                 s.external_id AS space_id,s.name AS space_name,
@@ -121,8 +128,11 @@ pub(crate) async fn read(
                      OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
                  AND CASE WHEN ch.space_id IS NULL THEN
                    EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
-                     AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
-                     AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                     AND ((d.feedback_user_id IS NULL AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
+                           AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                       OR (d.feedback_user_id IS NOT NULL
+                           AND (n.user_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.user_id AND ft.deleted_at IS NULL))
+                           AND (n.actor_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.actor_id AND ft.deleted_at IS NULL)))))
                    AND COALESCE(r.seq,0)<m.channel_seq
                  ELSE NOT s.demo
                    AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)
@@ -142,6 +152,7 @@ pub(crate) async fn read(
          LEFT JOIN public.notification_overrides co ON co.user_id=n.user_id AND co.channel_id=ch.id
          LEFT JOIN public.notification_overrides so ON so.user_id=n.user_id AND so.space_id=ch.space_id
          LEFT JOIN public.direct_reads r ON r.channel_id=n.channel_id AND r.user_id=n.user_id
+         LEFT JOIN public.direct_conversations fd ON fd.channel_id=ch.id AND fd.feedback_user_id IS NOT NULL
          WHERE n.user_id=$1 AND n.id>$2 AND n.id<=$3 ORDER BY n.id LIMIT 128"
     ).bind(user).bind(after).bind(head).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|row| (row.id, row.event())).collect())

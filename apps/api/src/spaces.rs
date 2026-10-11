@@ -133,7 +133,8 @@ macro_rules! channel_access_sql {
          JOIN public.direct_conversations d ON d.channel_id=c.id
          JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
          WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
-           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL"
+           AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL)))
+           AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL"
     };
 }
 

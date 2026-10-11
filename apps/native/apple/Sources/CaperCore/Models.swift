@@ -68,15 +68,20 @@ public struct DirectMessageConversation: Codable, Equatable, Identifiable, Senda
     public let status: DirectMessageStatus
     /// You blocked the peer (they are never told). Missing means false.
     public let blocked: Bool
+    /// A feedback conversation: one person's DM with the Caper team, which every
+    /// team member can read and reply in. The sender's peer is the team account;
+    /// a team member's peer is the person. Never a request, never blocked.
+    /// Missing on older servers: false.
+    public let feedback: Bool
 
     /// Incoming requests never count as unread.
     public var unread: Bool { status != .incoming && (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
 
-    private enum CodingKeys: String, CodingKey { case id, peer, lastSeq, readSeq, status, blocked }
+    private enum CodingKeys: String, CodingKey { case id, peer, lastSeq, readSeq, status, blocked, feedback }
     public init(id: String, peer: DirectMessagePeer, lastSeq: String, readSeq: String,
-                status: DirectMessageStatus = .accepted, blocked: Bool = false) {
+                status: DirectMessageStatus = .accepted, blocked: Bool = false, feedback: Bool = false) {
         self.id = id; self.peer = peer; self.lastSeq = lastSeq; self.readSeq = readSeq
-        self.status = status; self.blocked = blocked
+        self.status = status; self.blocked = blocked; self.feedback = feedback
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,16 +89,18 @@ public struct DirectMessageConversation: Codable, Equatable, Identifiable, Senda
         peer = try values.decode(DirectMessagePeer.self, forKey: .peer)
         lastSeq = try values.decode(String.self, forKey: .lastSeq)
         readSeq = try values.decode(String.self, forKey: .readSeq)
+        feedback = (try? values.decodeIfPresent(Bool.self, forKey: .feedback)) ?? false
         // An unknown future status is treated like an older server's omission.
-        status = (try? values.decodeIfPresent(DirectMessageStatus.self, forKey: .status)) ?? .accepted
-        blocked = (try? values.decodeIfPresent(Bool.self, forKey: .blocked)) ?? false
+        // Feedback conversations are always accepted and never blocked.
+        status = feedback ? .accepted : (try? values.decodeIfPresent(DirectMessageStatus.self, forKey: .status)) ?? .accepted
+        blocked = feedback ? false : (try? values.decodeIfPresent(Bool.self, forKey: .blocked)) ?? false
     }
 
     func with(readSeq: String) -> DirectMessageConversation {
-        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked, feedback: feedback)
     }
     func with(blocked: Bool) -> DirectMessageConversation {
-        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked, feedback: feedback)
     }
 }
 

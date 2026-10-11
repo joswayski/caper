@@ -2237,6 +2237,179 @@ revision; do not deploy an isolated feature branch that omits applied migrations
    content, versions, outbox records and read/projection compatibility while
    disabling new forwards. Never delete retained data or applied migration history.
 
+## Feedback (`@feedback`)
+
+Anyone signed in can mention the Caper team in any space channel, thread or DM:
+`@feedback`, `@caper`, `@capers`, `@caperchat`, `@support`, `@team`, `@staff`,
+`@admin(s)`, `@administrator(s)`, `@mod(s)`, `@moderator(s)`, `@caper_feedback`,
+`@caper_support` and `@caper_team` are aliases (all reserved usernames). The
+message is then forwarded live into the author's **feedback conversation**:
+their DM with the team account (display name **Caper**, the green headphones
+avatar `1`). Every active feedback team member can read that conversation, is
+notified about it, and replies as themselves. The person sees one conversation;
+team members see everyone's, labelled **Feedback**, in their DM list.
+
+What gets forwarded (one live forward per report, flattened like any forward):
+
+- A top-level message: that message, with its files, reactions, edits and any
+  later thread replies.
+- A thread reply: the thread's parent, so the team sees the whole thread live;
+  the reply's text becomes the forward's note.
+- A message that is only the alias (no other letters/digits, no files): the
+  message shown just before it in that conversation (its thread, for a reply
+  also sent to the channel). This covers "oh I hit a bug" followed by someone
+  else's `@feedback`. Otherwise earlier context is not included; people can use
+  **Forward message** to send any message to their **Caper** conversation.
+- In a DM, the same rules apply. The other participant sees the highlighted alias
+  in the message. Mentions inside a feedback conversation report nothing.
+
+Adding an alias by editing reports the message once. Forwarding with an alias in
+the note reports the forwarded original. Only what the reporter can still read
+when the report is processed is shared; a report whose source became unreadable
+is recorded as `unavailable`. Reports repeating the same original within 10
+minutes (for example several `@feedback` replies in one thread) are recorded as
+`duplicate`, because the existing forward is already live. More than 30 forwarded
+reports per person per hour, or an original already forwarded 100 times, are
+recorded as `limited` and not forwarded.
+
+This is not a support desk: there are no assignments, statuses, canned replies,
+team roles or in-app team management, and the person isn't sent an automatic
+acknowledgement (the conversation appears in their DM list within the 15-second
+list refresh). Team replies show the team member's own name and avatar.
+
+### Feedback data model and API
+
+- Migration `202610110001_feedback.sql` adds `users.team_account` (one row, inserted
+  by the migration with no email so nobody can sign in as it; username `caper`,
+  falling back to `caper_feedback`/`caper_team` if an existing account holds it),
+  `feedback_team` (members; removal sets `deleted_at`), nullable
+  `direct_conversations.feedback_user_id` (one feedback conversation per person,
+  always accepted, never a request) and retained `feedback_reports` (one per
+  reported message with its `outcome` and `forward_id`).
+- Sending, editing and forwarding only insert a `feedback_reports` row in their
+  transaction. The API role's chat publisher creates the forward afterwards, so
+  reporting never fails or slows a send. Failures retry with backoff and are
+  recorded as `failed` after 5 attempts.
+- `content.mentions` resolves each alias as `{"type":"user","id":<team account>,"username":<alias as typed>}`,
+  so existing clients highlight it and its profile card's **Message** opens the
+  feedback conversation. An existing account that already holds an alias as its
+  username keeps it, but `@alias` and **New message** by that name now reach the
+  team instead.
+- `GET /api/dms` adds `feedback: true|false`. The person's entry has the team
+  account as `peer`; team members' entries have the person as `peer`. `status`
+  is `accepted` and `blocked` is `false` for feedback conversations.
+- `POST /api/dms {"username":"feedback"}` (any alias, or the team account's
+  username) returns the caller's feedback conversation, creating it if needed,
+  regardless of DM privacy settings.
+- `PUT /api/blocks/{teamAccount}` returns 400 `team_account`. Blocks between the
+  person and a team member never close the conversation; they only suppress
+  notifications between those two accounts.
+- Every DM access check (history, sending, threads, reactions, pins, edits,
+  forwards out, typing, read cursors, DM notification settings, gateway
+  subscriptions) also admits active `feedback_team` members for feedback
+  conversations. Removing a member revokes access immediately, including queued
+  pushes. Push and local notification titles read `Sender · Feedback`.
+- Clients show a neutral **Feedback** tag on the conversation, hide Block there,
+  explain who can read it when it is empty, and suggest `@feedback` (**Send to
+  the Caper team**) in channels, threads and DMs, but not inside a feedback
+  conversation.
+
+### Managing the feedback team
+
+There is no in-app management. With the schema-owning `MIGRATION_DATABASE_URL`
+for `caperchat` exported (the runtime role can only read `feedback_team`), add a
+member by their current username; the row keeps their account ID, so later
+username changes don't affect it:
+
+```sh
+psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v username='your_username' <<'SQL'
+INSERT INTO public.feedback_team (user_id)
+SELECT id FROM public.users
+WHERE username = :'username' AND deleted_at IS NULL AND NOT team_account
+ON CONFLICT DO NOTHING
+RETURNING user_id;
+SQL
+```
+
+No row returned means the username wasn't found or is already a member. List and
+remove members (removal keeps the row with `deleted_at`):
+
+```sh
+psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 -c \
+  "SELECT u.username, t.created_at FROM public.feedback_team t JOIN public.users u ON u.id = t.user_id WHERE t.deleted_at IS NULL ORDER BY t.created_at;"
+psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v username='former_member' <<'SQL'
+UPDATE public.feedback_team SET deleted_at = now()
+WHERE deleted_at IS NULL AND user_id = (SELECT id FROM public.users WHERE username = :'username');
+SQL
+```
+
+Changes apply on the next request; no restart is needed. Recent reports:
+
+```sh
+psql "$MIGRATION_DATABASE_URL" -X -c \
+  "SELECT r.created_at, u.username, r.outcome FROM public.feedback_reports r JOIN public.users u ON u.id = r.reporter_id ORDER BY r.id DESC LIMIT 20;"
+```
+
+### Feedback validation boundary
+
+| Platform | Evidence and remaining gap |
+| --- | --- |
+| API | Workspace tests and Clippy, plus disposable local Postgres 15/Valkey: aliases in channels, thread replies, bare `@admins` context, DMs and edits; team list/history/reply/forwarded-thread access; outsiders denied; duplicate, hourly and unreadable-source outcomes; reports inside feedback conversations ignored; `@feedback`/`@caper`/`@admins` opening the conversation; team account block refused; removal revoking access; push recipients, `Sender · Feedback` APNs/FCM/live titles and queued-push revocation. Migration fallback when `caper` is taken and the operator `psql` commands checked on scratch databases |
+| Web | `npm run check` and `npm test` pass (572 web/shared tests), including the DM tag/controls, empty-state copy and `@feedback` suggestion rules. Real local API, gateway and Vite with seeded accounts: a team member's DM list (two tagged feedback conversations), forwarded thread card with note, team reply, no Block; the reporter's channel with highlighted aliases, **Caper** row and conversation without the `@feedback` suggestion; the channel `@feedback` suggestion; and the empty feedback conversation at 390px were inspected at 2x in headless Chromium (coarse-pointer layout). Not Safari or a physical phone |
+| Android | All 305 JVM unit tests pass with a temporary Android SDK 36 (decoding, row tag, Block visibility, empty note, suggestions). Not emulator- or device-rendered |
+| Apple | Every changed Swift file parses with Swift 6.1 on Linux; the model, request and mention logic type-check and the 28 changed `MentionAutocompleteTests`/`MessageRequestsTests` pass under Linux XCTest with local framework stubs. SwiftUI views are not compiled; Xcode builds, iOS/macOS rendering and device checks remain required |
+| Rust desktop | `build.sh` checks with clang-21 and the pinned libwebrtc: fmt, 402 tests (12 existing opt-in ignored) including suggestion, decoding, tag and block-gating tests, and application Clippy `--no-deps`. The bundled FFmpeg smoke check needs glibc 2.38 and was skipped on this Debian 12 orb. Not rendered natively or on Windows |
+| Live | No deployed multi-account, real-push or physical-device acceptance is claimed |
+
+### Deployment order for feedback
+
+Merging does not deploy. Set `MERGED_SHA` to the merged commit.
+
+1. **Prerequisites:** no new infrastructure, service, secret or configuration.
+   Keep one API replica and the existing database, Valkey and chat settings.
+   Wait for the backend and web images for `MERGED_SHA`.
+2. **API (applies the migration):** startup applies
+   `202610110001_feedback.sql` (team account, `feedback_team`,
+   `direct_conversations.feedback_user_id`, `feedback_reports`). No backfill.
+   ```sh
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+   Confirm the team account exists:
+   ```sh
+   psql "$MIGRATION_DATABASE_URL" -X -c "SELECT username, display_name FROM public.users WHERE team_account;"
+   ```
+3. **Gateway:** deploy the same revision, so team members can subscribe to live
+   updates in other people's feedback conversations.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. **Add the feedback team:** run the insert under
+   [Managing the feedback team](#managing-the-feedback-team) for each
+   member's username. Until then, reports are still forwarded into each
+   person's conversation, but nobody on the team can read them or is notified.
+5. **Clients:** deploy web, then release Android, Apple and Rust desktop
+   once their builds, rendering and device checks pass. They can ship
+   independently. Older clients already highlight aliases and show feedback
+   conversations as ordinary DMs (without the tag, the hidden Block or the
+   `@feedback` suggestion).
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+6. **Verification:** from a non-team account, send `@feedback` in a space
+   channel, reply `@mods` in a thread, and send a bare `@admins` after
+   someone else's message. Confirm each appears in that account's **Caper**
+   conversation and that a team member gets a `Name · Feedback` push, can open
+   the forwarded thread and replies visibly to the person. Check recent
+   outcomes with the `feedback_reports` query above.
+7. **Rollback:** redeploy the previous API, gateway and web images. Keep the
+   migration and all retained rows. Older images ignore the new columns and
+   tables. Pending reports are not forwarded and team members lose access to
+   others' conversations until the feature is redeployed. Never delete the
+   team account, feedback conversations or reports.
+
 ## Message editing
 
 Web, Android, Apple (iOS/macOS) and Rust desktop message actions and pins offer

@@ -6,7 +6,7 @@ use sqlx::{Postgres, Transaction};
 
 /// Forwards of one original, in total and by any one account. Projection
 /// rewrites every forward whenever the original changes.
-const MAX_FORWARDS: i64 = 100;
+pub(super) const MAX_FORWARDS: i64 = 100;
 const MAX_FORWARDS_PER_ACCOUNT: i64 = 10;
 
 #[cfg(test)]
@@ -75,7 +75,10 @@ async fn send_forward(
 
 // Match membership mutations' space -> channel order. Opposite-direction
 // forwards lock the spaces and channels canonically rather than source first.
-async fn lock_spaces(tx: &mut Transaction<'_, Postgres>, channels: &[i64]) -> Result<(), ApiError> {
+pub(super) async fn lock_spaces(
+    tx: &mut Transaction<'_, Postgres>,
+    channels: &[i64],
+) -> Result<(), ApiError> {
     sqlx::query("SELECT id FROM public.spaces WHERE id IN(SELECT space_id FROM public.channels WHERE id=ANY($1)) ORDER BY id FOR SHARE")
         .bind(channels).fetch_all(&mut **tx).await.map_err(database_error)?;
     Ok(())
@@ -166,8 +169,9 @@ async fn persist_forward(
         ));
     }
     // Mentions in the note are highlighted and open profile cards like any
-    // message's. The forward notifies as a message; its note's mentions don't.
-    let content = with_mentions(
+    // message's. The forward notifies as a message; its note's mentions don't,
+    // except that `@feedback` reports the forwarded original.
+    let (content, team_mentioned) = with_mentions(
         &mut tx,
         content,
         &mentions::parse(&input.text, destination.space_id.is_some()),
@@ -187,6 +191,9 @@ async fn persist_forward(
         crate::push::enqueue(&mut tx, message_id)
             .await
             .map_err(database_error)?;
+    }
+    if let (true, Some(user)) = (team_mentioned, user) {
+        super::feedback::enqueue(&mut tx, message_id, user, destination.id).await?;
     }
     sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
         .bind(destination.id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;
@@ -218,7 +225,7 @@ fn shared_message(mut message: Value) -> Value {
     message
 }
 
-async fn source_snapshot(
+pub(super) async fn source_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     source: i64,
 ) -> Result<Option<Value>, ApiError> {

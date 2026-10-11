@@ -43,6 +43,7 @@ struct Claimed {
     kind: String,
     message_id: String,
     text: Option<String>,
+    feedback: bool,
     channel_id: String,
     channel_name: String,
     space_id: Option<String>,
@@ -91,7 +92,7 @@ impl Claimed {
                 id: self.channel_id.clone(),
             },
         };
-        Alert::new(
+        let mut alert = Alert::new(
             &self.kind,
             &self.message_id,
             conversation,
@@ -99,7 +100,11 @@ impl Claimed {
             &self.sender_id,
             self.sender_avatar_id,
             self.text.as_deref().unwrap_or_default(),
-        )
+        );
+        if self.feedback {
+            alert.title = Alert::feedback_title(&self.sender);
+        }
+        alert
     }
 }
 
@@ -138,8 +143,11 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                          OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
                  AND CASE WHEN ch.space_id IS NULL THEN
                      EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
-                         AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
-                         AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                         AND ((d.feedback_user_id IS NULL AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
+                               AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                           OR (d.feedback_user_id IS NOT NULL
+                               AND (n.user_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.user_id AND ft.deleted_at IS NULL))
+                               AND (n.actor_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.actor_id AND ft.deleted_at IS NULL)))))
                  ELSE
                      NOT s.demo
                      AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)
@@ -153,7 +161,11 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
                 m.created_at AS message_at,
                 (ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq) AS read,
-                n.kind, m.external_id AS message_id, m.payload->'content'->>'text' AS text,
+                n.kind, m.external_id AS message_id,
+                CASE WHEN fd.channel_id IS NOT NULL AND COALESCE(m.payload->'content'->>'text','')=''
+                     THEN m.payload->'forward'->'message'->'content'->>'text'
+                     ELSE m.payload->'content'->>'text' END AS text,
+                fd.channel_id IS NOT NULL AS feedback,
                 ch.external_id AS channel_id, ch.name AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
@@ -178,6 +190,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          LEFT JOIN public.notification_overrides co ON co.user_id=n.user_id AND co.channel_id=ch.id
          LEFT JOIN public.notification_overrides so ON so.user_id=n.user_id AND so.space_id=ch.space_id
          LEFT JOIN public.direct_reads r ON r.channel_id=n.channel_id AND r.user_id=n.user_id
+         LEFT JOIN public.direct_conversations fd ON fd.channel_id=ch.id AND fd.feedback_user_id IS NOT NULL
          ORDER BY c.id",
     )
     .bind(BATCH)

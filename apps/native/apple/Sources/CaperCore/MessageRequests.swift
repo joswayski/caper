@@ -117,14 +117,44 @@ enum MessageRequests {
         "You blocked @\(peer.username)."
     }
 
+    /// The open 1:1 DM whose chrome offers Block/Unblock, the blocked bar and
+    /// "Waiting for @x": not personal notes and never a feedback conversation,
+    /// which the server keeps open regardless of anyone's block list.
+    static func peerConversation(_ conversation: DirectMessageConversation?, accountID: String?) -> DirectMessageConversation? {
+        guard let conversation, conversation.peer.id != accountID, !conversation.feedback else { return nil }
+        return conversation
+    }
+
     /// After blocking or unblocking `peerID`: marks their conversations, and a
-    /// block drops their pending request (the server declines it).
+    /// block drops their pending request (the server declines it). Feedback
+    /// conversations are never blocked, so they stay as they are.
     static func applying(blocked: Bool, peerID: String, to conversations: [DirectMessageConversation]) -> [DirectMessageConversation] {
         conversations.compactMap { conversation in
-            guard conversation.peer.id == peerID else { return conversation }
+            guard conversation.peer.id == peerID, !conversation.feedback else { return conversation }
             if blocked && conversation.status == .incoming { return nil }
             return conversation.with(blocked: blocked)
         }
+    }
+}
+
+/// Feedback conversations (`feedback: true` in `GET /api/dms`): one person's
+/// DM with the Caper team, shared by every team member.
+enum FeedbackConversations {
+    /// The small muted tag after the name in the Direct messages list.
+    static let tag = "Feedback"
+    /// The empty conversation's note, in place of "Only you and X can read
+    /// this conversation."
+    static let emptyNote = "The Caper team reads and replies here. Mention @feedback anywhere to send a message or its thread here."
+
+    /// The Direct messages row's tag, if any.
+    static func tag(for conversation: DirectMessageConversation) -> String? {
+        conversation.feedback ? tag : nil
+    }
+
+    /// The note under "No messages yet." in an empty DM (personal notes show
+    /// their own sentence instead).
+    static func emptyDirectNote(for conversation: DirectMessageConversation?, channelName: String) -> String {
+        conversation?.feedback == true ? emptyNote : "Only you and \(channelName) can read this conversation."
     }
 }
 
@@ -172,9 +202,10 @@ enum BlockedMessages {
         !message.author.isGuest && message.author.id != viewerID && blocked.contains(message.author.id)
     }
 
-    /// Whether message actions offer Block for this author.
-    static func canBlock(_ author: ChatAuthor, viewerID: String?, blocked: Set<String>) -> Bool {
-        guard let viewerID, !viewerID.isEmpty else { return false }
+    /// Whether message actions offer Block for this author: never while
+    /// viewing a feedback conversation.
+    static func canBlock(_ author: ChatAuthor, viewerID: String?, blocked: Set<String>, feedback: Bool = false) -> Bool {
+        guard !feedback, let viewerID, !viewerID.isEmpty else { return false }
         return !author.isGuest && author.id != viewerID && !blocked.contains(author.id)
     }
 

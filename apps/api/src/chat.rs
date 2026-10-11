@@ -31,6 +31,7 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 mod editing;
+mod feedback;
 mod forwarding;
 
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
@@ -378,14 +379,14 @@ async fn signed_conversation_window(
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL)))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR SHARE OF c")
         .bind(channel).bind(user).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head, space_id) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
         "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-         UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL",
+         UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id WHEN d.high_user_id=$3 THEN d.low_user_id ELSE d.feedback_user_id END WHERE d.channel_id=$1 AND u.deleted_at IS NULL",
     )
     .bind(channel_id)
     .bind(space_id)
@@ -907,7 +908,7 @@ pub(crate) async fn send_message(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR UPDATE OF c",
     )
     .bind(channel)
@@ -970,7 +971,7 @@ pub(crate) async fn send_message(
         content["attachments"] =
             Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
     }
-    let content =
+    let (content, team_mentioned) =
         with_mentions(&mut tx, content, &mentions::parse(text, space_id.is_some())).await?;
     let seq = head + 1;
     let id = random_id(15);
@@ -1013,6 +1014,9 @@ pub(crate) async fn send_message(
             .await
             .map_err(database_error)?;
     }
+    if let (true, Some(user)) = (team_mentioned, user_id) {
+        feedback::enqueue(&mut tx, message_id, user, channel_id).await?;
+    }
     if let Some(user) = user_id
         && space_id.is_none()
     {
@@ -1036,11 +1040,15 @@ pub(crate) async fn send_message(
 /// account named, in channels and DMs alike, so people can point each other at
 /// someone. Tagging is not access: notifications must check read access
 /// themselves. Unknown names stay plain text and are not recorded.
+///
+/// Team aliases (`@feedback`, `@admins`, ...) resolve to the team account as
+/// typed, so every client highlights them like any person. Also returns
+/// whether the team was mentioned, which reports the message as feedback.
 async fn with_mentions(
     connection: &mut sqlx::PgConnection,
     mut content: Value,
     found: &[Mention],
-) -> Result<Value, ApiError> {
+) -> Result<(Value, bool), ApiError> {
     let names: Vec<&str> = found
         .iter()
         .filter_map(|mention| match mention {
@@ -1048,13 +1056,20 @@ async fn with_mentions(
             Mention::Everyone | Mention::Here => None,
         })
         .collect();
-    let accounts: Vec<(String, String)> = if names.is_empty() {
+    let accounts: Vec<(String, String, bool)> = if names.is_empty() {
         Vec::new()
     } else {
         sqlx::query_as(
-            "SELECT username,external_id FROM public.users WHERE username=ANY($1) AND deleted_at IS NULL",
+            "SELECT n.name,u.external_id,u.team_account FROM unnest($1::text[]) AS n(name)
+             JOIN public.users u ON u.username=n.name AND u.deleted_at IS NULL
+             WHERE NOT n.name=ANY($2)
+             UNION ALL
+             SELECT n.name,u.external_id,true FROM unnest($1::text[]) AS n(name)
+             JOIN public.users u ON u.team_account AND u.deleted_at IS NULL
+             WHERE n.name=ANY($2)",
         )
         .bind(&names)
+        .bind(mentions::TEAM_ALIASES)
         .fetch_all(&mut *connection)
         .await
         .map_err(database_error)?
@@ -1066,14 +1081,14 @@ async fn with_mentions(
             Mention::Here => Some(json!({"type":"here"})),
             Mention::User(name) => accounts
                 .iter()
-                .find(|(username, _)| username == name)
-                .map(|(username, id)| json!({"type":"user","id":id,"username":username})),
+                .find(|(username, _, _)| username == name)
+                .map(|(username, id, _)| json!({"type":"user","id":id,"username":username})),
         })
         .collect();
     if !entries.is_empty() {
         content["mentions"] = Value::Array(entries);
     }
-    Ok(content)
+    Ok((content, accounts.iter().any(|(_, _, team)| *team)))
 }
 
 async fn persist_reaction(
@@ -1113,7 +1128,7 @@ async fn persist_reaction(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
@@ -1257,7 +1272,7 @@ async fn persist_pin(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND ($2 IN (d.low_user_id,d.high_user_id) OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$2 AND ft.deleted_at IS NULL))) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
@@ -1341,13 +1356,31 @@ async fn persist_pin(
     Ok(event)
 }
 
+/// Runs the feedback step of the publisher once, for tests in other modules.
+#[cfg(test)]
+pub(crate) async fn forward_feedback(chat: &Chat) -> Result<bool, ()> {
+    feedback::forward_pending(chat).await
+}
+
 /// API replicas claim disjoint outbox batches. Broker arrival order is not an
 /// ordering authority: gateways merge/replay the committed channel sequences.
 pub(crate) fn spawn_publisher(chat: Chat) {
     tokio::spawn(async move {
         loop {
+            // Feedback forwards are new outbox events, so create them first.
+            let reported = match feedback::forward_pending(&chat).await {
+                Ok(reported) => reported,
+                Err(()) => {
+                    tracing::warn!(
+                        event_name = "feedback_forward_retry",
+                        "feedback forwarding will retry"
+                    );
+                    false
+                }
+            };
             match publish_pending(&chat).await {
                 Ok(true) => continue,
+                Ok(false) if reported => continue,
                 Ok(false) => {}
                 Err(()) => tracing::warn!(
                     event_name = "chat_publish_retry",

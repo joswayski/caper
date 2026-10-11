@@ -1,9 +1,10 @@
 import Foundation
 
-/// A composer `@` suggestion: a person, or the `everyone`/`here` specials
-/// offered only in space channels.
+/// A composer `@` suggestion: a person, the `everyone`/`here` specials offered
+/// only in space channels, or `feedback`, offered everywhere except inside a
+/// feedback conversation.
 struct MentionCandidate: Equatable, Identifiable, Sendable {
-    enum Kind: Equatable, Sendable { case member, everyone, here }
+    enum Kind: Equatable, Sendable { case member, everyone, here, feedback }
     let kind: Kind
     /// The user's external id, or the special's name.
     let id: String
@@ -17,6 +18,9 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
                                            displayName: "Everyone in this channel")
     static let here = MentionCandidate(kind: .here, id: "here", username: "here",
                                        displayName: "Everyone online in this channel")
+    /// Sends the message (or its thread) to the sender's feedback conversation.
+    static let feedback = MentionCandidate(kind: .feedback, id: "feedback", username: "feedback",
+                                           displayName: "Send to the Caper team")
 
     static func member(id: String, username: String, displayName: String, avatarId: Int? = nil) -> MentionCandidate {
         MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId)
@@ -26,30 +30,35 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
 /// Who the composer may suggest in the open conversation.
 struct MentionSource: Equatable, Sendable {
     var members: [MentionCandidate]
+    /// `everyone` and `here`: space channels only.
     var specials: Bool
+    /// `feedback`: everywhere except inside a feedback conversation.
+    var feedback: Bool = false
 
     static let empty = MentionSource(members: [], specials: false)
 
     /// A space channel: the members from `GET /api/spaces/{space}` (empty
-    /// until loaded) except the signed-in account, then `everyone`/`here`.
+    /// until loaded) except the signed-in account, then `everyone`/`here`
+    /// and `feedback`.
     static func space(members: [Member], excluding accountID: String?) -> MentionSource {
         MentionSource(members: members.filter { $0.id != accountID }.map {
             MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
-        }, specials: true)
+        }, specials: true, feedback: true)
     }
 
     /// Any DM, self-notes included: everyone from `GET /api/people` once it
     /// has loaded (plus the DM peer if that list predates the conversation);
     /// until then only the other participant, so nobody in self-notes. Never
-    /// the specials.
-    static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?) -> MentionSource {
+    /// `everyone`/`here`; `feedback` unless this is a feedback conversation.
+    static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?,
+                       feedbackConversation: Bool = false) -> MentionSource {
         var members = (people ?? []).filter { $0.id != accountID }.map {
             MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
         }
         if let peer, peer.id != accountID, !members.contains(where: { $0.id == peer.id }) {
             members.append(.member(id: peer.id, username: peer.username, displayName: peer.displayName))
         }
-        return members.isEmpty ? .empty : MentionSource(members: members, specials: false)
+        return MentionSource(members: members, specials: false, feedback: !feedbackConversation)
     }
 }
 
@@ -141,11 +150,12 @@ enum MentionAutocomplete {
     /// Members ranked 0 (exact username), 1 (username prefix), 2 (display name
     /// or one of its space-separated words starts with the query), 3 (username
     /// contains it), ties by username; an empty query puts every member at 1.
-    /// Matching specials (`everyone`, then `here`) follow the members and keep
-    /// their slots within the cap of six.
+    /// Matching specials (`everyone`, `here`, then `feedback`) follow the
+    /// members and keep their slots within the cap of six.
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
-        let specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
+        let offered = (source.specials ? [MentionCandidate.everyone, .here] : []) + (source.feedback ? [.feedback] : [])
+        let specials = offered.filter { $0.username.hasPrefix(query) }
         let members = source.members.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
             let username = candidate.username.lowercased()
             let displayName = candidate.displayName.lowercased()

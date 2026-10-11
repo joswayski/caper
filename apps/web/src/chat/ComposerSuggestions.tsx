@@ -5,11 +5,13 @@ import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type Emoji
 import {
   insertMention,
   mentionName,
+  mentionOptionLabel,
   mentionSuggestions,
   mentionToken,
   specialMentionLabels,
   type MentionCandidate,
   type MentionSuggestion,
+  type SpecialMention,
 } from "./mentions.ts";
 
 /**
@@ -31,8 +33,8 @@ export function useComposerSuggestions({
   input: RefObject<HTMLTextAreaElement | null>;
   /** People `@` can suggest, without the author; undefined until loaded. */
   people?: MentionCandidate[];
-  /** `@everyone` and `@here`, which DMs do not offer. */
-  specialMentions: boolean;
+  /** Names offered beside people; see `specialMentionsFor`. */
+  specialMentions: readonly SpecialMention[];
   onInsert: (value: string) => void;
   onTooLong: () => void;
 }) {
@@ -171,11 +173,7 @@ export function useComposerSuggestions({
               key={`${option.kind}:${name}`}
               tabIndex={-1}
               aria-selected={index === activeOption}
-              aria-label={
-                option.kind === "member"
-                  ? `Mention ${option.member.displayName}, @${name}`
-                  : `Mention @${name}, ${specialMentionLabels[option.kind].toLowerCase()}`
-              }
+              aria-label={mentionOptionLabel(option)}
               onPointerDown={(event) => event.preventDefault()}
               onMouseMove={() => setSelected(index)}
               onClick={() => chooseMention(option)}

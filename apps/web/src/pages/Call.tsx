@@ -417,6 +417,8 @@ interface CallProps {
     demo?: boolean;
     direct?: boolean;
     directPeerId?: string;
+    /** A DM with the Caper team: its own empty-state copy, and no `@feedback` suggestion. */
+    feedback?: boolean;
     joined?: boolean;
   };
   /**
@@ -1632,6 +1634,7 @@ export default function Call({
               identityReady={identityReady && engaged}
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
+              feedback={channel?.feedback}
               onReadCursor={onReadCursor}
               readOnly={!channelJoined}
               composerNotice={channelActions}

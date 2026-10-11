@@ -1062,6 +1062,11 @@ private struct DirectMessageSidebarRow: View {
         HStack(spacing: 9) {
             Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId).frame(width: 24, height: 20)
             Text(conversation.peer.displayName).lineLimit(1)
+            if let tag = FeedbackConversations.tag(for: conversation) {
+                Text(tag).font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("dm-feedback-tag-\(conversation.id)")
+            }
             if muted { MutedBell() }
             Spacer()
             if showsUnread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
@@ -2030,9 +2035,10 @@ private struct ChatView: View {
     private var membersAvailable: Bool {
         model.selectedDirectMessageID == nil && !(narrow && model.previewingChannel)
     }
-    /// The open 1:1 DM, not personal notes.
+    /// The open 1:1 DM that offers Block, the blocked bar and the waiting
+    /// notice: not personal notes, not a feedback conversation.
     private var peerConversation: DirectMessageConversation? {
-        model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
+        MessageRequests.peerConversation(model.selectedDirectMessage, accountID: model.account?.id)
     }
     private var timelineEntries: [TimelineEntry] {
         BlockedMessages.entries(chat.displayedChannelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
@@ -2316,9 +2322,10 @@ private struct ChatView: View {
                                         .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
                                 } else {
                                     Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : FeedbackConversations.emptyDirectNote(for: model.selectedDirectMessage, channelName: chat.channelName)).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                        .multilineTextAlignment(.center)
                                 }
-                            }.padding(.top, 80)
+                            }.padding(.top, 80).padding(.horizontal, 24)
                         }
                     }
                     // Preceding history can move the pending row without
@@ -2417,7 +2424,7 @@ private struct ChatView: View {
                 }
                 if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
                 }.padding(12)
-            } else if let request = model.selectedDirectMessage, request.status == .incoming {
+            } else if let request = model.selectedDirectMessage, request.status == .incoming, !request.feedback {
                 // Requests are read-only: Accept, Decline or Block replace the composer.
                 MessageRequestBar(model: model, conversation: request) { blockTarget = BlockTarget(peer: request.peer) }
             } else if let conversation = peerConversation, conversation.blocked {
@@ -2552,7 +2559,8 @@ private struct ChatView: View {
                                         reactionMessage = nil
                                         Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
                                     },
-                                    block: BlockedMessages.canBlock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
+                                    block: BlockedMessages.canBlock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs,
+                                                                    feedback: chat.feedbackConversation)
                                         ? { blockTarget = BlockTarget(author: message.author) } : nil,
                                     unblock: BlockedMessages.canUnblock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
                                         ? { chat.unblock(message.author) } : nil,
@@ -2591,10 +2599,13 @@ private struct ChatView: View {
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
     /// returned them (only the specials until loaded), or in a DM everyone from
     /// `GET /api/people` (the DM's other participant until that loads). The
-    /// signed-in account is never suggested.
+    /// signed-in account is never suggested; `@feedback` is offered everywhere
+    /// except inside a feedback conversation.
     private var mentionSource: MentionSource {
         if let id = model.selectedDirectMessageID {
-            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
+            let conversation = model.directMessages.first { $0.id == id }
+            return .direct(peer: conversation?.peer, people: model.people, accountID: viewerID,
+                           feedbackConversation: conversation?.feedback ?? false)
         }
         return .space(members: model.detail?.members ?? [], excluding: viewerID)
     }
@@ -2826,7 +2837,8 @@ private struct NativeThreadView: View {
                         let own = message.reactions?.first { $0.emoji == emoji }?.authorIds.contains(chat.currentAuthor?.id ?? "") == true
                         reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
                     }, selectReaction: { emoji in reactionMessage = nil; Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) } },
-                    block: BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
+                    block: BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
+                                                    feedback: chat.feedbackConversation)
                         ? { blockTarget = BlockTarget(author: message.author) } : nil,
                     unblock: BlockedMessages.canUnblock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
                         ? { chat.unblock(message.author) } : nil,
@@ -2953,7 +2965,8 @@ private struct MessageRow: View {
     var forwardOpened: (() -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
-        requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
+        requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
+                                                        feedback: chat.feedbackConversation)
     }
     private var edited: Bool { message.forward == nil && (message.revision ?? 1) > 1 }
     /// A shown message from someone you blocked offers Unblock instead.

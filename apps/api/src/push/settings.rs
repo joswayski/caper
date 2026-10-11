@@ -288,7 +288,8 @@ async fn settings(pool: &PgPool, user: i64) -> Result<Value, ApiError> {
                 OR (c.space_id IS NULL AND c.deleted_at IS NULL AND EXISTS(
                     SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $1 IN (d.low_user_id,d.high_user_id)
+                    WHERE d.channel_id=c.id AND ($1 IN (d.low_user_id,d.high_user_id)
+                        OR (d.feedback_user_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=$1 AND ft.deleted_at IS NULL)))
                       AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          ORDER BY o.id",
     )

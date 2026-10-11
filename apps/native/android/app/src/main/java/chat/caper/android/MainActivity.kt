@@ -143,7 +143,10 @@ import chat.caper.android.data.muteActive
 import chat.caper.android.data.override
 import chat.caper.android.data.spaceKey
 import chat.caper.android.data.spaceMuted
+import chat.caper.android.data.directRowTag
 import chat.caper.android.data.directUnread
+import chat.caper.android.data.emptyConversationNote
+import chat.caper.android.data.offersAuthorBlock
 import chat.caper.android.data.collapsesFor
 import chat.caper.android.data.groupBlocked
 import chat.caper.android.data.groupsWithPrevious
@@ -1004,7 +1007,11 @@ private fun Modifier.browseDrag(
                             Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId)
                             Spacer(Modifier.width(9.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(direct.peer.displayName, Modifier.weight(1f, fill = false), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    // A neutral tag like "you": a feedback conversation with the Caper team.
+                                    directRowTag(direct)?.let { tag -> Spacer(Modifier.width(6.dp)); Text(tag, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                }
                                 Text("@${direct.peer.username}", color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             if (muted) MutedBell(Modifier.padding(start = 6.dp))
@@ -1430,8 +1437,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val timelineState = key(channel.id) { rememberLazyListState() }
     val timelineFollow = rememberSaveable(channel.id, saver = TimelineFollow.Saver) { TimelineFollow() }
     val joined = channel.joined
-    // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
-    val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
+    // A 1:1 DM (not your notes or a feedback conversation) offers Block / Unblock; a request does so in its own bar.
+    val direct = state.blockableDirect
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
     if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
@@ -1531,8 +1538,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         if (joined) TypingLine(state.typingAuthors)
         if (joined) HorizontalDivider(color = Border)
-        val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
+        val request = state.selectedDirect?.takeIf { channel.direct && it.incoming && !it.feedback }
         // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
+        // A feedback conversation has neither, and no outgoing notice: `direct` is null there.
         if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
         else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
         else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
@@ -1892,13 +1900,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         } }
         if (empty) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            // Inset like messages, so the longer feedback note wraps clear of the edges on phones.
+            Column(Modifier.padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
                     Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 } else {
                     Text("No messages yet.", color = TextMuted)
-                    val name = state.selectedChannel?.name.orEmpty()
-                    Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
+                    Text(emptyConversationNote(state), color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         } }
@@ -1921,7 +1929,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
-            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
+            blockLabel = presented.author.takeIf { offersAuthorBlock(state, it) }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
                 if (author.id in blocked) "Unblock $name" else "Block $name"

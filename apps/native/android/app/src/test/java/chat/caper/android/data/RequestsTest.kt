@@ -23,7 +23,8 @@ class RequestsTest {
         val old = json.decodeFromString<DirectConversationList>("""{"conversations":[{"id":"direct000001","peer":{"id":"alex00000001","username":"alex","displayName":"Alex"},"lastSeq":"4","readSeq":"2"}]}""")
             .conversations.single()
         assertNull(old.status)
-        assertFalse(old.incoming || old.outgoing || old.blocked)
+        assertFalse(old.incoming || old.outgoing || old.blocked || old.feedback)
+        assertNull(directRowTag(old))
         assertNull(old.peer.avatarId)
         assertEquals(listOf(old), mainDirects(listOf(old)))
         assertTrue(directUnread(old))
@@ -41,6 +42,23 @@ class RequestsTest {
         assertTrue(list[2].incoming)
         assertEquals("tom000000001", json.decodeFromString<BlockList>("""{"blocks":[{"id":"tom000000001","username":"tom","displayName":"Tom","avatarId":null}]}""").blocks.single().id)
         assertEquals("spaces", json.decodeFromString<DirectPrivacy>("""{"directMessages":"spaces"}""").directMessages)
+    }
+
+    @Test fun `feedback conversations decode their flag and carry a Feedback row tag`() {
+        val list = json.decodeFromString<DirectConversationList>("""{"conversations":[
+            {"id":"direct000001","peer":{"id":"team00000001","username":"caper","displayName":"Caper","avatarId":1},"lastSeq":"2","readSeq":"1","status":"accepted","blocked":false,"feedback":true},
+            {"id":"direct000002","peer":{"id":"sam000000001","username":"sam","displayName":"Sam"},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false,"feedback":false},
+            {"id":"direct000003","peer":{"id":"alex00000001","username":"alex","displayName":"Alex"},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}]}""").conversations
+        assertEquals(listOf(true, false, false), list.map { it.feedback })
+        assertEquals(listOf("Feedback", null, null), list.map(::directRowTag))
+        // An ordinary, accepted row in the main list: never a request, and unread like any DM.
+        assertEquals(list, mainDirects(list))
+        assertTrue(messageRequests(list).isEmpty())
+        assertTrue(directUnread(list[0]))
+        // `POST /api/dms {"username":"feedback"}` answers with the same shape.
+        val opened = json.decodeFromString<DirectConversation>("""{"id":"direct000001","peer":{"id":"team00000001","username":"caper","displayName":"Caper","avatarId":1},"lastSeq":"0","readSeq":"0","status":"accepted","blocked":false,"feedback":true}""")
+        assertTrue(opened.feedback)
+        assertEquals("Feedback", directRowTag(opened))
     }
 
     @Test fun `requests stay out of the main list and unread dots`() {

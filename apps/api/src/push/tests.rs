@@ -1633,6 +1633,103 @@ async fn recipients_follow_requests_blocks_mutes_levels_mentions_and_threads(poo
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn feedback_notifies_the_team_and_the_person_with_a_feedback_title(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let carol = person(&pool, "carol").await;
+    let dave = person(&pool, "dave").await;
+    for member in [&bob, &carol] {
+        sqlx::query("INSERT INTO public.feedback_team(user_id) VALUES($1)")
+            .bind(member.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let (space_id, _) = space(&pool, &alice, &[&dave]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &dave]).await;
+    register(&h, &alice, &alice.token, "fcm", "fcm:alice").await;
+    register(&h, &bob, &bob.token, "apns", APNS_TOKEN).await;
+    let chat = Chat::new(
+        pool.clone(),
+        redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap(),
+    );
+
+    // The channel hears the message as usual; the team isn't in the space.
+    let report = send(&h, &alice, &general, "@feedback the app crashed", None).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &report).await,
+        pairs(&[("dave", "channel.message")])
+    );
+    while crate::chat::forward_feedback(&chat).await.unwrap() {}
+    let (forward, conversation): (String, String) = sqlx::query_as(
+        "SELECT f.external_id,c.external_id FROM public.feedback_reports r
+         JOIN public.messages f ON f.id=r.forward_id JOIN public.channels c ON c.id=f.channel_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &forward).await,
+        pairs(&[("bob", "direct.message"), ("carol", "direct.message")])
+    );
+    deliver(&h).await;
+    let requests = h.apns.take();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body["aps"]["alert"]["title"],
+        "Alice · Feedback"
+    );
+    assert_eq!(
+        requests[0].body["aps"]["alert"]["body"], "@feedback the app crashed",
+        "an empty forward note previews the reported message"
+    );
+    assert_eq!(requests[0].body["conversationId"], conversation.as_str());
+
+    // A team member's reply reaches the person and the rest of the team.
+    let reply = send(&h, &bob, &conversation, "Thanks, on it", None).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &reply).await,
+        pairs(&[("alice", "direct.message"), ("carol", "direct.message")])
+    );
+    deliver(&h).await;
+    let requests = h.fcm.take();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body["message"]["data"]["title"],
+        "Bob · Feedback"
+    );
+    assert_eq!(requests[0].body["message"]["data"]["body"], "Thanks, on it");
+    let (live, _) = live::read(&pool, alice.id, 0, i64::MAX)
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|(_, event)| event.map(|event| (event, ())))
+        .unwrap();
+    assert_eq!(live["title"], "Bob · Feedback");
+    assert_eq!(live["conversationId"], conversation.as_str());
+
+    // Removed team members stop hearing about it, even if already queued.
+    let late = send(&h, &alice, &conversation, "One more detail", None).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &late).await,
+        pairs(&[("bob", "direct.message"), ("carol", "direct.message")])
+    );
+    sqlx::query("UPDATE public.feedback_team SET deleted_at=now() WHERE user_id=$1")
+        .bind(bob.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    deliver(&h).await;
+    assert!(h.apns.take().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn phone_push_waits_while_active_elsewhere_and_rechecks_at_send_time(pool: PgPool) {
     let h = harness(&pool).await;
     let alice = person(&pool, "alice").await;

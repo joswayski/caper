@@ -66,7 +66,10 @@ import {
   listDirectConversations,
   listPeople,
   readDirectConversation,
+  directControls,
+  directFeedback,
   directStatus,
+  directTag,
   directUnread,
   deleteChannel,
   deleteSpace,
@@ -2085,8 +2088,9 @@ export default function Spaces({
   const currentDirect = directView
     ? (directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation)
     : undefined;
-  const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
-  const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
+  const directChrome =
+    currentDirect && directControls(currentDirect, account?.id, blockedIds.has(currentDirect.peer.id));
+  const directLocked = !!directChrome?.locked;
   const acceptRequest = async (request: DirectConversation) => {
     const accepted = await acceptDirectRequest(request.id);
     setDirects((current) => current.map((conversation) => (conversation.id === accepted.id ? accepted : conversation)));
@@ -2097,9 +2101,9 @@ export default function Spaces({
   };
   const directPeer = (conversation: DirectConversation): BlockedAccount => ({ ...conversation.peer });
   const directActions =
-    !currentDirect || currentDirect.peer.id === account?.id ? undefined : directBlocked ? (
+    !currentDirect || !directChrome?.actions ? undefined : directChrome.actions === "unblock" ? (
       <BlockedBar conversation={currentDirect} />
-    ) : directStatus(currentDirect) === "incoming" ? (
+    ) : directChrome.actions === "request" ? (
       <RequestBar
         key={currentDirect.id}
         conversation={currentDirect}
@@ -2296,6 +2300,7 @@ export default function Spaces({
           .map((conversation) => {
             const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
             const muted = isMuted(conversationNotifications?.mutedUntil);
+            const tag = directTag(conversation, blockedIds.has(conversation.peer.id));
             return (
               <li key={conversation.id} data-muted={muted ? "" : undefined}>
                 <div className="direct-line">
@@ -2313,11 +2318,7 @@ export default function Spaces({
                       <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
                     </span>
                     <span>{conversation.peer.displayName}</span>
-                    {blockedIds.has(conversation.peer.id) ? (
-                      <small>Blocked</small>
-                    ) : (
-                      directStatus(conversation) === "outgoing" && <small>Request sent</small>
-                    )}
+                    {tag && <small>{tag}</small>}
                     {/* A muted DM shows no unread dot. */}
                     {muted ? (
                       <>
@@ -3003,6 +3004,7 @@ export default function Spaces({
             demo: detail.space.demo,
             direct: !!directView,
             directPeerId: currentDirect?.peer.id,
+            feedback: !!currentDirect && directFeedback(currentDirect),
             // An open request or a blocked DM replaces the composer.
             joined: currentDirect ? !directLocked : channel.joined,
           }
@@ -3038,19 +3040,22 @@ export default function Spaces({
           ) : undefined
         }
         composerBanner={
-          currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
+          currentDirect && directChrome?.waiting ? (
             <p className="direct-waiting" role="status">
               Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.
             </p>
           ) : undefined
         }
-        onBlockAuthor={(author) =>
-          setBlockTarget({
-            id: author.id,
-            username: "",
-            displayName: author.name,
-            avatarId: author.avatarId ?? undefined,
-          })
+        onBlockAuthor={
+          directChrome && !directChrome.blockAuthors
+            ? undefined
+            : (author) =>
+                setBlockTarget({
+                  id: author.id,
+                  username: "",
+                  displayName: author.name,
+                  avatarId: author.avatarId ?? undefined,
+                })
         }
         initialAccount={account}
         initialHistory={

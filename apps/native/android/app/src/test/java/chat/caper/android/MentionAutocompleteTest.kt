@@ -15,6 +15,7 @@ import chat.caper.android.model.PeopleList
 import chat.caper.android.model.Person
 import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceDetail
+import chat.caper.android.model.ThreadUi
 import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
@@ -83,8 +84,9 @@ class MentionAutocompleteTest {
         val inSpace = mentionSource(AppUiState(account = me, selectedSpace = detail, selectedChannel = channel))
         assertEquals(listOf(MentionCandidate("bob", "Bob B", avatarId = 7)), inSpace.people)
         assertTrue(inSpace.specials)
+        assertTrue(inSpace.feedback)
         val notLoaded = mentionSource(AppUiState(account = me, selectedChannel = channel))
-        assertEquals(MentionSource(emptyList(), true), notLoaded)
+        assertEquals(MentionSource(emptyList(), true, feedback = true), notLoaded)
 
         val dm = DirectConversation("direct000001", DirectPeer("bob00000000a", "bob", "Bob B"), "0", "0")
         val notes = DirectConversation("direct000002", DirectPeer("me000000000a", "me", "Me"), "0", "0")
@@ -93,19 +95,78 @@ class MentionAutocompleteTest {
             selectedChannel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true), people = people,
         ))
         // Before `/api/people` loads (or when it fails): the DM peer, nobody in self-notes.
-        assertEquals(MentionSource(listOf(MentionCandidate("bob", "Bob B")), false), direct(dm))
-        assertEquals(MentionSource(emptyList(), false), direct(notes))
+        // DMs offer `@feedback` but never `@everyone`/`@here`.
+        assertEquals(MentionSource(listOf(MentionCandidate("bob", "Bob B")), false, feedback = true), direct(dm))
+        assertEquals(MentionSource(emptyList(), false, feedback = true), direct(notes))
 
-        // Once loaded, every DM (self-notes too) suggests the people list without you or specials.
+        // Once loaded, every DM (self-notes too) suggests the people list without you or channel specials.
         val people = listOf(Person("alex0000000a", "alex", "Alex Doe", 3), Person("me000000000a", "me", "Me"), Person("bob00000000a", "bob", "Bob B"))
-        val expected = MentionSource(listOf(MentionCandidate("alex", "Alex Doe", avatarId = 3), MentionCandidate("bob", "Bob B")), false)
+        val expected = MentionSource(listOf(MentionCandidate("alex", "Alex Doe", avatarId = 3), MentionCandidate("bob", "Bob B")), false, feedback = true)
         assertEquals(expected, direct(dm, people))
         assertEquals(expected, direct(notes, people))
-        assertEquals(MentionSource(emptyList(), false), direct(dm, emptyList()))
+        assertEquals(MentionSource(emptyList(), false, feedback = true), direct(dm, emptyList()))
         assertEquals(listOf("alex"), mentionSuggestions(direct(dm, people), "do").map { it.username })
         assertTrue(mentionSuggestions(direct(dm, people), "every").isEmpty())
         // Space channels ignore the people list.
         assertEquals(inSpace, mentionSource(AppUiState(account = me, selectedSpace = detail, selectedChannel = channel, people = people)))
+    }
+
+    @Test fun `feedback follows people and channel specials, keeping its slot within the cap`() {
+        assertEquals(MentionCandidate("feedback", "Send to the Caper team", special = true), mentionFeedback)
+        // `@everyone`/`@here` are unchanged and stay the channel-only specials.
+        assertEquals(listOf(
+            MentionCandidate("everyone", "Everyone in this channel", special = true),
+            MentionCandidate("here", "Everyone online in this channel", special = true),
+        ), mentionSpecials)
+        val people = (1..8).map { person("user$it") }
+        val channel = MentionSource(people, specials = true, feedback = true)
+        val all = mentionSuggestions(channel, "")
+        assertEquals(listOf("user1", "user2", "user3", "everyone", "here", "feedback"), all.map { it.username })
+        assertTrue(all.takeLast(3).all { it.special })
+        assertEquals(listOf(mentionFeedback), mentionSuggestions(channel, "FEED"))
+        assertEquals(listOf("feedback"), mentionSuggestions(space(person("bob")).copy(feedback = true), "f").map { it.username })
+        // Matching people rank first.
+        assertEquals(listOf("felix", "feedback"), mentionSuggestions(MentionSource(listOf(person("felix"), person("bob")), true, true), "fe").map { it.username })
+        // DMs: `@feedback` only, never `@everyone`/`@here`.
+        val dm = MentionSource(people, specials = false, feedback = true)
+        assertEquals(listOf("user1", "user2", "user3", "user4", "user5", "feedback"), mentionSuggestions(dm, "").map { it.username })
+        assertTrue(mentionSuggestions(dm, "ev").isEmpty())
+        assertTrue(mentionSuggestions(dm, "he").isEmpty())
+        // Without it (a feedback conversation), nothing takes its place.
+        assertTrue(mentionSuggestions(MentionSource(emptyList(), specials = false, feedback = false), "fe").isEmpty())
+        assertEquals("@feedback ", insertMention(atEnd("@fe"), mentionToken(atEnd("@fe"))!!, mentionFeedback.username)!!.text)
+    }
+
+    @Test fun `feedback is offered in channels, threads and DMs, never inside a feedback conversation`() {
+        val me = Account("me000000000a", "me", "Me")
+        val channel = Channel("channel00001", "space0000001", "general", private = false)
+        val detail = SpaceDetail(Space("space0000001", "Space"), listOf(channel), listOf(Member("me000000000a", "me", "Me", true)))
+        val inChannel = AppUiState(account = me, selectedSpace = detail, selectedChannel = channel)
+        fun offered(state: AppUiState, query: String = "fe") = mentionSuggestions(mentionSource(state), query).map { it.username }
+        assertEquals(listOf("feedback"), offered(inChannel))
+        assertEquals(listOf("everyone", "here", "feedback"), offered(inChannel, ""))
+        // Thread composers use the open conversation's source.
+        assertEquals(listOf("feedback"), offered(inChannel.copy(thread = ThreadUi("message0001"))))
+
+        val dm = DirectConversation("direct000001", DirectPeer("bob00000000a", "bob", "Bob B"), "0", "0", "accepted")
+        val notes = DirectConversation("direct000002", DirectPeer("me000000000a", "me", "Me"), "0", "0", "accepted")
+        // The person's view: the peer is the team account (its username is the server's, not hard-coded).
+        val feedback = DirectConversation("direct000003", DirectPeer("team0000000a", "caper", "Caper", 1), "0", "0", "accepted", feedback = true)
+        fun open(conversation: DirectConversation, people: List<Person>? = null, thread: ThreadUi? = null) = AppUiState(
+            account = me, directConversations = listOf(dm, notes, feedback), selectedDirectId = conversation.id, people = people, thread = thread,
+            selectedChannel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true),
+        )
+        assertEquals(listOf("feedback"), offered(open(dm)))
+        assertEquals(listOf("feedback"), offered(open(notes)))
+        assertEquals(listOf("feedback"), offered(open(dm, thread = ThreadUi("message0001"))))
+        assertEquals(listOf("bob", "feedback"), offered(open(dm), ""))
+
+        // Inside the feedback conversation (and its threads) nothing new is offered; people still are.
+        assertFalse(mentionSource(open(feedback)).feedback)
+        assertTrue(offered(open(feedback)).isEmpty())
+        assertTrue(offered(open(feedback, thread = ThreadUi("message0001"))).isEmpty())
+        assertEquals(listOf("caper"), offered(open(feedback), ""))
+        assertTrue(offered(open(feedback, listOf(Person("ann0000000aa", "ann", "Ann"))), "").none { it == "feedback" || it == "everyone" || it == "here" })
     }
 
     @Test fun `people response decodes with optional avatars`() {

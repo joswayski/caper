@@ -285,15 +285,26 @@ async fn resolve(
     presence_required: bool,
 ) -> Result<Vec<Recipient>, ()> {
     // DMs: the other participant of an accepted conversation (not personal
-    // notes) unless either blocked the other. Channels: every reader except
-    // the author and anyone who blocked them; readers who haven't joined
-    // hear only about messages that @mention them by name.
+    // notes) unless either blocked the other. Feedback conversations: the
+    // person and every feedback team member except the author (the team
+    // account has no devices). Channels: every reader except the author and
+    // anyone who blocked them; readers who haven't joined hear only about
+    // messages that @mention them by name.
     let candidates: Vec<Candidate> = sqlx::query_as(
         "WITH candidates AS (
              SELECT u.id, true AS joined FROM public.direct_conversations d
              JOIN public.users u ON u.id = CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END
-             WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.low_user_id<>d.high_user_id
+             WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.low_user_id<>d.high_user_id AND d.feedback_user_id IS NULL
                AND $3 IN (d.low_user_id,d.high_user_id) AND d.accepted_at IS NOT NULL AND u.deleted_at IS NULL
+               AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+                   AND ((b.blocker_id=u.id AND b.blocked_id=$3) OR (b.blocker_id=$3 AND b.blocked_id=u.id)))
+             UNION ALL
+             SELECT u.id, true AS joined FROM public.direct_conversations d
+             CROSS JOIN LATERAL (SELECT d.feedback_user_id AS id
+                 UNION SELECT ft.user_id FROM public.feedback_team ft WHERE ft.deleted_at IS NULL) r
+             JOIN public.users u ON u.id=r.id
+             WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.feedback_user_id IS NOT NULL
+               AND u.id<>$3 AND u.deleted_at IS NULL AND NOT u.team_account
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                    AND ((b.blocker_id=u.id AND b.blocked_id=$3) OR (b.blocker_id=$3 AND b.blocked_id=u.id)))
              UNION ALL

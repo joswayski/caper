@@ -4,7 +4,7 @@ import Avatar from "../components/Avatar";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
-import type { MentionCandidate } from "./mentions.ts";
+import type { MentionCandidate, SpecialMention } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
 
 const DEFAULT_WIDTH = 340;
@@ -30,7 +30,8 @@ export default function ThreadPanel({
   readOnly: boolean;
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
-  specialMentions: boolean;
+  /** Names offered beside people; see `specialMentionsFor`. */
+  specialMentions: readonly SpecialMention[];
   renderMessage: (
     index: number,
     message: ChatMessage,

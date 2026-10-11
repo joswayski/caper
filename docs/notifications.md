@@ -35,7 +35,10 @@ Per committed message (edits never notify; demo spaces and guests never do):
 1. Never the author.
 2. **DMs** (`direct.message`): the other participant only. Personal notes, a DM
    that is still a message request (not accepted), and a DM where either person
-   blocked the other notify nobody.
+   blocked the other notify nobody. **Feedback conversations** (see
+   [`@feedback`](media.md#feedback-feedback)) notify the person and every active
+   feedback team member except the author, minus anyone with a block either way
+   between them and the author; the team account itself has no devices.
 3. **Space channels**: everyone who can read the channel (active members; for a
    private channel, the owner and people with a grant), minus anyone who blocked
    the author. Joining a channel is consent to hear from it, so readers who
@@ -97,9 +100,12 @@ offers the phone's platform, the app turns push on, unless the account turned
 
 ### Content and payloads
 
-- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
+- Title: DM → sender display name; feedback conversation → `Sender · Feedback`;
+  channels and mentions → `Sender · #channel (Space)`.
 - Body: the message text, trimmed, cut to 180 characters including a final `…`;
-  empty text (a forward without text) → `Sent a message`.
+  empty text (a forward without text) → `Sent a message`, except that a
+  forward without a note in a feedback conversation previews the forwarded
+  message's text.
 - Sender artwork is the current profile's bundled avatar (0–799), not the
   message's historical avatar or a remote image download. Missing/invalid
   artwork retains the OS/app fallback. Android sets both the `MessagingStyle`

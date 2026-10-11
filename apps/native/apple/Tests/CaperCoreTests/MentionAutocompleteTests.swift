@@ -87,28 +87,73 @@ final class MentionAutocompleteTests: XCTestCase {
     }
 
     func testSpecialsFollowMembersAndKeepTheirSlotsInTheCapOfSix() {
-        XCTAssertEqual(names("@"), ["alice", "alicia", "bob", "malice", "everyone", "here"],
-                       "an empty query lists members alphabetically, capped to leave room for both specials")
+        XCTAssertEqual(names("@"), ["alice", "alicia", "bob", "everyone", "here", "feedback"],
+                       "an empty query lists members alphabetically, capped to leave room for every special")
         XCTAssertEqual(names("@e"), ["alice", "malice", "zed", "everyone"])
         XCTAssertEqual(names("@HER"), ["here"])
         let many = (0..<10).map { Member(id: "User0000000\($0)", username: "user\($0)", displayName: "User \($0)", owner: false) }
         XCTAssertEqual(names("@user", .space(members: many, excluding: nil)).count, 6)
         XCTAssertEqual(names("@", .space(members: many, excluding: nil)),
-                       ["user0", "user1", "user2", "user3", "everyone", "here"])
-        XCTAssertEqual(names("@", .space(members: [], excluding: selfID)), ["everyone", "here"],
+                       ["user0", "user1", "user2", "everyone", "here", "feedback"])
+        XCTAssertEqual(names("@", .space(members: [], excluding: selfID)), ["everyone", "here", "feedback"],
                        "before members load a space channel offers only the specials")
+    }
+
+    func testFeedbackSuggestionIsOfferedEverywhereButAFeedbackConversation() throws {
+        XCTAssertEqual(MentionCandidate.feedback.username, "feedback")
+        XCTAssertEqual(MentionCandidate.feedback.displayName, "Send to the Caper team")
+        XCTAssertEqual(MentionCandidate.feedback.kind, .feedback)
+        XCTAssertEqual(ComposerSuggestionsView.mentionLabel(.feedback), "@feedback, Send to the Caper team")
+
+        // Space channels, and their thread composers, which share the channel's source.
+        XCTAssertTrue(space.specials && space.feedback)
+        XCTAssertEqual(names("@f"), ["feedback"])
+        XCTAssertEqual(names("@FEED"), ["feedback"], "queries compare lowercased")
+        XCTAssertEqual(names("@feedbackx"), [])
+        let crowd = (0..<10).map { Member(id: "Feed0000000\($0)", username: "feed\($0)", displayName: "Feed \($0)", owner: false) }
+        XCTAssertEqual(names("@feed", .space(members: crowd, excluding: nil)),
+                       ["feed0", "feed1", "feed2", "feed3", "feed4", "feedback"], "after matching people, keeping its slot in the cap")
+
+        // DMs and personal notes offer it, never @everyone/@here.
+        let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
+        let direct = MentionSource.direct(peer: peer, people: nil, accountID: selfID)
+        XCTAssertFalse(direct.specials)
+        XCTAssertTrue(direct.feedback)
+        XCTAssertEqual(names("@", direct), ["pat", "feedback"])
+        XCTAssertEqual(names("@fe", direct), ["feedback"])
+        let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"), people: nil, accountID: selfID)
+        XCTAssertEqual(names("@", notes), ["feedback"], "self-notes offer @feedback before people load")
+
+        // Not inside a feedback conversation (also its threads), for the sender or a team member.
+        let team = DirectMessagePeer(id: "Team00000001", username: "caper", displayName: "Caper", avatarId: 1)
+        let people = [Person(id: "Alex00000001", username: "alex", displayName: "Alex Stone")]
+        let feedback = MentionSource.direct(peer: team, people: people, accountID: selfID, feedbackConversation: true)
+        XCTAssertFalse(feedback.specials)
+        XCTAssertFalse(feedback.feedback)
+        XCTAssertEqual(names("@", feedback), ["alex", "caper"])
+        XCTAssertEqual(names("@feed", feedback), [])
+        XCTAssertEqual(names("@every", feedback), [])
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID, feedbackConversation: true), .empty)
+        XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false,
+                                               source: .direct(peer: nil, people: nil, accountID: selfID, feedbackConversation: true)))
+
+        // Inserted like the other specials.
+        let match = try XCTUnwrap(MentionAutocomplete.match(text: "hi @fee", selection: caret("hi @fee"), markedText: false, source: direct))
+        XCTAssertEqual(match.choices, [.feedback])
+        XCTAssertEqual(MentionAutocomplete.inserting(match.choices[0], in: "hi @fee", match: match)?.text, "hi @feedback ")
     }
 
     func testDirectMessagesFallBackToTheOtherParticipantUntilPeopleLoad() {
         let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
         let direct = MentionSource.direct(peer: peer, people: nil, accountID: selfID)
-        XCTAssertEqual(names("@", direct), ["pat"])
+        XCTAssertEqual(names("@", direct), ["pat", "feedback"])
         XCTAssertEqual(names("@doe", direct), ["pat"])
-        XCTAssertEqual(names("@every", direct), [], "specials are plain text in DMs")
+        XCTAssertEqual(names("@every", direct), [], "@everyone/@here are plain text in DMs")
         let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"), people: nil, accountID: selfID)
-        XCTAssertEqual(notes, .empty, "nobody to mention in self-notes before people load")
-        XCTAssertNil(MentionAutocomplete.match(text: "@", selection: caret("@"), markedText: false, source: notes))
-        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID), .empty)
+        XCTAssertEqual(notes, MentionSource(members: [], specials: false, feedback: true),
+                       "nobody to mention in self-notes before people load, only @feedback")
+        XCTAssertEqual(names("@", notes), ["feedback"])
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: nil, accountID: selfID), MentionSource(members: [], specials: false, feedback: true))
     }
 
     func testDirectMessagesSuggestEveryoneFromPeopleWithoutSpecials() {
@@ -121,7 +166,8 @@ final class MentionAutocompleteTests: XCTestCase {
         let peer = DirectMessagePeer(id: "Peer00000001", username: "pat", displayName: "Pat Doe")
         let direct = MentionSource.direct(peer: peer, people: people, accountID: selfID)
         XCTAssertFalse(direct.specials)
-        XCTAssertEqual(names("@", direct), ["alex", "pat", "sam"], "people beyond the peer, never yourself, no specials")
+        XCTAssertEqual(names("@", direct), ["alex", "pat", "sam", "feedback"],
+                       "people beyond the peer, never yourself, no @everyone/@here")
         XCTAssertEqual(names("@stone", direct), ["alex"], "same display-name ranking as space channels")
         XCTAssertEqual(names("@every", direct), [], "@everyone/@here stay space-only")
         XCTAssertEqual(names("@her", direct), [])
@@ -130,11 +176,11 @@ final class MentionAutocompleteTests: XCTestCase {
 
         let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "fixture_self", displayName: "Me"),
                                          people: people, accountID: selfID)
-        XCTAssertEqual(names("@", notes), ["alex", "pat", "sam"], "self-notes suggest people too")
+        XCTAssertEqual(names("@", notes), ["alex", "pat", "sam", "feedback"], "self-notes suggest people too")
         let newer = MentionSource.direct(peer: DirectMessagePeer(id: "New000000001", username: "newcomer", displayName: "New"),
                                          people: people, accountID: selfID)
         XCTAssertEqual(names("@new", newer), ["newcomer"], "a conversation newer than the list still offers its peer")
-        XCTAssertEqual(MentionSource.direct(peer: nil, people: [], accountID: selfID), .empty)
+        XCTAssertEqual(MentionSource.direct(peer: nil, people: [], accountID: selfID).members, [])
         let many = (0..<10).map { Person(id: "User0000000\($0)", username: "user\($0)", displayName: "User \($0)") }
         XCTAssertEqual(names("@", .direct(peer: nil, people: many, accountID: selfID)).count, 6, "same cap of six")
     }

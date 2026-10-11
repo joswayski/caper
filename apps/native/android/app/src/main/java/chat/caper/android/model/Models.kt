@@ -35,7 +35,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means
- * accepted. [blocked] is true when you blocked the peer.
+ * accepted. [blocked] is true when you blocked the peer. [feedback] marks a
+ * conversation with the Caper team (its peer is the team account, or for team
+ * members the person who sent feedback); it is always accepted and never blocked,
+ * and old servers omit it.
  */
 @Serializable data class DirectConversation(
     val id: String,
@@ -44,6 +47,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val readSeq: String,
     val status: String? = null,
     val blocked: Boolean = false,
+    val feedback: Boolean = false,
 ) {
     val incoming: Boolean get() = status == "incoming"
     val outgoing: Boolean get() = status == "outgoing"
@@ -492,13 +496,23 @@ data class AppUiState(
     val displayedChannelMessages: List<ChatMessage> get() = channelMessages.map(::project)
 
     /** You can write, react, pin and edit here: a joined channel, not a message request still waiting
-     * for your answer, and not a DM with someone you blocked (the server refuses those too). */
+     * for your answer, and not a DM with someone you blocked (the server refuses those too). Blocks
+     * never close a feedback conversation: the server allows it regardless. */
     val canParticipate: Boolean get() = selectedChannel?.joined == true && selectedDirect?.let {
-        it.incoming || it.blocked || it.peer.id in blockedIds
+        !it.feedback && (it.incoming || it.blocked || it.peer.id in blockedIds)
     } != true
 
     /** The open DM, when one is selected. */
     val selectedDirect: DirectConversation? get() = selectedDirectId?.let { id -> directConversations.firstOrNull { it.id == id } }
+
+    /** The open conversation is a feedback conversation with the Caper team. */
+    val feedbackOpen: Boolean get() = selectedChannel?.direct == true && selectedDirect?.feedback == true
+
+    /** The open 1:1 DM that offers Block / Unblock: not your notes, not a request (its bar has Block)
+     * and not a feedback conversation (the Caper team can't be blocked). */
+    val blockableDirect: DirectConversation? get() = selectedDirect?.takeIf {
+        selectedChannel?.direct == true && it.peer.id != account?.id && !it.incoming && !it.feedback
+    }
 }
 
 data class PendingMessageUi(

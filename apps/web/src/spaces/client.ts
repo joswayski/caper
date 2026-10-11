@@ -38,11 +38,45 @@ export interface DirectConversation {
   status?: "accepted" | "outgoing" | "incoming";
   /** You blocked the peer. The other side is never told. */
   blocked?: boolean;
+  /**
+   * A conversation with the Caper team. Yours has the team account as `peer`;
+   * team members also see everyone else's, with that person as `peer`. Older
+   * servers omit it: treat as an ordinary DM.
+   */
+  feedback?: boolean;
 }
 
 /** `incoming` is a message request for you; `outgoing` waits for the other person. */
 export function directStatus(conversation: DirectConversation) {
   return conversation.status ?? "accepted";
+}
+
+export function directFeedback(conversation: DirectConversation) {
+  return conversation.feedback === true;
+}
+
+/** The small muted tag after a DM's name in the sidebar. */
+export function directTag(conversation: DirectConversation, blocked: boolean) {
+  if (directFeedback(conversation)) return "Feedback";
+  if (blocked) return "Blocked";
+  if (directStatus(conversation) === "outgoing") return "Request sent";
+}
+
+/**
+ * What a DM offers around its composer: `block` (a header button), `unblock`
+ * (the blocked bar) or `request` (the request bar), whether the composer is
+ * locked, whether to show "Waiting for…", and whether message menus offer
+ * Block. Personal notes and feedback conversations have none of these, and the
+ * local block list never locks a feedback conversation: the server allows it.
+ */
+export function directControls(conversation: DirectConversation, accountId: string | undefined, blocked: boolean) {
+  const feedback = directFeedback(conversation);
+  if (feedback || conversation.peer.id === accountId)
+    return { actions: undefined, locked: false, waiting: false, blockAuthors: !feedback };
+  const status = directStatus(conversation);
+  if (blocked) return { actions: "unblock" as const, locked: true, waiting: false, blockAuthors: true };
+  if (status === "incoming") return { actions: "request" as const, locked: true, waiting: false, blockAuthors: true };
+  return { actions: "block" as const, locked: false, waiting: status === "outgoing", blockAuthors: true };
 }
 
 /** Requests for you never count as unread. */

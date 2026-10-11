@@ -62,6 +62,7 @@ impl Default for ReservedUsernames {
                 "safety",
                 "caper_support",
                 "caper_feedback",
+                "caper_team",
                 "jose",
                 "caperchat",
                 "aaron",

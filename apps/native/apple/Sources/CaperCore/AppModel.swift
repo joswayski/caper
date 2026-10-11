@@ -488,7 +488,9 @@ public final class AppModel {
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
             let current = directMessages.first { $0.id == conversation.id } ?? conversation
-            chat.directPeerID = current.peer.id == account?.id ? nil : current.peer.id
+            // A feedback conversation stays open whatever your block list holds.
+            chat.directPeerID = current.peer.id == account?.id || current.feedback ? nil : current.peer.id
+            chat.feedbackConversation = current.feedback
             if current.status == .incoming { await chat.preview(history: history) }
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
@@ -935,7 +937,7 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
-                chat.directPeerID = nil
+                chat.directPeerID = nil; chat.feedbackConversation = false
                 if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
                 else { await chat.preview(history: history) }
             }
@@ -1746,6 +1748,10 @@ public final class ChatModel {
     /// The other person in the open DM, kept by `AppModel`. Blocking them stops
     /// reactions, pins and edits as well as sending; the server refuses them too.
     public var directPeerID: String?
+    /// The open DM is a feedback conversation (kept by `AppModel`): message
+    /// actions never offer Block there, and `directPeerID` stays nil so your
+    /// block list never locks it.
+    public var feedbackConversation = false
     /// Reacting, pinning and editing need a chat session (not a preview), and
     /// never reach someone you blocked.
     public var canInteract: Bool {

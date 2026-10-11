@@ -7,9 +7,10 @@ final class MessageRequestsTests: XCTestCase {
     private let alex = ChatAuthor(id: "member000002", name: "Alex", isGuest: false)
 
     private func conversation(_ id: String, peer: String = "peer00000001", status: DirectMessageStatus = .accepted,
-                              blocked: Bool = false, lastSeq: String = "2", readSeq: String = "1") -> DirectMessageConversation {
+                              blocked: Bool = false, feedback: Bool = false,
+                              lastSeq: String = "2", readSeq: String = "1") -> DirectMessageConversation {
         DirectMessageConversation(id: id, peer: DirectMessagePeer(id: peer, username: "jordan", displayName: "Jordan"),
-                                  lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+                                  lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked, feedback: feedback)
     }
     private func message(_ id: String, _ author: ChatAuthor) -> ChatMessage {
         ChatMessage(id: id, channelId: "chan00000001", seq: "1", author: author,
@@ -41,6 +42,31 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertEqual(conversations.map(\.peer.avatarId), [nil, 412, nil, nil])
         let roundTrip = try JSONDecoder().decode(DirectMessageConversation.self, from: JSONEncoder().encode(conversations[2]))
         XCTAssertEqual(roundTrip, conversations[2])
+    }
+
+    func testFeedbackFlagDecodesAndDefaultsToFalse() throws {
+        let json = #"""
+        {"conversations":[
+          {"id":"dm0000000001","peer":{"id":"Team00000001","username":"caper","displayName":"Caper","avatarId":1},"lastSeq":"3","readSeq":"1","status":"accepted","blocked":false,"feedback":true},
+          {"id":"dm0000000002","peer":{"id":"b","username":"jordan","displayName":"Jordan"},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false,"feedback":false},
+          {"id":"dm0000000003","peer":{"id":"c","username":"sam","displayName":"Sam"},"lastSeq":"0","readSeq":"0"},
+          {"id":"dm0000000004","peer":{"id":"d","username":"lee","displayName":"Lee"},"lastSeq":"0","readSeq":"0","feedback":null},
+          {"id":"dm0000000005","peer":{"id":"e","username":"kim","displayName":"Kim"},"lastSeq":"0","readSeq":"0","feedback":"yes"},
+          {"id":"dm0000000006","peer":{"id":"f","username":"ash","displayName":"Ash"},"lastSeq":"2","readSeq":"0","status":"incoming","blocked":true,"feedback":true}
+        ]}
+        """#
+        let conversations = try JSONDecoder().decode(DirectMessagesResponse.self, from: Data(json.utf8)).conversations
+        XCTAssertEqual(conversations.map(\.feedback), [true, false, false, false, false, true], "missing or malformed means false")
+        XCTAssertEqual(conversations[0].peer.username, "caper")
+        XCTAssertEqual(conversations[5].status, .accepted, "a feedback conversation is never a request")
+        XCTAssertFalse(conversations[5].blocked, "a feedback conversation is never blocked")
+        XCTAssertTrue(conversations[5].unread)
+        XCTAssertEqual(MessageRequests.visible(conversations).map(\.id).last, "dm0000000006")
+        let roundTrip = try JSONDecoder().decode(DirectMessageConversation.self, from: JSONEncoder().encode(conversations[0]))
+        XCTAssertEqual(roundTrip, conversations[0])
+        XCTAssertTrue(conversations[0].with(readSeq: "3").feedback, "updating the read cursor keeps the flag")
+        XCTAssertTrue(conversations[0].with(blocked: false).feedback)
+        XCTAssertFalse(DirectMessageConversation(id: "dm", peer: conversations[1].peer, lastSeq: "0", readSeq: "0").feedback)
     }
 
     func testBlocksAndPrivacyPayloads() throws {
@@ -79,6 +105,37 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertEqual(blocked.map(\.id), ["dm1", "dm3"], "blocking a requester declines the request")
         XCTAssertEqual(blocked.map(\.blocked), [false, true])
         XCTAssertEqual(MessageRequests.applying(blocked: false, peerID: "b", to: blocked).map(\.blocked), [false, false])
+    }
+
+    func testFeedbackConversationsAreNeverBlockedOrLocked() {
+        let list = [conversation("dm1", peer: "b"), conversation("dm2", peer: "b", feedback: true)]
+        let blocked = MessageRequests.applying(blocked: true, peerID: "b", to: list)
+        XCTAssertEqual(blocked.map(\.blocked), [true, false], "a team member's block never marks the person's feedback conversation")
+        XCTAssertEqual(blocked.map(\.feedback), [false, true])
+        XCTAssertEqual(MessageRequests.applying(blocked: false, peerID: "b", to: blocked).map(\.blocked), [false, false])
+
+        // No Block/Unblock, blocked bar or waiting notice: not for notes, not for feedback.
+        XCTAssertEqual(MessageRequests.peerConversation(list[0], accountID: me)?.id, "dm1")
+        XCTAssertNil(MessageRequests.peerConversation(list[1], accountID: me))
+        XCTAssertNil(MessageRequests.peerConversation(conversation("dm3", peer: me), accountID: me), "personal notes")
+        XCTAssertNil(MessageRequests.peerConversation(nil, accountID: me))
+        XCTAssertNil(MessageRequests.peerConversation(conversation("dm4", status: .outgoing, feedback: true), accountID: me))
+
+        // Message actions never offer Block in a feedback conversation.
+        XCTAssertTrue(BlockedMessages.canBlock(alex, viewerID: me, blocked: [], feedback: false))
+        XCTAssertFalse(BlockedMessages.canBlock(alex, viewerID: me, blocked: [], feedback: true))
+        XCTAssertFalse(BlockedMessages.canBlock(maya, viewerID: me, blocked: [alex.id], feedback: true))
+    }
+
+    func testFeedbackRowTagAndEmptyNote() {
+        XCTAssertEqual(FeedbackConversations.tag(for: conversation("dm1", feedback: true)), "Feedback")
+        XCTAssertNil(FeedbackConversations.tag(for: conversation("dm2")))
+        XCTAssertEqual(FeedbackConversations.emptyDirectNote(for: conversation("dm1", feedback: true), channelName: "Caper"),
+                       "The Caper team reads and replies here. Mention @feedback anywhere to send a message or its thread here.")
+        XCTAssertEqual(FeedbackConversations.emptyDirectNote(for: conversation("dm2"), channelName: "Jordan"),
+                       "Only you and Jordan can read this conversation.")
+        XCTAssertEqual(FeedbackConversations.emptyDirectNote(for: nil, channelName: "Jordan"),
+                       "Only you and Jordan can read this conversation.")
     }
 
     func testCopyAndErrorMapping() {

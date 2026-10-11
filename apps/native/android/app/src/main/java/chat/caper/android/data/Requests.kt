@@ -1,5 +1,7 @@
 package chat.caper.android.data
 
+import chat.caper.android.model.AppUiState
+import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.DirectConversation
 import java.math.BigInteger
@@ -13,6 +15,27 @@ internal fun messageRequests(conversations: List<DirectConversation>): List<Dire
 /** The unread dot: requests never count, whatever their sequences say. */
 internal fun directUnread(conversation: DirectConversation): Boolean = !conversation.incoming &&
     runCatching { BigInteger(conversation.lastSeq) > BigInteger(conversation.readSeq) }.getOrDefault(false)
+
+/** The small muted tag after a DM row's name: `Feedback` for a conversation with the Caper team. */
+internal fun directRowTag(conversation: DirectConversation): String? = if (conversation.feedback) "Feedback" else null
+
+/** The empty feedback conversation's note, in place of "Only you and … can read this conversation." */
+internal const val FEEDBACK_EMPTY_NOTE = "The Caper team reads and replies here. Mention @feedback anywhere to send a message or its thread here."
+
+/** The line under "No messages yet." in an empty channel or DM (your notes have their own text). */
+internal fun emptyConversationNote(state: AppUiState): String {
+    val name = state.selectedChannel?.name.orEmpty()
+    return when {
+        state.selectedChannel?.direct != true -> "Start the conversation in #$name."
+        state.feedbackOpen -> FEEDBACK_EMPTY_NOTE
+        else -> "Only you and $name can read this conversation."
+    }
+}
+
+/** Message actions offer Block/Unblock for another signed-in account's message, never a guest's,
+ * and never in a feedback conversation (the Caper team reads and replies there). */
+internal fun offersAuthorBlock(state: AppUiState, author: ChatAuthor): Boolean =
+    state.account != null && !state.feedbackOpen && !author.isGuest && author.id != (state.chatAuthorId ?: state.account.id)
 
 /** Account ids whose messages collapse for you: never yourself or a guest. */
 internal fun collapsesFor(message: ChatMessage, blocked: Set<String>, selfId: String?): Boolean =

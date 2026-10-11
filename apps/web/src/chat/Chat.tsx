@@ -36,7 +36,13 @@ import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
-import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
+import {
+  mentionCardPerson,
+  mentionSegments,
+  mentionsAccount,
+  specialMentionsFor,
+  type MentionCandidate,
+} from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
@@ -161,6 +167,7 @@ export default function Chat({
   channelName: expectedChannelName,
   direct = false,
   directPeerId,
+  feedback = false,
   onReadCursor,
   initialHistory,
   initialHistoryError,
@@ -191,6 +198,8 @@ export default function Chat({
   channelName?: string;
   direct?: boolean;
   directPeerId?: string;
+  /** A DM with the Caper team, which `@feedback` reaches from everywhere else. */
+  feedback?: boolean;
   onReadCursor?: (seq: string) => void;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
@@ -1562,9 +1571,11 @@ export default function Chat({
                   <>
                     <p>No messages yet.</p>
                     <small>
-                      {direct
-                        ? `Only you and ${channelName} can read this conversation.`
-                        : `Start the conversation in #${channelName}.`}
+                      {feedback
+                        ? "The Caper team reads and replies here. Mention @feedback anywhere to send a message or its thread here."
+                        : direct
+                          ? `Only you and ${channelName} can read this conversation.`
+                          : `Start the conversation in #${channelName}.`}
                     </small>
                   </>
                 )}
@@ -1802,6 +1813,7 @@ export default function Chat({
               channelName={channelName}
               draftKey={accountId && channelId ? `${accountId}:${channelId}` : undefined}
               direct={direct}
+              feedback={feedback}
               disabled={state.phase !== "ready"}
               identityReady={identityReady}
               sending={sending}
@@ -1835,7 +1847,7 @@ export default function Chat({
         direct={direct}
         readOnly={readOnly}
         mentionPeople={mentionPeople}
-        specialMentions={!direct}
+        specialMentions={specialMentionsFor({ direct, feedback })}
         renderMessage={renderMessage}
         onClose={closeThread}
       />

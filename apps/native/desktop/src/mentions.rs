@@ -70,6 +70,9 @@ pub enum Candidate {
     Person(Person),
     Everyone,
     Here,
+    /// The Caper team. The server forwards the message (or its thread) into
+    /// the sender's feedback conversation.
+    Feedback,
 }
 
 impl Candidate {
@@ -79,19 +82,35 @@ impl Candidate {
             Self::Person(person) => &person.username,
             Self::Everyone => "everyone",
             Self::Here => "here",
+            Self::Feedback => "feedback",
         }
     }
 }
 
+/// Which specials a composer offers besides people.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Specials {
+    /// `everyone` and `here`: space channels only.
+    pub channel: bool,
+    /// `feedback`: channels, threads and DMs, but not inside a feedback
+    /// conversation. The server's other team aliases are never suggested.
+    pub feedback: bool,
+}
+
 /// Up to six rows: matching people by rank then username, then the matching
-/// specials (`everyone`, `here`), which always keep their slots. Callers pass
-/// people without the current user, and `specials` only in space channels.
-pub fn suggestions(people: &[Person], specials: bool, query: &str) -> Vec<Candidate> {
+/// specials (`everyone`, `here`, `feedback`), which always keep their slots.
+/// Callers pass people without the current user.
+pub fn suggestions(people: &[Person], specials: Specials, query: &str) -> Vec<Candidate> {
     let query = query.to_ascii_lowercase();
-    let specials: Vec<_> = [Candidate::Everyone, Candidate::Here]
-        .into_iter()
-        .filter(|special| specials && special.name().starts_with(&query))
-        .collect();
+    let specials: Vec<_> = [
+        (Candidate::Everyone, specials.channel),
+        (Candidate::Here, specials.channel),
+        (Candidate::Feedback, specials.feedback),
+    ]
+    .into_iter()
+    .filter(|(special, offered)| *offered && special.name().starts_with(&query))
+    .map(|(special, _)| special)
+    .collect();
     let mut ranked: Vec<_> = people
         .iter()
         .filter_map(|person| {
@@ -388,6 +407,22 @@ mod tests {
         }
     }
 
+    /// People only: a feedback conversation offers no specials.
+    const PEOPLE: Specials = Specials {
+        channel: false,
+        feedback: false,
+    };
+    /// A space channel, or a thread in one.
+    const CHANNEL: Specials = Specials {
+        channel: true,
+        feedback: true,
+    };
+    /// Any other DM, personal notes included, or a thread in one.
+    const DIRECT: Specials = Specials {
+        channel: false,
+        feedback: true,
+    };
+
     #[test]
     fn suggestions_rank_members_then_specials_and_cap_at_six() {
         let people = [
@@ -398,46 +433,93 @@ mod tests {
             person("carol", "Carol"),
         ];
         assert_eq!(
-            names(&suggestions(&people, false, "ALEX")),
+            names(&suggestions(&people, PEOPLE, "ALEX")),
             ["alex", "alexander", "bob", "malex"],
             "exact, prefix, display-name word, contains"
         );
-        assert_eq!(names(&suggestions(&people, false, "riv")), ["alex"]);
-        assert_eq!(names(&suggestions(&people, false, "q")), ["alexander"]);
-        assert!(suggestions(&people, true, "zzz").is_empty());
+        assert_eq!(names(&suggestions(&people, PEOPLE, "riv")), ["alex"]);
+        assert_eq!(names(&suggestions(&people, PEOPLE, "q")), ["alexander"]);
+        assert!(suggestions(&people, CHANNEL, "zzz").is_empty());
         assert_eq!(
-            names(&suggestions(&people, true, "")),
-            ["alex", "alexander", "bob", "carol", "everyone", "here"],
+            names(&suggestions(&people, CHANNEL, "")),
+            ["alex", "alexander", "bob", "everyone", "here", "feedback"],
             "an empty query lists members alphabetically and keeps the specials"
         );
-        assert_eq!(names(&suggestions(&people, true, "ev")), ["everyone"]);
+        assert_eq!(names(&suggestions(&people, CHANNEL, "ev")), ["everyone"]);
         assert_eq!(
-            names(&suggestions(&people, true, "e")),
+            names(&suggestions(&people, CHANNEL, "e")),
             ["alex", "alexander", "malex", "everyone"],
             "usernames containing the query still rank above specials"
         );
         assert_eq!(
-            names(&suggestions(&people, true, "h")),
+            names(&suggestions(&people, CHANNEL, "h")),
             ["here"],
             "specials match by prefix only"
         );
         assert!(
-            suggestions(&people, false, "every").is_empty(),
-            "no specials in DMs"
+            suggestions(&people, DIRECT, "every").is_empty(),
+            "no everyone or here in DMs"
         );
+        assert!(suggestions(&people, DIRECT, "her").is_empty());
         let many: Vec<_> = (0..10)
             .map(|index| person(&format!("user{index}"), "Member"))
             .collect();
         assert_eq!(
-            names(&suggestions(&many, false, "")),
+            names(&suggestions(&many, PEOPLE, "")),
             ["user0", "user1", "user2", "user3", "user4", "user5"]
         );
         assert_eq!(
-            names(&suggestions(&many, true, "")),
-            ["user0", "user1", "user2", "user3", "everyone", "here"]
+            names(&suggestions(&many, CHANNEL, "")),
+            ["user0", "user1", "user2", "everyone", "here", "feedback"]
         );
-        assert!(suggestions(&[], false, "").is_empty());
-        assert_eq!(names(&suggestions(&[], true, "")), ["everyone", "here"]);
+        assert_eq!(
+            names(&suggestions(&many, DIRECT, "")),
+            ["user0", "user1", "user2", "user3", "user4", "feedback"]
+        );
+        assert!(suggestions(&[], PEOPLE, "").is_empty());
+        assert_eq!(
+            names(&suggestions(&[], CHANNEL, "")),
+            ["everyone", "here", "feedback"]
+        );
+        assert_eq!(names(&suggestions(&[], DIRECT, "")), ["feedback"]);
+    }
+
+    #[test]
+    fn feedback_is_offered_in_channels_and_dms_but_not_in_feedback_conversations() {
+        let people = [
+            person("alex", "Alex Rivera"),
+            person("feedback_fan", "Fern"),
+        ];
+        for specials in [CHANNEL, DIRECT] {
+            assert_eq!(
+                names(&suggestions(&people, specials, "FEED")),
+                ["feedback_fan", "feedback"],
+                "matching people rank first: {specials:?}"
+            );
+            assert_eq!(
+                names(&suggestions(&people, specials, "feedback")),
+                ["feedback_fan", "feedback"]
+            );
+            assert!(suggestions(&people, specials, "feedbackx").is_empty());
+        }
+        assert_eq!(
+            suggestions(&[], DIRECT, "f"),
+            [Candidate::Feedback],
+            "personal notes offer nobody but the team"
+        );
+        assert_eq!(Candidate::Feedback.name(), "feedback");
+        // Inside a feedback conversation: people only.
+        assert_eq!(names(&suggestions(&people, PEOPLE, "f")), ["feedback_fan"]);
+        assert!(suggestions(&[], PEOPLE, "").is_empty());
+        // No other team alias is ever suggested.
+        for alias in [
+            "caper", "admins", "admin", "mods", "support", "team", "staff",
+        ] {
+            assert!(
+                suggestions(&[], CHANNEL, alias).is_empty(),
+                "{alias} is not a suggestion"
+            );
+        }
     }
 
     #[test]
@@ -455,6 +537,11 @@ mod tests {
         assert_eq!(
             insert("@", &active, "everyone"),
             Some(("@everyone ".into(), 10))
+        );
+        let active = token("hi @fe", 6).unwrap();
+        assert_eq!(
+            insert("hi @fe", &active, Candidate::Feedback.name()),
+            Some(("hi @feedback ".into(), 13))
         );
         let text = format!("{} @x", "😀".repeat(3993));
         let active = token(&text, text.chars().count()).unwrap();
@@ -557,6 +644,7 @@ mod tests {
             read_seq: "0".into(),
             status: crate::model::DirectStatus::Accepted,
             blocked: false,
+            feedback: false,
         };
         let members = [member("u1", "alex", "Alex (space)")];
         let people = [
