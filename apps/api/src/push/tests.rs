@@ -2325,3 +2325,60 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     );
     assert!(h.fcm.take().is_empty());
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn prune_drops_only_week_old_finished_deliveries_and_expanded_jobs(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    for device in [
+        "old-delivered",
+        "old-abandoned",
+        "recent-delivered",
+        "pending",
+    ] {
+        let (token, _) = session(&pool, bob.id).await;
+        register(&h, &bob, &token, "fcm", device).await;
+    }
+    let old = send(&h, &alice, &general, "a week ago", None).await;
+    expand(&h).await;
+    let recent = send(&h, &alice, &general, "just now", None).await;
+    // An unexpanded job stays until it is expanded and a week old.
+    sqlx::query("UPDATE public.notification_jobs SET available_at=now()+interval '1 hour' WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1)")
+        .bind(&recent).execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE public.notification_deliveries d SET
+           delivered_at=CASE dev.address WHEN 'old-delivered' THEN now()-interval '8 days'
+                                         WHEN 'recent-delivered' THEN now()-interval '6 days' END,
+           abandoned_at=CASE dev.address WHEN 'old-abandoned' THEN now()-interval '8 days' END
+         FROM public.notification_devices dev WHERE dev.id=d.device_id",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE public.notification_jobs SET expanded_at=now()-interval '8 days' WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1)")
+        .bind(&old).execute(&pool).await.unwrap();
+
+    assert_eq!(super::delivery::prune(&pool).await, 3);
+    let kept: Vec<String> = sqlx::query_scalar("SELECT dev.address FROM public.notification_deliveries d JOIN public.notification_devices dev ON dev.id=d.device_id ORDER BY dev.address")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        kept,
+        vec!["pending".to_owned(), "recent-delivered".to_owned()]
+    );
+    let jobs: Vec<String> = sqlx::query_scalar("SELECT m.external_id FROM public.notification_jobs j JOIN public.messages m ON m.id=j.message_id")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        jobs,
+        vec![recent],
+        "the expanded week-old job is pruned; the pending one is kept"
+    );
+    assert_eq!(
+        super::delivery::prune(&pool).await,
+        0,
+        "a second pass has nothing left"
+    );
+}
