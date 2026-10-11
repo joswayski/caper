@@ -37,6 +37,7 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -663,6 +664,7 @@ private fun Modifier.browseDrag(
             var dx = 0f
             var velocity = 0f
             tracker.resetTracking()
+            tracker.addPosition(down.uptimeMillis, down.position)
             try {
                 while (true) {
                     // Once sliding, take moves before the timeline or channel list
@@ -679,7 +681,8 @@ private fun Modifier.browseDrag(
                         dragging = true
                         drawer.dragging = true
                     }
-                    tracker.addPosition(change.uptimeMillis, change.position)
+                    // Includes the batched samples a slow frame coalesces, so flings still register.
+                    tracker.addPointerInputChange(change)
                     // Lifting flings; a second finger settles where the slide is.
                     if (!change.pressed || event.changes.size != 1) {
                         if (!change.pressed) velocity = tracker.calculateVelocity().x * direction

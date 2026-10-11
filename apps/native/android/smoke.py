@@ -564,13 +564,15 @@ def main() -> None:
     members_button = find(narrow, description="Show member list")
     assert pins is not None and members_button is not None, "Phone header shows Pins and Members"
     assert center(pins)[0] < center(members_button)[0], "Members sits right of Pins"
-    # Navigation starts at the middle of the content, not at a screen edge.
+    # Navigation starts inside the content, not at a screen edge. Swipes travel past half the
+    # width: a shorter one opens or closes only as a fling, which a busy emulator can report too
+    # slowly (its frames take over a second).
     width, middle = 780, "844"
     adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
     assert find(hierarchy(), description="Back to Browse") is not None, "Vertical scrolling stays in chat"
-    adb("shell", "input", "swipe", str(width // 2), middle, str(width - 10), middle, "150")
+    adb("shell", "input", "swipe", str(width // 4), middle, str(width - 10), middle, "150")
     wait_for(description="Close navigation")
-    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
+    adb("shell", "input", "swipe", str(width * 3 // 4), middle, "10", middle, "150")
     wait_for(description="Back to Browse")
     tap(description="Show member list")
     members_open = capture("caper-android-narrow-members", "Members")
