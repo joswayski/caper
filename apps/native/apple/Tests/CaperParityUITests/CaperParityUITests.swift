@@ -1188,6 +1188,54 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(macOS)
+    func testThreadResizeDragKeyboardAndSavedWidth() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["incomingReply": ["rootId": "chan00000001m01", "text": "Resize fixture reply"]])
+        let app = Self.configuredApp()
+        app.launchArguments += ["-AppleKeyboardUIMode", "2"]
+        app.launch(); launchedApp = app
+        func openThread(_ application: XCUIApplication) throws {
+            let row = try require(application.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
+            try require(row.buttons["View thread"], timeout: 5, "Missing thread link").click()
+        }
+        try openThread(app)
+        let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
+        let panel = app.descendants(matching: .any)["message-thread"]
+        handle.doubleClick()
+        XCTAssertEqual(sidebarWidth(of: handle), 340)
+        let initialEdge = panel.frame.minX
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: handle.frame.midX - window.frame.minX, dy: handle.frame.midY - window.frame.minY
+        ))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -63, dy: 0)))
+        let dragged = try XCTUnwrap(sidebarWidth(of: handle))
+        XCTAssertEqual(Double(dragged), 403, accuracy: 2, "Dragging left widens the thread")
+        XCTAssertEqual(initialEdge - panel.frame.minX, CGFloat(dragged - 340), accuracy: 2)
+        handle.doubleClick(); handle.click()
+        handle.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 350)
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 340)
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 300)
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 600)
+        handle.doubleClick()
+        handle.typeKey(.leftArrow, modifierFlags: [])
+        app.buttons["Back to channel"].click()
+        try openThread(app)
+        XCTAssertEqual(sidebarWidth(of: handle), 350, "Closing does not discard the width")
+        app.terminate()
+        let reopened = launch()
+        try openThread(reopened)
+        let saved = try require(reopened.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing saved handle")
+        XCTAssertEqual(sidebarWidth(of: saved), 350, "Width survives relaunch")
+        capture("thread-resized", app: reopened)
+        saved.doubleClick()
+    }
+
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()
         let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
