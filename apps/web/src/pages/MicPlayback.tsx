@@ -60,6 +60,8 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
   );
 }
 
+type SinkAudioContext = AudioContext & { sinkId: string | object; setSinkId(id: string): Promise<void> };
+
 interface Clip {
   url: string;
   silent: boolean;
@@ -71,6 +73,7 @@ function RecordingPlayback({
   output,
   volume,
   autoPlay,
+  manualPlayback = false,
   loop = false,
   onEnded,
   onPlay,
@@ -82,6 +85,8 @@ function RecordingPlayback({
   output: string;
   volume: number;
   autoPlay: boolean;
+  /** Visible controls can start the sample when the browser blocks autoplay. */
+  manualPlayback?: boolean;
   loop?: boolean;
   onEnded?(): void;
   onPlay?(): void;
@@ -89,7 +94,7 @@ function RecordingPlayback({
   onDeviceError(): void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
-  const contextRef = useRef<(AudioContext & { setSinkId(id: string): Promise<void> }) | null>(null);
+  const contextRef = useRef<SinkAudioContext | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   useEffect(() => {
     const element = ref.current;
@@ -102,7 +107,7 @@ function RecordingPlayback({
     // Keep native playback (and its device picker) on browsers without
     // AudioContext output selection. Native volume is limited to 100%.
     if (!element || !("setSinkId" in AudioContext.prototype)) return;
-    const context = new AudioContext() as AudioContext & { setSinkId(id: string): Promise<void> };
+    const context = new AudioContext() as SinkAudioContext;
     const source = context.createMediaElementSource(element);
     const gain = context.createGain();
     source.connect(gain).connect(context.destination);
@@ -129,15 +134,20 @@ function RecordingPlayback({
         element,
       );
       try {
-        if (contextRef.current) await contextRef.current.setSinkId(output);
-        else if (setSinkId) await setSinkId(output);
+        // Re-selecting the current sink can leave Chromium's context suspended
+        // (playback stalls at 0:00), so only switch when the output differs.
+        if (contextRef.current) {
+          if (contextRef.current.sinkId !== output) await contextRef.current.setSinkId(output);
+        } else if (setSinkId) await setSinkId(output);
       } catch {
         if (current) onDeviceError();
         return;
       }
       if (current && autoPlay)
-        void element.play().catch(() => {
-          if (current) onDeviceError();
+        void element.play().catch((error: unknown) => {
+          // Blocked or interrupted autoplay is not an output failure when people can press play.
+          const blocked = error instanceof DOMException && ["NotAllowedError", "AbortError"].includes(error.name);
+          if (current && !(manualPlayback && blocked)) onDeviceError();
         });
     };
     void prepare();
@@ -296,6 +306,10 @@ export default function MicPlayback({
     return () => discardAll();
   }, [stream]);
   useEffect(() => {
+    // A newly chosen output gets a fresh attempt; playback reports again if it also fails.
+    setDeviceError(false);
+  }, [output]);
+  useEffect(() => {
     if (!recordedBlob) return;
     const current = ++generation.current;
     const previous = urlsRef.current.processed;
@@ -405,6 +419,7 @@ export default function MicPlayback({
                   output={output}
                   volume={volume}
                   autoPlay
+                  manualPlayback
                   onEnded={() => setNaturalPlaybackEnded(true)}
                   onPlay={() => pauseSample("processed")}
                   onAudioElement={(element) => {
@@ -430,6 +445,7 @@ export default function MicPlayback({
                   output={output}
                   volume={volume}
                   autoPlay={naturalPlaybackEnded}
+                  manualPlayback
                   onPlay={() => pauseSample("natural")}
                   onAudioElement={(element) => {
                     playbackRefs.current.processed = element ?? undefined;
