@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
-import { Paperclip } from "lucide-react";
+import { Plus } from "lucide-react";
 import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
@@ -192,7 +192,7 @@ export default function Composer({
               disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
             >
-              <Paperclip size={17} aria-hidden="true" />
+              <Plus size={17} aria-hidden="true" />
             </button>
             <input
               ref={fileInputRef}

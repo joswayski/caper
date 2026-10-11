@@ -2496,7 +2496,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             contentDescription = "Attach files"
             if (!enabled) stateDescription = "File uploads are not ready or the attachment limit has been reached"
         }, enabled = enabled) {
-            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
