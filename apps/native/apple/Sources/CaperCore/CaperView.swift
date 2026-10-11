@@ -3397,16 +3397,22 @@ private struct MentionCardHost: ViewModifier {
     @Binding var target: MentionCardTarget?
     let model: AppModel
     let viewerID: String?
+    /// Block closes the card first, as on web, so the confirmation belongs to the host.
+    @State private var blockTarget: BlockTarget?
 
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
+                            requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
+        .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #else
         content.sheet(item: $target) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
+                            requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
+        .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #endif
     }
 
@@ -3465,15 +3471,23 @@ private struct MentionPillInteraction: ViewModifier {
 private struct MentionCardView: View {
     @Bindable var model: AppModel
     let person: MentionCardPerson
+    /// Shows the host's block confirmation once the card has closed.
+    let requestBlock: (BlockTarget) -> Void
     let close: () -> Void
     @State private var pending: String?
     @State private var error: String?
     @State private var status: String?
     @State private var choosingSpace = false
-    @State private var invited: Set<String> = []
-    @State private var blockTarget: BlockTarget?
+    /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
+    @State private var invited: [String: String] = [:]
+    @State private var blockRequested = false
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
-    private var ownedSpaces: [Space] { model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true } }
+    private var ownedSpaces: [Space] {
+        // Don't offer the open space to someone who is already in it.
+        let open: String? = model.detail.flatMap { detail in detail.members.contains(where: { $0.id == person.id }) ? detail.space.id : nil }
+        return model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true && $0.id != open }
+    }
+    private static let redundantInvitation = ["user already in space": "Member", "user already invited": "Invited"]
 
     var body: some View {
         ScrollView {
@@ -3504,20 +3518,20 @@ private struct MentionCardView: View {
                         if choosingSpace {
                             VStack(spacing: 6) {
                                 ForEach(ownedSpaces) { space in
-                                    Button(pending == space.id ? "Sending…" : space.name + (invited.contains(space.id) ? " · Invited" : "")) {
+                                    Button(pending == space.id ? "Sending…" : space.name + (invited[space.id].map { " · \($0)" } ?? "")) {
                                         Task { await invite(space) }
                                     }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                                        .disabled(pending != nil || invited.contains(space.id))
+                                        .disabled(pending != nil || invited[space.id] != nil)
                                 }
                             }.accessibilityLabel("Spaces you own")
                         }
                     }
                     Button {
-                        if blocked { Task { await changeBlock(false) } }
-                        else { blockTarget = BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId) }
+                        if blocked { Task { await unblock() } }
+                        else { blockRequested = true; close() }
                     } label: {
                         Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
-                            .foregroundStyle(CaperTheme.terracottaBright)
+                            .foregroundStyle(CaperTheme.error)
                     }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
                         .accessibilityIdentifier("mention-card-block")
                     if let status {
@@ -3534,8 +3548,11 @@ private struct MentionCardView: View {
             }.padding(16)
         }
         #if os(macOS)
-        // A fixed width keeps the popover's size independent of its content.
-        .frame(width: 280, height: person.isSelf ? 172 : choosingSpace ? 460 : blocked ? 210 : 320, alignment: .topLeading)
+        // A fixed width keeps text wrapping stable; the height fits the
+        // content, and only a long space list scrolls.
+        .frame(width: 280, alignment: .topLeading)
+        .frame(maxHeight: 460)
+        .fixedSize(horizontal: false, vertical: true)
         .background(CaperTheme.surface)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3543,7 +3560,11 @@ private struct MentionCardView: View {
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
         #endif
-        .modifier(BlockConfirmation(target: $blockTarget, block: { _ in await changeBlock(true) }))
+        .onDisappear {
+            if blockRequested {
+                requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
+            }
+        }
         // Contain, so this identifier does not replace each child's own.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mention-card")
@@ -3560,25 +3581,28 @@ private struct MentionCardView: View {
     }
 
     private func invite(_ space: Space) async {
-        guard pending == nil, !blocked, !invited.contains(space.id), let username = person.username else { return }
+        guard pending == nil, !blocked, invited[space.id] == nil, let username = person.username else { return }
         pending = space.id; error = nil; status = nil
         defer { pending = nil }
         do {
             try await model.addSpaceMember(username: username, spaceID: space.id)
-            invited.insert(space.id)
+            invited[space.id] = "Invited"
             status = "Invitation sent to \(space.name)."
-        } catch { self.error = FriendlyError.message(for: error) }
+        } catch {
+            // Redundant invitations still mark the row so it isn't retried.
+            if let already = (error as? APIError).flatMap({ Self.redundantInvitation[$0.message] }) { invited[space.id] = already }
+            self.error = FriendlyError.message(for: error)
+        }
     }
 
-    private func changeBlock(_ block: Bool) async {
+    /// Unblock keeps the card open and says so, as on web.
+    private func unblock() async {
         guard pending == nil else { return }
-        pending = block ? "block" : "unblock"; error = nil
+        pending = "unblock"; error = nil
         defer { pending = nil }
         do {
-            if block {
-                try await model.block(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
-            } else { try await model.unblock(accountID: person.id) }
-            status = block ? "Blocked." : "Unblocked."
+            try await model.unblock(accountID: person.id)
+            status = "Unblocked."
         } catch { self.error = FriendlyError.message(for: error) }
     }
 }

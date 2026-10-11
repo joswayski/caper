@@ -1969,11 +1969,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
         done()
     }
-    /** A profile invitation targets an owned space without changing the open conversation. */
-    fun inviteToSpace(spaceId: String, username: String, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+    /**
+     * A profile invitation targets an owned space without changing the open conversation.
+     * [already] gets "Member" or "Invited" when the server says it is redundant, before [failed].
+     */
+    fun inviteToSpace(spaceId: String, username: String, done: () -> Unit, already: (String) -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
         val current = mutable.value
         check(current.spaces.any { it.id == spaceId && it.ownerId == current.account?.id && !it.demo }) { "Only space owners can invite people." }
-        val member = api.addSpaceMember(token, spaceId, username)
+        val member = try { api.addSpaceMember(token, spaceId, username) }
+        catch (error: ApiException) {
+            redundantInvitations[error.message]?.let { if (request == accountGeneration) already(it) }
+            throw error
+        }
         if (request != accountGeneration) return@accountRequest
         if (mutable.value.selectedSpace?.space?.id == spaceId)
             mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
@@ -2237,6 +2244,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
 /** The longest launch keeps the loading screen up while restoring the last conversation. */
 internal const val RESTORE_LIMIT_MS = 5_000L
+
+/** The server's redundant-invitation errors -> the profile card's label for that space. */
+private val redundantInvitations = mapOf("user already in space" to "Member", "user already invited" to "Invited")
 
 /** Web/Apple: [preferred] when the space has it, else the channel last opened there while still joined, else the first joined channel. */
 internal fun spaceLandingChannel(channels: List<Channel>, preferred: String?, remembered: String?): Channel? =
