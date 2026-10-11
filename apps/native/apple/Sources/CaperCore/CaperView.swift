@@ -143,8 +143,6 @@ private struct FirstSpaceView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
                     .accessibilityIdentifier("first-space-create")
-                Button("Direct messages") { model.navigationOpen = true }
-                    .accessibilityIdentifier("first-space-direct-messages")
                 if !model.canCreateSpace, model.limits != nil {
                     Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
