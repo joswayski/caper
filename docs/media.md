@@ -6333,6 +6333,13 @@ account/request revisions fence late responses. Reads from another client appear
 on the next refresh. Historical messages start unread until viewed: there is no
 backfill asserting that existing users have seen them.
 
+The list only inspects channels whose stream moved past the reader's position,
+takes each joined channel's newest qualifying message by index, and finds
+mentions through the partial GIN index `messages_mentions` (migration
+`202610110002`, built `CONCURRENTLY` outside a transaction). On 400k seeded
+messages in unjoined, never-read channels this took the poll from about 660ms to
+under 1ms.
+
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres test exercises the actual unread/read routes: own/blocked authors, private grants, unjoined and thread mentions, broadcast replies, forwarded mention exclusion, channel-specific clearing, monotonic reads, future-cursor clamping and revoked membership. |
