@@ -206,6 +206,8 @@ Neither installation nor launch requires a terminal or administrator access. The
 replaces only `app`, preserving the uninstaller and shortcuts. Close Caper before
 installing or uninstalling. CI runs `test-installer.ps1` on a clean Windows host
 to check the PE GUI subsystem, install/reinstall, file hashes, shortcuts and removal.
+In CI it first clears an install left by a run cancelled mid-test; run locally,
+it refuses to touch an existing install.
 
 The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
 X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or
