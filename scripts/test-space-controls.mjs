@@ -16,8 +16,6 @@ const init = join(directory, "fixture.js");
 function fixture() {
   if (location.protocol === "about:") return;
   const saved = new URL(location.href).searchParams.get("width") ?? "240";
-  const publicDemo = new URL(location.href).searchParams.has("public");
-  const guest = new URL(location.href).searchParams.has("guest");
   localStorage.setItem("caper:channel-sidebar-width", saved);
   const account = {
     id: "owner1234567",
@@ -32,16 +30,6 @@ function fixture() {
     spaceId: space.id,
     name: "fixture-channel",
     private: !new URL(location.href).searchParams.has("publicChannel"),
-  };
-  window.homeFixture = {
-    account,
-    history: {
-      space: { id: "public123456", name: "Public demo" },
-      channel: { id: "general12345", name: "general" },
-      messages: [],
-      cursor: "0",
-      hasMore: false,
-    },
   };
   const members = [
     { ...account, owner: true },
@@ -99,7 +87,7 @@ function fixture() {
         this.subscriptions.set(request.id, request);
         control.subscriptions[request.id] = request;
         const event =
-          request.kind === "chat"
+          request.kind === "chat" || request.kind === "notifications"
             ? { type: "ready", cursor: request.after ?? "0" }
             : request.kind === "presence"
               ? {
@@ -169,16 +157,13 @@ function fixture() {
     }
     if (path === "/api/account/me") {
       await new Promise((resolve) => setTimeout(resolve, 350));
-      if (guest) return Response.json({ error: "unauthorized" }, { status: 401 });
       return Response.json(account);
     }
     if (path === "/api/chat/session")
       return Response.json({
         token: "fixture-token",
-        author: { id: account.id, name: guest ? "Fixture guest" : account.displayName, isGuest: guest },
+        author: { id: account.id, name: account.displayName, isGuest: false },
       });
-    if (publicDemo && path === "/api/chat/general")
-      return Response.json({ space, channel, messages: [], cursor: "0", hasMore: false });
     if (path === "/api/spaces")
       return Response.json({
         spaces: deletedSpace ? [] : [space],
@@ -191,10 +176,13 @@ function fixture() {
     return Response.json({ error: "Disabled in UI fixture" }, { status: 503 });
   };
   function sample() {
-    const room = document.querySelector(".call-room");
+    // While the client route mounts, React keeps the server-rendered skeleton
+    // hidden (display: none) beside the visible page; sample the visible one.
+    const page = [...document.querySelectorAll(".call-page")].find((main) => main.getClientRects().length);
+    const room = page?.querySelector(".call-room");
     if (room) {
       const bounds = (selector) => {
-        const r = document.querySelector(selector).getBoundingClientRect();
+        const r = page.querySelector(selector).getBoundingClientRect();
         return [r.x, r.y, r.width, r.height];
       };
       const frame = {
@@ -237,6 +225,7 @@ function openOverview() {
   browser("focus", '[aria-label="Manage fixture-channel"]');
   browser("press", "Enter");
   browser("find", "role", "button", "click", "--name", "Channel settings", "--exact");
+  wait('!!document.querySelector(".space-dialog[open] .danger-outline")');
   browser("click", ".danger-outline");
   wait('!!document.querySelector(".delete-confirmation")');
 }
@@ -261,12 +250,25 @@ function dismissBackdrop() {
   browser("mouse", "down", "left");
   browser("mouse", "up", "left");
 }
+// Space dialogs fit their content and hang from a fixed top edge (#409): async
+// errors, member loading and save bars only extend them downward. Compare their
+// position and width; their height may grow, but nothing above a change moves.
+const anchored = (selector) =>
+  selector.startsWith(".space-dialog") ? geometry(selector).slice(0, 3) : geometry(selector);
 function stableShell(selector) {
   const before = geometry(selector);
   evaluate(
     `(() => { const d = document.querySelector(${JSON.stringify(selector)}); const p = document.createElement('p'); p.dataset.layoutProbe = ''; p.textContent = 'Test-only asynchronous content '.repeat(200); d.append(p); })()`,
   );
-  assert.deepEqual(geometry(selector), before, `${selector}: overflowing async content must not resize or recenter`);
+  assert.deepEqual(
+    anchored(selector),
+    before.slice(0, anchored(selector).length),
+    `${selector}: overflowing async content must not resize or recenter`,
+  );
+  assert.ok(
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().bottom <= innerHeight`),
+    `${selector}: overflowing async content must scroll inside the viewport`,
+  );
   evaluate('document.querySelector("[data-layout-probe]").remove()');
   assert.deepEqual(geometry(selector), before);
 }
@@ -301,6 +303,17 @@ function testSettingRows(width, height) {
   })()`);
   if (artifacts) browser("screenshot", ".profile-dialog", `${artifacts}/settings-centered-${width}-${height}.png`);
 }
+// Browse buttons slide the conversation away before Browse becomes the layout.
+function openBrowse() {
+  browser("click", ".navigation-toggle");
+  wait(
+    '!!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition',
+  );
+}
+function closeBrowse() {
+  browser("click", '.channel-select[aria-current="page"]');
+  wait('!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition');
+}
 function testModalGeometry() {
   for (const [width, height] of [
     [1280, 900],
@@ -311,7 +324,7 @@ function testModalGeometry() {
     browser("open", `${url}?space=space1234567&channel=channel12345&publicChannel&debug`);
     wait('!!document.querySelector(".channel-navigation")');
     evaluate("document.fonts.ready");
-    if (width < 760) browser("click", ".navigation-toggle");
+    if (width < 760) openBrowse();
     if (width < 760) {
       const layout = evaluate(`(() => {
         const rail = document.querySelector('.space-rail'), sidebar = document.querySelector('.sidebar-channels'), account = document.querySelector('.call-account');
@@ -343,22 +356,22 @@ function testModalGeometry() {
     browser("press", "Enter");
     browser("find", "role", "button", "click", "--name", "Channel settings", "--exact");
     const selectors = [".space-dialog[open]", ".space-field input", ".channel-privacy input"];
-    const before = selectors.map(geometry);
+    const before = selectors.map(anchored);
     assert.ok(evaluate('document.querySelector(".channel-save-bar").inert'));
     screenshot(`modal-channel-clean-${width}-${height}`);
     browser("check", ".channel-privacy input");
-    assert.deepEqual(selectors.map(geometry), before, "Privacy toggle moved dialog or controls");
+    assert.deepEqual(selectors.map(anchored), before, "Privacy toggle moved dialog or controls");
     assert.equal(evaluate('document.querySelector(".channel-save-bar").inert'), false);
     screenshot(`modal-channel-dirty-${width}-${height}`);
     browser("click", ".channel-save-bar .secondary");
-    assert.deepEqual(selectors.map(geometry), before, "Reset moved dialog or controls");
+    assert.deepEqual(selectors.map(anchored), before, "Reset moved dialog or controls");
     browser("check", ".channel-privacy input");
     browser("click", ".channel-save-bar .primary");
     wait('document.querySelector(".channel-save-bar").inert && !!document.querySelector(".member-manager")');
-    assert.deepEqual(selectors.map(geometry), before, "Saving privacy and loading members moved dialog or fields");
+    assert.deepEqual(selectors.map(anchored), before, "Saving privacy and loading members moved dialog or fields");
     screenshot(`modal-channel-members-${width}-${height}`);
     browser("uncheck", ".channel-privacy input");
-    assert.deepEqual(selectors.map(geometry), before, "Making a private channel public moved dialog or fields");
+    assert.deepEqual(selectors.map(anchored), before, "Making a private channel public moved dialog or fields");
     browser("click", ".channel-save-bar .secondary");
     stableShell(".space-dialog[open]");
     evaluate(
@@ -460,7 +473,7 @@ function testModalGeometry() {
     stableShell(".audio-dialog[open]");
     browser("press", "Escape");
     if (width < 760) {
-      browser("click", '.channel-select[aria-current="page"]');
+      closeBrowse();
       toggleMembers();
       wait('!!document.querySelector(".member-list-close")');
       screenshot(`members-overlay-${width}-${height}`);
@@ -503,442 +516,308 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   testModalGeometry();
   if (!process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
-    if (!process.env.HOMEPAGE_ONLY) {
-      for (const [viewport, saved, expected] of [
-        [1280, "240", 240],
-        [1280, "440", 440],
-        [800, "440", 362],
-        [1280, "invalid", 280],
-      ]) {
-        browser("set", "viewport", String(viewport), "900", "2");
-        browser("open", `${url}?space=space1234567&channel=channel12345&width=${saved}`);
-        wait('!!document.querySelector(".channel-navigation")');
-        wait("spaceControlFixture.frames.some(frame => !frame.loading)");
-        const frames = evaluate("spaceControlFixture.frames");
-        assert.ok(frames.some((f) => f.loading) && frames.some((f) => !f.loading));
-        for (const f of frames) {
-          assert.equal(
-            f.geometry[3][2],
-            expected,
-            `Wrong sidebar width during ${f.loading ? "loading" : "loaded"} state`,
-          );
-          assert.deepEqual(f.geometry, frames.at(-1).geometry, "Loading shell moved");
-        }
+    for (const [viewport, saved, expected] of [
+      [1280, "240", 240],
+      [1280, "440", 440],
+      // 800 - 15 stable scrollbar gutter (#465) - 56 page margins - 2 borders - 60 rail - 320 conversation.
+      [800, "440", 347],
+      [1280, "invalid", 260], // ChannelSidebar DEFAULT_WIDTH
+    ]) {
+      browser("set", "viewport", String(viewport), "900", "2");
+      browser("open", `${url}?space=space1234567&channel=channel12345&width=${saved}`);
+      wait('!!document.querySelector(".channel-navigation")');
+      wait("spaceControlFixture.frames.some(frame => !frame.loading)");
+      const frames = evaluate("spaceControlFixture.frames");
+      assert.ok(frames.some((f) => f.loading) && frames.some((f) => !f.loading));
+      for (const f of frames) {
+        assert.equal(
+          f.geometry[3][2],
+          expected,
+          `Wrong sidebar width during ${f.loading ? "loading" : "loaded"} state`,
+        );
+        assert.deepEqual(f.geometry, frames.at(-1).geometry, "Loading shell moved");
       }
-      wait(
-        'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")',
-      );
-      assert.ok(
-        evaluate(
-          '(() => { const a = document.querySelector(".channel-navigation > header").getBoundingClientRect(), b = document.querySelector(".chat-heading").getBoundingClientRect(); return a.top === b.top && a.bottom === b.bottom; })()',
-        ),
-        "Space and channel headers must align",
-      );
-      assert.ok(
-        evaluate(
-          'document.querySelector(".space-member-presence").getBoundingClientRect().left >= document.querySelector(".stage").getBoundingClientRect().right',
-        ),
-        "Desktop members must be on the right",
-      );
-      assert.equal(
-        evaluate(
-          'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
-        ),
-        25,
-      );
-      assert.equal(
-        evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'),
-        "Online",
-      );
-      assert.equal(
-        evaluate('document.querySelectorAll(".space-member-presence small").length'),
-        0,
-        "Statuses belong on the dots, not text rows",
-      );
-      assert.equal(
-        evaluate('getComputedStyle(document.querySelector(".member-presence-heading")).borderBottomWidth'),
-        "0px",
-      );
-      assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), "1");
-      assert.equal(
-        evaluate('document.querySelector(".member-presence-heading .section-count").textContent'),
-        "30",
-        "Member count must include every page",
-      );
-      screenshot("gateway-merged-members-desktop");
-      for (const status of ["idle", "offline", "online"]) {
-        evaluate(`spaceControlFixture.setPresence('${status}')`);
-        wait(`document.querySelector('.account-avatar .presence-dot').dataset.status === '${status}'`);
-        assert.equal(evaluate('document.querySelector(".space-member-presence .presence-dot").dataset.status'), status);
-        screenshot(`presence-${status}`);
-      }
-      browser("click", ".member-presence-pages button:last-child");
-      wait(
-        'document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")',
-      );
-      assert.equal(
-        evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
-        2,
-      );
-      assert.equal(
-        evaluate(
-          'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
-        ),
-        5,
-      );
-      const expandedChatWidth = evaluate('document.querySelector(".stage").getBoundingClientRect().width');
-      browser("click", ".member-list-toggle");
-      wait(
-        '!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence" && s.userIds.length > 1)',
-      );
-      assert.equal(
-        evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
-        1,
-        "Own presence must remain subscribed with members hidden",
-      );
-      assert.equal(
-        evaluate('document.querySelector(".space-member-presence")'),
-        null,
-        "Hidden members must not retain a sidebar",
-      );
-      assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "false");
-      assert.ok(
-        evaluate('document.querySelector(".stage").getBoundingClientRect().width') > expandedChatWidth,
-        "Chat must reclaim the member column",
-      );
-      browser("click", ".channel-section-toggle");
-      assert.ok(evaluate('document.querySelector("#space-channel-list").hidden'));
-      assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), "1");
-      screenshot("members-collapsed");
-      browser("click", ".channel-section-toggle");
-      browser("click", ".member-list-toggle");
-      wait('document.querySelectorAll(".space-member-presence li").length === 25');
-      assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), "30");
-      assert.ok(
-        evaluate(
-          '[...document.querySelectorAll(".space-member-presence .presence-dot")].every(node => ["online", "idle", "offline"].includes(node.dataset.status))',
-        ),
-        "Reopening must restore live subscriptions",
-      );
-      assert.equal(
-        evaluate('document.querySelector(".space-member-presence").textContent.includes("Updating")'),
-        false,
-      );
-      browser("set", "viewport", "390", "844", "2");
-      screenshot("members-narrow-open");
-      closeMembers();
-      assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
-      toggleMembers();
-      dismissMemberBackdrop();
-      assert.equal(
-        evaluate('!!document.querySelector(".space-member-presence")'),
-        false,
-        "Outside tap must close the narrow member panel",
-      );
-      assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);
-      screenshot("members-narrow-hidden");
-      assert.ok(
-        evaluate(
-          'Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2',
-        ),
-        "Mobile messages must fill the available grid row without a fixed-height blank gap",
-      );
-      browser("click", ".navigation-toggle");
-      wait('!!document.querySelector(".spaces-room.navigation-open")');
-      assert.ok(
-        evaluate("document.documentElement.scrollWidth <= innerWidth"),
-        "Narrow member navigation must not overflow",
-      );
-      screenshot("gateway-merged-members-narrow");
-      browser("click", '.channel-select[aria-current="page"]');
-      wait('!document.querySelector(".spaces-room.navigation-open")');
-      browser("set", "viewport", "1280", "900", "2");
-      for (const label of ["Create space", "Create channel"]) {
-        browser("click", `[aria-label="${label}"]`);
-        wait('!!document.querySelector(".space-dialog[open]")');
-        browser("click", ".space-field input");
-        assert.equal(opens(), 1, "Clicking inside must not dismiss");
-        screenshot(label === "Create space" ? "create-space-dialog" : "create-channel-dialog");
-        browser("mouse", "move", "10", "10");
-        browser("mouse", "down", "left");
-        browser("mouse", "up", "left");
-        assert.equal(opens(), 0, `${label} must dismiss on backdrop click`);
-      }
-      openOverview();
-      assert.equal(opens(), 2);
-      assert.equal(evaluate("document.activeElement.textContent"), "Cancel");
-      assert.equal(evaluate("getComputedStyle(document.activeElement).outlineStyle"), "solid");
-      screenshot("gateway-merged-delete-confirmation");
-      browser("press", "Enter");
-      assert.equal(opens(), 1, "Immediate Enter must cancel, not delete");
-      assert.equal(evaluate("spaceControlFixture.deletes.length"), 0);
-      browser("click", ".danger-outline");
-      browser("press", "Escape");
-      assert.equal(opens(), 1, "Escape must close only the confirmation");
-      assert.equal(evaluate("document.activeElement.className"), "danger-outline");
-      browser("fill", ".space-field input", "   Fresh Plans   ");
-      browser("press", "Enter");
-      wait('document.querySelector(".channel-save-bar").inert');
-      assert.equal(evaluate('document.querySelector(".space-field input").value'), "fresh-plans");
-      assert.deepEqual(evaluate("spaceControlFixture.updates.at(-1).body"), { name: "fresh-plans", private: true });
-      browser("click", ".danger-outline");
+    }
+    // The member list starts closed on every client (#414); open it here.
+    assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "false");
+    assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
+    toggleMembers();
+    wait(
+      'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")',
+    );
+    assert.ok(
+      evaluate(
+        '(() => { const a = document.querySelector(".channel-navigation > header").getBoundingClientRect(), b = document.querySelector(".chat-heading").getBoundingClientRect(); return a.top === b.top && a.bottom === b.bottom; })()',
+      ),
+      "Space and channel headers must align",
+    );
+    assert.ok(
+      evaluate(
+        'document.querySelector(".space-member-presence").getBoundingClientRect().left >= document.querySelector(".stage").getBoundingClientRect().right',
+      ),
+      "Desktop members must be on the right",
+    );
+    assert.equal(
+      evaluate(
+        'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
+      ),
+      25,
+    );
+    assert.equal(
+      evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'),
+      "Online",
+    );
+    assert.equal(
+      evaluate('document.querySelectorAll(".space-member-presence small").length'),
+      0,
+      "Statuses belong on the dots, not text rows",
+    );
+    assert.equal(
+      evaluate('getComputedStyle(document.querySelector(".member-presence-heading")).borderBottomWidth'),
+      "0px",
+    );
+    assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), "1");
+    assert.equal(
+      evaluate('document.querySelector(".member-presence-heading .section-count").textContent'),
+      "30",
+      "Member count must include every page",
+    );
+    screenshot("gateway-merged-members-desktop");
+    for (const status of ["idle", "offline", "online"]) {
+      evaluate(`spaceControlFixture.setPresence('${status}')`);
+      wait(`document.querySelector('.account-avatar .presence-dot').dataset.status === '${status}'`);
+      assert.equal(evaluate('document.querySelector(".space-member-presence .presence-dot").dataset.status'), status);
+      screenshot(`presence-${status}`);
+    }
+    browser("click", ".member-presence-pages button:last-child");
+    wait(
+      'document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")',
+    );
+    assert.equal(
+      evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
+      2,
+    );
+    assert.equal(
+      evaluate(
+        'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
+      ),
+      5,
+    );
+    const expandedChatWidth = evaluate('document.querySelector(".stage").getBoundingClientRect().width');
+    browser("click", ".member-list-toggle");
+    wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence" && s.userIds.length > 1)');
+    assert.equal(
+      evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
+      1,
+      "Own presence must remain subscribed with members hidden",
+    );
+    assert.equal(
+      evaluate('document.querySelector(".space-member-presence")'),
+      null,
+      "Hidden members must not retain a sidebar",
+    );
+    assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "false");
+    assert.ok(
+      evaluate('document.querySelector(".stage").getBoundingClientRect().width') > expandedChatWidth,
+      "Chat must reclaim the member column",
+    );
+    browser("click", ".channel-section-toggle");
+    // Collapsed via data-collapsed (#211), so an active call's channel can stay visible.
+    assert.ok(
+      evaluate(
+        '(() => { const list = document.querySelector("#space-channel-list"); return list.hasAttribute("data-collapsed") && !list.getClientRects().length; })()',
+      ),
+      "Collapsing channels must hide the list",
+    );
+    assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), "1");
+    screenshot("members-collapsed");
+    browser("click", ".channel-section-toggle");
+    browser("click", ".member-list-toggle");
+    wait('document.querySelectorAll(".space-member-presence li").length === 25');
+    assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), "30");
+    assert.ok(
+      evaluate(
+        '[...document.querySelectorAll(".space-member-presence .presence-dot")].every(node => ["online", "idle", "offline"].includes(node.dataset.status))',
+      ),
+      "Reopening must restore live subscriptions",
+    );
+    assert.equal(evaluate('document.querySelector(".space-member-presence").textContent.includes("Updating")'), false);
+    browser("set", "viewport", "390", "844", "2");
+    screenshot("members-narrow-open");
+    closeMembers();
+    assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
+    toggleMembers();
+    dismissMemberBackdrop();
+    assert.equal(
+      evaluate('!!document.querySelector(".space-member-presence")'),
+      false,
+      "Outside tap must close the narrow member panel",
+    );
+    assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);
+    screenshot("members-narrow-hidden");
+    assert.ok(
+      evaluate(
+        'Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2',
+      ),
+      "Mobile messages must fill the available grid row without a fixed-height blank gap",
+    );
+    openBrowse();
+    assert.ok(
+      evaluate("document.documentElement.scrollWidth <= innerWidth"),
+      "Narrow member navigation must not overflow",
+    );
+    screenshot("gateway-merged-members-narrow");
+    closeBrowse();
+    browser("set", "viewport", "1280", "900", "2");
+    for (const label of ["Create space", "Create channel"]) {
+      browser("click", `[aria-label="${label}"]`);
+      wait('!!document.querySelector(".space-dialog[open]")');
+      browser("click", ".space-field input");
+      assert.equal(opens(), 1, "Clicking inside must not dismiss");
+      screenshot(label === "Create space" ? "create-space-dialog" : "create-channel-dialog");
       browser("mouse", "move", "10", "10");
       browser("mouse", "down", "left");
       browser("mouse", "up", "left");
-      assert.equal(opens(), 1, "Backdrop dismissal must preserve settings");
-      browser("dblclick", ".danger-outline");
-      assert.equal(evaluate("spaceControlFixture.deletes.length"), 0, "Double-click opener must not delete");
-      assert.equal(opens(), 2);
-      evaluate(
-        'document.querySelector(".delete-confirmation .danger").dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}))',
-      );
-      assert.equal(evaluate("spaceControlFixture.deletes.length"), 0, "Second click must not confirm");
-      browser("click", `${modal} .secondary`);
-      browser("click", ".danger-outline");
-      evaluate("spaceControlFixture.fail = true");
-      browser("click", `${modal} .danger`);
-      wait("spaceControlFixture.release !== null");
-      browser("press", "Escape");
-      assert.equal(opens(), 2, "Pending deletion must retain its result surface");
-      assert.equal(evaluate('document.querySelector(".delete-confirmation .danger").disabled'), true);
-      evaluate("spaceControlFixture.release()");
-      wait('!!document.querySelector(".delete-confirmation [role=alert]")');
-      assert.equal(
-        evaluate('document.querySelector(".delete-confirmation [role=alert]").textContent'),
-        "Test-only deletion failure",
-      );
-      evaluate("spaceControlFixture.fail = false; spaceControlFixture.release = null");
-      browser("click", `${modal} .danger`);
-      wait("spaceControlFixture.release !== null");
-      evaluate("spaceControlFixture.release()");
-      wait('!document.querySelector(".space-dialog[open]")');
-      assert.deepEqual(
-        evaluate("spaceControlFixture.deletes"),
-        Array(2).fill("/api/spaces/space1234567/channels/channel12345"),
-      );
-      browser("click", ".space-menu summary");
-      browser("find", "role", "button", "click", "--name", "Space settings", "--exact");
-      browser("fill", ".space-field input", "   Renamed studio   ");
-      browser("press", "Enter");
-      wait('document.querySelector(".space-field input").value === "Renamed studio"');
-      assert.deepEqual(evaluate("spaceControlFixture.updates.at(-1).body"), { name: "Renamed studio" });
-      browser("fill", ".space-field input", "   Renamed studio   ");
-      browser("press", "Tab");
-      assert.equal(
-        evaluate('document.querySelector(".space-field input").value'),
-        "Renamed studio",
-        "Whitespace-only edits normalize on blur even without saving",
-      );
-      browser("click", ".danger-outline");
-      assert.match(
-        evaluate('document.querySelector(".delete-confirmation").textContent'),
-        /All its channels and their messages will disappear from the space\. This cannot be undone/,
-      );
-      browser("press", "Enter");
-      assert.equal(opens(), 1, "Immediate Enter also cancels space deletion");
-      assert.equal(evaluate("spaceControlFixture.deletes.length"), 2);
-      browser("click", ".danger-outline");
-      browser("click", `${modal} .danger`);
-      wait("spaceControlFixture.deletes.length === 3");
-      evaluate("spaceControlFixture.release()");
-      wait('!document.querySelector(".space-dialog[open]")');
-      assert.equal(evaluate("spaceControlFixture.deletes.at(-1)"), "/api/spaces/space1234567");
-      for (const enabled of [false, true]) {
-        browser("set", "viewport", "1280", "900", "2");
-        browser("open", `${url}?space=space1234567&channel=channel12345${enabled ? "&debug" : ""}`);
-        wait('!!document.querySelector(".account-avatar")');
-        browser("click", '[aria-label="User Settings"]');
-        assert.equal(
-          evaluate('[...document.querySelectorAll("button")].some(b => b.textContent === "Audio diagnostics")'),
-          enabled,
-        );
-        if (enabled) {
-          browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
-          wait('!!document.querySelector(".audio-debug")');
-          assert.match(evaluate('document.querySelector(".audio-debug").textContent'), /No microphone capture started/);
-          assert.equal(
-            evaluate('JSON.parse(document.querySelector(".audio-debug pre").textContent).captureAttempt'),
-            "not-started",
-          );
-        }
-      }
-      console.log("PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.");
-      for (const guest of [false, true]) {
-        browser("open", `${url}?public${guest ? "&guest" : ""}`);
-        wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
-        assert.equal(
-          evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
-          0,
-          "Demo self presence must not subscribe to account-space presence",
-        );
-        assert.equal(
-          evaluate('getComputedStyle(document.querySelector(".account-avatar .presence-dot")).backgroundColor'),
-          "rgb(99, 122, 67)",
-        );
-        screenshot(guest ? "guest-self-online" : "demo-account-self-online");
-        browser("click", '[aria-label="User Settings"]');
-        assert.equal(
-          evaluate('document.querySelector(".top-layer-tooltip:popover-open")'),
-          null,
-          "Clicking settings dismisses its tooltip",
-        );
-        browser("uncheck", '[role="switch"]');
-        assert.equal(evaluate('localStorage.getItem("caper:system-sounds")'), "off");
-        screenshot(guest ? "guest-system-sounds-off" : "account-system-sounds-off");
-        browser("open", `${url}?public${guest ? "&guest" : ""}`);
-        wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
-        browser("click", '[aria-label="User Settings"]');
-        assert.equal(
-          evaluate('document.querySelector("[role=switch]").checked'),
-          false,
-          "System sounds preference survives reload",
-        );
-        browser("check", '[role="switch"]');
-        screenshot(guest ? "guest-system-sounds-on" : "account-system-sounds-on");
-        if (guest) {
-          browser("set", "viewport", "390", "844", "2");
-          browser("click", ".navigation-toggle");
-          browser("click", '[aria-label="User Settings"]');
-          screenshot("guest-system-sounds-narrow");
-          browser("set", "viewport", "1280", "900", "2");
-        }
-        browser("click", '[aria-label="User Settings"]');
-        evaluate("window.realNow = Date.now; Date.now = () => realNow() + 600001");
-        wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "idle"');
-        screenshot(guest ? "guest-self-idle" : "demo-account-self-idle");
-        evaluate('Date.now = realNow; window.dispatchEvent(new Event("pointerdown"))');
-        wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "online"');
-        evaluate("spaceControlFixture.disconnect()");
-        wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "offline"');
-      }
-      console.log(
-        "PASS: public guest and account footer dots track chat online/idle/offline without an account presence subscription.",
-      );
-      console.log(
-        "PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).",
-      );
+      assert.equal(opens(), 0, `${label} must dismiss on backdrop click`);
     }
-    // Mount the real homepage with explicit loader fixtures; API/gateway mocks
-    // remain the same as the standalone spaces checks above.
-    for (const guest of [false, true]) {
-      browser("open", `${url}?public&width=440`);
-      wait('!!document.querySelector(".channel-navigation")');
-      evaluate(`(async () => {
-      const { default: React } = await import('/node_modules/.vite/deps/react.js');
-      const { default: { createRoot } } = await import('/node_modules/.vite/deps/react-dom_client.js');
-      const { default: Home } = await import('/src/pages/Home.tsx');
-      for (const child of document.body.children) child.style.display = 'none';
-      History.prototype.replaceState.call(history, {}, '', '/');
-      if (${guest}) {
-        const fetch = window.fetch;
-        window.fetch = (input, options) => String(input) === '/api/account/me'
-          ? Promise.resolve(Response.json({ error: 'unauthorized' }, { status: 401 }))
-          : fetch(input, options);
-      }
-      const root = document.createElement('div'); document.body.append(root);
-      createRoot(root).render(React.createElement(Home, { account: ${guest ? "null" : "homeFixture.account"}, history: homeFixture.history, initialNow: Date.now(), latestChanges: [] }));
-    })()`);
-      if (!guest) {
-        wait('!!document.querySelector(".live-app .channel-navigation[data-demo] .channel-select")');
+    openOverview();
+    assert.equal(opens(), 2);
+    assert.equal(evaluate("document.activeElement.textContent"), "Cancel");
+    assert.equal(evaluate("getComputedStyle(document.activeElement).outlineStyle"), "solid");
+    screenshot("gateway-merged-delete-confirmation");
+    browser("press", "Enter");
+    assert.equal(opens(), 1, "Immediate Enter must cancel, not delete");
+    assert.equal(evaluate("spaceControlFixture.deletes.length"), 0);
+    browser("click", ".danger-outline");
+    browser("press", "Escape");
+    assert.equal(opens(), 1, "Escape must close only the confirmation");
+    assert.equal(evaluate("document.activeElement.className"), "danger-outline");
+    browser("fill", ".space-field input", "   Fresh Plans   ");
+    browser("press", "Enter");
+    wait('document.querySelector(".channel-save-bar").inert');
+    assert.equal(evaluate('document.querySelector(".space-field input").value'), "fresh-plans");
+    assert.deepEqual(evaluate("spaceControlFixture.updates.at(-1).body"), { name: "fresh-plans", private: true });
+    browser("click", ".danger-outline");
+    browser("mouse", "move", "10", "10");
+    browser("mouse", "down", "left");
+    browser("mouse", "up", "left");
+    assert.equal(opens(), 1, "Backdrop dismissal must preserve settings");
+    browser("dblclick", ".danger-outline");
+    assert.equal(evaluate("spaceControlFixture.deletes.length"), 0, "Double-click opener must not delete");
+    assert.equal(opens(), 2);
+    evaluate(
+      'document.querySelector(".delete-confirmation .danger").dispatchEvent(new MouseEvent("click", {bubbles:true, detail:2}))',
+    );
+    assert.equal(evaluate("spaceControlFixture.deletes.length"), 0, "Second click must not confirm");
+    browser("click", `${modal} .secondary`);
+    browser("click", ".danger-outline");
+    evaluate("spaceControlFixture.fail = true");
+    browser("click", `${modal} .danger`);
+    wait("spaceControlFixture.release !== null");
+    browser("press", "Escape");
+    assert.equal(opens(), 2, "Pending deletion must retain its result surface");
+    assert.equal(evaluate('document.querySelector(".delete-confirmation .danger").disabled'), true);
+    evaluate("spaceControlFixture.release()");
+    wait('!!document.querySelector(".delete-confirmation [role=alert]")');
+    assert.equal(
+      evaluate('document.querySelector(".delete-confirmation [role=alert]").textContent'),
+      "Test-only deletion failure.", // Server text reads as a sentence (#409).
+    );
+    evaluate("spaceControlFixture.fail = false; spaceControlFixture.release = null");
+    browser("click", `${modal} .danger`);
+    wait("spaceControlFixture.release !== null");
+    evaluate("spaceControlFixture.release()");
+    wait('!document.querySelector(".space-dialog[open]")');
+    assert.deepEqual(
+      evaluate("spaceControlFixture.deletes"),
+      Array(2).fill("/api/spaces/space1234567/channels/channel12345"),
+    );
+    browser("click", ".space-menu summary");
+    browser("find", "role", "button", "click", "--name", "Space settings", "--exact");
+    browser("fill", ".space-field input", "   Renamed studio   ");
+    browser("press", "Enter");
+    wait('document.querySelector(".space-field input").value === "Renamed studio"');
+    assert.deepEqual(evaluate("spaceControlFixture.updates.at(-1).body"), { name: "Renamed studio" });
+    browser("fill", ".space-field input", "   Renamed studio   ");
+    browser("press", "Tab");
+    assert.equal(
+      evaluate('document.querySelector(".space-field input").value'),
+      "Renamed studio",
+      "Whitespace-only edits normalize on blur even without saving",
+    );
+    browser("click", ".danger-outline");
+    assert.match(
+      evaluate('document.querySelector(".delete-confirmation").textContent'),
+      /All its channels and their messages will disappear from the space\. This cannot be undone/,
+    );
+    browser("press", "Enter");
+    assert.equal(opens(), 1, "Immediate Enter also cancels space deletion");
+    assert.equal(evaluate("spaceControlFixture.deletes.length"), 2);
+    browser("click", ".danger-outline");
+    browser("click", `${modal} .danger`);
+    wait("spaceControlFixture.deletes.length === 3");
+    evaluate("spaceControlFixture.release()");
+    wait('!document.querySelector(".space-dialog[open]")');
+    assert.equal(evaluate("spaceControlFixture.deletes.at(-1)"), "/api/spaces/space1234567");
+    for (const enabled of [false, true]) {
+      browser("set", "viewport", "1280", "900", "2");
+      browser("open", `${url}?space=space1234567&channel=channel12345${enabled ? "&debug" : ""}`);
+      wait('!!document.querySelector(".account-avatar")');
+      browser("click", '[aria-label="User Settings"]');
+      assert.equal(
+        evaluate('[...document.querySelectorAll("button")].some(b => b.textContent === "Audio diagnostics")'),
+        enabled,
+      );
+      if (enabled) {
+        browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
+        wait('!!document.querySelector(".audio-debug")');
+        assert.match(evaluate('document.querySelector(".audio-debug").textContent'), /No microphone capture started/);
         assert.equal(
-          evaluate('document.querySelectorAll(".live-app .channel-navigation h1").length'),
-          0,
-          "Public demo must not render a space heading",
+          evaluate('JSON.parse(document.querySelector(".audio-debug pre").textContent).captureAttempt'),
+          "not-started",
         );
-        assert.equal(
-          evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'),
-          0,
-          "The single-channel demo must not have a Channels dropdown",
-        );
-        browser("set", "viewport", "1280", "844", "2");
-        evaluate("document.fonts.ready");
-        screenshot("homepage-public-no-heading");
-      }
-      for (const width of [1280, 390]) {
-        browser("set", "viewport", String(width), "844", "2");
-        browser("click", ".live-activator");
-        wait('!!document.querySelector(".live-scene[data-settled], .live-stage[data-sheet]")');
-        wait(
-          '[...document.querySelectorAll(".live-stage, .live-scene")].every(el => el.getAnimations().every(animation => animation.playState === "finished"))',
-        );
-        assert.equal(evaluate('document.querySelectorAll(".live-titlebar, .live-lights").length'), 0);
-        if (!guest) {
-          if (width === 1280) {
-            const alignment = evaluate(`(() => {
-            const row = document.querySelector('.live-app .channel-select').getBoundingClientRect();
-            const heading = document.querySelector('.live-app .chat-heading').getBoundingClientRect();
-            return { row: row.toJSON(), heading: heading.toJSON(), delta: row.top + row.height / 2 - heading.top - heading.height / 2 };
-          })()`);
-            assert.ok(
-              Math.abs(alignment.delta) < 2,
-              `Public general row must align with the chat header: ${JSON.stringify(alignment)}`,
-            );
-            assert.ok(
-              evaluate('document.querySelector(".live-app .people-panel").getBoundingClientRect().width <= 260'),
-              "A wide saved sidebar must stay compact on the homepage",
-            );
-            assert.ok(
-              evaluate(`(() => {
-            const line = document.querySelector('.live-app .channel-line').getBoundingClientRect();
-            const panel = document.querySelector('.live-app .people-panel').getBoundingClientRect();
-            return line.height <= 44 && line.top - panel.top >= 5 && line.top - panel.top <= 8;
-          })()`),
-              "Public channel highlight must be compact and inset from the top",
-            );
-            screenshot("homepage-public-aligned");
-          }
-          if (width === 390) browser("click", ".live-app .navigation-toggle");
-          browser("click", '.live-app [aria-label="Disposable UI fixture"]');
-          wait('!!document.querySelector(".live-app .channel-manage")');
-          assert.equal(
-            evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'),
-            1,
-            "Account spaces retain channel controls",
-          );
-          assert.ok(
-            evaluate('parseFloat(getComputedStyle(document.querySelector(".live-app .space-menu h1")).fontSize) < 20'),
-            "Space names must not inherit homepage headline typography",
-          );
-          if (width === 390) browser("click", ".live-app .navigation-toggle");
-          browser("click", '.live-app [aria-label="Create space"]');
-          wait('!!document.querySelector(".space-dialog[open]")');
-          screenshot(`homepage-create-space-${width}`);
-          browser("press", "Escape");
-          assert.ok(
-            evaluate('document.querySelector(".live-stage").hasAttribute("data-active")'),
-            "Dialog Escape must not exit the demo",
-          );
-          browser("focus", '.live-app [aria-label="Manage fixture-channel"]');
-          browser("press", "Enter");
-          browser("find", "role", "button", "click", "--name", "Channel settings", "--exact");
-          wait('!!document.querySelector(".space-dialog[open]")');
-          browser("press", "Escape");
-          if (width === 390) browser("click", ".live-app .channel-select");
-        }
-        assert.equal(
-          evaluate("location.pathname + location.search"),
-          "/",
-          "Embedded navigation must not rewrite the homepage URL",
-        );
-        assert.ok(
-          evaluate(`(() => {
-        const exit = document.querySelector('.live-close').getBoundingClientRect();
-        if (exit.top < 0 || exit.right > innerWidth || exit.bottom > innerHeight) return false;
-        return [...document.querySelectorAll('.live-app button')].filter(b => b.getClientRects().length).every(b => {
-          const r = b.getBoundingClientRect();
-          return r.right <= exit.left || r.left >= exit.right || r.bottom <= exit.top || r.top >= exit.bottom;
-        });
-      })()`),
-          "Exit must not overlap app buttons",
-        );
-        screenshot(`homepage-${guest ? "guest" : "account"}-${width}`);
-        browser("click", '[aria-label="Exit demo"]');
-        wait('!document.querySelector(".live-stage[data-active]")');
-        assert.equal(evaluate("document.activeElement.className"), "live-activator");
       }
     }
+    console.log("PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.");
+    // The public General demo and guests were retired (#223): footer status
+    // now always comes from account presence (checked above). System sounds
+    // remain an account setting that survives reloads.
+    const accountUrl = `${url}?space=space1234567&channel=channel12345`;
+    browser("open", accountUrl);
+    wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
+    assert.equal(
+      evaluate('getComputedStyle(document.querySelector(".account-avatar .presence-dot")).backgroundColor'),
+      "rgb(99, 122, 67)",
+    );
+    browser("click", '[aria-label="User Settings"]');
+    assert.equal(
+      evaluate('document.querySelector(".top-layer-tooltip:popover-open")'),
+      null,
+      "Clicking settings dismisses its tooltip",
+    );
+    browser("uncheck", '[role="switch"]');
+    assert.equal(evaluate('localStorage.getItem("caper:system-sounds")'), "off");
+    screenshot("account-system-sounds-off");
+    browser("open", accountUrl);
+    wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
+    browser("click", '[aria-label="User Settings"]');
+    assert.equal(
+      evaluate('document.querySelector("[role=switch]").checked'),
+      false,
+      "System sounds preference survives reload",
+    );
+    browser("check", '[role="switch"]');
+    screenshot("account-system-sounds-on");
+    browser("press", "Escape");
+    browser("set", "viewport", "390", "844", "2");
+    openBrowse();
+    browser("click", '[aria-label="User Settings"]');
+    assert.equal(evaluate('document.querySelector("[role=switch]").checked'), true);
+    screenshot("account-system-sounds-narrow");
+    browser("set", "viewport", "1280", "900", "2");
+    console.log("PASS: account footer dot and persisted system sounds setting (desktop and narrow).");
     console.log(
-      "PASS: homepage guest/account desktop and narrow layouts, local space navigation, create/manage dialogs, dialog Escape, exit and focus restoration (mock API/gateway).",
+      "PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).",
     );
   }
 } finally {

@@ -16,8 +16,8 @@ function evaluate(code) {
   return result.data.result;
 }
 try {
-  browser("open", new URL("/spaces", origin).href);
-  browser("wait", ".spaces-state, .chat-panel, .spaces-empty");
+  browser("open", new URL("/privacy", origin).href);
+  browser("wait", "main");
   browser("set", "viewport", "1280", "900", "2");
   browser("click", "body");
   evaluate(`
@@ -101,26 +101,24 @@ try {
     createRoot(mount).render(React.createElement('dialog', {className: 'audio-dialog', ref: e => {if(e && !e.open) e.showModal();}},
       React.createElement('div', {className: 'audio-dialog-body'},
         React.createElement('p', null, 'Synthetic microphone fixture — real RNNoise fallback'),
-        React.createElement(MicPlayback, {stream: filteredStream, output: '', processingStrength: 50, noiseStatus: capture.status, onProcessingStrengthChange: () => {}}))));
+        React.createElement(MicPlayback, {stream: filteredStream, output: '', processingStrength: 50, onProcessingStrengthChange: () => {}}))));
   `);
   browser("wait", ".mic-test-card");
+  // The "About On-device noise cancellation" tooltip was removed with the simplified
+  // enhancement copy (#171); keep the filtered-stream card layout check at both widths.
   for (const width of [1280, 390]) {
     browser("set", "viewport", String(width), "900", "2");
-    browser("click", '[aria-label="About On-device noise cancellation"]');
     evaluate(`
-      const tip = document.querySelector('#noise-cancellation-detail');
-      assert(tip.matches(':popover-open'), 'tooltip must open on click');
-      const box = tip.getBoundingClientRect();
-      assert(box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight, 'tooltip clipped by viewport');
-      assert(document.elementFromPoint(box.left + 10, box.top + 10) === tip, 'tooltip must be above the modal');
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const dialog = document.querySelector('dialog[open]');
+      const card = document.querySelector('.mic-test-card').getBoundingClientRect();
+      assert(dialog && card.left >= 0 && card.right <= innerWidth, 'mic test card clipped by viewport');
+      assert(dialog.scrollWidth <= dialog.clientWidth, 'audio dialog must not overflow horizontally');
+      assert(document.querySelector('.mic-test-button')?.textContent === 'Test microphone', 'filtered stream must be testable');
     `);
-    browser("press", "Escape");
-    evaluate(
-      `assert(!document.querySelector(':popover-open') && document.querySelector('dialog[open]'), 'Escape should dismiss only the tooltip');`,
-    );
   }
   console.log(
-    "PASS: 8 HR startup retry; overload skips retries; real DPDFNet-2 HR and RNNoise attenuate synthetic noise; stable tracks; desktop/narrow tooltip and Escape. Not hardware/SFU validation.",
+    "PASS: 8 HR startup retry; overload skips retries; real DPDFNet-2 HR and RNNoise attenuate synthetic noise; stable tracks; desktop/narrow mic test layout. Not hardware/SFU validation.",
   );
 } catch (error) {
   console.error(evaluate(`return {context: window.context?.state, capture: window.capture?.status};`));

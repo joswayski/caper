@@ -108,7 +108,7 @@ function fixture() {
       if (r.type === "heartbeat") this.frame({ type: "heartbeat" });
       if (r.type === "subscribe") {
         const event =
-          r.kind === "chat"
+          r.kind === "chat" || r.kind === "notifications"
             ? { type: "ready", cursor: "5" }
             : r.kind === "presence"
               ? { type: "snapshot", members: r.userIds.map((userId) => ({ userId, status: "online" })) }
@@ -194,6 +194,9 @@ try {
     evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'),
     [0, 31, 32, 799, 143],
   );
+  // The member list starts closed on every client (#414).
+  browser("click", ".member-list-toggle");
+  wait('document.querySelectorAll(".member-presence-avatar [data-avatar-id]").length === 5');
   assert.deepEqual(
     evaluate(
       '[...document.querySelectorAll(".member-presence-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))',
@@ -340,7 +343,10 @@ try {
   );
   if (artifacts) browser("screenshot", join(artifacts, "avatars-narrow-members.png"));
   browser("click", ".navigation-toggle");
-  wait('document.querySelector(".call-room").classList.contains("navigation-open")');
+  // Browse buttons slide; clicks during the view transition land on its snapshot.
+  wait(
+    'document.querySelector(".call-room").classList.contains("navigation-open") && !document.documentElement.dataset.browseTransition',
+  );
   checkDirectDensity(44);
   assert.equal(
     evaluate('getComputedStyle(document.querySelector(".direct-self .direct-avatar")).backgroundColor'),
@@ -349,7 +355,9 @@ try {
   );
   if (artifacts) browser("screenshot", join(artifacts, "avatars-narrow-browse.png"));
   browser("click", '[aria-label="Close navigation"]');
-  wait('!document.querySelector(".call-room").classList.contains("navigation-open")');
+  wait(
+    '!document.querySelector(".call-room").classList.contains("navigation-open") && !document.documentElement.dataset.browseTransition',
+  );
   browser("click", ".member-list-toggle");
   wait('!document.querySelector(".space-member-presence")');
   browser("scroll", "up", "1000", "--selector", ".chat-scroller");
