@@ -345,6 +345,8 @@ struct DraftUpload {
     channel: String,
     name: String,
     kind: model::AttachmentKind,
+    /// The selected original, available for preview before upload completes.
+    local_path: Option<std::path::PathBuf>,
     /// The picked file's size; 0 until the file was read.
     source_size: u64,
     /// What is stored after compression, once prepared.
@@ -1824,6 +1826,7 @@ impl CaperApp {
             channel: channel.clone(),
             name: name.into(),
             kind: model::AttachmentKind::Image,
+            local_path: None,
             source_size: size,
             stored_size: Some(size),
             compressing: None,
@@ -4608,6 +4611,7 @@ impl CaperApp {
                     .file_name()
                     .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
                 kind: model::AttachmentKind::File,
+                local_path: Some(path.clone()),
                 source_size: 0,
                 stored_size: None,
                 compressing: None,
@@ -4642,6 +4646,7 @@ impl CaperApp {
                 channel: channel.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
+                local_path: None,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
                 compressing: None,
@@ -10910,6 +10915,7 @@ impl CaperApp {
     /// File chips above the composer: name, size saving, progress, remove.
     fn draft_chips(&mut self, ui: &mut egui::Ui) {
         let mut remove = None;
+        let mut preview = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             for draft in &mut self.draft_files {
@@ -11020,6 +11026,38 @@ impl CaperApp {
                     egui::pos2(rect.right() - 17.0, rect.center().y),
                     egui::vec2(22.0, 22.0),
                 );
+                let url = draft
+                    .local_path
+                    .as_ref()
+                    .and_then(|path| url::Url::from_file_path(path).ok())
+                    .map(String::from)
+                    .or_else(|| {
+                        draft
+                            .attachment
+                            .as_ref()
+                            .and_then(|attachment| attachment.url.clone())
+                    });
+                if let Some(url) = url {
+                    let response = ui.interact(
+                        egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(close.left() - 4.0, rect.bottom()),
+                        ),
+                        egui::Id::new(("draft-preview", draft.key)),
+                        egui::Sense::click(),
+                    );
+                    let label = format!("Preview {}", draft.name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                    });
+                    if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(label)
+                        .clicked()
+                    {
+                        preview = Some(url);
+                    }
+                }
                 let response = ui.interact(
                     close,
                     egui::Id::new(("draft-remove", draft.key)),
@@ -11045,6 +11083,9 @@ impl CaperApp {
         });
         if let Some(key) = remove {
             self.remove_draft(key);
+        }
+        if let Some(url) = preview {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
 
@@ -23807,6 +23848,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-attachments"),
         );
+        app.draft_files[1].local_path = Some(std::env::temp_dir().join("selected diagram #1.png"));
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -23853,6 +23895,12 @@ mod tests {
             let position = text_position(&output, label);
             assert_eq!(click_opening(&mut app, &context, position), None, "{label}");
         }
+        // An unfinished draft previews its local original without removing it.
+        let draft = text_position(&output, "TEST FIXTURE diagram.png");
+        let url = click_opening(&mut app, &context, draft).expect("draft preview opens");
+        assert!(url.starts_with("file:///"));
+        assert!(url.ends_with("/selected%20diagram%20%231.png"));
+        assert_eq!(app.draft_files.len(), 3);
     }
 
     #[test]
