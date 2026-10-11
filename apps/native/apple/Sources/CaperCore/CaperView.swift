@@ -2946,6 +2946,7 @@ private struct MessageRow: View {
     var continued = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
+    var forwardOpened: (() -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -3029,7 +3030,9 @@ private struct MessageRow: View {
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
                 }
-                ForwardCardView(message: message) { chat.forwardConversationTarget = message }
+                ForwardCardView(message: message) {
+                    Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
+                }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
@@ -4024,7 +4027,7 @@ private struct PinnedMessagesView: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
-                                    mentionCards: mentionCards, inThread: true, inPins: true) { actionTarget = message }
+                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close) { actionTarget = message }
                                 Button {
                                     mentionCard = nil
                                     Task { if await chat.goToMessage(message) { close() } }

@@ -934,6 +934,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             messages: replies.slice(-50).map(sharedMessage),
             cursor: source ? channelHead(source.channelId) : "0",
             hasMore: replies.length > 50,
+            source:
+              source && canRead(channelFor(source.channelId), user)
+                ? {
+                    spaceId: channelFor(source.channelId).direct ? null : channelFor(source.channelId).spaceId,
+                    message: source,
+                  }
+                : null,
           });
         }
         if (method === "POST" && !forwardPath[2]) {

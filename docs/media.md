@@ -2133,8 +2133,16 @@ their retained history. Individual message deletion is not implemented.
   snapshot cursor) and `forwardSeq` (destination projection revision).
 - `GET /api/chat/channels/{destination}/forwards/{wrapper}/thread?before={seq}`
   authorizes through the destination wrapper and returns
-  `{root,messages,cursor,hasMore}`, with 50 ascending replies and exclusive
+  `{root,messages,cursor,hasMore,source}`, with 50 ascending replies and exclusive
   `before`. Its source cursor must not advance destination replay.
+  `source` is null without source-channel access; otherwise it contains
+  `{spaceId,message}` with the original's real thread parent (`spaceId:null`
+  for a DM). Web, Android, Apple and Rust desktop check this on every
+  **View conversation** click, navigate to the original and focus it (opening
+  its containing thread for a reply). Destination-only readers retain the
+  read-only excerpt view. Older APIs omit `source` and keep that fallback.
+  Deploy the API before clients to enable navigation; no migration, new
+  infrastructure, secrets/configuration or gateway rollout is needed.
 - The outbox publisher projects source creation/reactions/edits into durable
   destination `message.forward` events, with schema version 1 and
   `event.seq == message.forwardSeq`. Projection and publisher completion commit

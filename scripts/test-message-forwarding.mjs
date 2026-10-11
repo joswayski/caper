@@ -248,6 +248,40 @@ try {
   screenshot("forward-read-only-actions");
   browser("press", "Escape");
   const session = (await request("/api/chat/session", { name: "Fixture Owner" })).value;
+  for (const [width, height, name] of [
+    [1440, 900, "desktop"],
+    [390, 844, "narrow"],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("click", `${wrapperRow} .chat-forward-card button`);
+    wait(
+      `document.querySelector('#chat-heading')?.textContent.includes('planning') && !!document.querySelector('${sourceRow}.chat-message-jump-target')`,
+    );
+    assert.equal(
+      evaluate('!!document.querySelector(".chat-forward-dialog")'),
+      false,
+      "Source members navigate without a modal",
+    );
+    assert.equal(new URL(browser("get", "url").url).searchParams.get("channel"), source.channelId);
+    screenshot(`forward-source-${name}`);
+    browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+    wait(
+      `!!document.querySelector('${wrapperRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+    );
+  }
+  browser("set", "viewport", "1440", "900", "2");
+  // An outage is not a lack-of-access result and must not open the excerpt modal.
+  await control({
+    failure: {
+      path: `/api/chat/channels/${wrapper.channelId}/forwards/${wrapper.id}/thread`,
+      method: "GET",
+      status: 503,
+    },
+  });
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait('document.querySelector(".chat-action-status")?.textContent.includes("Couldn’t open")');
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  assert.equal(evaluate('document.querySelector("#chat-heading").textContent.includes("general")'), true);
   assert.equal(
     (
       await request(
@@ -329,8 +363,86 @@ try {
     2,
   );
   screenshot("forward-destination-thread-mobile");
+  // A forwarded reply uses its authorized parent, not the stripped shared snapshot.
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  const originalThread = (await request(`/api/chat/channels/${source.channelId}/messages/${source.id}/thread`)).value;
+  const reply = originalThread.messages[0];
+  const replyForward = (
+    await request(
+      `/api/chat/channels/${wrapper.channelId}/forwards`,
+      {
+        sourceChannelId: source.channelId,
+        sourceMessageId: reply.id,
+        clientMessageId: crypto.randomUUID(),
+      },
+      "owner",
+      "POST",
+      session.token,
+    )
+  ).value;
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  const replyForwardRow = `[data-message-key="${replyForward.clientMessageId}"]`;
+  wait(
+    `!!document.querySelector('${replyForwardRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  browser("click", `${replyForwardRow} .chat-forward-card button`);
+  wait(
+    `!!document.querySelector('[data-message-key="${reply.clientMessageId}"].chat-message-jump-target') && !!document.querySelector('#chat-thread-reply')`,
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  screenshot("forward-source-reply-narrow");
+
+  // DMs use their original channel id without a space/channel route.
+  await control({ incomingMessage: { channelId: "dm0000000001", text: "Forward navigation DM source" } });
+  const dmSource = (await request("/api/chat/channels/dm0000000001/messages")).value.messages.at(-1);
+  const dmForward = (
+    await request(
+      `/api/chat/channels/${wrapper.channelId}/forwards`,
+      {
+        sourceChannelId: dmSource.channelId,
+        sourceMessageId: dmSource.id,
+        clientMessageId: crypto.randomUUID(),
+      },
+      "owner",
+      "POST",
+      session.token,
+    )
+  ).value;
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  const dmForwardRow = `[data-message-key="${dmForward.clientMessageId}"]`;
+  wait(
+    `!!document.querySelector('${dmForwardRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  browser("click", `${dmForwardRow} .chat-forward-card button`);
+  wait(`!!document.querySelector('[data-message-key="${dmSource.clientMessageId}"].chat-message-jump-target')`);
+  assert.equal(new URL(browser("get", "url").url).searchParams.get("dm"), dmSource.channelId);
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  screenshot("forward-source-dm-narrow");
+
+  // A delayed lookup cannot override navigation chosen while it was pending.
+  browser("set", "viewport", "1440", "900", "2");
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  wait(
+    `!!document.querySelector('${wrapperRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  evaluate(`document.querySelector('${wrapperRow}').scrollIntoView({ block: 'center' })`);
+  evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (String(input).includes('/forwards/') && String(input).endsWith('/thread'))
+        await new Promise(resolve => { window.releaseForwardLookup = resolve; });
+      return response;
+    };
+  })()`);
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait("!!window.releaseForwardLookup");
+  browser("find", "text", "design", "click", "--exact");
+  evaluate("window.releaseForwardLookup()");
+  wait('document.querySelector("#chat-heading")?.textContent.includes("design")');
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
   console.log(
-    "Forwarding browser checks passed: aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread, desktop/narrow layouts.",
+    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
   );
 } finally {
   browser("close");

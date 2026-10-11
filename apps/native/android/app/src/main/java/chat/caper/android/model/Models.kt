@@ -209,7 +209,8 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class MessageForward(val message: ChatMessage?, val seq: String)
 @Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean)
 @Serializable data class ForwardDestinations(val destinations: List<ForwardDestination>)
-@Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+@Serializable data class ForwardSource(val spaceId: String? = null, val message: ChatMessage)
+@Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val source: ForwardSource? = null)
 @Serializable data class ForwardUpdate(val type: String, val schemaVersion: Int, val channelId: String, val seq: String, val message: ChatMessage)
 @Serializable data class EditUpdate(
     val type: String,
