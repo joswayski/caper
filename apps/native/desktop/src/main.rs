@@ -41,6 +41,7 @@ mod updates;
 mod uploads;
 mod viewer;
 mod voice;
+mod whats_new;
 mod worker;
 
 use chrono::{DateTime, Local, TimeZone};
@@ -709,6 +710,7 @@ enum Dialog {
     SignIn,
     Profile,
     Settings,
+    WhatsNew,
     Audio,
     Connection,
     Diagnostics,
@@ -1161,6 +1163,7 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
+    whats_new: whats_new::WhatsNew,
     /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
     /// Latest `attachment.progress` percent per processing attachment id.
@@ -1207,6 +1210,10 @@ impl CaperApp {
         let api_base = api.base().clone();
         // Fixtures never fetch attachment media.
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
+        let whats_new = whats_new::WhatsNew::new(
+            &api.base().origin().ascii_serialization(),
+            whats_new::PLATFORM,
+        );
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
         let mut reaction_textures = emoji::Textures::default();
@@ -1403,6 +1410,7 @@ impl CaperApp {
             connection_copy_status: "",
             diagnostics_copied: false,
             updates: updates::Updates::start(context, fixture.is_none()),
+            whats_new,
             uploads: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
@@ -1451,7 +1459,9 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name.starts_with("parity-pins") {
+                if name.starts_with("parity-whats-new") {
+                    app.install_whats_new_fixture(name);
+                } else if name.starts_with("parity-pins") {
                     let author = app.timeline.messages().next().unwrap().author.clone();
                     app.session = Some(ChatSession {
                         token: "fixture-token".into(),
@@ -2805,6 +2815,9 @@ impl CaperApp {
                         }
                     }
                 }
+                // Public immutable metadata is scoped to this worker's API
+                // origin and compiled revision, not a signed-in account epoch.
+                Event::WhatsNew(result) => self.whats_new.finish(result),
                 Event::OpenNotification { epoch, alert }
                     if epoch == self.account_epoch
                         && self.token.is_some()
@@ -7493,6 +7506,7 @@ impl CaperApp {
         if !self.persist_preferences {
             return;
         }
+        self.whats_new.restore(storage);
         if let Some(json) = storage.get_string("audio-preferences-v1") {
             self.voice.preferences = voice::Preferences::restore(&json);
         }
@@ -7563,6 +7577,7 @@ impl eframe::App for CaperApp {
         if self.persist_preferences {
             storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
+            self.whats_new.save(storage);
         }
         if self.persist_preferences
             && let Ok(json) = serde_json::to_string(&self.voice.preferences)
@@ -7571,7 +7586,7 @@ impl eframe::App for CaperApp {
         }
     }
 
-    fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         if motion::reduced() && context.style().animation_time > 0.0 {
             // egui's own fades, scrolls and disclosures rest at once too.
             context.all_styles_mut(|style| {
@@ -7620,12 +7635,31 @@ impl eframe::App for CaperApp {
         {
             self.viewer = Some(viewer);
         }
+        self.poll_whats_new(context);
         self.page(context);
+        // Includes Escape, backdrop, close/Done, logout and navigation that
+        // replaces a dialog. Pending/error views have no shown sequence.
+        if !matches!(self.dialog, Some(Dialog::WhatsNew))
+            || context.input(|input| input.viewport().close_requested())
+        {
+            self.whats_new.dismiss();
+        }
+        if self.persist_preferences
+            && let Some(storage) = frame.storage_mut()
+        {
+            self.whats_new.save(storage);
+        }
         self.update_notice(context);
         // A mouse close leaves focus alone, as `:focus-visible` would.
         let from_settings_menu = matches!(
             self.dialog,
-            Some(Dialog::Settings | Dialog::Audio | Dialog::Connection | Dialog::Diagnostics)
+            Some(
+                Dialog::Settings
+                    | Dialog::WhatsNew
+                    | Dialog::Audio
+                    | Dialog::Connection
+                    | Dialog::Diagnostics
+            )
         );
         self.focus_user_settings = self.settings_menu_dialog
             && self.dialog.is_none()
@@ -7677,6 +7711,89 @@ impl eframe::App for CaperApp {
 }
 
 impl CaperApp {
+    fn load_whats_new(&mut self, manual: bool) {
+        if self.persist_preferences && self.whats_new.begin(Instant::now(), manual) {
+            self.worker.send(Command::WhatsNew);
+        }
+    }
+
+    fn whats_new_workspace_ready(&self) -> bool {
+        self.account.is_some()
+            && !self.onboarding()
+            && self.limits.is_some()
+            && self.restoring.is_none()
+            && !self.loading
+            && !self.opening
+            && !self.needs_first_space()
+    }
+
+    fn poll_whats_new(&mut self, context: &egui::Context) {
+        if !self.foreground || !self.whats_new_workspace_ready() {
+            return;
+        }
+        self.load_whats_new(false);
+        // Publication may arrive after the installer: retry while foreground,
+        // also on the first frame after focus, using the same bounded gate.
+        if self.persist_preferences {
+            context.request_repaint_after(Duration::from_secs(60));
+        }
+        if self.dialog.is_none()
+            && matches!(self.voice.state.phase, Phase::Idle)
+            && self.pending_voice_join.is_none()
+            && self.viewer.is_none()
+            && !self.showing_pins
+            && self.message_editor.is_none()
+            && self.edit_history.is_none()
+            && self.reactors_view.is_none()
+            && self.reaction_picker.is_none()
+            && self.mention_card.is_none()
+            && !self.forwarding.is_open()
+            && !egui::Popup::is_any_open(context)
+            && self.updates.available().is_none()
+            && self.whats_new.open_unread()
+        {
+            self.dialog = Some(Dialog::WhatsNew);
+        }
+    }
+
+    fn install_whats_new_fixture(&mut self, name: &str) {
+        self.whats_new.open_history();
+        self.dialog = Some(Dialog::WhatsNew);
+        if name == "parity-whats-new-loading" {
+            self.whats_new.begin(Instant::now(), true);
+            return;
+        }
+        if name == "parity-whats-new-error" {
+            self.whats_new.finish(Err(
+                "Release highlights aren’t available yet. Please try again.".into(),
+            ));
+            return;
+        }
+        let highlight = |title: &str, body: &str| serde_json::json!({"title": title, "body": body});
+        let payload = serde_json::json!({
+            "schema": 1, "platform": whats_new::PLATFORM, "revision": whats_new::REVISION, "sequence": 3,
+            "releases": [
+                {"sequence": 1, "revision": "1".repeat(40), "publishedAt": "2026-10-09T19:00:00Z", "highlights": []},
+                {"sequence": 2, "revision": "2".repeat(40), "publishedAt": "2026-10-10T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Find your conversations", "Move between your spaces and direct messages while keeping your drafts.")] }},
+                {"sequence": 3, "revision": whats_new::REVISION, "publishedAt": "2026-10-11T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Edit your messages", "Update a message and view its earlier versions."), highlight("Catch up after an update", "Read the highlights from shipped updates here, and reopen them from Settings.")] }}
+            ]
+        });
+        let baseline = serde_json::json!({
+            "schema": 1, "platform": whats_new::PLATFORM, "revision": "1".repeat(40),
+            "sequence": 1, "releases": [payload["releases"][0].clone()]
+        });
+        self.whats_new.finish(whats_new::Snapshot::decode(
+            &serde_json::to_vec(&baseline).unwrap(),
+            whats_new::PLATFORM,
+            &"1".repeat(40),
+        ));
+        self.whats_new.finish(whats_new::Snapshot::decode(
+            &serde_json::to_vec(&payload).unwrap(),
+            whats_new::PLATFORM,
+            whats_new::REVISION,
+        ));
+    }
+
     fn page(&mut self, context: &egui::Context) {
         self.poll_app_links(context);
         let login = self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn));
@@ -17026,6 +17143,7 @@ impl CaperApp {
             }
             Dialog::Profile => "Edit profile",
             Dialog::Settings => "Settings",
+            Dialog::WhatsNew => "What’s new",
             Dialog::Audio => "Audio test",
             Dialog::Connection => "Connection details",
             Dialog::Diagnostics => "Audio diagnostics",
@@ -17073,7 +17191,8 @@ impl CaperApp {
             }),
         };
         let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
-        let settings = matches!(dialog, Dialog::Settings);
+        let whats_new = matches!(dialog, Dialog::WhatsNew);
+        let settings = matches!(dialog, Dialog::Settings | Dialog::WhatsNew);
         let width: f32 = if matches!(dialog, Dialog::Audio) {
             720.0
         } else if wide {
@@ -17142,6 +17261,7 @@ impl CaperApp {
             dialog,
             Dialog::Settings
                 | Dialog::Profile
+                | Dialog::WhatsNew
                 | Dialog::ManageSpace
                 | Dialog::ManageChannel(_)
                 | Dialog::StartDirect
@@ -17228,7 +17348,7 @@ impl CaperApp {
                         };
                         egui::ScrollArea::vertical()
                             .id_salt(("modal-content", title))
-                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 149.0 } else { 81.0 }).max(1.0))
+                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() || whats_new { 149.0 } else { 81.0 }).max(1.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -17238,6 +17358,7 @@ impl CaperApp {
                                             Dialog::SignIn => unreachable!("sign-in is rendered as a full page"),
                                             Dialog::Profile => self.profile_dialog(ui),
                                             Dialog::Settings => self.settings_dialog(ui),
+                                            Dialog::WhatsNew => self.whats_new_dialog(ui),
                                             Dialog::Audio => self.audio_test(ui),
                                             Dialog::Connection => self.connection_details(ui),
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
@@ -17374,6 +17495,14 @@ impl CaperApp {
                                         }
                                     });
                             });
+                        if whats_new {
+                            let filler = dialog_top + dialog_height.min(available.y) - 66.0 - ui.cursor().top();
+                            if filler > 0.0 { ui.add_space(filler); }
+                            ui.separator();
+                            egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 10)).show(ui, |ui| {
+                                if primary_button(ui, "Done", true).clicked() { close = true; }
+                            });
+                        }
                         if let Some((id, dirty)) = save_bar {
                             // Web's bar is sticky at the dialog's bottom edge.
                             let filler = dialog_top + dialog_height.min(available.y) - 66.0 - ui.cursor().top();
@@ -17438,8 +17567,56 @@ impl CaperApp {
         // A join navigates when it finishes, so its dialog stays until then.
         let joining = join_dialog && self.invite_join.joining;
         if close && !(self.loading && hold_while_loading) && !joining {
+            if whats_new {
+                self.whats_new.dismiss();
+            }
             self.dialog = return_to;
             self.error = None;
+        }
+    }
+
+    fn whats_new_dialog(&mut self, ui: &mut egui::Ui) {
+        if !self.persist_preferences {
+            ui.label(
+                bold("TEST FIXTURE · simulated release highlights")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+            ui.add_space(10.0);
+        }
+        if self.whats_new.loading {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Loading release highlights…");
+            });
+        } else if let Some(error) = self.whats_new.error.clone() {
+            ui.colored_label(ERROR, error);
+            if secondary_button(ui, "Retry", true).clicked() {
+                self.load_whats_new(true);
+            }
+        } else {
+            let releases = self.whats_new.displayed();
+            if releases.is_empty() {
+                ui.label(RichText::new("No release highlights for this version yet.").color(MUTED));
+            } else {
+                ui.label(RichText::new("Highlights from shipped Caper updates.").color(MUTED));
+                for release in releases {
+                    ui.add_space(20.0);
+                    let published = DateTime::parse_from_rfc3339(&release.published_at)
+                        .expect("validated publication date");
+                    let date = published.format("%B %-d, %Y");
+                    ui.label(
+                        bold(format!("{date} · Release {}", release.sequence))
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                    for highlight in release.highlights {
+                        ui.add_space(10.0);
+                        ui.label(bold(highlight.title).size(16.0));
+                        ui.label(highlight.body);
+                    }
+                }
+            }
         }
     }
 
@@ -17539,6 +17716,12 @@ impl CaperApp {
             .size(12.0)
             .color(MUTED),
         );
+        ui.add_space(10.0);
+        if secondary_button(ui, "What’s new", true).clicked() {
+            self.whats_new.open_history();
+            self.dialog = Some(Dialog::WhatsNew);
+            self.load_whats_new(true);
+        }
         if self.account.is_some() {
             ui.add_space(18.0);
             ui.separator();
@@ -22158,6 +22341,7 @@ fn main() -> eframe::Result {
                 | "parity-thread-attachments-narrow"
                 | "parity-thread-attachments-ready-narrow"
                 | "parity-thread-attachments-rejected-narrow"
+                | "parity-whats-new-narrow"
         )
     }) {
         [390.0, 844.0]
@@ -23370,6 +23554,137 @@ mod tests {
                     "Later must still work after scrolling"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn whats_new_defers_until_workspace_ready_without_call_or_other_modal() {
+        for blocker in 0..8 {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-whats-new"),
+            );
+            app.whats_new.dismiss(); // Fixture has not drawn/acknowledged its unread snapshot.
+            app.dialog = None;
+            app.foreground = true;
+            let account = app.account.clone();
+            match blocker {
+                0 => app.foreground = false,
+                1 => app.account = None,
+                2 => app.loading = true,
+                3 => app.restoring = Some(Instant::now()),
+                4 => app.opening = true,
+                5 => app.dialog = Some(Dialog::Settings),
+                6 => app.showing_pins = true,
+                7 => {
+                    app.voice.state.phase = Phase::Connected(crate::state::CallContext {
+                        channel_id: "voice".into(),
+                        channel_name: "Voice".into(),
+                        space_name: "Fixture".into(),
+                    })
+                }
+                _ => unreachable!(),
+            }
+            app.poll_whats_new(&context);
+            assert!(
+                !matches!(app.dialog, Some(Dialog::WhatsNew)),
+                "blocker {blocker}"
+            );
+            app.foreground = true;
+            app.account = account;
+            app.loading = false;
+            app.restoring = None;
+            app.opening = false;
+            app.dialog = None;
+            app.showing_pins = false;
+            app.voice.state.phase = Phase::Idle;
+            app.poll_whats_new(&context);
+            assert!(
+                matches!(app.dialog, Some(Dialog::WhatsNew)),
+                "unread snapshot retained for blocker {blocker}"
+            );
+        }
+    }
+
+    #[test]
+    fn whats_new_dismissals_acknowledge_and_settings_reopens_newest_first() {
+        for route in ["Done", "Close What’s new", "Escape", "backdrop"] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-whats-new"),
+            );
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                text_position(&output, "Edit your messages").y
+                    < text_position(&output, "Find your conversations").y
+            );
+            match route {
+                "Escape" => {
+                    render(&mut app, &context, press(egui::Key::Escape));
+                }
+                "backdrop" => click(&mut app, &context, egui::pos2(10.0, 10.0)),
+                "Done" => click(&mut app, &context, text_position(&output, "Done")),
+                _ => click(&mut app, &context, node_center(&output, route)),
+            }
+            assert!(app.dialog.is_none(), "{route}");
+            assert!(
+                !app.whats_new.open_unread(),
+                "{route} acknowledges the shown snapshot"
+            );
+            app.dialog = Some(Dialog::Settings);
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, text_position(&output, "What’s new"));
+            assert!(matches!(app.dialog, Some(Dialog::WhatsNew)));
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                shows(&output, "Edit your messages"),
+                "manual history includes acknowledged releases"
+            );
+            assert!(shows(&output, "Find your conversations"));
+        }
+    }
+
+    #[test]
+    fn whats_new_history_loading_empty_and_retry_states_keep_actions_visible() {
+        for (fixture, label) in [
+            ("parity-whats-new-loading", "Loading release highlights…"),
+            (
+                "parity-whats-new-empty",
+                "No release highlights for this version yet.",
+            ),
+            ("parity-whats-new-error", "Retry"),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows(&output, label), "{fixture}");
+            assert!(shows(&output, "Done"), "{fixture}");
+            click(&mut app, &context, text_position(&output, "Done"));
+            assert!(
+                app.dialog.is_none(),
+                "pending/failed loads remain dismissible"
+            );
         }
     }
 

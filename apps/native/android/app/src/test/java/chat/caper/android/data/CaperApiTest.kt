@@ -30,6 +30,24 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `release notes are a bounded public request pinned to the exact source revision`() = runTest {
+        val revision = "a".repeat(40)
+        val body = """{"schema":1,"platform":"android","revision":"$revision","sequence":3,"releases":[{"sequence":3,"revision":"$revision","publishedAt":"2026-10-11T19:00:00Z","highlights":[]}]}"""
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody(body))
+        assertEquals(3L, api.whatsNew(revision).sequence)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/whats-new?platform=android&revision=$revision", request.path)
+        assertNull(request.headers["Authorization"])
+        server.enqueue(MockResponse().setBody(body.replace(revision, "b".repeat(40))))
+        assertTrue(runCatching { api.whatsNew(revision) }.isFailure)
+        server.enqueue(MockResponse().setBody(body.replace("\"sequence\":3", "\"sequence\":\"3\"")))
+        assertTrue(runCatching { api.whatsNew(revision) }.isFailure)
+        server.enqueue(MockResponse().setChunkedBody(" ".repeat(WHATS_NEW_MAX_BYTES + 1), 1024))
+        assertTrue(runCatching { api.whatsNew(revision) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
     @Test fun `editing keeps identity and sends revision and capabilities correctly`() = runTest {
         val body = """{"id":"message00000001","channelId":"channel00001","seq":"3","author":{"id":"account00001","name":"Jose","isGuest":false},"content":{"version":1,"type":"text","text":"corrected 🙂"},"createdAt":"2026-09-23T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000123","revision":2,"editSeq":"12","editedAt":"2026-10-06T00:00:00Z"}"""
         server.enqueue(MockResponse().setBody(body))

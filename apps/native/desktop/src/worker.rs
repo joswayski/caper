@@ -24,6 +24,7 @@ pub enum Command {
         token: String,
         send: Box<crate::profile_dm::Send>,
     },
+    WhatsNew,
     Forward {
         generation: u64,
         request: u64,
@@ -559,6 +560,7 @@ pub enum Event {
         send: Box<crate::profile_dm::Send>,
         result: Result<DirectConversation, crate::profile_dm::Failure>,
     },
+    WhatsNew(Result<crate::whats_new::Snapshot, String>),
     OpenNotification {
         epoch: u64,
         alert: crate::os_notifications::Alert,
@@ -1364,6 +1366,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 result,
             }
         }
+        Command::WhatsNew => Event::WhatsNew(api.whats_new()),
         Command::Upload {
             key,
             token,

@@ -40,6 +40,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val api = CaperApi()
+    internal val whatsNew = WhatsNewClient(application, api)
+    internal fun refreshWhatsNew() { viewModelScope.launch { whatsNew.refresh() } }
     private val tokens = TokenStore(application)
     private val mutable = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = mutable.map { it.withAccountProfile() }

@@ -11,6 +11,14 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   minute. **User Settings → Settings… → Updates → Check for updates** checks
   immediately with progress and success/failure feedback. Writable installs
   offer a restart to update; the `.deb` offers a download for manual installation.
+- **Settings… → Updates → What’s new** reopens shipped release highlights for
+  the exact running source revision. First successful load quietly establishes
+  a baseline; later updates show unread highlights once, newest first, after
+  the workspace opens and no call or other modal is active. Acknowledgment is
+  local to the API origin/platform and never moves backward on rollback.
+  Missing publication retries while foreground, at most once per minute;
+  manual history shows loading, empty and retryable error states. Builds use
+  `CAPER_RELEASE_SHA` (40 lowercase hex characters), or the current Git HEAD.
 - Bearer sessions stored in Windows Credential Manager or the Linux Secret
   Service. If the vault is unavailable, the session remains in memory only and
   the UI warns that sign-in will not survive restart. There is no plaintext
@@ -434,6 +442,11 @@ notes under **What’s new**, collapsed by default, with a fixed restart/Later f
 manual installer fallback; `parity-update-error` and `parity-update-incomplete`
 show a previous install failure and unavailable older history. These fixtures never install
 updates or start update checks.
+`parity-whats-new` and `parity-whats-new-narrow` preview labeled simulated
+post-update highlights with newest releases first and a fixed Done footer.
+`parity-whats-new-loading`, `parity-whats-new-empty`, and
+`parity-whats-new-error` preview the manual history states. None fetches release
+metadata or changes real acknowledgments.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

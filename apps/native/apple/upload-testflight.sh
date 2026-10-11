@@ -24,15 +24,16 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 "$ROOT/prepare.sh"
+source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" CAPER_SOURCE_REVISION="$source_revision" \
   CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES archive
 
 # Validate the built bundles before export can upload them (ITMS-90473).
-python3 - "$work/Caper.xcarchive" <<'PY'
+python3 - "$work/Caper.xcarchive" "$source_revision" <<'PY'
 from pathlib import Path
 import plistlib
 import sys
@@ -40,6 +41,8 @@ import sys
 bundle = Path(sys.argv[1]) / "Products/Applications/Caper.app"
 with (bundle / "Info.plist").open("rb") as source:
     app = plistlib.load(source)
+if app.get("CaperSourceRevision") != sys.argv[2]:
+    sys.exit("CaperSourceRevision does not match the release source SHA.")
 with (bundle / "PlugIns/CaperNotificationService.appex/Info.plist").open("rb") as source:
     extension = plistlib.load(source)
 for key in ("CFBundleVersion", "CFBundleShortVersionString"):

@@ -99,6 +99,30 @@ public actor APIClient {
 
     public func authorizationToken() -> String? { token }
 
+    /// Public immutable release snapshot. Never send account tokens or cookies.
+    public func whatsNew(platform: String, revision: String) async throws -> WhatsNewSnapshot {
+        guard ["ios", "macos"].contains(platform), WhatsNewSnapshot.validRevision(revision),
+              var url = URLComponents(url: baseURL, resolvingAgainstBaseURL: true) else { throw URLError(.badURL) }
+        url.path = "/api/whats-new"
+        url.queryItems = [URLQueryItem(name: "platform", value: platform), URLQueryItem(name: "revision", value: revision)]
+        url.fragment = nil
+        guard let endpoint = url.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+        request.httpShouldHandleCookies = false
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError(status: (response as? HTTPURLResponse)?.statusCode ?? 502, message: "Release notes are not available yet.")
+        }
+        guard response.expectedContentLength <= Int64(WhatsNewSnapshot.maximumBytes) else { throw URLError(.dataLengthExceedsMaximum) }
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < WhatsNewSnapshot.maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(byte)
+        }
+        return try decoder.decode(WhatsNewSnapshot.self, from: data).validated(platform: platform, revision: revision)
+    }
+
     public func account() async throws -> Account? {
         do { return try await request("api/account/me") }
         catch let error as APIError where error.status == 401 { return nil }

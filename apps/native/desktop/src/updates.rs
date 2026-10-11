@@ -273,6 +273,11 @@ fn check(install: &Install) -> Result<Option<Available>, String> {
         .arg(&install.folder)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
+    if !crate::whats_new::REVISION.is_empty() {
+        command
+            .arg("--current-revision")
+            .arg(crate::whats_new::REVISION);
+    }
     hide_console(&mut command);
     let output = command.output().map_err(|error| error.to_string())?;
     if !output.status.success() {

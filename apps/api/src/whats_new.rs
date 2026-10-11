@@ -322,5 +322,31 @@ mod tests {
             assert_eq!(response.headers()["cache-control"], "no-store");
             *value.lock().await = original;
         }
+        cache.cache.lock().await.clear();
+        let before = calls.load(Ordering::SeqCst);
+        assert_eq!(
+            router.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        for number in 0..40 {
+            let response = router
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(format!(
+                            "/api/whats-new?platform=web&revision={number:040x}"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 32);
+        assert_eq!(
+            router.oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
 }

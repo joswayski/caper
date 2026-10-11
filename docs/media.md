@@ -7823,3 +7823,141 @@ scrolling dismisses names, and closing/covering a composer leaves no tooltip.
 No API/gateway, infrastructure, secret or database change is required. Web and
 native releases can deploy independently; reverting a client removes only these
 tooltips and needs no data rollback.
+
+## Release highlights (What’s new)
+
+Web, Android, iOS, macOS and Rust desktop implement an after-update highlights
+view and a User Settings entry for retained history. The first successful fetch
+on a new installation quietly records its baseline. Later builds show unread
+highlighted releases newest-first in one view; maintenance-only releases advance
+the baseline without opening anything. Every dismissal acknowledges the displayed
+snapshot. Failed fetches do not acknowledge it, and rollbacks never lower the
+saved sequence. Preferences are installation/API-origin/platform-local, not
+account-synced. Automatic presentation waits for the signed-in workspace and
+defers during calls or another modal. Missing publication retries at most once
+per minute while foregrounded; Settings offers immediate retry.
+
+The existing Mac/Windows/Linux **before-install** prompt remains. New clients pass
+their source revision to the bundled updater, which reads current/target exact
+snapshots and shows the same user-facing highlights for skipped releases. Missing
+editorial metadata never blocks installing the signed update. Older clients keep
+their signed commit-title changelog until updated once. Mac notes use an explicitly
+laid-out, read-only AppKit text view with a reserved scroller width; physical Mac
+scrolling/timing acceptance is still required.
+
+### Generation and storage
+
+Infrastructure's successful Caper web rollout dispatches `whats-new.yml` on Caper
+`main` with the exact confirmed image SHA. It holds the web deployment queue until
+generation finishes so successive shipped versions cannot overwrite pending
+dispatches. The native release calls the same workflow only after all distribution
+jobs succeed. The existing Godis Discord buttons need no code or deployment change.
+Committing, building an image, or a failed deployment does not generate notes.
+
+`scripts/whats_new.py` reads the previous per-platform revision, first-parent commit
+messages, relevant runtime diffs, and recent highlights. One bounded Claude Messages
+API request selects/groups at most five highlights. Tests, infrastructure, tooling,
+dependency maintenance and server-only changes cannot independently announce a
+client feature. Output must cite commits in each platform's release range, have
+changed client/shared runtime evidence, and pass local schema/text/claim checks.
+An empty list is valid. These checks constrain errors, but do not prove the model's
+prose is factually correct; review generated assets when checking a release.
+No model call occurs on a user's device or app open, and no user/account/message
+data is sent to Claude. Repository source evidence is sent to the configured API.
+
+Public GitHub prereleases `whats-new-web`, `whats-new-android`, `whats-new-ios`,
+`whats-new-macos`, `whats-new-windows` and `whats-new-linux` hold immutable
+`<source-sha>.json` snapshots and rolling `latest.json` heads. No database, bucket,
+Terraform, API secret or new service is needed. All platform snapshots validate
+before publication; immutable assets precede rolling heads. Exact reruns reuse
+published bytes without calling Claude. Partial uploads reserve their sequence
+and recover on a retry or newer release. Known rollback revisions reuse their
+old snapshots without lowering rolling heads; an unrecorded historical rebuild
+gets a quiet, new sequence. Do not overwrite/delete immutable assets.
+
+The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
+only reads the requested immutable asset from the fixed Caper repository. Clients
+never read rolling `latest.json`, so an old build cannot announce future features.
+The API has bounded GitHub fetches, coalescing and 60-second success/failure cache.
+Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
+and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,
+at most 100/500 Unicode code points. Missing metadata fails closed.
+
+### Deployment order
+
+1. Merge the Caper change, then the infrastructure dispatch change. No Godis
+   release, infrastructure apply, database migration, gateway rollout or runtime
+   secret change is needed. Merging does not deploy apps or activate generation.
+2. Claim the plan's Claude Platform credits by linking the Console organization
+   in Claude billing. Subscription sign-in credentials are not API credentials.
+   From either repository root, with authenticated `gh`, save the Console API key
+   and a fine-grained token restricted to Caper **Actions: read/write**. These
+   commands prompt privately; do not paste keys into scripts or commit them:
+
+   ```bash
+   gh auth status
+   gh secret set ANTHROPIC_API_KEY --repo joswayski/caper
+   gh secret set CAPER_RELEASE_NOTES_TOKEN --repo joswayski/infrastructure
+   gh secret list --repo joswayski/caper
+   gh secret list --repo joswayski/infrastructure
+   ```
+
+   `CAPER_RELEASE_NOTES_MODEL` is an optional Caper Actions variable; the default
+   is `claude-haiku-5-5`. The native workflow uses its own `contents:write` token.
+   No AWS/Cloudflare secret, OpenTofu initialization/plan/apply or new capacity
+   is required. No shared credentials were configured during development.
+3. Choose the merged Caper SHA and wait for its immutable web/API images to exist.
+   Deploy the API first, preserving the normal one-replica/shared-state policy:
+
+   ```bash
+   CAPER_SHA="$(gh api repos/joswayski/caper/commits/main --jq .sha)"
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$CAPER_SHA"
+   ```
+
+   Wait for that exact rollout to succeed. Web and native clients can then deploy
+   independently through their existing Discord buttons, or from the repo root:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$CAPER_SHA"
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$CAPER_SHA"
+   ```
+
+4. Verify a first release quietly establishes each feed; a later user-facing
+   release creates the exact SHA asset and presents once on an already-baselined
+   installation. Check skipped releases, maintenance-only updates, Settings,
+   offline/error/retry, other modals, calls and restart. Inspect generated text
+   and native scrolling on supported devices. Repair a generation failure by
+   rerunning only for a revision that actually shipped:
+
+   ```bash
+   gh workflow run whats-new.yml --repo joswayski/caper --ref main -f audience=web -f git_sha="$CAPER_SHA"
+   gh run list --repo joswayski/caper --workflow whats-new.yml --limit 5
+   gh release download whats-new-web --repo joswayski/caper --pattern "$CAPER_SHA.json" --dir /tmp/caper-highlights-review
+   curl --fail --silent --show-error "https://caper.chat/api/whats-new?platform=web&revision=$CAPER_SHA" | jq .
+   ```
+
+   Use `audience=native` and the corresponding platform tag for native repair.
+   Never generate notes for a PR branch or an unshipped revision. No workflow
+   dispatch, production publication or live Claude request was executed here.
+5. Roll back clients using the existing exact-image or higher-build-number native
+   release process. Do not delete history or lower acknowledgements. Removing the
+   infrastructure token stops future web generation without affecting deployment;
+   existing immutable notes remain available. Prefer a forward API fix; missing
+   notes do not affect conversations or signed update verification.
+
+### Validation boundary
+
+| Component | Executed checks and limitations |
+| --- | --- |
+| Web | `npm run check` and `npm test`: 567 tests pass. Inspected wide/narrow, retained-history, loading, error and empty Chromium renders; exercised dismissal, focus return, retry and no-repeat after reload. Loopback-only native parity fixture, not live Claude output or a physical phone. |
+| API | Workspace fmt, tests and Clippy pass: 159 tests pass, 59 existing database/network tests ignored. Public HTTP regression covers pinned revisions, cache/backoff and bounded arbitrary-SHA traffic. The final run used one build job after a concurrent-build OOM. |
+| Rust desktop | 413 tests pass, 12 existing device/audio tests ignored; fmt and application-package Clippy pass. Inspected real Linux/Xvfb wide/narrow, loading, error, empty and Settings fixtures. Windows build/runtime remains unverified. |
+| Bundled updater | 17 tests, fmt and Clippy pass; real local HTTP regression checks current/target snapshots, skipped/silent releases, retained-history limits and mismatched revisions. Signed production updates were not executed. |
+| Android | Isolated native implementation: 305 JVM tests, lint, instrumentation compilation and release revision configuration pass. No device/emulator UI execution or full native-media APK packaging; the integrated latest-main native app was not rebuilt in the parent orb. |
+| Apple | Actual Foundation contract: four tests pass under Swift 6 on Linux; changed Swift parses for macOS/iOS targets. Plists/shell scripts and revision override/fallback/rejection checks pass. No Xcode/SDK typecheck, SwiftUI/AppKit execution, Apple API/updater tests or physical device checks. |
+| Generator/release tooling | Ruff, 49 Python tests (one existing macOS-only skip), four font tests and Actionlint pass. TestFlight regression rejects mismatched source metadata before upload. No live provider/GitHub calls. |
+| Infrastructure | Fake-GitHub highlights dispatch, disposable-Git deployment and cluster-verification regressions pass, as does Actionlint. No shared state was changed. |
+
+Live Claude schema acceptance, GitHub publication, production dispatch, physical
+phone/Mac testing and Mac scroll frame timing remain separate rollout checks.
+No Docker daemon was available; web/API build stages were checked directly.

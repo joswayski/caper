@@ -6,10 +6,11 @@ struct CaperMacOSApp: App {
     private let parity = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
     private let updater = AppUpdater()
     @State private var ready = false
+    @State private var whatsNew: WhatsNewModel?
 
     var body: some Scene {
         WindowGroup {
-            CaperWindow(parity: parity, updater: updater, ready: $ready)
+            CaperWindow(parity: parity, updater: updater, ready: $ready, whatsNew: $whatsNew)
         }
         // Keep system window controls in their own title bar, outside the space rail.
         .windowStyle(.titleBar)
@@ -21,7 +22,7 @@ struct CaperMacOSApp: App {
             }
         }
         Settings {
-            CaperSettingsView()
+            CaperSettingsView(whatsNew: whatsNew)
         }
     }
 }
@@ -33,6 +34,8 @@ private struct CaperWindow: View {
     let parity: Bool
     let updater: AppUpdater
     @Binding var ready: Bool
+    @Binding var whatsNew: WhatsNewModel?
+    @Environment(\.controlActiveState) private var windowActivity
     @State private var model = CaperRuntime.makeModel()
 
     var body: some View {
@@ -45,9 +48,13 @@ private struct CaperWindow: View {
         }
         .frame(minWidth: parity ? 390 : 840, minHeight: 600)
         .onAppear {
+            whatsNew = model.whatsNew
             guard !ready else { return }
             ready = updater.prepareInstallation()
             if ready { updater.start() }
+        }
+        .onChange(of: windowActivity) { _, activity in
+            if activity == .key { whatsNew = model.whatsNew }
         }
         .onOpenURL { model.openInviteLink($0) }
         // An opened link goes to an open window instead of opening another;

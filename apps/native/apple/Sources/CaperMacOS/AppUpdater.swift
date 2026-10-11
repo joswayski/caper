@@ -1,4 +1,5 @@
 import AppKit
+import CaperCore
 import Foundation
 
 /// Self-updates through `caper-updater` (apps/native/updater), which release
@@ -25,6 +26,7 @@ import Foundation
 
     private let updater: URL?
     private let build: Int
+    private let sourceRevision: String?
     private var declined: Set<String> = []
     private var timer: Timer?
     private var checking = false
@@ -43,12 +45,14 @@ import Foundation
     init(bundle: Bundle = .main, environment: [String: String] = ProcessInfo.processInfo.environment) {
         let updater = bundle.bundleURL.appendingPathComponent("Contents/MacOS/caper-updater")
         let build = Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+        let revision = bundle.object(forInfoDictionaryKey: "CaperSourceRevision") as? String
         // Only signed release builds ship the updater; tests never check.
         let enabled = environment["CAPER_TEST_MODE"] == nil
             && build > 0
             && FileManager.default.isExecutableFile(atPath: updater.path)
         self.updater = enabled ? updater : nil
         self.build = build
+        sourceRevision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
     }
 
     var isAvailable: Bool { updater != nil }
@@ -129,8 +133,9 @@ import Foundation
         manualCheck = manualCheck || manual
         guard !checking else { return }
         checking = true
-        let arguments = ["check", "--current-build", String(build), "--install", Bundle.main.bundleURL.path]
-        Task.detached(priority: .utility) {
+        var arguments = ["check", "--current-build", String(build), "--install", Bundle.main.bundleURL.path]
+        if let sourceRevision { arguments += ["--current-revision", sourceRevision] }
+        Task.detached(priority: .utility) { [arguments] in
             let result = Self.run(updater, arguments)
             await MainActor.run { self.finish(result) }
         }
@@ -200,10 +205,18 @@ import Foundation
     static func notesView(_ update: Update, size: NSSize) -> NSScrollView {
         let scroll = NSScrollView(frame: NSRect(origin: .zero, size: size))
         scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
+        scroll.hasHorizontalScroller = false
+        // Reserve the gutter before measuring. Auto-hiding legacy scrollers
+        // can otherwise change the wrapping width once the document grows.
+        scroll.scrollerStyle = .legacy
+        scroll.autohidesScrollers = false
         scroll.borderType = .bezelBorder
+        scroll.tile()
         let contentSize = scroll.contentSize
-        let text = NSTextView(frame: NSRect(origin: .zero, size: contentSize))
+        // These immutable notes need an exact scroll range, not TextKit 2's
+        // viewport estimates that can change as more paragraphs are laid out.
+        let text = NSTextView(usingTextLayoutManager: false)
+        text.frame = NSRect(origin: .zero, size: contentSize)
         text.isEditable = false
         text.isSelectable = true
         text.isVerticallyResizable = true
@@ -212,7 +225,8 @@ import Foundation
         text.minSize = NSSize(width: 0, height: contentSize.height)
         text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         text.textContainerInset = NSSize(width: 8, height: 8)
-        text.textContainer?.containerSize = NSSize(width: contentSize.width, height: .greatestFiniteMagnitude)
+        text.textContainer?.containerSize = NSSize(width: contentSize.width - 2 * text.textContainerInset.width,
+                                                  height: .greatestFiniteMagnitude)
         text.textContainer?.widthTracksTextView = true
         let content = NSMutableAttributedString(string: "")
         func append(_ string: String, heading: Bool = false) {
@@ -238,7 +252,12 @@ import Foundation
         }
         text.textStorage?.setAttributedString(content)
         scroll.documentView = text
-        text.sizeToFit()
+        let container = text.textContainer!
+        let layout = text.layoutManager!
+        layout.ensureLayout(for: container)
+        let height = ceil(layout.usedRect(for: container).maxY + 2 * text.textContainerInset.height)
+        text.setFrameSize(NSSize(width: contentSize.width, height: max(contentSize.height, height)))
+        scroll.reflectScrolledClipView(scroll.contentView)
         return scroll
     }
 

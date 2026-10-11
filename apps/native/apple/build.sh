@@ -21,6 +21,7 @@ fi
 
 export CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID"
 "$ROOT/prepare.sh"
+source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Debug \
   -destination "platform=macOS,arch=$mac_arch" -derivedDataPath "$ROOT/DerivedData-Tests" \
   CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
@@ -37,8 +38,9 @@ case "$MODE" in
     fi
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Release \
       -destination "platform=macOS,arch=$mac_arch" -derivedDataPath "$ROOT/DerivedData" \
-      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" ARCHS="$mac_arch" ONLY_ACTIVE_ARCH=YES ${versions[@]+"${versions[@]}"} build
+      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_SOURCE_REVISION="$source_revision" ARCHS="$mac_arch" ONLY_ACTIVE_ARCH=YES ${versions[@]+"${versions[@]}"} build
     cp -R "$ROOT/DerivedData/Build/Products/Release/Caper.app" "$ROOT/dist/Caper.app"
+    test "$(plutil -extract CaperSourceRevision raw -o - "$ROOT/dist/Caper.app/Contents/Info.plist")" = "$source_revision"
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge"
@@ -67,9 +69,10 @@ case "$MODE" in
     rm -rf "$ROOT/DerivedData" "$ROOT/dist/Caper.app"
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
       -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/DerivedData" \
-      CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
+      CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" CAPER_SOURCE_REVISION="$source_revision" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
     product="$ROOT/DerivedData/Build/Products/Release-iphonesimulator"
     cp -R "$product/Caper.app" "$ROOT/dist/Caper.app"
+    test "$(plutil -extract CaperSourceRevision raw -o - "$ROOT/dist/Caper.app/Info.plist")" = "$source_revision"
     test -x "$ROOT/dist/Caper.app/Caper"
     test -f "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/CaperRTCBridgeIOS"
