@@ -32,7 +32,14 @@ import {
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
-import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
+import {
+  MAX_ATTACHMENTS,
+  browserTransport,
+  cancelUpload,
+  refreshAttachmentUrls,
+  uploadPrepared,
+  uploadSettings,
+} from "./uploads.ts";
 import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
@@ -507,7 +514,13 @@ export default function Chat({
   }, [state.author?.id, readOnly]);
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const [attachError, setAttachError] = useState<string>();
-  const uploads = useRef(new Map<string, AbortController>());
+  const uploads = useRef(new Map<string, { controller: AbortController; id?: string }>());
+  const abandonUpload = useCallback((key: string) => {
+    const upload = uploads.current.get(key);
+    upload?.controller.abort();
+    if (upload?.id) void cancelUpload(upload.id);
+    uploads.current.delete(key);
+  }, []);
   const objectUrls = useRef(new Set<string>());
   // undefined is checking; null means unavailable. Neither removes the attach button.
   const [compression, setCompression] = useState<CompressionSettings | null>();
@@ -673,11 +686,10 @@ export default function Chat({
   // Uploads belong to one channel; abandon them when it changes or unmounts.
   useEffect(
     () => () => {
-      for (const controller of uploads.current.values()) controller.abort();
-      uploads.current.clear();
+      for (const key of uploads.current.keys()) abandonUpload(key);
       setDrafts([]);
     },
-    [channelId],
+    [channelId, abandonUpload],
   );
   useEffect(
     () => () => {
@@ -714,7 +726,8 @@ export default function Chat({
       const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
       objectUrls.current.add(localUrl);
       const controller = new AbortController();
-      uploads.current.set(key, controller);
+      const upload: { controller: AbortController; id?: string } = { controller };
+      uploads.current.set(key, upload);
       setDrafts((current) => [
         ...current,
         {
@@ -747,6 +760,11 @@ export default function Chat({
             (progress) => updateDraft(key, { progress }),
             controller.signal,
           );
+          if (controller.signal.aborted) {
+            void cancelUpload(attachment.id);
+            return;
+          }
+          upload.id = attachment.id;
           updateDraft(key, { attachment, progress: 1 });
         } catch (error) {
           if (!controller.signal.aborted)
@@ -754,7 +772,7 @@ export default function Chat({
               error: error instanceof Error ? error.message : "Upload failed.",
             });
         } finally {
-          uploads.current.delete(key);
+          if (!upload.id) uploads.current.delete(key);
         }
       })();
     }
@@ -765,12 +783,15 @@ export default function Chat({
     state.pendingSend && !state.pendingSend.threadRootId ? state.pendingSend.clientMessageId : undefined;
   useLayoutEffect(() => {
     const sent = new Set((state.pendingSend?.attachments ?? []).map((attachment) => attachment.id));
+    // A pending send owns these files now, including uncertain send outcomes.
+    for (const [key, upload] of uploads.current) {
+      if (upload.id && sent.has(upload.id)) uploads.current.delete(key);
+    }
     if (sent.size) setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
   }, [pendingSendId]);
 
   const removeDraft = (key: string) => {
-    uploads.current.get(key)?.abort();
-    uploads.current.delete(key);
+    abandonUpload(key);
     setDrafts((current) => current.filter((item) => item.key !== key));
   };
 

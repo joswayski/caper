@@ -1044,8 +1044,10 @@ for tabs open longer than a URL's lifetime.
   the whole allowance. Space owners are not charged for members' uploads.
 - Quota counts what is **stored** (after browser compression), and reservations
   count immediately so parallel uploads cannot overshoot.
-- Bytes stay counted until the purge loop removes the objects. That bounds
-  upload/delete/re-upload churn to the allowance.
+- Bytes stay counted until the purge loop successfully deletes the original and
+  preview. Late storage writes may briefly recreate uncharged bytes until the
+  reconciliation sweep removes them; quota is accounting, not a strict ceiling
+  on instantaneous R2 bytes. Reservation rate limits remain in place.
 - Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
   not implemented.
 
@@ -1253,17 +1255,98 @@ to a full FFmpeg (lavfi test sources, libx265) that makes their inputs.
 
 ### Deletion and purge
 
-An API loop (every minute, `FOR UPDATE SKIP LOCKED`, safe across replicas):
+Selecting a file starts uploading before Send. Removing a composer file cancels
+local work and best-effort calls authenticated `POST /api/assets/{id}/cancel` on
+web, Android, Apple and Rust desktop. The endpoint soft-deletes only the owner's
+unsent asset and returns 204, including repeat requests; missing/foreign files
+return 404 and sent files return 409. Its row lock serializes with Send, so a
+late cancellation cannot delete a successfully sent file. Failed uploads and
+discarded composer files also request cancellation. Moving a file into a pending
+send or cleaning up a confirmed send's local copy must not cancel it. An unknown
+send outcome keeps the original IDs for a safe retry.
+
+An API loop (approximately every minute, idempotent across replicas):
 
 - Marks uploads never completed after 1 hour, or completed but never sent
-  after 24 hours, as deleted.
-- Removes R2 objects for deleted rows: immediately when the file was never
-  sent, 24 hours after deletion when it was (so moderators can still inspect
-  it), then sets `purged_at` and releases quota.
+  after 24 hours, as deleted. This remains the fallback when a client is offline,
+  closes before cancellation completes, or never receives the reservation ID.
+- Removes R2 objects for deleted rows in batches of 25: unsent files are eligible
+  on the next pass (no 24-hour wait after explicit removal), sent files 24 hours
+  after deletion (so moderators can still inspect them). Only successful deletion
+  of both original and preview sets `purged_at` and releases quota. Failures retry.
+- Revisits deleted, unsent rows, including already-purged rows, in a separate
+  25-row batch. Presigned PUT URLs can be reused until expiry and an in-flight PUT
+  can race deletion. Rows remain permanent cleanup records; a cursor with a fixed
+  ceiling per pass prevents new arrivals or failed deletions starving older rows.
+  `purged_at` records the first successful delete pass, not permanent object
+  absence. Full-sweep latency and scan cost grow with retained history; no finite
+  cutoff is safe without a provider-enforced bound on late writes.
+
+An open draft does not extend the 24-hour lifetime. Send enforces it even before
+cleanup runs and returns 409 `attachment_unavailable` with instructions to Edit
+and attach the files again. Edit preserves text without restoring stale IDs;
+users reselect the files, producing new reservations. Other newly composed text
+or files and unknown-outcome retries are not discarded. No durable attachment
+drafts, automatic re-upload, or new expiry-renewal protocol is introduced.
 
 History marks deleted attachments `unavailable` without URLs. No user-facing
-message or file delete exists yet; account deletion should set `deleted_at` on
+sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
+
+#### Cancellation validation and rollout (October 11, 2026)
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres attachment test passes with fake S3: owner-only/idempotent cancellation, sent-file protection, Send/removal races, expiry before purge, accepted-send retries after 24 hours, quota held across delete failures, late PUT reconciliation and multi-batch sweep progress. Not live R2 acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (569 tests). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, expired Send, text-preserving Edit, fresh-ID reselection and no cancellation of sent files. Both ready and expired states inspected; not Safari or a physical phone. |
+| Rust desktop | 410 tests pass, 12 device/audio tests ignored; formatting and Clippy pass. Includes rendered Edit recovery and failed-upload cancellation. Not Windows or physical-device acceptance. |
+| Android | Implementation and tests updated. Gradle stops at configuration because Android SDK location is missing; no Kotlin compilation, tests, native render or device acceptance. |
+| iOS/macOS | Implementation and XCTest updated; no Swift compiler or Xcode in this orb, so no typecheck, tests, native render or device acceptance. |
+| Containers/services | Docker daemon unavailable; web production build and Rust compilation validated directly. No deployment, shared SQL, live R2 or SFU changes. Initial overlapping builds exhausted orb memory; bounded reruns passed. |
+
+**Deployment order.**
+
+1. No infrastructure apply, secrets/configuration, database migration, CDN Worker,
+   gateway or Valkey change is needed. Retain existing R2 permissions and the
+   established API replica count. Merging does not deploy services. After merge,
+   wait for immutable API/web images for the merged revision and set `MERGED_SHA`
+   to that full revision.
+2. Deploy the API first so clients can cancel reservations:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+   Older clients still use abandonment expiry. The new reconciliation sweep also
+   revisits previously deleted, unsent rows; monitor `asset_delete_retry`,
+   `asset_purge_retry`, `asset_sweep_retry` and R2 request volume as history grows.
+3. After API readiness, web and native clients can release independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+   Complete Android/Apple builds and physical-device acceptance before native
+   distribution, then use the existing signed release pipeline:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+4. Verify a removed, unsent file and its preview leave R2 and stop counting toward
+   usage after cleanup (allow for its 25-row batches/retries). Sent files must
+   remain accessible. Verify a draft older than 24 hours explains expiry, Edit
+   keeps the text, reselection sends successfully, and offline send retries do not
+   cancel accepted attachments. These live/device checks remain outstanding.
+5. Roll back API/web to their prior known-good image SHAs using the same deploy
+   commands; there is no new schema to undo. New clients tolerate a missing cancel
+   route and fall back to expiry. An API rollback loses reconciliation and the
+   clearer expiry response; it cannot restore already-purged unsent bytes. Native
+   rollback requires a corrected higher-build-number release.
 
 ### Configuration
 

@@ -1487,6 +1487,42 @@ final class AttachmentTests: XCTestCase {
         await chat.stop()
     }
 
+    @MainActor
+    func testReadyDraftRemovalCancelsUploadAndExpiredSendRestoresOnlyText() async throws {
+        let base = composerHandler()
+        AttachmentURLProtocol.handler = { request, body in
+            if request.url?.path.hasSuffix("/cancel") == true { return (204, Data()) }
+            if request.httpMethod == "POST", request.url?.path.hasSuffix("/messages") == true {
+                return (409, Data(#"{"code":"attachment_unavailable","error":"Files expired. Edit and attach again."}"#.utf8))
+            }
+            return try base(request, body)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let file = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
+        chat.addAttachments([file])
+        await waitUntil("ready") { chat.attachmentDrafts.first?.attachment != nil }
+        chat.removeAttachmentDraft(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
+        await waitUntil("cancel") { AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/cancel") } }
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+
+        let next = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
+        chat.addAttachments([next])
+        await waitUntil("ready again") { chat.attachmentDrafts.first?.attachment != nil }
+        chat.draft = "keep this message"
+        await chat.send()
+        XCTAssertTrue(chat.sendRejected)
+        XCTAssertEqual(chat.error, "Files expired. Edit and attach again.")
+        XCTAssertTrue(chat.discardRejected(edit: true))
+        XCTAssertEqual(chat.draft, "keep this message")
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty, "Edit cannot restore expired IDs")
+        await waitUntil("cancel rejected") { AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/cancel") }.count == 2 }
+        await chat.stop()
+    }
+
     func testTextOnlySendOmitsAttachmentIDs() async throws {
         AttachmentURLProtocol.handler = { _, body in
             let input = json(body) ?? [:]

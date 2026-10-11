@@ -2,7 +2,9 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatAttachment
 import java.io.File
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 
 /**
  * A file ready to upload: the compressed (or unchanged original) bytes in a local working copy,
@@ -41,15 +43,22 @@ class AttachmentUploader(
             sourceByteSize = file.sourceSize.takeIf { it > 0 }, width = file.width, height = file.height, durationMs = file.durationMs,
             previewContentType = preview?.let { file.previewContentType }, previewByteSize = preview?.length(),
         )
-        val previewUpload = reservation.previewUpload?.takeIf { preview != null }
-        val previewSize = if (preview != null && previewUpload != null) preview.length() else 0L
-        val total = (size + previewSize).toFloat()
-        if (preview != null && previewUpload != null) api.putUpload(previewUpload, previewSize, preview::inputStream)
-        api.putUpload(reservation.upload, size, file.file::inputStream) { sent -> progress((previewSize + sent) / total) }
-        val attachment = complete(token, reservation.id)
-        if (attachment.id != reservation.id) throw UploadException("The upload service returned an invalid response.")
-        progress(1f)
-        return attachment
+        try {
+            currentCoroutineContext().ensureActive()
+            val previewUpload = reservation.previewUpload?.takeIf { preview != null }
+            val previewSize = if (preview != null && previewUpload != null) preview.length() else 0L
+            val total = (size + previewSize).toFloat()
+            if (preview != null && previewUpload != null) api.putUpload(previewUpload, previewSize, preview::inputStream)
+            api.putUpload(reservation.upload, size, file.file::inputStream) { sent -> progress((previewSize + sent) / total) }
+            val attachment = complete(token, reservation.id)
+            currentCoroutineContext().ensureActive()
+            if (attachment.id != reservation.id) throw UploadException("The upload service returned an invalid response.")
+            progress(1f)
+            return attachment
+        } catch (error: Throwable) {
+            api.cancelAsset(token, reservation.id)
+            throw error
+        }
     }
 
     private suspend fun complete(token: String, id: String): ChatAttachment {

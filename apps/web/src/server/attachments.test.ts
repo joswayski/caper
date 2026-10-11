@@ -166,6 +166,7 @@ function transport(complete: Array<() => Response>, withPreview = false) {
           { status: 201 },
         );
       }
+      if (String(input).endsWith("/cancel")) return new Response(null, { status: 204 });
       const next = complete.shift();
       assert.ok(next, "unexpected extra /complete call");
       return next();
@@ -233,6 +234,34 @@ test("uploads reserve the compressed size with source size and preview, PUT the 
   assert.equal(t.puts[0].body, file.preview);
   assert.equal(t.puts[1].body, file.blob, "the prepared bytes go up untouched");
   assert.deepEqual(progress, [0.125, 0.25, 0.625, 1, 1], "progress spans preview and file by size");
+});
+
+test("removing during reservation, storage PUT or completion cancels the reservation without cancelling cleanup", async () => {
+  for (const stage of ["reservation", "put", "complete"]) {
+    const controller = new AbortController();
+    const t = transport([ready]);
+    const original = t.value.fetch;
+    t.value.fetch = async (input, init) => {
+      const response = await original(input, init);
+      if (
+        (stage === "reservation" && String(input) === "/api/assets") ||
+        (stage === "complete" && String(input).endsWith("/complete"))
+      )
+        controller.abort();
+      return response;
+    };
+    if (stage === "put")
+      t.value.put = async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      };
+    await assert.rejects(
+      uploadPrepared("c1", prepared(), t.value, () => undefined, controller.signal),
+      { name: "AbortError" },
+    );
+    assert.equal(t.calls.at(-1), "POST /api/assets/f1/cancel");
+    if (stage === "reservation") assert.equal(t.puts.length, 0);
+  }
 });
 
 test("files without a preview or a browser type reserve only what they have", async () => {

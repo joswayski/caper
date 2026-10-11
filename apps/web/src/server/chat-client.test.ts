@@ -311,6 +311,7 @@ function committed(body: SendBody, seq: string): ChatMessage {
 async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
+  const cancelled: string[] = [];
   const posts: {
     body: SendBody;
     signal: AbortSignal;
@@ -318,6 +319,10 @@ async function sendingFixture(t: TestContext) {
     reject: (error: Error) => void;
   }[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith("/cancel")) {
+      cancelled.push(String(input));
+      return new Response(null, { status: 204 });
+    }
     if (String(input) === "/api/chat/session")
       return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general")
@@ -360,6 +365,7 @@ async function sendingFixture(t: TestContext) {
     sockets,
     posts,
     history,
+    cancelled,
     get typingPosts() {
       return sockets.flatMap((socket) => socket.commands);
     },
@@ -945,6 +951,31 @@ test("file-only messages send attachment IDs, keep local previews while pending,
   f.posts[0].resolve(Response.json(accepted));
   assert.equal(await sending, true);
   assert.equal(f.state.messages[0].content.attachments?.[0].url, "https://cdn.test/original/f1?exp=1&sig=s");
+});
+
+test("expired attachment rejection preserves text for Edit without reusing files or cancelling uncertain sends", async (t) => {
+  const f = await sendingFixture(t);
+  const attachment = { id: "expired", kind: "file" as const, contentType: "text/plain", name: "notes.txt", size: 7 };
+  const send = f.client.send("keep my text", { attachments: [attachment] });
+  f.posts[0].reject(new TypeError("offline"));
+  assert.equal(await send, false);
+  assert.equal(f.client.discardRejected(), undefined);
+  assert.deepEqual(f.cancelled, []);
+  const retry = f.client.send("keep my text");
+  assert.deepEqual(f.posts[1].body.attachmentIds, ["expired"]);
+  f.posts[1].resolve(
+    Response.json({ code: "attachment_unavailable", error: "Files expired. Edit and attach again." }, { status: 409 }),
+  );
+  assert.equal(await retry, false);
+  assert.equal(f.state.sendRejected, true);
+  assert.match(f.state.sendError!, /attach again/);
+  const text = f.client.discardRejected();
+  assert.equal(text, "keep my text");
+  assert.deepEqual(f.cancelled, ["/api/assets/expired/cancel"]);
+  const reselected = f.client.send(text!, { attachments: [{ ...attachment, id: "fresh" }] });
+  assert.deepEqual(f.posts[2].body.attachmentIds, ["fresh"]);
+  f.posts[2].resolve(Response.json(committed(f.posts[2].body, "1")));
+  assert.equal(await reselected, true);
 });
 
 test("WebSocket-first confirmation requires the sender and cannot be undone by a late failed HTTP response", async (t) => {

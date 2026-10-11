@@ -70,6 +70,20 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
+/** Best effort; abandonment cleanup remains the fallback for offline clients. */
+export async function cancelUpload(id: string, fetcher: typeof fetch = fetch): Promise<void> {
+  try {
+    await fetcher(`/api/assets/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    // Do not turn a removed file into a composer error.
+  }
+}
+
 /** Reserve the prepared (compressed) file and its preview, PUT each straight
  * to storage with exactly the signed headers (preview first), then confirm.
  * Returns the attachment description to send with a message. */
@@ -80,11 +94,14 @@ export async function uploadPrepared(
   progress: (fraction: number) => void,
   signal: AbortSignal,
 ): Promise<ChatAttachment> {
+  signal.throwIfAborted();
   const created = await transport.fetch("/api/assets", {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
-    signal,
+    // Receive the reservation even if removal races this request, so we can
+    // cancel its ID rather than silently abandoning a successful reservation.
+    signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
       channelId,
       filename: file.name,
@@ -103,46 +120,55 @@ export async function uploadPrepared(
     upload?: Partial<PresignedPut>;
     previewUpload?: Partial<PresignedPut>;
   };
-  if (typeof reservation.id !== "string" || typeof reservation.upload?.url !== "string")
-    throw new UploadError("The upload service returned an invalid response.");
-  // A reserved preview must be uploaded, or /complete rejects the asset.
-  if (file.preview && typeof reservation.previewUpload?.url !== "string")
-    throw new UploadError("The upload service returned an invalid response.");
-  const preview =
-    file.preview && reservation.previewUpload?.url
-      ? { blob: file.preview, url: reservation.previewUpload.url, headers: reservation.previewUpload.headers ?? {} }
-      : undefined;
-  const previewSize = preview?.blob.size ?? 0;
-  const total = file.blob.size + previewSize;
-  if (preview)
+  if (typeof reservation.id !== "string") throw new UploadError("The upload service returned an invalid response.");
+  try {
+    signal.throwIfAborted();
+    if (typeof reservation.upload?.url !== "string")
+      throw new UploadError("The upload service returned an invalid response.");
+    // A reserved preview must be uploaded, or /complete rejects the asset.
+    if (file.preview && typeof reservation.previewUpload?.url !== "string")
+      throw new UploadError("The upload service returned an invalid response.");
+    const preview =
+      file.preview && reservation.previewUpload?.url
+        ? { blob: file.preview, url: reservation.previewUpload.url, headers: reservation.previewUpload.headers ?? {} }
+        : undefined;
+    const previewSize = preview?.blob.size ?? 0;
+    const total = file.blob.size + previewSize;
+    if (preview)
+      await transport.put(
+        preview.url,
+        preview.headers,
+        preview.blob,
+        (fraction) => progress((fraction * previewSize) / total),
+        signal,
+      );
     await transport.put(
-      preview.url,
-      preview.headers,
-      preview.blob,
-      (fraction) => progress((fraction * previewSize) / total),
+      reservation.upload.url,
+      reservation.upload.headers ?? {},
+      file.blob,
+      (fraction) => progress((previewSize + fraction * file.blob.size) / total),
       signal,
     );
-  await transport.put(
-    reservation.upload.url,
-    reservation.upload.headers ?? {},
-    file.blob,
-    (fraction) => progress((previewSize + fraction * file.blob.size) / total),
-    signal,
-  );
-  const path = `/api/assets/${encodeURIComponent(reservation.id)}/complete`;
-  for (let attempt = 0; ; attempt++) {
-    const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
-    if (completed.ok) {
-      progress(1);
-      return (await completed.json()) as ChatAttachment;
+    const path = `/api/assets/${encodeURIComponent(reservation.id)}/complete`;
+    for (let attempt = 0; ; attempt++) {
+      const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
+      if (completed.ok) {
+        const attachment = (await completed.json()) as ChatAttachment;
+        signal.throwIfAborted();
+        progress(1);
+        return attachment;
+      }
+      // 409: storage has not made the object visible yet. Anything else is final.
+      if (completed.status !== 409 || attempt >= COMPLETE_RETRY_DELAYS_MS.length) {
+        if (completed.status === 422) throw new UploadError("The upload did not arrive intact. Try again.");
+        throw await failure(completed, "This file could not be uploaded.");
+      }
+      await completed.body?.cancel().catch(() => undefined);
+      await (transport.sleep ?? sleep)(COMPLETE_RETRY_DELAYS_MS[attempt], signal);
     }
-    // 409: storage has not made the object visible yet. Anything else is final.
-    if (completed.status !== 409 || attempt >= COMPLETE_RETRY_DELAYS_MS.length) {
-      if (completed.status === 422) throw new UploadError("The upload did not arrive intact. Try again.");
-      throw await failure(completed, "This file could not be uploaded.");
-    }
-    await completed.body?.cancel().catch(() => undefined);
-    await (transport.sleep ?? sleep)(COMPLETE_RETRY_DELAYS_MS[attempt], signal);
+  } catch (error) {
+    await cancelUpload(reservation.id, transport.fetch);
+    throw error;
   }
 }
 
@@ -150,6 +176,7 @@ export const browserTransport: UploadTransport = {
   fetch: (...args) => fetch(...args),
   put: (url, headers, body, progress, signal) =>
     new Promise((resolve, reject) => {
+      signal.throwIfAborted();
       const request = new XMLHttpRequest();
       request.open("PUT", url);
       // Exactly the signed headers; the browser adds the matching content-length.

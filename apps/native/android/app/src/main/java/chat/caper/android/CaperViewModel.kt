@@ -25,6 +25,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1393,6 +1394,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     SendFailure.DEFINITIVE -> {
                         pendingSends.definitiveFailure(operation.id)
                         mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error), rejected = true))
+                        if (error.code == "attachment_unavailable") {
+                            pendingDrafts.forEach { abandonDraft(it) }
+                            pendingDrafts = emptyList()
+                            mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(attachments = emptyList()))
+                        }
                     }
                     SendFailure.UNKNOWN -> mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
                 } else mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
@@ -1404,10 +1410,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Edit restores a rejected message's files to the composer; Dismiss drops them. */
     fun discardPending(restoreFiles: Boolean = false): String? {
         val pending = mutable.value.pendingMessage ?: return null
+        if (!pending.rejected) return null
         pendingSends.clear()
         val candidates = if (restoreFiles) pendingDrafts + mutable.value.drafts else mutable.value.drafts
         val kept = candidates.take(AttachmentPolicy.MAX_ATTACHMENTS)
-        (pendingDrafts + mutable.value.drafts).filter { it !in kept }.forEach { discardDraftFiles(it.key) }
+        (pendingDrafts + mutable.value.drafts).filter { it !in kept }.forEach { abandonDraft(it) }
         pendingDrafts = emptyList()
         mutable.value = mutable.value.copy(pendingMessage = null, drafts = kept)
         return pending.text
@@ -1476,8 +1483,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removeDraft(key: String) {
-        discardDraftFiles(key)
+        mutable.value.drafts.find { it.key == key }?.let { abandonDraft(it) }
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.filter { it.key != key }, attachmentError = null)
+    }
+
+    private fun abandonDraft(draft: DraftAttachmentUi) {
+        val token = accountToken
+        val id = draft.attachment?.id
+        if (token != null && id != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) }
+        discardDraftFiles(draft.key)
     }
 
     /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
@@ -2169,7 +2183,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (clearPending) {
             pendingSends.clear()
             // Uploads belong to one conversation; abandon them when it changes.
-            (pendingDrafts + mutable.value.drafts).forEach { discardDraftFiles(it.key) }
+            mutable.value.drafts.forEach { abandonDraft(it) }
+            // An uncertain send may still commit; do not cancel its files.
+            pendingDrafts.forEach { discardDraftFiles(it.key) }
             pendingDrafts = emptyList()
             urlBatch?.cancel(); urlBatch = null; urlQueue.clear(); urlRefresh.reset()
             mutable.value = mutable.value.copy(

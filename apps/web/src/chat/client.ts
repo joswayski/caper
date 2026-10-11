@@ -1,5 +1,6 @@
 import { CHAT_SESSION_KEY } from "../account/client.ts";
 import { ChatConnection } from "./connection.ts";
+import { cancelUpload } from "./uploads.ts";
 import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
@@ -671,6 +672,9 @@ export class ChatClient {
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
+    // Edit restores text, never stale attachment IDs. A definitive rejection
+    // proves these files were not sent; uncertain sends keep their IDs intact.
+    for (const attachment of this.state.pendingSend?.attachments ?? []) void cancelUpload(attachment.id);
     this.update({
       pendingSend: undefined,
       sendError: undefined,

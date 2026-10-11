@@ -2573,7 +2573,13 @@ public final class ChatModel {
 
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
+        let attachments = delivery.pending?.attachmentIDs ?? []
         guard let text = delivery.discardRejected() else { return false }
+        // Edit restores text, not expired uploads. Never cancel an uncertain send.
+        for id in attachments {
+            Task { await api.cancelAsset(id: id) }
+            if let local = localAttachmentCopies.removeValue(forKey: id) { AttachmentStaging.remove(local) }
+        }
         if edit { draft = text }
         error = nil
         return true
@@ -3011,7 +3017,11 @@ public final class ChatModel {
                             self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
                         }
                     }
-                    guard self.uploadGeneration == expectedGeneration else { return }
+                    guard self.uploadGeneration == expectedGeneration, !Task.isCancelled,
+                          self.attachmentDrafts.contains(where: { $0.id == id }) else {
+                        await api.cancelAsset(id: attachment.id)
+                        return
+                    }
                     self.updateDraft(id) { $0.attachment = attachment; $0.progress = 1; $0.error = nil }
                 } catch {
                     guard self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
@@ -3025,7 +3035,10 @@ public final class ChatModel {
     public func removeAttachmentDraft(id: String) {
         uploadTasks[id]?.cancel()
         uploadTasks[id] = nil
-        if let draft = attachmentDrafts.first(where: { $0.id == id }) { AttachmentStaging.remove(draft.localURL) }
+        if let draft = attachmentDrafts.first(where: { $0.id == id }) {
+            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+            AttachmentStaging.remove(draft.localURL)
+        }
         attachmentDrafts.removeAll { $0.id == id }
         attachmentNotice = nil
     }
@@ -3034,7 +3047,10 @@ public final class ChatModel {
         uploadGeneration += 1
         uploadTasks.values.forEach { $0.cancel() }
         uploadTasks = [:]
-        attachmentDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+        for draft in attachmentDrafts {
+            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+            AttachmentStaging.remove(draft.localURL)
+        }
         attachmentDrafts = []
         attachmentNotice = nil
     }

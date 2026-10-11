@@ -2502,7 +2502,17 @@ impl CaperApp {
                         self.open_after_refresh = Some(url);
                     }
                 }
-                Event::Upload { key, update } => self.upload_update(key, update),
+                Event::Upload { key, token, update } => {
+                    if !self.draft_files.iter().any(|draft| draft.key == key)
+                        && let worker::UploadUpdate::Finished(Ok(attachment)) = &update
+                    {
+                        self.worker.send(Command::CancelAssets {
+                            token,
+                            ids: vec![attachment.id.clone()],
+                        });
+                    }
+                    self.upload_update(key, update);
+                }
                 Event::Forward {
                     generation,
                     request,
@@ -4519,10 +4529,15 @@ impl CaperApp {
             Err(error) if matches!(error.status, Some(401 | 403)) => self
                 .clear_channel("Your messaging session expired. Select the channel to reconnect."),
             Err(error) if permanent_send_rejection(error.status) => {
+                let mut abandoned = Vec::new();
                 if let Some(pending) = &mut self.pending {
                     pending.sending = false;
                     pending.rejection = Some(error.message);
+                    if error.code.as_deref() == Some("attachment_unavailable") {
+                        abandoned = std::mem::take(&mut pending.attachments);
+                    }
                 }
+                self.cancel_assets(abandoned.into_iter().map(|file| file.id).collect());
                 self.error = None;
             }
             Err(error) => {
@@ -4568,7 +4583,15 @@ impl CaperApp {
     }
 
     fn discard_rejected(&mut self) -> Option<String> {
-        self.take_rejected().map(|pending| pending.text)
+        let pending = self.take_rejected()?;
+        self.cancel_assets(
+            pending
+                .attachments
+                .into_iter()
+                .map(|file| file.id)
+                .collect(),
+        );
+        Some(pending.text)
     }
 
     fn take_rejected(&mut self) -> Option<PendingSend> {
@@ -5035,6 +5058,13 @@ impl CaperApp {
             return;
         };
         let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
+        self.cancel_assets(
+            attachments
+                .iter()
+                .skip(room)
+                .map(|file| file.id.clone())
+                .collect(),
+        );
         for attachment in attachments.into_iter().take(room) {
             self.draft_keys += 1;
             self.draft_files.push(DraftUpload {
@@ -5058,20 +5088,39 @@ impl CaperApp {
 
     fn remove_draft(&mut self, key: u64) {
         if let Some(index) = self.draft_files.iter().position(|draft| draft.key == key) {
-            self.draft_files[index]
+            let draft = self.draft_files.remove(index);
+            draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.draft_files.remove(index);
+            if let Some(file) = draft.attachment {
+                self.cancel_assets(vec![file.id]);
+            }
+        }
+    }
+
+    fn cancel_assets(&self, ids: Vec<String>) {
+        if !ids.is_empty()
+            && let Some(token) = &self.token
+        {
+            self.worker.send(Command::CancelAssets {
+                token: token.clone(),
+                ids,
+            });
         }
     }
 
     /// Uploads belong to one channel; abandon them when it changes.
     fn drop_drafts(&mut self) {
+        let mut ids = Vec::new();
         for draft in self.draft_files.drain(..) {
             draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(file) = draft.attachment {
+                ids.push(file.id);
+            }
         }
+        self.cancel_assets(ids);
     }
 
     fn upload_update(&mut self, key: u64, update: worker::UploadUpdate) {
@@ -25818,6 +25867,35 @@ mod tests {
         assert!(context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
         app.send_message();
         assert_ne!(app.pending.as_ref().unwrap().id, second_id);
+    }
+
+    #[test]
+    fn expired_files_are_not_restored_by_editing_a_rejected_send() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        app.session = Some(session());
+        app.draft_files.retain(|draft| draft.attachment.is_some());
+        app.draft = "keep this text".into();
+        app.send_message();
+        assert!(!app.pending.as_ref().unwrap().attachments.is_empty());
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(409),
+            message: "Files expired. Edit and attach again.".into(),
+            code: Some("attachment_unavailable".into()),
+        }));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Edit"));
+        assert_eq!(app.draft, "keep this text");
+        assert!(app.pending.is_none());
+        assert!(
+            app.draft_files.is_empty(),
+            "expired IDs cannot be sent again"
+        );
     }
 
     #[test]

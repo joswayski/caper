@@ -2,6 +2,11 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatAuthor
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -12,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
@@ -123,18 +129,42 @@ class AttachmentUploaderTest {
         assertEquals(1, server.requestCount)
     }
 
-    @Test fun `a refused storage put is reported and never completed`() = runTest {
+    @Test(timeout = 10000) fun `a refused storage put is reported and never completed`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(201).setBody(reservation(preview = false)))
         server.enqueue(MockResponse().setResponseCode(403))
+        server.enqueue(MockResponse().setResponseCode(204))
         val error = runCatching {
             AttachmentUploader(CaperApi(baseUrl = server.url("/").toString())).upload("account-secret", "channel00001", prepared(preview = false))
         }.exceptionOrNull()
         assertTrue(error is UploadException)
         assertEquals("Storage refused the upload (403).", AttachmentPolicy.uploadErrorMessage(error!!))
-        assertEquals(2, server.requestCount)
+        assertEquals(3, server.requestCount)
+        repeat(2) { server.takeRequest() }
+        val cancelled = server.takeRequest()
+        assertEquals("/api/assets/$id/cancel", cancelled.path)
+        assertEquals("Bearer account-secret", cancelled.headers["Authorization"])
     }
 
-    @Test fun `complete retries while storage has not seen the upload, other errors are not retried`() = runTest {
+    @Test(timeout = 10000) fun `cancelling an in-flight put still cancels its reservation`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(201).setBody(reservation(preview = false)))
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val file = prepared(preview = false)
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val upload = launch(Dispatchers.Default) {
+            AttachmentUploader(api).upload("account-secret", "channel00001", file)
+        }
+        assertEquals("/api/assets", server.takeRequest(2, TimeUnit.SECONDS)?.path)
+        assertEquals("PUT", server.takeRequest(2, TimeUnit.SECONDS)?.method)
+        upload.cancelAndJoin()
+        assertTrue(upload.isCancelled)
+        val cancelled = server.takeRequest(2, TimeUnit.SECONDS)
+        assertEquals("/api/assets/$id/cancel", cancelled?.path)
+        assertEquals("Bearer account-secret", cancelled?.headers?.get("Authorization"))
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test(timeout = 10000) fun `complete retries while storage has not seen the upload, other errors are not retried`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(201).setBody(reservation(preview = false)))
         server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"upload not finished"}"""))
@@ -148,12 +178,13 @@ class AttachmentUploaderTest {
         server.enqueue(MockResponse().setResponseCode(201).setBody(reservation(preview = false)))
         server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setResponseCode(422).setBody("""{"error":"size mismatch"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
         val file = folder.newFile("again.png").apply { writeBytes(ByteArray(10) { 1 }) }
         val mismatch = runCatching {
             uploader.upload("account-secret", "channel00001", PreparedAttachment(file, "again.png", "image/png", "image", 10))
         }.exceptionOrNull()
         assertEquals("The file changed while uploading. Try again.", AttachmentPolicy.uploadErrorMessage(mismatch!!))
-        assertEquals(7, server.requestCount)
+        assertEquals(8, server.requestCount)
     }
 
     @Test fun `empty files are refused before reserving`() = runTest {

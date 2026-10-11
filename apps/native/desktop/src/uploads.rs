@@ -485,61 +485,68 @@ fn upload_with_delays(
         })
         .ok_or_else(invalid)?
         .to_owned();
-    let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
-    let preview_size = preview.as_ref().map_or(0, Vec::len) as u64;
-    let total = (size + preview_size).max(1) as f32;
-    if let Some(preview) = preview {
-        // The reservation counted the preview, so it must arrive.
-        let put = presigned(&reserved["previewUpload"]).ok_or_else(invalid)?;
-        cancelled(&cancel)?;
-        let body = Progress {
-            inner: std::io::Cursor::new(preview),
-            sent: 0,
-            report: {
-                let progress = progress.clone();
-                Arc::new(move |sent| progress(sent as f32 / total))
-            },
-            cancel: cancel.clone(),
-        };
-        api.put_presigned(
-            &put.url,
-            &put.headers,
-            reqwest::blocking::Body::sized(body, preview_size),
-        )
-        .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
-    }
-    cancelled(&cancel)?;
-    let report: Arc<dyn Fn(u64) + Send + Sync> = {
-        let progress = progress.clone();
-        Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
-    };
-    let body = reqwest::blocking::Body::sized(
-        Progress {
-            inner: source,
-            sent: 0,
-            report,
-            cancel: cancel.clone(),
-        },
-        size,
-    );
-    api.put_presigned(&upload.url, &upload.headers, body)
-        .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
-    let mut delays = delays.iter();
-    let completed = loop {
-        cancelled(&cancel)?;
-        match api.complete_asset(token, &id) {
-            Err(error) if error.status == Some(409) => match delays.next() {
-                Some(delay) => std::thread::sleep(*delay),
-                None => return Err(error),
-            },
-            result => break result?,
+    let result = (|| {
+        let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
+        let preview_size = preview.as_ref().map_or(0, Vec::len) as u64;
+        let total = (size + preview_size).max(1) as f32;
+        if let Some(preview) = preview {
+            // The reservation counted the preview, so it must arrive.
+            let put = presigned(&reserved["previewUpload"]).ok_or_else(invalid)?;
+            cancelled(&cancel)?;
+            let body = Progress {
+                inner: std::io::Cursor::new(preview),
+                sent: 0,
+                report: {
+                    let progress = progress.clone();
+                    Arc::new(move |sent| progress(sent as f32 / total))
+                },
+                cancel: cancel.clone(),
+            };
+            api.put_presigned(
+                &put.url,
+                &put.headers,
+                reqwest::blocking::Body::sized(body, preview_size),
+            )
+            .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
         }
-    };
-    let attachment = Attachment::parse(&completed)
-        .filter(|attachment| attachment.id == id)
-        .ok_or_else(invalid)?;
-    progress(1.0);
-    Ok(attachment)
+        cancelled(&cancel)?;
+        let report: Arc<dyn Fn(u64) + Send + Sync> = {
+            let progress = progress.clone();
+            Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
+        };
+        let body = reqwest::blocking::Body::sized(
+            Progress {
+                inner: source,
+                sent: 0,
+                report,
+                cancel: cancel.clone(),
+            },
+            size,
+        );
+        api.put_presigned(&upload.url, &upload.headers, body)
+            .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
+        let mut delays = delays.iter();
+        let completed = loop {
+            cancelled(&cancel)?;
+            match api.complete_asset(token, &id) {
+                Err(error) if error.status == Some(409) => match delays.next() {
+                    Some(delay) => std::thread::sleep(*delay),
+                    None => return Err(error),
+                },
+                result => break result?,
+            }
+        };
+        let attachment = Attachment::parse(&completed)
+            .filter(|attachment| attachment.id == id)
+            .ok_or_else(invalid)?;
+        cancelled(&cancel)?;
+        progress(1.0);
+        Ok(attachment)
+    })();
+    if result.is_err() {
+        api.cancel_asset(token, &id);
+    }
+    result
 }
 
 /// "X MB → Y KB" when compression saved space, otherwise the stored size.
@@ -926,12 +933,14 @@ mod tests {
                 (200, String::new()),
                 (409, r#"{"error":"upload not finished"}"#.into()),
                 (409, r#"{"error":"upload not finished"}"#.into()),
+                (204, String::new()),
                 (201, reserved(base)),
                 (200, String::new()),
                 (
                     422,
                     r#"{"error":"file does not match its declared size or type"}"#.into(),
                 ),
+                (204, String::new()),
             ]
         });
         let api = Api::new(&base).unwrap();
@@ -952,7 +961,21 @@ mod tests {
         assert_eq!(pending.message, "upload not finished");
         let mismatch = attempt();
         assert_eq!(mismatch.status, Some(422));
-        assert_eq!(server.join().unwrap().len(), 7);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 9);
+        for index in [4, 8] {
+            assert_eq!(
+                requests[index].line,
+                "POST /api/assets/asset0001/cancel HTTP/1.1"
+            );
+            assert_eq!(
+                requests[index]
+                    .headers
+                    .get("authorization")
+                    .map(String::as_str),
+                Some("Bearer token")
+            );
+        }
     }
 
     #[test]
