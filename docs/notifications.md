@@ -56,7 +56,7 @@ Per committed message (edits never notify; demo spaces and guests never do):
    `mentions`.
 5. One `notifications` row per recipient, and one delivery per active device on
    an advertised platform whose session is still valid.
-6. **`@feedback`/`@caper`** (`feedback`): every feedback team member except the
+6. **`@feedback`, `@caper`, `@admin` or any team name** (`feedback`): every feedback team member except the
    author, wherever it was written, including channels they aren't in, DMs and
    thread replies. Like `mention.user`, it ignores mutes. A team member who only
    visits the conversation through feedback access hears about nothing else
