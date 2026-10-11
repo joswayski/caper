@@ -457,6 +457,8 @@ interface CallProps {
   mentionDirectory?: MentionCandidate[];
   /** Opens (or starts) a DM from a mention's profile card. */
   onMessagePerson?: (username: string) => Promise<void>;
+  onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
+  focusMessage?: GeneralChatHistory["messages"][number];
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -486,6 +488,8 @@ export default function Call({
   mentionMembers,
   mentionDirectory,
   onMessagePerson,
+  onOpenForward,
+  focusMessage,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -1638,6 +1642,8 @@ export default function Call({
               mentionMembers={mentionMembers}
               mentionDirectory={mentionDirectory}
               onMessagePerson={onMessagePerson}
+              onOpenForward={onOpenForward}
+              focusMessage={focusMessage}
               channelId={channel?.id}
               channelName={channel?.name}
               initialHistory={initialHistory}

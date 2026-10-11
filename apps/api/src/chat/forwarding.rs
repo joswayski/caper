@@ -298,16 +298,38 @@ async fn thread(
     let rows: Vec<(Value, Option<i16>, i64, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq,u.display_name FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
         .bind(source).bind(before).bind(PAGE+2).fetch_all(&mut *tx).await.map_err(database_error)?;
     let mut root = Value::Null;
+    let mut source = Value::Null;
     let mut replies = Vec::new();
     let mut head = "0".to_owned();
     for (payload, avatar, cursor, name) in rows {
         head = cursor.to_string();
-        let original = shared_message(enrich_author(payload, avatar, name.as_deref()));
+        let original = enrich_author(payload, avatar, name.as_deref());
         // The first row is always the selected original, not a guessed root.
         if root.is_null() {
-            root = original;
+            // Destination access shares only the excerpt. Navigation metadata,
+            // including a reply's real parent, requires source access as well.
+            match channel_access(
+                &mut *tx,
+                original["channelId"].as_str().ok_or_else(unavailable)?,
+                user,
+            )
+            .await
+            {
+                Ok(access) => {
+                    let space: Option<String> =
+                        sqlx::query_scalar("SELECT external_id FROM public.spaces WHERE id=$1")
+                            .bind(access.space_id)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .map_err(database_error)?;
+                    source = json!({"spaceId":space,"message":original});
+                }
+                Err(error) if error.status == StatusCode::NOT_FOUND => {}
+                Err(error) => return Err(error),
+            }
+            root = shared_message(original);
         } else {
-            replies.push(original);
+            replies.push(shared_message(original));
         }
     }
     let more = replies.len() > PAGE as usize;
@@ -315,7 +337,7 @@ async fn thread(
     replies.reverse();
     hydrate(&mut tx, &mut replies).await?;
     Ok(Json(
-        json!({"root":root,"messages":replies,"cursor":head,"hasMore":more}),
+        json!({"root":root,"messages":replies,"cursor":head,"hasMore":more,"source":source}),
     ))
 }
 

@@ -32,6 +32,41 @@ interface Conversation {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+  source?: { spaceId: string | null; message: ChatMessage } | null;
+}
+
+export async function forwardedConversation(
+  message: ChatMessage,
+  signal: AbortSignal,
+  before?: string,
+): Promise<Conversation> {
+  const path = `/api/chat/channels/${encodeURIComponent(message.channelId)}/forwards/${encodeURIComponent(message.id)}/thread`;
+  const response = await fetch(`${path}${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
+    cache: "no-store",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+  });
+  if (!response.ok) throw await apiError(response, "Conversation is unavailable.");
+  const data = (await response.json()) as Conversation;
+  if (
+    !data ||
+    !(data.root === null || isChatMessage(data.root)) ||
+    !Array.isArray(data.messages) ||
+    !data.messages.every(isChatMessage) ||
+    typeof data.hasMore !== "boolean" ||
+    typeof data.cursor !== "string" ||
+    (data.source != null &&
+      (!(data.source.spaceId === null || typeof data.source.spaceId === "string") ||
+        !isChatMessage(data.source.message) ||
+        data.source.message.id !== data.root?.id ||
+        data.source.message.channelId !== data.root?.channelId))
+  )
+    throw new Error("Conversation is unavailable.");
+  try {
+    sequence(data.cursor);
+  } catch {
+    throw new Error("Conversation is unavailable.");
+  }
+  return data;
 }
 
 // fetch rejects with a TypeError when offline and a TimeoutError after AbortSignal.timeout;
@@ -393,29 +428,7 @@ export function ForwardConversation({
   const viewed =
     viewer && [conversation?.root, ...(conversation?.messages ?? [])].find((item) => item?.id === viewer.messageId);
   const path = `/api/chat/channels/${encodeURIComponent(message.channelId)}/forwards/${encodeURIComponent(message.id)}/thread`;
-  const page = async (signal: AbortSignal, before?: string): Promise<Conversation> => {
-    const response = await fetch(`${path}${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
-      cache: "no-store",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-    });
-    if (!response.ok) throw await apiError(response, "Conversation is unavailable.");
-    const data = (await response.json()) as Conversation;
-    if (
-      !data ||
-      !(data.root === null || isChatMessage(data.root)) ||
-      !Array.isArray(data.messages) ||
-      !data.messages.every(isChatMessage) ||
-      typeof data.hasMore !== "boolean" ||
-      typeof data.cursor !== "string"
-    )
-      throw new Error("Conversation is unavailable.");
-    try {
-      sequence(data.cursor);
-    } catch {
-      throw new Error("Conversation is unavailable.");
-    }
-    return data;
-  };
+  const page = (signal: AbortSignal, before?: string) => forwardedConversation(message, signal, before);
   useEffect(() => {
     controller.current?.abort();
     const request = new AbortController();

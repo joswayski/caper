@@ -482,6 +482,7 @@ struct CaperApp {
     context_window: Option<MessageWindow>,
     has_newer: bool,
     context_loading: bool,
+    forward_focus: Option<(u64, model::ForwardSource)>,
     focused_message: Option<String>,
     scroll_to_target: bool,
     error: Option<String>,
@@ -703,6 +704,7 @@ impl CaperApp {
             context_window: None,
             has_newer: false,
             context_loading: false,
+            forward_focus: None,
             focused_message: None,
             scroll_to_target: false,
             error: None,
@@ -2321,6 +2323,24 @@ impl CaperApp {
                     request,
                     result,
                 } if generation == self.generation => {
+                    if self.forwarding.resolving(request) {
+                        match &result {
+                            Ok(forwarding::Response::Conversation(page))
+                                if page.source.is_some() =>
+                            {
+                                let source = page.source.clone().unwrap();
+                                self.forwarding.close();
+                                self.open_forward_source(source);
+                                continue;
+                            }
+                            Err(error) => {
+                                self.error = Some(error.message.clone());
+                                self.forwarding.close();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some(message) = self.forwarding.receive(request, result)
                         && self.selected_channel.as_deref() == Some(&message.channel_id)
                     {
@@ -3355,6 +3375,8 @@ impl CaperApp {
     fn navigate(&mut self, target: NavigationTarget) {
         // Another conversation's media never stays open over it.
         self.viewer = None;
+        self.forwarding.cancel_conversation();
+        self.forward_focus = None;
         let mut cache_target = navigation::Target {
             space: target.space.clone(),
             channel: target.channel.clone(),
@@ -3560,6 +3582,7 @@ impl CaperApp {
         self.restoring = None;
         match result {
             Ok(prepared) => {
+                let forward_focus = self.forward_focus.take();
                 let direct = prepared
                     .conversation
                     .as_ref()
@@ -3605,6 +3628,12 @@ impl CaperApp {
                     }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
+                }
+                if let Some((request, source)) = forward_focus
+                    && request == self.navigation
+                    && self.selected_channel.as_deref() == Some(&source.message.channel_id)
+                {
+                    self.load_context(source.message.thread_root_id, source.message.id, false);
                 }
             }
             Err(error) => {
@@ -4321,6 +4350,7 @@ impl CaperApp {
         self.context_window = None;
         self.has_newer = false;
         self.context_loading = false;
+        self.forward_focus = None;
         self.focused_message = None;
         self.scroll_to_target = false;
         self.timeline = Timeline::default();
@@ -4822,6 +4852,19 @@ impl CaperApp {
             channel,
             before,
         });
+    }
+
+    fn open_forward_source(&mut self, source: model::ForwardSource) {
+        if self.selected_channel.as_deref() == Some(&source.message.channel_id) {
+            self.showing_pins = false;
+            self.load_context(source.message.thread_root_id, source.message.id, false);
+        } else {
+            self.navigate(NavigationTarget {
+                space: source.space_id.clone(),
+                channel: Some(source.message.channel_id.clone()),
+            });
+            self.forward_focus = Some((self.navigation, source));
+        }
     }
 
     fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {

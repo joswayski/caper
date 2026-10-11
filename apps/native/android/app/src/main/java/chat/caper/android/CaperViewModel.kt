@@ -77,6 +77,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var directHistoryJob: Job? = null
     private var openingDirectId: String? = null
     private var directOpeningRevision = 0L
+    private var openingForward = false
     private var notificationEdits: NotificationEdits? = null
     private var foreground = false
     private val uploader = AttachmentUploader(api)
@@ -866,6 +867,55 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request == generation && anchorRequest == historyAnchorRequest) mutable.value = mutable.value.copy(loadingOlder = false, olderError = message(error))
             }
+        }
+    }
+
+    fun openForwardedConversation(wrapper: ChatMessage, readOnly: () -> Unit, onOpened: () -> Unit = {}) {
+        if (openingForward) return
+        openingForward = true
+        val request = generation; val accountRequest = accountGeneration; val navigation = directOpeningRevision
+        viewModelScope.launch {
+            try {
+                val token = requireAccountToken()
+                val conversation = forwardedConversation(wrapper)
+                if (request != generation || accountRequest != accountGeneration || navigation != directOpeningRevision) return@launch
+                val source = conversation.source
+                if (source == null) { readOnly(); return@launch }
+                require(source.message.id == conversation.root?.id && source.message.channelId == conversation.root?.channelId) { "Conversation is unavailable." }
+                val target = source.message
+                if (mutable.value.selectedChannel?.id != target.channelId) {
+                    // Prepare before replacing the destination, just as voice-context navigation does.
+                    val detail = source.spaceId?.let { api.space(token, it) }
+                    val direct = if (detail == null) api.directConversations(token).conversations.first { it.id == target.channelId } else null
+                    val channel = detail?.channels?.first { it.id == target.channelId }
+                        ?: Channel(target.channelId, "", requireNotNull(direct).peer.displayName, private = true, direct = true)
+                    val history = api.history(token, target.channelId)
+                    require(history.channel?.id == target.channelId && history.space?.id == (source.spaceId ?: "")) { "Conversation is unavailable." }
+                    if (request != generation || accountRequest != accountGeneration || navigation != directOpeningRevision) return@launch
+                    rememberDirectHistory(); cancelDirectOpening()
+                    val previousSpace = mutable.value.selectedSpace?.space?.id
+                    val committed = ++generation
+                    if (detail != null && previousSpace != detail.space.id) ++spaceAccessGeneration
+                    closeChannel(clearPending = true)
+                    if (detail != null) lastChannelBySpace[detail.space.id] = channel.id
+                    installHistoryPins(history)
+                    mutable.value = mutable.value.copy(
+                        selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
+                        directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
+                        messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
+                        presencePage = if (detail == null || previousSpace == detail.space.id) mutable.value.presencePage else 0,
+                        deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
+                        busy = false, error = null, messagesLoading = false,
+                    )
+                    openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
+                    if (direct != null) { markDirectRead(direct.id, history.cursor); refreshPeople() }
+                }
+                goToMessage(target, onOpened)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request == generation && accountRequest == accountGeneration && navigation == directOpeningRevision)
+                    mutable.value = mutable.value.copy(error = "Couldn’t open the conversation. Try again.")
+            } finally { openingForward = false }
         }
     }
 
