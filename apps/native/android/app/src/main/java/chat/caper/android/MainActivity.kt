@@ -1231,8 +1231,9 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
 /**
  * Web's header voice: who is in voice in the open channel, then one Join, Switch here,
  * Joining… or Leave action. Channel rows carry no join, so empty channels stay a single line.
- * [compact] (phones) is one bordered group of icons beside the name, as in Slack: one face,
- * no count or labels (they stay as accessible names), and [mute] before the action during a call.
+ * [compact] (phones) is one bordered group of icons beside the name, as in Slack: no faces,
+ * count or labels (labels stay as accessible names; the title's subtitle says how many are in
+ * voice), and [mute] before the action during a call.
  */
 @Composable internal fun HeaderVoice(
     people: List<Participant>,
@@ -1265,11 +1266,7 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             contentDescription = if (action == HeaderVoiceAction.Joining) description else unavailableLabel ?: description
             if (action == HeaderVoiceAction.Joining) stateDescription = "Busy"
         }
-    val summary = voicePeopleSummary(people.map { it.name })
-    if (compact) return PhoneVoiceGroup(face = people.isNotEmpty()) {
-        if (people.isNotEmpty()) Box(Modifier.padding(end = 2.dp).clearAndSetSemantics { contentDescription = summary }) {
-            VoiceFaces(people, 1, 24.dp, SurfaceConversation, speaking)
-        }
+    if (compact) return PhoneVoiceGroup {
         mute?.invoke()
         if (action == HeaderVoiceAction.Leave) HeaderLeaveIcon(onLeave)
         else IconButton(onJoin, Modifier.size(48.dp).then(joinModifier), enabled = active) {
@@ -1278,6 +1275,7 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
     }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (people.isNotEmpty()) {
+            val summary = voicePeopleSummary(people.map { it.name })
             Row(Modifier.clearAndSetSemantics { contentDescription = summary }, verticalAlignment = Alignment.CenterVertically) {
                 VoiceFaces(people, 3, 24.dp, SurfaceConversation, speaking)
                 Spacer(Modifier.width(6.dp))
@@ -1306,9 +1304,9 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
     }
 }
 
-/** Phones' voice group: one 1dp bordered container of 48dp icon buttons, led by a face when anyone is in voice. */
-@Composable private fun PhoneVoiceGroup(face: Boolean, content: @Composable () -> Unit) {
-    Row(Modifier.border(1.dp, Border, RoundedCornerShape(8.dp)).padding(start = if (face) 8.dp else 2.dp, end = 2.dp),
+/** Phones' voice group: one 1dp bordered container of 48dp icon buttons only. */
+@Composable private fun PhoneVoiceGroup(content: @Composable () -> Unit) {
+    Row(Modifier.border(1.dp, Border, RoundedCornerShape(8.dp)).padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) { content() }
 }
 
@@ -1335,7 +1333,7 @@ private val HeaderMutedRed = Color(0xFFFF7182)
 
 /** A DM, or any conversation without its own voice, still offers the call's mute and Leave on phones, in the same group. */
 @Composable internal fun HeaderVoiceElsewhere(mute: @Composable () -> Unit, onLeave: () -> Unit) {
-    PhoneVoiceGroup(face = false) {
+    PhoneVoiceGroup {
         mute()
         HeaderLeaveIcon(onLeave)
     }

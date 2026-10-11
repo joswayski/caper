@@ -1715,28 +1715,22 @@
   font-size: 0.78rem;
   font-weight: 700;
 }
-/* Phones: one bordered group of icons beside the name, as in Slack. The
-   labels stay as accessible names; one face is enough, since Browse lists everyone. */
+/* Phones: one bordered group of icons beside the name, as in Slack. Who is in
+   voice is the subtitle under the name ("2 in voice"), so no faces here; the
+   labels stay as accessible names. */
 @media (max-width: 760px) {
   .header-voice {
     flex: none;
     gap: 2px;
     margin-right: 0;
-    padding: 0 2px 0 8px;
+    padding: 0 2px;
     border: 1px solid var(--border);
     border-radius: 8px;
-  }
-  .header-voice:not(:has(.header-voice-people)) {
-    padding-left: 2px;
-  }
-  .header-voice-people {
-    margin-right: 2px;
   }
   .header-voice-elsewhere {
     display: flex;
   }
-  .header-voice-count,
-  .header-voice-people .voice-stack-avatar + .voice-stack-avatar,
+  .header-voice-people,
   .header-voice :is(.channel-join-label, .voice-leave > span) {
     display: none;
   }

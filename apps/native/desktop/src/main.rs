@@ -8561,23 +8561,17 @@ impl CaperApp {
         });
     }
 
-    /// Phones' voice: one bordered group with one face, then icon buttons
-    /// that keep the wide header's names: the call's mute while in voice,
-    /// then Join voice, Switch here, Joining… or Leave. `channel` is the
-    /// open channel's id and name; without one (a DM or preview) the group
-    /// is the call's mute and Leave.
+    /// Phones' voice: one bordered group of icon buttons that keep the wide
+    /// header's names: the call's mute while in voice, then Join voice,
+    /// Switch here, Joining… or Leave. The name's subtitle says how many
+    /// are in voice. `channel` is the open channel's id and name; without
+    /// one (a DM or preview) the group is the call's mute and Leave.
     fn narrow_voice(&mut self, ui: &mut egui::Ui, channel: Option<(&str, &str)>) {
         let action = channel.map_or(VoiceAction::Leave, |(id, _)| self.voice_action(id));
-        let people = channel.map_or_else(Vec::new, |(id, _)| self.voice_people(id).0);
         let mute = self.in_voice();
         let buttons = 1 + usize::from(mute);
-        let face = !people.is_empty();
-        // Web: 8px before the face (2px without one), 2px gaps and a 2px end.
-        let width = 2.0
-            + if face { 8.0 + 24.0 + 2.0 + 2.0 } else { 2.0 }
-            + buttons as f32 * 44.0
-            + (buttons - 1) as f32 * 2.0
-            + 2.0;
+        // Web: 2px inside the border at each end and between buttons.
+        let width = 2.0 + 2.0 + buttons as f32 * 44.0 + (buttons - 1) as f32 * 2.0 + 2.0;
         let (group, _) = ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::hover());
         ui.painter().rect_stroke(
             group,
@@ -8591,16 +8585,7 @@ impl CaperApp {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         ui.spacing_mut().item_spacing.x = 2.0;
-        ui.add_space(if face { 8.0 } else { 2.0 });
-        if let Some(summary) = voice_summary(&people) {
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &summary));
-            paint_avatar(&ui, rect, &people[0].name, people[0].avatar_id);
-            response.on_hover_text(summary);
-            ui.add_space(2.0);
-        }
+        ui.add_space(2.0);
         if mute {
             let muted = self.voice.state.audio.muted;
             let button = voice_icon_button(
@@ -21100,7 +21085,7 @@ mod tests {
             assert!(bounds.bottom() <= 54.0, "{label} sits in the header");
             bounds
         };
-        // Browse | the name | one group: a face, the call's mute, Leave.
+        // Browse | the name | one group: the call's mute, then Leave.
         let browse = header(&closed, "Browse");
         let title = header(&closed, "#general options");
         let mute = header(&closed, "Mute microphone");
@@ -21113,9 +21098,10 @@ mod tests {
         );
         let people = app.voice_people("chan00000001").0;
         if let Some(summary) = super::voice_summary(&people) {
-            let face = header(&closed, &summary);
-            assert!(title.right() < face.left() && face.right() < mute.left());
-            assert_eq!(face.width(), 24.0);
+            assert!(
+                node_bounds(&closed, &summary).is_none(),
+                "phones show no faces"
+            );
         }
         let group = closed
             .shapes
@@ -21131,7 +21117,9 @@ mod tests {
                 _ => None,
             })
             .expect("one bordered voice group");
-        assert!(group.width() < 200.0 && !group.contains_rect(title));
+        // Just the two icon buttons inside the border.
+        assert_eq!(group.width(), 2.0 + 2.0 + 44.0 + 2.0 + 44.0 + 2.0);
+        assert!(!group.contains_rect(title));
         let shown = texts(&closed);
         assert!(!shown.contains(&"Leave"), "no labels on phones");
         assert!(shown.contains(&"# general"));
@@ -21950,19 +21938,24 @@ mod tests {
             modes.insert(mode);
         }
         assert_eq!(modes.len(), 3, "{modes:?}");
-        // Phones: one face and an icon-only Join in one group after the name.
+        // Phones: no faces or count, just an icon-only Join after the name,
+        // whose subtitle says how many are in voice.
         for width in (380..=760).step_by(20) {
             let (output, join, count_shown) = header(5, width as f32, "planning-notes");
             assert_eq!(join.size(), egui::vec2(44.0, 44.0), "{width}");
-            assert!(!count_shown, "{width}: phones show one face, not the count");
-            let face = node_bounds(&output, summary).expect("one face");
-            assert_eq!(face.width(), 24.0);
+            assert!(!count_shown, "{width}: phones show no count beside voice");
+            assert!(
+                node_bounds(&output, summary).is_none(),
+                "{width}: phones show no faces"
+            );
+            assert!(
+                texts(&output)
+                    .iter()
+                    .any(|text| text.ends_with("5 in voice"))
+            );
             let title =
                 node_bounds(&output, "#planning-notes options").expect("the name opens a menu");
-            assert!(
-                title.right() < face.left() && face.right() < join.left(),
-                "{width}"
-            );
+            assert!(title.right() < join.left(), "{width}");
             assert!(title_end(&output, "# planning-notes") <= title.right());
             assert!(
                 !texts(&output).contains(&"Join voice"),

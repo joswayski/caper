@@ -1158,8 +1158,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(headerLeave.label, "Leave voice")
         XCTAssertFalse(app.buttons["join-voice-button"].exists, "The connected channel's header has no Join")
         let headerPeople = app.descendants(matching: .any)["header-voice-people"]
+        #if os(macOS)
+        // Wide headers show who is there; phones count them in the title's subtitle instead.
         XCTAssertTrue(headerPeople.exists)
         XCTAssertEqual(headerPeople.label, "TEST FIXTURE You and TEST FIXTURE Maya are in voice")
+        #else
+        XCTAssertFalse(headerPeople.exists, "Phone headers show no faces; the title's subtitle counts who is in voice")
+        #endif
         let headerMute = app.buttons["header-mute"]
         #if os(iOS)
         // Phones keep the call's microphone in the header; the account bar stays in Browse.

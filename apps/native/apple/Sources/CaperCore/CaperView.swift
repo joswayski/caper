@@ -1431,9 +1431,9 @@ private struct ChannelVoiceSlot: View {
 }
 
 /// Web's headerVoice: who is in voice in the open channel, then Join voice,
-/// Switch here or Leave. Phones keep one face and no count, as web's narrowest
-/// layout does, and add the call's microphone toggle, since the account bar
-/// stays in Browse; wider headers drop faces only when the title needs the room.
+/// Switch here or Leave. Phones show only icon buttons (with the call's microphone
+/// toggle, since the account bar stays in Browse) and no faces; wider headers
+/// drop to one face only when the title needs the room.
 private struct HeaderVoice: View {
     @Bindable var model: AppModel
     let channel: Channel
@@ -1452,12 +1452,12 @@ private struct HeaderVoice: View {
         Group {
             if narrow {
                 // Phones: one bordered group of icons beside the name, as in Slack. The
-                // labels stay as accessible names; one face is enough, since Browse lists everyone.
+                // labels stay as accessible names. No faces: a lone face was unclear, and
+                // the title's subtitle already counts who is in voice.
                 HStack(spacing: 2) {
-                    if !people.isEmpty { occupants(people, speaking: action.active).padding(.trailing, 2) }
                     if inVoiceCall(model.voice) { HeaderMuteButton(voice: model.voice) }
                     if action.leaves { HeaderLeaveButton(model: model, compact: true) } else { join(action, compact: true) }
-                }.modifier(CompactVoiceGroup(leading: people.isEmpty ? 2 : 8))
+                }.modifier(CompactVoiceGroup())
             } else {
                 HStack(spacing: 10) {
                     if !people.isEmpty { occupants(people, speaking: action.active) }
@@ -1470,15 +1470,9 @@ private struct HeaderVoice: View {
 
     private func occupants(_ people: [VoiceSpectator], speaking active: Bool) -> some View {
         let summary = Self.summary(people.map(\.name))
-        return Group {
-            if narrow {
-                faces(people, limit: 1, count: false, speaking: active)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    faces(people, limit: 3, count: true, speaking: active)
-                    faces(people, limit: 1, count: false, speaking: active)
-                }
-            }
+        return ViewThatFits(in: .horizontal) {
+            faces(people, limit: 3, count: true, speaking: active)
+            faces(people, limit: 1, count: false, speaking: active)
         }
         .help(summary)
         .accessibilityElement(children: .ignore)
@@ -1531,10 +1525,8 @@ private struct HeaderVoice: View {
 
 /// Phones group the header's voice controls in one bordered container.
 private struct CompactVoiceGroup: ViewModifier {
-    /// Room before a face; buttons need less.
-    let leading: CGFloat
     func body(content: Content) -> some View {
-        content.padding(.leading, leading).padding(.trailing, 2)
+        content.padding(.horizontal, 2)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border, lineWidth: 1))
             .fixedSize()
     }
@@ -2562,7 +2554,7 @@ private struct ChatView: View {
                     HStack(spacing: 2) {
                         HeaderMuteButton(voice: voice)
                         HeaderLeaveButton(model: model, compact: true)
-                    }.modifier(CompactVoiceGroup(leading: 2))
+                    }.modifier(CompactVoiceGroup())
                 }
                 if !narrow {
                     Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }

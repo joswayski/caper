@@ -52,9 +52,9 @@ class VoiceHeaderUiTest {
         compose.onNodeWithContentDescription("Switch voice to #design").performClick()
         compose.runOnIdle { assertEquals(2, joined) }
 
-        // Phones keep one face and drop the count; the summary still names everyone.
+        // Phones drop the faces and count; the title's subtitle says how many are in voice.
         compose.runOnIdle { compact.value = true }
-        compose.onNodeWithContentDescription("Maya, Alex, Sam and 1 more are in voice").assertExists()
+        compose.onNodeWithContentDescription("are in voice", substring = true).assertDoesNotExist()
         // Phones show icons only; each label stays as the accessible name.
         compose.onNodeWithText("Switch here").assertDoesNotExist()
         compose.onNodeWithContentDescription("Switch voice to #design").assertIsEnabled().performClick()

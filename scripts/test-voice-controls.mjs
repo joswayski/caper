@@ -813,7 +813,7 @@ try {
         1,
         "The dock keeps Leave wherever you browse",
       );
-      if (width === 390) click("Back to Browse");
+      if (width === 390) openBrowse();
       assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), "headset");
       assert.deepEqual(
         evaluate(`return [voiceFixture.client.muted, voiceFixture.client.deafened, voiceFixture.client.inputVolume];`),

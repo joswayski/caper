@@ -680,14 +680,16 @@ def main() -> None:
     tap(description="4 in voice in design. Hide who is in voice")
     collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")
     assert find(collapsed, text="Fixture Voice 1") is None, "Collapsed roster still exposed occupants"
-    # The open channel's header names who is in voice beside its Join action.
+    # Phones count who is in voice under the channel name; the header's voice group has no faces.
     tap(text="design")
-    occupied = capture(
-        "caper-android-voice-header-occupied",
-        "Fixture Voice 1, Fixture Voice 2, Fixture Voice 3 and 1 more are in voice",
-    )
-    assert find(occupied, contains="Message #design") is not None
+    wait_for(contains="Message #design")
     wait_for(description="Join voice")
+    occupied = capture("caper-android-voice-header-occupied", "#design options")
+    title = find(occupied, description="#design options")
+    assert title is not None and "4 in voice" in title.get("text", ""), (
+        "The phone title's subtitle counts who is in voice"
+    )
+    assert find(occupied, contains="are in voice") is None, "Phone header voice shows no faces"
     tap(description="Back to Browse")
     tap(text="general")
     wait_for(contains="Message #general")
