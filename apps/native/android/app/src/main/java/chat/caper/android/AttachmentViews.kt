@@ -300,6 +300,7 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** In-app audio playback; a failed load asks for fresh URLs once, then offers the browser. */
+@OptIn(UnstableApi::class)
 @Composable private fun MediaPlayerDialog(attachment: ChatAttachment, close: () -> Unit, open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val url = attachment.url ?: return
     val playback = rememberAttachmentPlayback(attachment, url, silent = false, onLoadFailed) { playWhenReady = true }

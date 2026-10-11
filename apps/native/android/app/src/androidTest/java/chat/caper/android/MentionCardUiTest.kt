@@ -34,7 +34,7 @@ class MentionCardUiTest {
         val state = AppUiState(account = me, chatAuthorId = me.id, selectedSpace = space, selectedChannel = channel)
         val message = ChatMessage(
             "message00001", channel.id, "1", ChatAuthor("alex0000000a", "Alex", false),
-            ChatContent(1, "text", "TEST FIXTURE — ask @maya or @fixture_owner, @everyone", listOf(
+            ChatContent(1, "text", "TEST FIXTURE — ask @maya or @fixture_owner, @everyone", mentions = listOf(
                 MessageMention("user", "maya0000000a", "maya"), MessageMention("user", "owner000000a", "fixture_owner"), MessageMention("everyone"),
             )),
             "2026-10-06T12:00:00Z", "00000000-0000-4000-8000-000000000001",
