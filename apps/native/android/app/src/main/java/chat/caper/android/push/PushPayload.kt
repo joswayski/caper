@@ -100,7 +100,7 @@ internal data class PushAttachment(val url: String, val contentType: String, val
             val raw = data["attachmentUrl"] ?: return null
             val url = runCatching { java.net.URI(raw) }.getOrNull() ?: return null
             if (url.scheme != "https" || url.host == null || url.rawUserInfo != null || url.rawFragment != null ||
-                !Regex("^/(original|preview)/[A-Za-z0-9]{1,64}$").matches(url.path)) return null
+                !Regex("^/(assets|original|preview)/[A-Za-z0-9]{1,64}$").matches(url.path)) return null
             val type = data["attachmentContentType"] ?: return null
             if (type !in listOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif")) return null
             val size = data["attachmentSize"]?.toLongOrNull()?.takeIf { it in 1..MAX_BYTES } ?: return null

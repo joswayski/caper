@@ -1054,7 +1054,15 @@ for tabs open longer than a URL's lifetime.
 Every response or socket frame that carries a message signs URLs as it leaves:
 history, the send response, and both gateway paths (live and replay, including
 the legacy socket). URLs look like
-`https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+`https://cdn.caper.chat/assets/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+The public `/assets/{id}` path maps to the existing `original/{id}` R2 key;
+the HMAC still signs that storage key. Previews stay at `/preview/{id}`.
+The Worker also accepts already-issued `/original/{id}` links with their
+existing signatures, and both main-file paths share the same edge cache entry.
+No stored objects, upload URLs or database records move. Roll out the updated
+web/native notification downloaders and the CDN Worker before the API and
+gateway begin issuing `/assets` URLs. Older clients can still open files, but
+their notification downloaders reject the new path and show text only.
 Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
 cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
