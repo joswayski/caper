@@ -74,11 +74,11 @@ export function useMembersDrawer(
     const offset = new DOMMatrixReadOnly(getComputedStyle(panel).transform).m41;
     return Math.min(1, Math.max(0, 1 - offset / travel(room, panel)));
   };
-  /** Holds the panel `progress` of the way in, as a finger moves it. */
-  const pose = (progress: number) => {
-    const { room, panel, backdrop } = parts();
-    if (!room || !panel) return;
-    panel.style.transform = `translateX(${(1 - progress) * travel(room, panel)}px)`;
+  /** Holds the panel `progress` of the way in, as a finger moves it `length` pixels. */
+  const pose = (progress: number, length: number) => {
+    const { panel, backdrop } = parts();
+    if (!panel) return;
+    panel.style.transform = `translateX(${(1 - progress) * length}px)`;
     if (backdrop) backdrop.style.opacity = String(progress);
   };
   const reset = () => {
@@ -253,7 +253,7 @@ export function useMembersDrawer(
               distance: Math.max(0, (move.clientX - startX) * direction),
             })),
           ];
-          pose(progressAt(distance));
+          pose(progressAt(distance), length);
         };
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", lift);
@@ -264,6 +264,9 @@ export function useMembersDrawer(
       onClickCapture(event: ReactMouseEvent) {
         if (!suppressClick.current) return;
         suppressClick.current = false;
+        // A touch drag may end without a click. Keyboard and assistive
+        // activations (no pointer, so detail 0) are never a drag's release.
+        if (event.detail === 0) return;
         event.preventDefault();
         event.stopPropagation();
       },

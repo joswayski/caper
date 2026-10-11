@@ -245,6 +245,8 @@ private protocol SlideDrawer: AnyObject {
     static let opening: CGFloat = 1
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
     static let tap = Animation.interpolatingSpring(duration: 0.22, bounce: 0)
+    /// While a released swipe navigates, which already set its speed-matched curve.
+    @ObservationIgnored var releasing = false
 }
 
 /// Marks a Browse/conversation switch. Only the conversation layer moves with
@@ -309,6 +311,8 @@ private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 
 // Horizontal swipes start across the content surface. Attach outside text entry
 // and audio controls so those keep their own selection and slider gestures.
+// The whole view takes touches even while disabled, so attach it only where
+// the view itself would take them.
 private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
@@ -354,7 +358,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                         drawer.drag = nil
                         if commit {
                             // Only Browse marks its switch; the member list animates inside the conversation.
-                            if Drawer.self == BrowseDrawer.self { withTransaction(\.browseSlide, true, navigate) } else { navigate() }
+                            if let browse = drawer as? BrowseDrawer {
+                                browse.releasing = true
+                                withTransaction(\.browseSlide, true, navigate)
+                                browse.releasing = false
+                            } else { navigate() }
                         }
                     }
                 }, including: enabled ? .all : .subviews)
@@ -606,8 +614,10 @@ private struct WorkspaceView: View {
         }
     }
 
-    /// Buttons switch with a quicker version of the finger's slide.
+    /// Buttons switch with a quicker version of the finger's slide. A released
+    /// swipe keeps the curve it set to match the finger's speed.
     private func slide(open: Bool) {
+        if browseDrawer.releasing { model.navigationOpen = open; return }
         var transaction = Transaction(animation: BrowseDrawer.tap)
         transaction.browseSlide = true
         withTransaction(transaction) { model.navigationOpen = open }
@@ -1533,6 +1543,10 @@ private struct MembersOverlay: View {
             Color.black.opacity(0.25)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: close)
+                // Each layer swipes closed within its own bounds, before its
+                // margins: closed, the overlay must leave the conversation's
+                // header and timeline gestures alone.
+                .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 50)
                 .transaction(settle) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
@@ -1551,13 +1565,13 @@ private struct MembersOverlay: View {
                     RoundedRectangle(cornerRadius: 16).fill(CaperTheme.sidebar)
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
+                .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
-        .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
     }
 }

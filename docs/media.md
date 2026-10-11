@@ -6410,3 +6410,41 @@ under 1ms.
    must retain the applied migration ledger; do not roll SQLx images back across
    this migration or delete read positions. No shared migration, deployment,
    provider change or release was executed during development.
+
+## Swipe follow-up fixes (October 11, 2026)
+
+Follow-ups to full-surface swipes and swipe release timing:
+
+- iOS: the closed phone member list no longer takes touches over the
+  conversation. Its backdrop and panel each carry their own close swipe, so
+  Back, Pins, Members, the timeline, the composer and timeline swipes work while
+  the list is hidden; swiping either closes it when shown.
+- iOS/macOS: a released Browse swipe keeps its speed-matched curve instead of the
+  220ms button slide. Buttons, Back and channel choices still use the button slide.
+- Android: drags that start on the Browse "Search channels" field stay in the
+  field, as on web, Apple and Rust desktop.
+- Rust desktop: swipe releases settle with the same 160–320ms speed-matched
+  `cubic-bezier(0.2, 0.2·slope, 0.35, 1)` as the other clients, rather than a
+  fixed 0.3s ease. Release speed is measured against an earlier frame, so a
+  flick whose last move and release share a frame still commits. Undecided
+  touches no longer expire after 0.5s.
+- Web: after a touch drag that ends without a click, the next keyboard or
+  assistive activation (click `detail` 0) is no longer swallowed by Browse or
+  the member list. Member-list drags no longer read layout on every move.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run typecheck`, Oxlint and Oxfmt on the changed files. No browser regression run; no Safari or physical-device acceptance. |
+| Android | Implementation only; no Android SDK here, so no Kotlin compilation, tests or device acceptance. |
+| iOS/macOS | Implementation only; no Swift compiler or Xcode, so no build, XCTest, simulator or device acceptance. |
+| Rust desktop | `cargo test` (all 409 tests, including new release-curve and same-frame-flick tests) and `cargo clippy --all-targets -D warnings` pass on Linux. No physical touchscreen acceptance. |
+| Services | No API, gateway, infrastructure, secrets/configuration or database change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is required. Merging deploys nothing.
+2. Web, Android, Apple and Rust desktop can release independently with their
+   usual release commands for the merged revision. Roll back web to the previous
+   image; native rollback requires a corrected higher-build-number release. No
+   data rollback is needed.

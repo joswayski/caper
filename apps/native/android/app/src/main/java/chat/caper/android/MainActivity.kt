@@ -547,6 +547,8 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     var dragging = false
     /** Set when a touch lands on content or its header; editors and audio controls keep their own drags. */
     var regionTouched = false
+    /** Set when a touch lands on an editor inside a region, which keeps its own drags. */
+    var regionExcluded = false
 
     fun drag(value: Float) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
@@ -617,7 +619,18 @@ private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean):
     if (drawer == null || !enabled) this else pointerInput(drawer) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
-            drawer.regionTouched = true
+            // An excluded child sees the touch first.
+            drawer.regionTouched = !drawer.regionExcluded
+            drawer.regionExcluded = false
+        }
+    }
+
+// Editors inside a swipe region keep their text drags, as the web's and Apple's excluded starts.
+private fun Modifier.browseSwipeExcluded(drawer: BrowseDrawer?): Modifier =
+    if (drawer == null) this else pointerInput(drawer) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            drawer.regionExcluded = true
         }
     }
 
@@ -634,6 +647,7 @@ private fun Modifier.browseDrag(
             val down = awaitFirstDown(requireUnconsumed = false)
             val allowed = drawer.regionTouched
             drawer.regionTouched = false
+            drawer.regionExcluded = false
             if (!allowed) return@awaitEachGesture
             val opening = drawer.progress.targetValue < 0.5f
             val width = (travel?.invoke() ?: size.width.toFloat()).coerceAtLeast(1f)
@@ -806,7 +820,7 @@ private fun Modifier.browseDrag(
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
-            if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
+            if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp).browseSwipeExcluded(LocalBrowseDrawer.current), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)

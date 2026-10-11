@@ -103,10 +103,11 @@ struct NavigationTouch {
     device: egui::TouchDeviceId,
     id: egui::TouchId,
     origin: egui::Pos2,
-    started: f64,
     slide: Option<NavigationSlide>,
     travel: f32,
     distance: f32,
+    /// Horizontal positions, one per frame: egui gives a frame's touch events
+    /// its single time.
     samples: Vec<(f64, f32)>,
 }
 
@@ -126,6 +127,53 @@ struct NavigationSettle {
     from: f32,
     to: f32,
     started: f64,
+    /// Seconds, and the curve's starting slope, from `release_timing`.
+    duration: f64,
+    slope: f32,
+}
+
+/// As the web's `releaseTiming`: carries on from a finger without accelerating
+/// a held drag or slamming a short remainder into the edge. `speed` is progress
+/// per second toward the target; returns seconds and the curve's starting slope.
+fn release_timing(distance: f32, speed: f32) -> (f64, f32) {
+    let duration = if speed > 0.0 {
+        (3.0 * distance / speed).clamp(0.16, 0.32)
+    } else {
+        0.32
+    };
+    // Match the initial speed to the release, capped at three times the average.
+    // A held or reversing finger starts at rest; every curve lands at rest too.
+    let slope = if distance > 0.0 {
+        (speed * duration / distance).clamp(0.0, 3.0)
+    } else {
+        0.0
+    };
+    (f64::from(duration), slope)
+}
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at time fraction `x`.
+fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let curve = |a: f32, b: f32, t: f32| {
+        3.0 * (1.0 - t) * (1.0 - t) * t * a + 3.0 * (1.0 - t) * t * t * b + t * t * t
+    };
+    // With x1 and x2 in 0..=1, time rises steadily along the curve: bisect for
+    // the point at `x`.
+    let (mut low, mut high) = (0.0_f32, 1.0_f32);
+    for _ in 0..24 {
+        let t = (low + high) / 2.0;
+        if curve(x1, x2, t) < x {
+            low = t;
+        } else {
+            high = t;
+        }
+    }
+    curve(y1, y2, (low + high) / 2.0)
 }
 
 #[derive(Clone, Copy)]
@@ -6505,7 +6553,7 @@ impl CaperApp {
             || context.input(|input| !input.focused || input.multi_touch().is_some());
         let now = context.input(|input| input.time);
         if blocked {
-            self.finish_navigation_touch(context, now, false);
+            self.finish_navigation_touch(context, now, false, 0.0);
             return;
         }
         let members_available = self.selected_direct.is_none()
@@ -6524,7 +6572,7 @@ impl CaperApp {
             };
             if phase == egui::TouchPhase::Start {
                 if self.navigation_touch.is_some() {
-                    self.finish_navigation_touch(context, now, false);
+                    self.finish_navigation_touch(context, now, false, 0.0);
                     return;
                 }
                 let bottom = if self.navigation_open {
@@ -6542,11 +6590,10 @@ impl CaperApp {
                         device: device_id,
                         id,
                         origin: pos,
-                        started: now,
                         slide: None,
                         travel: 1.0,
                         distance: 0.0,
-                        samples: Vec::new(),
+                        samples: vec![(now, pos.x)],
                     });
                 }
                 continue;
@@ -6558,16 +6605,30 @@ impl CaperApp {
                 continue;
             }
             if phase == egui::TouchPhase::Cancel {
-                self.finish_navigation_touch(context, now, false);
+                self.finish_navigation_touch(context, now, false, 0.0);
                 continue;
             }
             if phase == egui::TouchPhase::End && touch.slide.is_none() {
                 self.navigation_touch = None;
                 continue;
             }
+            // A move and release in one frame share its time, so speed is
+            // measured from an earlier frame: the oldest in the last 0.1s, or
+            // the latest before them, where a pause leaves no fling.
+            match touch.samples.last_mut() {
+                Some(last) if last.0 >= now => last.1 = pos.x,
+                _ => touch.samples.push((now, pos.x)),
+            }
+            let recent = touch
+                .samples
+                .iter()
+                .position(|(time, _)| now - time <= 0.1)
+                .unwrap_or(touch.samples.len());
+            let stale = recent.min(touch.samples.len().saturating_sub(2));
+            touch.samples.drain(..stale);
             let delta = pos - touch.origin;
             if touch.slide.is_none() {
-                if delta.y.abs() > delta.x.abs().max(12.0) || now - touch.started > 0.5 {
+                if delta.y.abs() > delta.x.abs().max(12.0) {
                     self.navigation_touch = None;
                     continue;
                 }
@@ -6601,39 +6662,50 @@ impl CaperApp {
                     screen.width() + 16.0
                 };
             }
-            touch.distance = delta.x * touch.slide.unwrap().direction();
-            touch.samples.retain(|(time, _)| now - time <= 0.1);
-            touch.samples.push((now, touch.distance));
+            let direction = touch.slide.unwrap().direction();
+            touch.distance = delta.x * direction;
             // Own the horizontal drag before a scrolling list or selectable
             // message can consume it, including its release click.
             context.set_dragged_id(egui::Id::new("navigation-swipe"));
             if phase == egui::TouchPhase::End {
-                let velocity = touch.samples.first().map_or(0.0, |(time, distance)| {
-                    if now - time >= 0.008 {
-                        (touch.distance - distance) / (now - time) as f32
-                    } else {
-                        0.0
-                    }
-                });
+                let velocity = match touch.samples.first() {
+                    Some(&(time, x)) if now > time => (pos.x - x) * direction / (now - time) as f32,
+                    _ => 0.0,
+                };
                 let commit = velocity > -300.0
                     && (touch.distance >= touch.travel / 2.0
                         || (velocity >= 300.0 && touch.distance >= 40.0));
-                self.finish_navigation_touch(context, now, commit);
+                self.finish_navigation_touch(context, now, commit, velocity);
             }
         }
     }
 
-    fn finish_navigation_touch(&mut self, context: &egui::Context, now: f64, commit: bool) {
+    /// `velocity` is the finger's, in points per second toward the slide's end.
+    fn finish_navigation_touch(
+        &mut self,
+        context: &egui::Context,
+        now: f64,
+        commit: bool,
+        velocity: f32,
+    ) {
         let Some(touch) = self.navigation_touch.take() else {
             return;
         };
         let Some(slide) = touch.slide else { return };
         let open = if commit { slide.open() } else { !slide.open() };
+        let from = touch.progress();
+        let to: f32 = if open { 1.0 } else { 0.0 };
+        // Progress per second toward where it settles.
+        let toward = if commit { velocity } else { -velocity };
+        let speed = toward / touch.travel;
+        let (duration, slope) = release_timing((to - from).abs(), speed);
         self.navigation_settle = Some(NavigationSettle {
             slide,
-            from: touch.progress(),
-            to: if open { 1.0 } else { 0.0 },
+            from,
+            to,
             started: now,
+            duration,
+            slope,
         });
         match slide {
             NavigationSlide::Browse(_) => self.navigation_open = open,
@@ -6662,10 +6734,12 @@ impl CaperApp {
                 self.navigation_settle = None;
                 return normal;
             }
-            let elapsed = ((context.input(|input| input.time) - settle.started) / 0.3) as f32;
+            // The web's and phones' speed-matched curve.
+            let elapsed =
+                ((context.input(|input| input.time) - settle.started) / settle.duration) as f32;
             let progress = settle.from
                 + (settle.to - settle.from)
-                    * egui::emath::easing::cubic_out(elapsed.clamp(0.0, 1.0));
+                    * cubic_bezier(0.2, 0.2 * settle.slope, 0.35, 1.0, elapsed);
             if elapsed >= 1.0 {
                 // A throttled/paused frame can outlast the slide. Land the
                 // button animation too, rather than revealing an older pose.
@@ -20434,6 +20508,72 @@ mod tests {
         frame(&mut app, None, center, 0.5);
         assert!(!app.navigation_open);
         assert_eq!(app.draft, "Touch navigation retains this draft");
+    }
+
+    #[test]
+    fn narrow_flick_released_in_its_last_move_frame_keeps_its_speed() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        let frame = |app: &mut CaperApp, time: f64, touches: &[(egui::TouchPhase, f32)]| {
+            let events = touches
+                .iter()
+                .map(|&(phase, x)| egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId(1),
+                    phase,
+                    pos: egui::pos2(x, 422.0),
+                    force: None,
+                })
+                .collect();
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            );
+        };
+        use egui::TouchPhase::{End, Move, Start};
+        frame(&mut app, 0.0, &[]);
+        frame(&mut app, 0.016, &[]);
+        frame(&mut app, 0.032, &[(Start, 195.0)]);
+        // Under half the width, but 100pt in one frame: the speed is measured
+        // from the previous frame, not the release's own.
+        frame(&mut app, 0.048, &[(Move, 255.0), (End, 295.0)]);
+        frame(&mut app, 0.6, &[]);
+        assert!(app.navigation_open);
+    }
+
+    #[test]
+    fn swipe_releases_settle_with_the_webs_speed_matched_curve() {
+        // A held finger gets the full finish from rest; a fling is quicker and
+        // starts at up to three times the average speed.
+        assert_eq!(super::release_timing(0.5, 0.0), (0.32_f32.into(), 0.0));
+        let (duration, slope) = super::release_timing(0.5, 10.0);
+        assert!((duration - 0.16).abs() < 1e-6);
+        assert!((slope - 3.0).abs() < 1e-6);
+        let (duration, slope) = super::release_timing(0.5, 2.0);
+        assert!((duration - 0.32).abs() < 1e-6);
+        assert!((slope - 1.28).abs() < 1e-4);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 0.0), 0.0);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 1.0), 1.0);
+        let mut last = 0.0;
+        for step in 1..20 {
+            let eased = super::cubic_bezier(0.2, 0.6, 0.35, 1.0, step as f32 / 20.0);
+            assert!(eased > last && eased < 1.0);
+            last = eased;
+        }
+        // `linear` is the identity.
+        assert!((super::cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-4);
     }
 
     #[test]
