@@ -2428,7 +2428,6 @@ private struct ChatView: View {
             }
             AttachmentDraftsView(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
-                if chat.canAttach { AttachmentPickerButton(chat: chat) }
                 VStack(spacing: 6) {
                     if let conversation = peerConversation, conversation.status == .outgoing {
                         Text(MessageRequests.waitingNotice(for: conversation.peer))
@@ -2445,25 +2444,27 @@ private struct ChatView: View {
                         }.font(CaperTheme.font(11))
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
-                    ZStack(alignment: .topLeading) {
-                        if chat.draft.isEmpty {
-                            Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                    HStack(alignment: .bottom, spacing: 0) {
+                        if chat.canAttach { AttachmentPickerButton(chat: chat).padding(.leading, 4) }
+                        ZStack(alignment: .topLeading) {
+                            if chat.draft.isEmpty {
+                                Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            }
+                            NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
+                                                  controller: composerAutocomplete, mentions: mentionSource,
+                                                  submit: { Task { await chat.send() } })
                         }
-                        NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                              controller: composerAutocomplete, mentions: mentionSource,
-                                              submit: { Task { await chat.send() } })
+                        .frame(minHeight: 42, maxHeight: 174)
+                        // Measure the text view instead of filling the 174-point maximum.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                        #if os(iOS)
+                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        #endif
                     }
-                    .frame(minHeight: 42, maxHeight: 174)
-                    // The flexible frame otherwise fills its proposal up to 174,
-                    // centering a one-line text view inside an oversized background.
-                    .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
-                    #if os(iOS)
-                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))

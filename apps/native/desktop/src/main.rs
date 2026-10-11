@@ -9433,7 +9433,7 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            let attach_width = if attach { 36.0 } else { 0.0 };
+            let attach_width = if attach { 40.0 } else { 0.0 };
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
@@ -9556,40 +9556,46 @@ impl CaperApp {
                                 RichText::new(placeholder)
                                     .color(Color32::from_rgb(142, 149, 152)),
                             )
-                            .background_color(COMPOSER)
+                            .frame(false)
                             .char_limit(4_000).show(ui)
                     );
-                    let editor = if attach {
-                        let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
-                        let mut pick = false;
-                        let editor = ui.horizontal_top(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(7.0);
-                                let enabled = !full && self.file_picker.is_none();
-                                let button = ui
-                                    .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
-                                    .inner;
-                                pick = button.clicked();
-                            });
-                            editor_area(ui, &mut self.draft)
-                        }).inner;
-                        if pick {
-                            self.pick_files(ui.ctx());
-                        }
-                        editor
-                    } else {
-                        editor_area(ui, &mut self.draft)
-                    };
-                    let mut output = editor.inner;
+                    let editor = egui::Frame::new()
+                        .fill(COMPOSER)
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin { left: if attach { 4 } else { 0 }, ..Default::default() })
+                        .show(ui, |ui| {
+                            if attach {
+                                let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
+                                let mut pick = false;
+                                let editor = ui.horizontal_top(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.add_space(7.0);
+                                        let enabled = !full && self.file_picker.is_none();
+                                        let button = ui
+                                            .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                            .inner;
+                                        pick = button.clicked();
+                                    });
+                                    editor_area(ui, &mut self.draft)
+                                }).inner;
+                                if pick {
+                                    self.pick_files(ui.ctx());
+                                }
+                                editor
+                            } else {
+                                editor_area(ui, &mut self.draft)
+                            }
+                        });
+                    let mut output = editor.inner.inner;
                     let draft = self.draft.clone();
                     if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
                         self.draft = value;
                     }
                     let response = &output.response;
                     ui.painter().rect_stroke(
-                        editor.inner_rect,
-                        6.0,
-                        Stroke::new(1.0, BORDER),
+                        editor.response.rect,
+                        8.0,
+                        Stroke::new(1.0, if response.has_focus() { TERRACOTTA } else { BORDER }),
                         egui::StrokeKind::Inside,
                     );
                     if self.draft != before {
@@ -24069,6 +24075,33 @@ mod tests {
         assert!(url.starts_with("file:///"));
         assert!(url.ends_with("/selected%20diagram%20%231.png"));
         assert_eq!(app.draft_files.len(), 3);
+
+        // Empty and multiline drafts share one message-box surface with Attach.
+        for draft in ["", "First line\nSecond line\nThird line"] {
+            app.draft = draft.into();
+            context.enable_accesskit();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let attach = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
+            )), "{draft:?}: Attach must be inside the message box");
+        }
     }
 
     #[test]

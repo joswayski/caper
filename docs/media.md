@@ -1281,6 +1281,14 @@ to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
 
+The channel/DM attachment control sits inside the left edge of the message box
+on web, Android, iOS/macOS and Rust desktop, sharing its background and outline.
+Existing pickers, the ten-file limit and upload availability rules are unchanged.
+Web and native binaries can roll out independently; no API, gateway, database,
+infrastructure or secret changes are required. Android/Apple native builds and
+rendering, Windows rendering and physical-device checks remain release checks;
+browser fixtures do not validate those platforms.
+
 Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
 Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
 within an hour, or after a 403/404, at most once per stale URL; decoded images
