@@ -189,7 +189,7 @@ class AttachmentUploaderTest {
         assertEquals("""{"ids":["$id"]}""", refresh.body.readUtf8())
     }
 
-    @Test fun `unconfigured uploads fail the usage check so the control stays hidden`() = runTest {
+    @Test fun `unconfigured uploads fail the usage check so the control stays disabled`() = runTest {
         server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":"uploads unavailable"}"""))
         val error = runCatching { CaperApi(baseUrl = server.url("/").toString()).assetUsage("account-secret") }.exceptionOrNull()
         assertEquals(503, (error as ApiException).status)

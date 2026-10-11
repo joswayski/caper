@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
@@ -206,9 +207,12 @@ export default function ThreadPanel({
   useEffect(() => {
     if (!state.thread?.focusMessageId) follow.current = true;
   }, [state.thread?.focusMessageId]);
-  useEffect(() => {
-    if (scroll.current && follow.current) scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [rootId, replies.at(-1)?.id, pending?.clientMessageId, state.thread?.loading]);
+  // Reactions grow an existing reply (or the root) without changing its ID.
+  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  useLayoutEffect(() => {
+    if (scroll.current && follow.current && !state.thread?.hasNewer && !state.thread?.focusMessageId)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
   useEffect(() => {
     const id = state.thread?.focusMessageId;
     if (!id || state.thread?.loading) return;
@@ -223,7 +227,6 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
-  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
@@ -342,17 +345,10 @@ export default function ThreadPanel({
           </div>
         )}
         {state.thread.loading && !replies.length && (
-          <div className="chat-thread-skeleton" role="status" aria-label="Loading thread replies">
-            {Array.from({ length: Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2)) }, (_, index) => (
-              <div className="chat-thread-skeleton-row" key={index} aria-hidden="true">
-                <span className="chat-thread-skeleton-avatar" />
-                <div>
-                  <span className="chat-thread-skeleton-name" />
-                  <span className="chat-thread-skeleton-text" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <MessageSkeleton
+            label="Loading thread replies"
+            rows={Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2))}
+          />
         )}
         {state.thread.error && (
           <p className="chat-thread-status chat-inline-error" role="alert">

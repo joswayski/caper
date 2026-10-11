@@ -649,7 +649,7 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
-    /// Compression settings while uploads are configured; `None` hides Attach.
+    /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
@@ -3298,7 +3298,7 @@ impl CaperApp {
         })
     }
 
-    /// Web `uploadsAvailable`: any failure hides Attach. Rechecked at most
+    /// Any failure disables Attach without changing composer width. Rechecked at most
     /// once a minute on channel loads while unavailable.
     fn check_uploads(&mut self) {
         let Some(token) = self.token.clone() else {
@@ -8961,7 +8961,8 @@ impl CaperApp {
             });
         }
         for member in members {
-            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let tint = ui.painter().add(egui::Shape::Noop);
+            let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add_space(16.0);
                 let status = self
@@ -8971,6 +8972,15 @@ impl CaperApp {
                 presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
                 ui.label(bold(&member.display_name).size(12.0));
             });
+            let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
+            if response.hovered() || response.has_focus() {
+                ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, RAISED));
+            }
+            if response.clicked() {
+                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false }, &response, true);
+            }
         }
         if page_count > 1 {
             ui.horizontal(|ui| {
@@ -9432,7 +9442,8 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            let attach_width = if attach { 40.0 } else { 0.0 };
+            // Reserve the paperclip before upload settings or the session arrive.
+            let attach_width = 40.0;
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
@@ -9561,29 +9572,26 @@ impl CaperApp {
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
-                        .inner_margin(egui::Margin { left: if attach { 4 } else { 0 }, ..Default::default() })
+                        .inner_margin(egui::Margin { left: 4, ..Default::default() })
                         .show(ui, |ui| {
-                            if attach {
-                                let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
-                                let mut pick = false;
-                                let editor = ui.horizontal_top(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.add_space(7.0);
-                                        let enabled = !full && self.file_picker.is_none();
-                                        let button = ui
-                                            .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
-                                            .inner;
-                                        pick = button.clicked();
-                                    });
-                                    editor_area(ui, &mut self.draft)
-                                }).inner;
-                                if pick {
-                                    self.pick_files(ui.ctx());
-                                }
-                                editor
-                            } else {
+                            let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
+                            let mut pick = false;
+                            let editor = ui.horizontal_top(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    let enabled = attach && !full && self.file_picker.is_none();
+                                    let button = ui
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
+                                        .inner
+                                        .on_disabled_hover_text(if full { "You can attach up to 10 files." } else { "File uploads are not ready" });
+                                    pick = button.clicked();
+                                });
                                 editor_area(ui, &mut self.draft)
+                            }).inner;
+                            if pick {
+                                self.pick_files(ui.ctx());
                             }
+                            editor
                         });
                     let mut output = editor.inner.inner;
                     let draft = self.draft.clone();
@@ -9783,7 +9791,7 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
+                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -10097,33 +10105,16 @@ impl CaperApp {
                                 && !was_hovered
                                 && !ui.input(|input| input.pointer.any_down()))
                         {
-                            self.mention_card = Some(MentionCard {
-                                pill: PillClick {
-                                    id: response.id,
-                                    rect: response.rect,
-                                    entry: model::Mention {
-                                        kind: "user".into(),
-                                        id: Some(pin.author.id.clone()),
-                                        username: None,
-                                    },
-                                },
-                                author: Some(pin.author.clone()),
-                                focus_on_open: response.clicked() || response.long_touched(),
-                                opening: None,
-                                error: None,
-                                fresh: true,
-                            });
+                            self.open_author_card(
+                                &pin.author,
+                                &response,
+                                response.clicked() || response.long_touched(),
+                            );
                         }
                     });
             }
-            let (timestamp, body) = message_row(
-                ui,
-                &message.author.name,
-                message.author.avatar_id,
-                &time,
-                message.author.is_guest,
-                short.as_deref(),
-                |ui| {
+            let (timestamp, profile, body) =
+                message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
                     // Compact follow-ups have no header line for the hover
                     // actions to sit beside: keep their text clear of them
                     // instead of under them (web floats the first line).
@@ -10153,8 +10144,10 @@ impl CaperApp {
                         },
                         grouped && edited,
                     )
-                },
-            );
+                });
+            if let Some(response) = profile {
+                self.open_author_card(&message.author, &response, true);
+            }
             // The header's time, or a grouped row's inline marker.
             if message.forward.is_none()
                 && edited
@@ -12019,6 +12012,31 @@ impl CaperApp {
             self.people.as_deref().unwrap_or_default(),
             &self.directs,
         )
+    }
+
+    /// Authors and member rows use the same card and ID-based resolution as mentions.
+    fn open_author_card(
+        &mut self,
+        author: &model::Author,
+        response: &egui::Response,
+        focus_on_open: bool,
+    ) {
+        self.mention_card = Some(MentionCard {
+            pill: PillClick {
+                id: response.id,
+                rect: response.rect,
+                entry: model::Mention {
+                    kind: "user".into(),
+                    id: Some(author.id.clone()),
+                    username: None,
+                },
+            },
+            author: Some(author.clone()),
+            focus_on_open,
+            opening: None,
+            error: None,
+            fresh: true,
+        });
     }
 
     /// The card for a clicked person pill: below the pill, or above it when
@@ -14229,17 +14247,39 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 /// empty so the text lines up, showing the short time while hovered. Screen
 /// readers still get the author and `time` there.
 ///
-/// Returns the header timestamp's rect (the edit-history target; `None` for
-/// grouped rows) and the body's result.
+/// Returns the timestamp (edit history), an activated author profile target,
+/// and the body's result. Grouped rows have no header/profile targets.
 fn message_row<R>(
     ui: &mut egui::Ui,
-    author: &str,
-    avatar_id: Option<i32>,
+    author: &model::Author,
     time: &str,
-    guest: bool,
     grouped: Option<&str>,
+    profile: bool,
     body: impl FnOnce(&mut egui::Ui) -> R,
-) -> (Option<egui::Rect>, R) {
+) -> (Option<egui::Rect>, Option<egui::Response>, R) {
+    let profile = profile && !author.is_guest;
+    let mut activated = None;
+    let mut profile_response = |ui: &egui::Ui, response: egui::Response| {
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("Open profile for {}", author.name),
+            )
+        });
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect.expand(2.0),
+                4.0,
+                Stroke::new(2.0, TERRACOTTA),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if response.clicked() {
+            activated = Some(response);
+        }
+    };
     let shown = egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 18,
@@ -14259,18 +14299,49 @@ fn message_row<R>(
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Label,
                             true,
-                            format!("{author} {time}"),
+                            format!("{} {time}", author.name),
                         )
                     });
                     let result = ui.vertical(body).inner;
                     return (Err(column), result);
                 }
-                avatar(ui, author, avatar_id, 34.0, false);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(34.0, 34.0),
+                    if profile {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                paint_avatar(ui, rect, &author.name, author.avatar_id);
+                if profile {
+                    if response.hovered() {
+                        ui.painter()
+                            .circle_stroke(rect.center(), 19.0, Stroke::new(2.0, BORDER));
+                    }
+                    profile_response(ui, response);
+                }
                 ui.vertical(|ui| {
                     let timestamp = ui
                         .horizontal_wrapped(|ui| {
-                            ui.label(bold(author).size(13.0));
-                            if guest {
+                            let name = ui.add(
+                                egui::Label::new(bold(&author.name).size(13.0)).sense(if profile {
+                                    egui::Sense::click()
+                                } else {
+                                    egui::Sense::hover()
+                                }),
+                            );
+                            if profile {
+                                if name.hovered() {
+                                    ui.painter().hline(
+                                        name.rect.x_range(),
+                                        name.rect.bottom(),
+                                        Stroke::new(1.0, TEXT),
+                                    );
+                                }
+                                profile_response(ui, name);
+                            }
+                            if author.is_guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
                             }
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
@@ -14284,7 +14355,7 @@ fn message_row<R>(
         });
     let (head, result) = shown.inner;
     match head {
-        Ok(timestamp) => (Some(timestamp), result),
+        Ok(timestamp) => (Some(timestamp), activated, result),
         Err(column) => {
             if let Some(short) = grouped
                 && ui.rect_contains_pointer(shown.response.rect)
@@ -14297,7 +14368,7 @@ fn message_row<R>(
                     MUTED,
                 );
             }
-            (None, result)
+            (None, None, result)
         }
     }
 }
@@ -16389,6 +16460,83 @@ mod tests {
     }
 
     #[test]
+    fn last_message_reactions_stay_visible_without_pulling_a_history_reader() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.reactions.clear();
+        }
+        app.timeline.reset(messages, "40").unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let newest = "Scroll fixture message 40";
+        let before = text_position(&render(&mut app, &context, vec![]), newest);
+        let reaction = crate::model::Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["fixture-peer".into()],
+        };
+        let update = |seq, reactions| crate::model::ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: app.selected_channel.clone().unwrap(),
+            seq,
+            message_id: "scroll-40".into(),
+            reactions,
+        };
+        let first = update("41".into(), vec![reaction]);
+        let removed = update("42".into(), vec![]);
+        app.timeline.apply_reactions(first).unwrap();
+        let reacted = render(&mut app, &context, vec![]);
+        assert!(text_position(&reacted, newest).y < before.y);
+        let chip = reacted
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "1" => {
+                    Some((text.pos.y + text.galley.size().y, shape.clip_rect.bottom()))
+                }
+                _ => None,
+            })
+            .expect("the reaction count is painted");
+        assert!(chip.0 <= chip.1, "the chip is not clipped by the timeline");
+        // Wheel input releases egui's bottom stickiness, as a real reader does.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 450.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let reading = render(&mut app, &context, vec![]);
+        let anchor = reading
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a history message is visible");
+        let position = text_position(&reading, &anchor);
+        app.timeline.apply_reactions(removed).unwrap();
+        let changed = render(&mut app, &context, vec![]);
+        assert_eq!(text_position(&changed, &anchor), position);
+    }
+
+    #[test]
     fn pins_use_normal_hover_actions_and_a_dismissible_navigation_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -17638,16 +17786,20 @@ mod tests {
             app.notifications.level(&space),
             Some(model::NotificationLevel::Nothing)
         );
+        // The refresh sent when the menu opened can still be in flight once
+        // the save is done (seen on the Windows runner).
+        receive_until(&mut app, |_| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line == "GET /api/notifications/settings")
+        });
         let seen = seen.lock().unwrap();
         assert!(
             seen.contains(
                 &r#"PUT /api/spaces/space0000001/notifications {"level":"nothing"}"#.to_owned()
             ),
             "{seen:?}"
-        );
-        assert!(
-            seen.contains(&"GET /api/notifications/settings".to_owned()),
-            "opening the menu refreshes the settings: {seen:?}"
         );
     }
 
@@ -21792,6 +21944,83 @@ mod tests {
     }
 
     #[test]
+    fn author_avatars_names_and_member_rows_open_profiles() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        for members_visible in [false, true] {
+            app.members_visible = members_visible;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let targets: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Open profile for Maya"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .map(|rect| {
+                    egui::pos2(
+                        (rect.x0 + rect.x1) as f32 / 2.0,
+                        (rect.y0 + rect.y1) as f32 / 2.0,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                targets.len(),
+                if members_visible { 3 } else { 2 },
+                "avatar, name, and optionally member row"
+            );
+            for target in targets {
+                click_at(&mut app, &context, target);
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "profile resolves the author/member by ID"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                let output = render(&mut app, &context, vec![]);
+                assert!(!shows(&output, "Message"));
+                render(&mut app, &context, press(egui::Key::Enter));
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "focus returns and Enter reopens the profile"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                render(&mut app, &context, vec![]);
+            }
+        }
+        app.members_visible = false;
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.author.is_guest = true;
+        }
+        app.timeline.reset(messages, "4").unwrap();
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Open profile for Maya")),
+            "guest authors have no account profile"
+        );
+    }
+
+    #[test]
     fn person_pills_open_profile_cards_that_close_on_escape_or_outside_click() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -24156,6 +24385,51 @@ mod tests {
     }
 
     #[test]
+    fn attachment_readiness_never_moves_the_composer() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-account".into());
+        app.session = Some(session());
+        let mut bounds = None;
+        for ready in [false, true, false] {
+            app.uploads = ready.then(crate::compress::Compression::default);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let attach = &nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .expect("paperclip stays present")
+                .1;
+            assert_eq!(attach.is_disabled(), !ready);
+            let editor = &nodes
+                .iter()
+                .find(|(_, node)| node.role() == egui::accesskit::Role::MultilineTextInput)
+                .unwrap()
+                .1;
+            if let Some(previous) = bounds {
+                assert_eq!(
+                    editor.bounds(),
+                    Some(previous),
+                    "upload readiness must not move or resize the editor"
+                );
+            }
+            bounds = editor.bounds();
+            assert!(bounds.is_some());
+        }
+    }
+
+    #[test]
     fn attach_needs_uploads_and_a_writable_channel_and_drafts_gate_sending() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -24165,7 +24439,7 @@ mod tests {
         );
         assert!(app.can_attach());
         app.uploads = None;
-        assert!(!app.can_attach(), "usage failure hides Attach");
+        assert!(!app.can_attach(), "usage failure disables Attach");
         app.uploads = Some(crate::compress::Compression::default());
         let channel = app.selected_channel.clone().unwrap();
         app.detail

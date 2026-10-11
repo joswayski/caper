@@ -88,6 +88,65 @@
 .spaces-loading .stage {
   background: var(--surface-conversation);
 }
+.spaces-loading > .people-panel {
+  width: var(--channel-sidebar-width, 260px);
+}
+.spaces-loading-heading {
+  display: flex;
+  align-items: center;
+  flex: 0 0 54px;
+  min-height: 54px;
+  margin: 0;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.spaces-skeleton-tile,
+.spaces-skeleton-line,
+.spaces-skeleton-input {
+  display: block;
+  background: var(--border);
+  border-radius: 8px;
+}
+.spaces-skeleton-tile {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+}
+.spaces-skeleton-line {
+  width: 65%;
+  height: 12px;
+  border-radius: 4px;
+}
+.spaces-loading-channels {
+  display: grid;
+  gap: 30px;
+  padding: 24px 18px;
+}
+.spaces-loading-channels > :nth-child(even) {
+  width: 45%;
+}
+.spaces-loading-account {
+  margin-top: auto;
+  padding: 24px 18px;
+  border-top: 1px solid var(--border);
+}
+.spaces-loading-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 18px;
+}
+.spaces-loading-composer {
+  display: flex;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+.spaces-skeleton-input {
+  flex: 1;
+  height: 40px;
+}
 .demo-space-title {
   flex: 1;
   min-height: 38px;
@@ -950,12 +1009,29 @@
   overflow-y: auto;
   margin: 8px 0;
 }
-.space-member-presence li {
+.member-profile-trigger {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   min-height: 44px;
   padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .member-profile-trigger:hover {
+    background: var(--surface-raised);
+  }
+}
+.member-profile-trigger:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 .member-presence-avatar {
   position: relative;
@@ -967,12 +1043,8 @@
   color: #fff;
   font-size: 0.75rem;
 }
-.space-member-presence li > span:last-child {
-  display: grid;
-  align-items: center;
-  min-width: 0;
-}
 .space-member-presence strong {
+  min-width: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 0.75rem;

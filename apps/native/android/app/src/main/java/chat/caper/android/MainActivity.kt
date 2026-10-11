@@ -359,6 +359,8 @@ internal data class VoiceJoinIntent(
 @Composable private fun BrandLoading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Wordmark(); CircularProgressIndicator(color = Terracotta)
+        Text("Loading your spaces…", color = TextMuted, fontSize = 12.sp,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 
@@ -1187,6 +1189,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
 @Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false, close: (() -> Unit)? = null) {
     val members = state.selectedSpace?.members ?: return
     val detail = state.selectedSpace ?: return
+    var profile by remember(detail.space.id) { mutableStateOf<MentionCard?>(null) }
     val pages = ((members.size + 24) / 25).coerceAtLeast(1)
     val shown = members.drop(state.presencePage * 25).take(25)
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
@@ -1203,7 +1206,9 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
             items(shown, key = { it.id }) { member ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
+                    .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         Avatar(member.displayName, 30.dp, avatarId = member.avatarId)
                         PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, SurfaceSidebar, Modifier.align(Alignment.BottomEnd))
@@ -1216,6 +1221,13 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }
             Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
             TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages, shape = MaterialTheme.shapes.small) { Text("Next", fontSize = 10.sp) }
+        }
+    }
+    profile?.let { card ->
+        key(card.id) {
+            MentionCardSheet(card, { done, failed -> card.username?.let { username ->
+                viewModel.messageMentioned(card.id, username, { profile = null; close?.invoke(); done() }, failed)
+            } }) { profile = null }
         }
     }
 }
@@ -1574,13 +1586,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
-                        // Share the field's outline; read-only previews have no composer.
-                        leadingIcon = if (state.uploadsEnabled) ({
+                        // Reserve the icon inside the field while uploads/session become ready.
+                        // Read-only previews and locked DMs have no composer.
+                        leadingIcon = {
                             AttachButton(
-                                state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
+                                state.uploadsEnabled && state.chatAuthorId != null && state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
                                 viewModel::addAttachments,
                             )
-                        }) else null,
+                        },
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
                         colors = composerFieldColors(),
@@ -1756,8 +1769,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
-    // The tapped person's `user` mention entry; another pill replaces it.
-    var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
+    // Mentions, author avatars and author names share the same profile sheet.
+    var mentionTarget by remember { mutableStateOf<MentionCard?>(null) }
     // Above the list, so new messages scrolling a row away don't close its viewer.
     val viewerHost = remember { MediaViewerHost() }
     val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
@@ -1795,7 +1808,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
-        return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Loading messages…", color = TextMuted, fontSize = 13.sp) }
+        return MessageSkeleton(modifier.clipToBounds())
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1815,6 +1828,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
+        reactions = messages.lastOrNull()?.reactions.orEmpty(),
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -1850,7 +1864,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
-                        openMention = { mentionTarget = it },
+                        openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
+                        openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
                         openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
@@ -1867,17 +1882,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         if (skeleton) item("thread-loading") {
-            Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
-                repeat(2) { index ->
-                    Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Box(Modifier.size(34.dp).background(Border, CircleShape))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
-                            Box(Modifier.fillMaxWidth(if (index == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
-                        }
-                    }
-                }
-            }
+            MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
         listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -1952,9 +1957,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
         }
     }
-    mentionTarget?.let { target ->
-        val card = mentionCard(target.id, target.username.orEmpty(), state)
-        key(target) {
+    mentionTarget?.let { card ->
+        key(card.id) {
             MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }) { mentionTarget = null }
         }
     }
@@ -2016,6 +2020,7 @@ internal class TimelineFollow(var settled: Boolean = false) {
 internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
+    val reactions: List<MessageReaction> = emptyList(),
 )
 
 /**
@@ -2040,7 +2045,9 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
         now.pendingId != null && now.pendingId != last.pendingId -> latest.also { follow.sent = now.historical }
         last.historical && !now.historical -> if (last.loadingNewer && !follow.sent) null else latest.also { follow.sent = false }
         else -> (if (last.loadingOlder && !now.loadingOlder) anchor() else null)
-            ?: latest.takeIf { !now.historical && !last.historical && now.keys.lastOrNull() != last.keys.lastOrNull() && near() }
+            // Reaction chips can add/wrap a row without changing its key.
+            ?: latest.takeIf { !now.historical && !last.historical &&
+                (now.keys.lastOrNull() != last.keys.lastOrNull() || now.reactions != last.reactions) && near() }
     }
 }
 
@@ -2135,6 +2142,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     openHistory: (ChatMessage) -> Unit = {},
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: (MessageMention) -> Unit = {},
+    openAuthor: ((ChatAuthor) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
     openActions: (ChatMessage) -> Unit,
@@ -2153,7 +2161,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, grouped) { if (message.forward == null) openHistory(message) } }
+        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
@@ -2298,6 +2306,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
+                    openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
@@ -2377,6 +2386,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
+    openAuthor: ((ChatAuthor) -> Unit)? = null,
     grouped: Boolean = false, openHistory: () -> Unit = {},
 ) = MessageRow(
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
@@ -2385,6 +2395,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     edited = message.forward == null && message.revision > 1, openHistory = openHistory,
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
     openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
+    openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2394,9 +2405,13 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
     grouped: Boolean = false,
+    openAuthor: (() -> Unit)? = null,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
+    val profile = if (openAuthor == null) Modifier else Modifier
+        .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
+        .semantics { contentDescription = "Open profile for $author" }
     Row(Modifier.fillMaxWidth().hoverable(hover).padding(start = 18.dp, end = 18.dp, top = if (grouped) 2.dp else 10.dp, bottom = 10.dp)) {
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
@@ -2406,12 +2421,12 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             contentAlignment = Alignment.TopCenter,
         ) {
             if (hovered) Text(shortTimeLabel(createdAt), color = TextMuted, fontSize = 10.sp, lineHeight = 21.sp, maxLines = 1, softWrap = false)
-        } else Avatar(author, 34.dp, avatarId = avatarId)
+        } else Avatar(author, 34.dp, modifier = profile, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
                 // A long name gives way first, so the time and tags stay whole.
-                Text(author, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(author, Modifier.weight(1f, fill = false).then(profile), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }
@@ -2453,13 +2468,34 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
+/** Static, noninteractive placeholders shared by channel and thread loading. */
+@Composable private fun MessageSkeleton(modifier: Modifier = Modifier, rows: Int = 5, label: String = "Loading messages") {
+    Column(modifier.fillMaxWidth().clearAndSetSemantics {
+        contentDescription = label
+        progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+    }) {
+        repeat(rows) { index ->
+            Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(34.dp).background(Border, CircleShape))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
+                    Box(Modifier.fillMaxWidth(if (index % 2 == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
 @Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
     Box {
-        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
+        IconButton({ open = true }, Modifier.size(48.dp).semantics {
+            contentDescription = "Attach files"
+            if (!enabled) stateDescription = "File uploads are not ready or the attachment limit has been reached"
+        }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {

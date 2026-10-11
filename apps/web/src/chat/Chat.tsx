@@ -17,6 +17,7 @@ import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
@@ -225,6 +226,7 @@ export default function Chat({
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
   const clientRef = useRef<ChatClient | undefined>(undefined);
+  const followUpdatedRows = useRef(false);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
@@ -489,17 +491,6 @@ export default function Chat({
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
-  // Show "Loading messages…" only when loading takes a moment, so quick opens
-  // (such as DMs, which load on open) don't flash it.
-  const [loadingShown, setLoadingShown] = useState(false);
-  useEffect(() => {
-    if (state.phase !== "loading") {
-      setLoadingShown(false);
-      return;
-    }
-    const timer = setTimeout(() => setLoadingShown(true), 200);
-    return () => clearTimeout(timer);
-  }, [state.phase]);
   useEffect(() => {
     if (!state.author || readOnly) return;
     // Warm the code/data after chat settles, without mounting the picker or
@@ -513,8 +504,8 @@ export default function Chat({
   const [attachError, setAttachError] = useState<string>();
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // Present only when the API has uploads configured; carries its compression settings.
-  const [compression, setCompression] = useState<CompressionSettings>();
+  // undefined is checking; null means unavailable. Neither removes the paperclip.
+  const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
   // The sender's local copies of sent files, shown while the server processes them.
@@ -563,8 +554,22 @@ export default function Chat({
 
   useEffect(() => {
     let firstMessageId: string | undefined;
+    let previousRows = state.channelMessages;
     const client = new ChatClient(
       (next) => {
+        if (next.channelMessages !== previousRows) {
+          const scroller = scrollerRef.current;
+          // Read BEFORE React grows the row. Virtuoso's 80px tolerance can
+          // otherwise consider a newly clipped reaction bar still at bottom.
+          followUpdatedRows.current =
+            !!scroller &&
+            allowFollow.current &&
+            !next.hasNewer &&
+            previousRows?.length === next.channelMessages?.length &&
+            previousRows?.[0]?.id === next.channelMessages?.[0]?.id &&
+            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+          previousRows = next.channelMessages;
+        }
         if (next.phase !== "ready") {
           firstMessageId = undefined;
           setListReady(false);
@@ -647,7 +652,7 @@ export default function Chat({
     }
     let active = true;
     void uploadSettings().then((settings) => {
-      if (active) setCompression(settings);
+      if (active) setCompression(settings ?? null);
     });
     return () => {
       active = false;
@@ -1133,13 +1138,11 @@ export default function Chat({
                 {compactTime(message.createdAt)}
               </div>
             ) : (
-              <div className="chat-avatar">
-                <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
-              </div>
+              authorAvatar(author)
             )}
             <div>
               <header className={grouped ? "sr-only" : undefined}>
-                <strong>{author?.name ?? name}</strong>
+                {grouped ? <strong>{author?.name ?? name}</strong> : authorName(author)}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}
@@ -1338,14 +1341,45 @@ export default function Chat({
       <Pin size={18} aria-hidden="true" />
     </button>
   );
-  const openPinner = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+  const openAuthor = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+    setActionTarget(undefined);
     setMentionCard({
-      person: mentionCardPerson(author, mentionDirectory, state.author?.id),
+      person: mentionCardPerson(author, mentionDirectory, viewerId),
       anchor,
       drawer: isTouchLayout(),
       focusOnOpen,
     });
   };
+  const authorAvatar = (author: ChatAuthor | undefined) => {
+    const image = <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />;
+    return author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-avatar chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        {image}
+      </button>
+    ) : (
+      <div className="chat-avatar">{image}</div>
+    );
+  };
+  const authorName = (author: ChatAuthor | undefined) =>
+    author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-author-name chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        <strong>{author.name}</strong>
+      </button>
+    ) : (
+      <strong>{author?.name ?? name}</strong>
+    );
 
   const pinsOpen = showPins && state.phase === "ready";
   // Opened from pins, the viewer renders inside that dialog, which then treats it as its own layer.
@@ -1453,10 +1487,10 @@ export default function Chat({
                             className="chat-pin-author"
                             aria-label={`Open profile for ${message.pin.author.name}`}
                             aria-haspopup="dialog"
-                            onClick={(event) => openPinner(message.pin!.author, event.currentTarget)}
+                            onClick={(event) => openAuthor(message.pin!.author, event.currentTarget)}
                             onPointerEnter={(event) => {
                               if (event.pointerType === "mouse")
-                                openPinner(message.pin!.author, event.currentTarget, false);
+                                openAuthor(message.pin!.author, event.currentTarget, false);
                             }}
                             onPointerDown={(event) => {
                               cancelPress();
@@ -1468,7 +1502,7 @@ export default function Chat({
                                 pointerId: event.pointerId,
                                 timer: setTimeout(() => {
                                   suppressClick.current = true;
-                                  openPinner(message.pin!.author, anchor);
+                                  openAuthor(message.pin!.author, anchor);
                                 }, 500),
                               };
                             }}
@@ -1491,11 +1525,9 @@ export default function Chat({
                           </button>
                         </small>
                       )}
-                      <div className="chat-avatar chat-pinned-avatar">
-                        <Avatar avatarId={message.author.avatarId} name={message.author.name} />
-                      </div>
+                      {authorAvatar(message.author)}
                       <header>
-                        <strong>{message.author.name}</strong>
+                        {authorName(message.author)}
                         <time dateTime={message.createdAt}>
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>
@@ -1541,11 +1573,7 @@ export default function Chat({
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
-            {state.phase === "loading" && loadingShown && (
-              <p className="chat-state" role="status">
-                Loading messages…
-              </p>
-            )}
+            {state.phase === "loading" && <MessageSkeleton />}
             {state.phase === "error" && (
               <div className="chat-state" role="alert">
                 <p>{state.error}</p>
@@ -1589,6 +1617,11 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
+                totalListHeightChanged={() => {
+                  if (followUpdatedRows.current && allowFollow.current)
+                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                  followUpdatedRows.current = false;
+                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1605,7 +1638,14 @@ export default function Chat({
                 tabIndex={listReady ? 0 : -1}
                 role="region"
                 aria-label={`Messages in ${channelName}`}
+                onWheel={() => {
+                  followUpdatedRows.current = false;
+                }}
+                onTouchMove={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
+                  followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
                     listRef.current?.scrollToIndex({
@@ -1814,9 +1854,15 @@ export default function Chat({
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
               attachments={
-                canAttach || drafts.length
+                signedIn || drafts.length
                   ? {
                       enabled: canAttach,
+                      disabledReason:
+                        compression === undefined
+                          ? "Checking file uploads…"
+                          : compression === null
+                            ? "File uploads are unavailable"
+                            : "Waiting for the conversation…",
                       drafts,
                       error: attachError,
                       onAdd: addFiles,

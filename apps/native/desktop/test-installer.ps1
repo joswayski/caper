@@ -3,12 +3,21 @@ $ErrorActionPreference = 'Stop'
 # Exercise the real installer on disposable CI hosts, without launching media.
 $Install = Join-Path $env:LOCALAPPDATA 'Programs\Caper'
 $Registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper'
-if ((Test-Path $Install) -or (Test-Path $Registry)) { throw 'Installer test requires a clean host without Caper installed' }
 $Startup = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $StartupCommand = '"' + (Join-Path $Install 'app\Caper.exe') + '"'
-if ((Get-ItemProperty $Startup -ErrorAction SilentlyContinue).Caper) { throw 'Installer test requires no existing Caper login entry' }
 $Shell = New-Object -ComObject WScript.Shell
 $Links = @((Join-Path $Shell.SpecialFolders.Item('Programs') 'Caper.lnk'), (Join-Path $Shell.SpecialFolders.Item('Desktop') 'Caper.lnk'))
+# The self-hosted Windows PC is not disposable: a run cancelled mid-test (a
+# failed job cancels the rest of its run) leaves this test's install behind.
+# Only CI installs Caper there, so clear it; elsewhere keep refusing.
+if ($env:GITHUB_ACTIONS -eq 'true') {
+  Remove-Item $Install -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item $Registry -Recurse -Force -ErrorAction SilentlyContinue
+  if ((Get-ItemProperty $Startup -ErrorAction SilentlyContinue).Caper -eq $StartupCommand) { Remove-ItemProperty $Startup -Name Caper }
+  foreach ($Link in $Links) { Remove-Item $Link -Force -ErrorAction SilentlyContinue }
+}
+if ((Test-Path $Install) -or (Test-Path $Registry)) { throw 'Installer test requires a clean host without Caper installed' }
+if ((Get-ItemProperty $Startup -ErrorAction SilentlyContinue).Caper) { throw 'Installer test requires no existing Caper login entry' }
 foreach ($Link in $Links) { if (Test-Path $Link) { throw "Existing shortcut: $Link" } }
 # Inspect the actual PE header, not just the Rust source attribute.
 $Bytes = [IO.File]::ReadAllBytes((Join-Path $Stage 'Caper.exe'))

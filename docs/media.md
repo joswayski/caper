@@ -61,11 +61,15 @@ never the internal sequence key.
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
 pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
 that opens the existing DM or starts one through `POST /api/dms`, then navigates
-there. Your own card says "You" and has no button. Card data comes only from what
+there. Message-author avatars/names (channels, DMs, threads and Pins) and member-list
+rows open the same card on every client; guest authors stay inert. Your own card
+says "You" and has no button. Card data comes only from what
 the client already loaded: space members, then `GET /api/people`, then DM peers;
 someone you share nothing with shows `@username` and the generic avatar, and
-Message still works. Wide layouts (web desktop, macOS, Rust desktop) show a popover
-by the pill; web narrow/touch, Android and iPhone show a bottom sheet. DM errors
+Message still works. Authors absent from that directory retain their message name
+and avatar, without a guessed username or Message action. Wide layouts (web desktop,
+macOS, Rust desktop) show a popover by the clicked identity; web narrow/touch,
+Android and iPhone show a bottom sheet. DM errors
 stay inline in the card. No API change. Mentions drive phone push kinds
 (`mention.user`, `mention.everyone`); see [notifications.md](notifications.md).
 
@@ -6036,3 +6040,55 @@ uses a resizable egui thread SidePanel (300–480) and is unchanged.
    browser reload and desktop/mobile transitions. Roll back web by deploying the
    previous known-good image SHA with the command above. For native clients, ship
    a corrected higher-build-number release. No data rollback is required.
+
+### Workspace loading and stable attachment controls (October 11, 2026)
+
+The client-only web workspace now renders a server-safe branded skeleton during
+account/list loading and the first conversation, including direct visits and
+reloads. Opening the landing channel no longer waits for the independent DM
+list; DM deep links still wait for their access list. Initial message loading
+reuses the neutral thread skeleton on web, Android and Apple. Rust desktop
+already has an initial history skeleton. No new skeleton animation was added.
+
+Each client's signed-in main conversation composer reserves its attachment
+control while upload availability/session checks finish. The control stays
+disabled until uploads are allowed, and remains disabled if availability fails;
+text composition does not depend on that check. This is not a guarantee that the
+upload service is healthy.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (54 files, 565 tests). Three new regression cases fail on the unchanged baseline and pass after the fix. Inspected 1440px and 390px Chromium renders using explicitly labelled local fixture data and held API responses: Join/reload skeleton, delayed DM list and DM deep link, disabled/enabled paperclip, and upload-availability failure. The textarea's measured bounds change by 0px when uploads become ready at both widths. This is not Safari, touch or physical-device validation. |
+| Rust desktop | `cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked` passes (401 passed, 12 ignored). The accessibility regression asserts disabled/enabled/disabled attachment states and unchanged editor bounds. Linux fixture renders cover disabled and enabled controls at 1440px and 390px; a narrow Linux window is not a mobile client. Ignored device/audio tests were not run. |
+| Android | Implementation updated, but `./gradlew --no-daemon --max-workers=1 compileDebugKotlin testDebugUnitTest lintDebug` stops at project configuration: Android SDK location not found. No Kotlin compilation, native rendering or device validation. |
+| iOS/macOS | Implementation updated; no Swift compiler or Xcode in this orb, so no parse/typecheck, XCTest, native rendering or device validation. |
+| Containers/services | No Docker daemon for an image build; the web production build runs directly. No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration or backend rollout
+   is needed. Web and native clients can deploy independently; merging does not
+   deploy them.
+2. After merge, wait for the immutable web image for that revision. With access to
+   the infrastructure repository and the production Kubernetes context, set
+   `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/check Apple and Android on supported hosts before distributing. Verify
+   cold launch, delayed history/upload availability, failed availability and
+   unchanged composer placement on real clients. After native acceptance, the
+   existing signed-release workflow can distribute this exact merged revision:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+4. Verify web Join and reload at desktop/phone widths and attachment readiness in
+   production. Roll back web with the previous known-good image SHA using the same
+   deployment command; native rollback needs a corrected higher-build-number
+   release. No data rollback is required.

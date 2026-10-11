@@ -4,6 +4,8 @@ import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import { watchPresence } from "../gateway/client";
 import type { Member } from "./client";
+import MentionCard, { type MentionCardTarget } from "../chat/MentionCard";
+import { mentionCardPerson } from "../chat/mentions";
 
 const PAGE_SIZE = 25;
 type Status = "online" | "idle" | "offline";
@@ -13,16 +15,21 @@ export default function MemberPresence({
   spaceId,
   members,
   demo,
+  accountId,
+  onMessagePerson,
   onClose,
 }: {
   spaceId: string;
   members: Member[];
   demo?: boolean;
+  accountId?: string;
+  onMessagePerson: (username: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [page, setPage] = useState(0);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [live, setLive] = useState(false);
+  const [profile, setProfile] = useState<MentionCardTarget>();
   const lastPage = Math.max(0, Math.ceil(members.length / PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
   const visible = members.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
@@ -30,6 +37,7 @@ export default function MemberPresence({
 
   useEffect(() => {
     setPage(0);
+    setProfile(undefined);
   }, [spaceId]);
 
   useEffect(() => {
@@ -70,13 +78,25 @@ export default function MemberPresence({
             const status = statuses[member.id];
             return (
               <li key={member.id}>
-                <span className="member-presence-avatar">
-                  <Avatar avatarId={member.avatarId} name={member.displayName} />
-                  <PresenceDot status={status} live={live} />
-                </span>
-                <span>
+                <button
+                  type="button"
+                  className="member-profile-trigger"
+                  aria-label={`Open profile for ${member.displayName}`}
+                  aria-haspopup="dialog"
+                  onClick={(event) =>
+                    setProfile({
+                      person: mentionCardPerson(member, members, accountId),
+                      anchor: event.currentTarget,
+                      drawer: matchMedia("(max-width: 760px), (pointer: coarse)").matches,
+                    })
+                  }
+                >
+                  <span className="member-presence-avatar">
+                    <Avatar avatarId={member.avatarId} name={member.displayName} />
+                    <PresenceDot status={status} live={live} />
+                  </span>
                   <strong title={member.displayName}>{member.displayName}</strong>
-                </span>
+                </button>
               </li>
             );
           })}
@@ -95,6 +115,17 @@ export default function MemberPresence({
           </div>
         )}
       </div>
+      {profile && (
+        <MentionCard
+          key={profile.person.id}
+          target={profile}
+          onClose={() => setProfile(undefined)}
+          onMessage={async (username) => {
+            await onMessagePerson(username);
+            onClose();
+          }}
+        />
+      )}
     </aside>
   );
 }

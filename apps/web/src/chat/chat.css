@@ -894,6 +894,32 @@
   font-size: 0.78rem;
   font-weight: 700;
 }
+.chat-author-profile {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-author-name {
+  max-width: 100%;
+  border-radius: 4px;
+}
+@media (hover: hover) {
+  .chat-author-name:hover {
+    text-decoration: underline;
+  }
+  .chat-avatar.chat-author-profile:hover {
+    outline: 2px solid var(--border);
+    outline-offset: 2px;
+  }
+}
+.chat-author-profile:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
 .chat-message header {
   display: flex;
   flex-wrap: wrap;
@@ -981,7 +1007,7 @@
   border-radius: 8px;
   background: var(--pin-wash);
 }
-.chat-pinned-avatar {
+.chat-pinned-message > .chat-avatar {
   grid-column: 1;
   grid-row: 2 / 4;
   align-self: start;

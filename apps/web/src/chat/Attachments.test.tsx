@@ -1,7 +1,37 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
+import Composer from "./Composer.tsx";
 import type { ChatAttachment } from "./types.ts";
+
+test.each([false, true])("the attachment slot stays present while availability changes to %s", (enabled) => {
+  const markup = renderToStaticMarkup(
+    <Composer
+      channelName="general"
+      direct={false}
+      disabled={false}
+      identityReady
+      sending={false}
+      sendRejected={false}
+      onSend={() => undefined}
+      onTyping={() => {}}
+      onResize={() => {}}
+      onDraftPresence={() => {}}
+      attachments={{
+        enabled,
+        disabledReason: "File uploads are unavailable",
+        drafts: [],
+        onAdd: () => {},
+        onRemove: () => {},
+      }}
+    />,
+  );
+  expect(markup).toContain('data-attach="true"');
+  const attach = markup.match(/<button[^>]*aria-label="Attach files"[^>]*>/)?.[0];
+  expect(attach).toBeDefined();
+  expect(attach!.includes('disabled=""')).toBe(!enabled);
+  expect(attach).toContain(`title="${enabled ? "Attach files" : "File uploads are unavailable"}"`);
+});
 
 const file = (id: string, name: string, overrides: Partial<ChatAttachment>): ChatAttachment => ({
   id,

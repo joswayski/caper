@@ -430,6 +430,7 @@ final class CaperParityUITests: XCTestCase {
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         try require(app.buttons["Close navigation"], timeout: 5, "Missing conversation return target").tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Returning from Browse must not reopen the keyboard")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Dismissing the keyboard must restore the safe-area layout")
         capture("composer-keyboard-dismissed", app: app)
         XCTAssertTrue(focus(composer))

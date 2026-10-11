@@ -11,6 +11,8 @@ import { MAX_ATTACHMENTS } from "./uploads.ts";
 export interface ComposerAttachments {
   /** Whether new files can be added (uploads configured, conversation writable). */
   enabled: boolean;
+  /** Why the stable attachment control cannot be used yet. */
+  disabledReason?: string;
   drafts: DraftAttachment[];
   /** A problem adding files, such as too many. */
   error?: string;
@@ -174,20 +176,20 @@ export default function Composer({
       )}
       {attachments && <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} />}
       <form
-        data-attach={canAttach || undefined}
+        data-attach={!!attachments || undefined}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        {canAttach && (
+        {attachments && (
           <>
             <button
               type="button"
               className="chat-attach"
               aria-label="Attach files"
-              title="Attach files"
-              disabled={attachments.drafts.length >= MAX_ATTACHMENTS}
+              title={canAttach ? "Attach files" : (attachments.disabledReason ?? "File uploads are not ready yet")}
+              disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
             >
               <Plus size={17} aria-hidden="true" />
@@ -197,7 +199,9 @@ export default function Composer({
               type="file"
               multiple
               hidden
+              disabled={!canAttach || disabled}
               onChange={(event) => {
+                if (!canAttach || disabled) return;
                 attachments.onAdd([...(event.target.files ?? [])]);
                 event.target.value = "";
               }}

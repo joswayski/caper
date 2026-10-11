@@ -585,7 +585,9 @@ def main() -> None:
     adb("shell", "input", "swipe", str(width * 9 // 10), middle, str(width // 5), middle, "150")
     wait_for(text="Members")
     assert find(hierarchy(), description="Back to Browse") is not None, "A left swipe opens Members, not Browse"
-    adb("shell", "input", "swipe", str(width * 3 // 5), middle, str(width - 10), middle, "150")
+    # The panel spans 103-383dp. Swipe past half its travel (280dp plus a 32dp margin): a shorter
+    # swipe closes it only as a fling, which a busy emulator can report too slowly.
+    adb("shell", "input", "swipe", str(width * 2 // 5), middle, str(width - 10), middle, "150")
     members_closed("A right swipe on the member panel must close it")
     tap(description="Back to Browse")
     tap(description="Fixture Studio")

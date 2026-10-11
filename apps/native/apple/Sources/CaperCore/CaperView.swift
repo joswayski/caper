@@ -102,6 +102,28 @@ private struct LoadingView: View {
     }
 }
 
+/// Static placeholders keep the message layout visible without introducing motion.
+private struct MessageSkeleton: View {
+    var rows = 5
+    var label = "Loading messages"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<rows, id: \.self) { index in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
+                    VStack(alignment: .leading, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border)
+                            .frame(width: index.isMultiple(of: 2) ? 180 : 128, height: 10)
+                    }
+                    Spacer(minLength: 0)
+                }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
+            }
+        }.accessibilityElement(children: .ignore).accessibilityLabel(label)
+    }
+}
+
 /// Web's first-space page: an account with no spaces names one here.
 private struct FirstSpaceView: View {
     @Bindable var model: AppModel
@@ -542,6 +564,8 @@ private struct WorkspaceView: View {
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
                         }
+                        // Returning from Browse must not reopen the keyboard on its own.
+                        .environment(\.composerCovered, showsBrowse)
                         // Full height, under the status bar and home indicator too, with a
                         // soft shadow cast from the conversation's edge onto Browse, like the web's.
                         .background {
@@ -1389,6 +1413,8 @@ private struct MemberPresenceView: View {
     @Bindable var model: AppModel
     @Bindable var presence: PresenceModel
     var close: (() -> Void)?
+    @State private var profile: MentionCardTarget?
+    @State private var pointer = MentionPointer()
     init(model: AppModel, close: (() -> Void)? = nil) { self.model = model; presence = model.presence; self.close = close }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1413,14 +1439,28 @@ private struct MemberPresenceView: View {
                 Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else {
                 ForEach(presence.visibleMembers) { member in
-                    HStack(spacing: 10) {
-                        ZStack(alignment: .bottomTrailing) {
-                            Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
-                            Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
-                                .overlay(Circle().stroke(CaperTheme.sidebar, lineWidth: 2))
+                    Button {
+                        profile = MentionCardTarget(pill: MentionPill(id: member.id, username: member.username), pointer: pointer.location)
+                    } label: {
+                        HStack(spacing: 10) {
+                            ZStack(alignment: .bottomTrailing) {
+                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                                Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
+                                    .overlay(Circle().stroke(CaperTheme.sidebar, lineWidth: 2))
+                            }
+                            Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }.frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+                    }.buttonStyle(ProfileButtonStyle())
+                        .accessibilityLabel("Open profile for \(member.displayName)")
+                        #if os(macOS)
+                        .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                            switch phase {
+                            case .active(let point): pointer.location = point
+                            case .ended: pointer.location = nil
+                            }
                         }
-                        Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                    }.frame(height: 38)
+                        #endif
                 }
                 if presence.pageCount > 1 {
                     HStack {
@@ -1435,6 +1475,9 @@ private struct MemberPresenceView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(CaperTheme.sidebar)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            .coordinateSpace(.named(MentionCard.timelineSpace))
+            .modifier(MentionCardHost(target: $profile, model: model, viewerID: model.account?.id))
+            .onChange(of: model.detail?.space.id) { _, _ in profile = nil }
     }
     private func statusColor(_ status: PresenceStatus) -> Color {
         switch status { case .online: CaperTheme.green; case .idle: Color(red: 0.72, green: 0.60, blue: 0.35); case .offline, .unknown: CaperTheme.border }
@@ -1471,7 +1514,12 @@ private struct MembersOverlay: View {
                 .transaction(settle) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
-            MemberPresenceView(model: model, close: close)
+            Group {
+                // Only rendered while some of it is in view: hidden or transparent,
+                // the closed list's "Members" header stayed in the iOS accessibility
+                // tree for VoiceOver and the UI tests. Closing slides the empty panel away.
+                if shown > 0 { MemberPresenceView(model: model, close: close) } else { Color.clear }
+            }
                 .frame(width: width)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Outlined on every side, and lifted by the same shadow the conversation casts over Browse.
@@ -1481,9 +1529,6 @@ private struct MembersOverlay: View {
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                // Fully closed, it is also transparent (as BrowseLayer does), which
-                // drops it from the accessibility tree; accessibilityHidden alone
-                // left its "Members" header visible to VoiceOver and UI tests.
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
@@ -1956,15 +2001,19 @@ private struct ConversationStage: View {
     }
 }
 
-/// Whether a timeline is scrolled to its end, and its viewport's height.
+/// The timeline's content/viewport heights and whether its end is visible.
 private struct TimelinePin: Equatable {
     var height: CGFloat
+    var contentHeight: CGFloat
     var atBottom: Bool
+    var firstID: String?
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
-    init(_ geometry: GeometryProxy, viewport: String) {
+    init(_ geometry: GeometryProxy, viewport: String, firstID: String?) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
+        contentHeight = geometry.size.height
         atBottom = visible.maxY >= geometry.size.height - 24
+        self.firstID = firstID
     }
 }
 
@@ -1972,11 +2021,13 @@ private struct TimelinePin: Equatable {
 /// never re-renders the conversation.
 private final class TimelinePinBox {
     private var last: TimelinePin?
-    /// Records `pin`; true when the viewport just got shorter while scrolled to the end.
-    func shortened(to pin: TimelinePin) -> Bool {
+    /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
+    /// A changed first row means history was prepended/replaced, not tail growth.
+    func needsReveal(to pin: TimelinePin) -> Bool {
         defer { last = pin }
         guard let last else { return false }
-        return pin.height < last.height && last.atBottom
+        return last.atBottom && last.firstID == pin.firstID &&
+            (pin.height < last.height || pin.contentHeight > last.contentHeight)
     }
 }
 
@@ -2067,6 +2118,9 @@ private struct ChatView: View {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        }, openAuthor: { author in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
     }
 
@@ -2079,7 +2133,7 @@ private struct ChatView: View {
     /// The newest message (or the pending send) at the bottom, as when one arrives.
     private func revealLatest(_ proxy: ScrollViewProxy) {
         if chat.pendingMessage != nil { revealPending(proxy) }
-        else if chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+        else if !chat.hasNewer, chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
     }
     /// Older history goes above the reader's place. Remember the first row so
     /// the page that arrives cannot push it (and what they were reading) away.
@@ -2265,7 +2319,7 @@ private struct ChatView: View {
                                 else { Text("Beginning of conversation") }
                             }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
                             if chat.loading && chat.messages.isEmpty {
-                                Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
+                                MessageSkeleton()
                             }
                             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 VStack(spacing: 0) {
@@ -2324,10 +2378,10 @@ private struct ChatView: View {
                     // Preceding history can move the pending row without
                     // changing that row's own height; observe the whole extent.
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
-                    // A growing draft, suggestions or the keyboard shorten the timeline
-                    // from below: keep the newest message in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin) { revealLatest(proxy) }
+                    // Reactions grow existing rows; a draft or keyboard shrinks
+                    // the viewport. Both retain a reader already at the bottom.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
@@ -2445,7 +2499,7 @@ private struct ChatView: View {
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     HStack(alignment: .bottom, spacing: 0) {
-                        if chat.canAttach { AttachmentPickerButton(chat: chat).padding(.leading, 4) }
+                        AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
                             if chat.draft.isEmpty {
                                 Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
@@ -2632,6 +2686,9 @@ private struct NativeThreadView: View {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
+        }, openAuthor: { author in
+            reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
+            mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
     }
     @State private var blockTarget: BlockTarget?
@@ -2713,18 +2770,7 @@ private struct NativeThreadView: View {
                             }
                         }
                         if chat.threadLoading && replies.isEmpty {
-                            VStack(spacing: 0) {
-                                ForEach(0..<2) { index in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
-                                        VStack(alignment: .leading, spacing: 12) {
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: index == 0 ? 180 : 128, height: 10)
-                                        }
-                                        Spacer(minLength: 0)
-                                    }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
-                                }
-                            }.accessibilityElement(children: .ignore).accessibilityLabel("Loading thread replies")
+                            MessageSkeleton(rows: 2, label: "Loading thread replies")
                         }
                         // Styled like the channel's "Load older messages" row.
                         if let error = chat.threadError {
@@ -2750,10 +2796,9 @@ private struct NativeThreadView: View {
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
-                    // A growing reply, suggestions or the keyboard shorten the panel
-                    // from below: keep the newest reply in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin), chat.focusedMessageID == nil, let id = replies.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    // Follow reaction height changes as well as a shorter viewport.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
                 .coordinateSpace(.named(MentionCard.timelineSpace))
@@ -3002,11 +3047,13 @@ private struct MessageRow: View {
             }
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
-                if grouped { groupedGutter } else { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId) }
+                if grouped { groupedGutter } else {
+                    authorProfile { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId) }
+                }
                 VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
+                        authorProfile { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                         if edited { editedMarker }
@@ -3125,6 +3172,21 @@ private struct MessageRow: View {
             .onHover { controlsHovered = $0 }
             .contextMenu { messageMenuItems }
         #endif
+    }
+    @ViewBuilder private func authorProfile<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if !message.author.isGuest, let openAuthor = mentionCards.openAuthor {
+            Button { openAuthor(message.author) } label: { content() }
+                .buttonStyle(ProfileButtonStyle())
+                .accessibilityLabel("Open profile for \(message.author.name)")
+                #if os(macOS)
+                .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                    switch phase {
+                    case .active(let point): mentionCards.pointer.location = point
+                    case .ended: mentionCards.pointer.location = nil
+                    }
+                }
+                #endif
+        } else { content() }
     }
     #if os(macOS)
     /// Web's message actions, in the ⋯ menu and the context menu. A quick
@@ -5493,6 +5555,17 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 struct CaperPrimaryButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45).modifier(ControlHover()) }
+}
+
+/// Profile entry points keep their content's size and use the common control feedback.
+private struct ProfileButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.foregroundStyle(CaperTheme.text)
+            .contentShape(Rectangle())
+            .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .modifier(ControlHover())
+    }
 }
 
 private struct ControlHover: ViewModifier {
