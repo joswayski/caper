@@ -36,7 +36,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
 - File attachments, when the server has storage configured (otherwise the
-  attach control is hidden). Inline images show the uploaded preview, else
+  attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
   attachment id. Videos show their poster with a play button. Clicking an
   image or video opens the in-app viewer over the window (`viewer.rs`): the
@@ -206,6 +206,8 @@ Neither installation nor launch requires a terminal or administrator access. The
 replaces only `app`, preserving the uninstaller and shortcuts. Close Caper before
 installing or uninstalling. CI runs `test-installer.ps1` on a clean Windows host
 to check the PE GUI subsystem, install/reinstall, file hashes, shortcuts and removal.
+In CI it first clears an install left by a run cancelled mid-test; run locally,
+it refuses to touch an existing install.
 
 The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
 X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or

@@ -303,6 +303,69 @@ try {
     (await request(`/api/chat/channels/${source.channelId}/messages/${source.id}/versions`, undefined, "other")).status,
     404,
   );
+  // Let source-access resolution finish, then hold the excerpt's replies fetch.
+  // The card's original stays visible while those replies fetch.
+  evaluate(`(() => {
+    window.forwardFetch = window.fetch.bind(window);
+    let lookups = 0;
+    window.fetch = (input, init) => {
+      if (!String(input).includes('/forwards/') || ++lookups === 1) return window.forwardFetch(input, init);
+      return new Promise(resolve => { window.releaseForward = () => resolve(window.forwardFetch(input, init)); });
+    };
+  })()`);
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait('!!window.releaseForward && !!document.querySelector(".chat-forward-body[aria-busy=true]")');
+  assert.equal(evaluate('document.querySelectorAll(".chat-forward-dialog .chat-forward-original").length'), 1);
+  assert.equal(evaluate('document.querySelector(".chat-forward-body h3, .chat-forward-status")'), null);
+  assert.equal(evaluate('document.querySelector(".chat-forward-body [role=status]").className'), "sr-only");
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-notice").textContent'),
+    "Heads up! New reactions and replies appear here automatically.",
+  );
+  screenshot("forward-conversation-fetching-desktop");
+  browser("set", "viewport", "390", "844", "2");
+  screenshot("forward-conversation-fetching-mobile");
+  evaluate("window.releaseForward(); window.fetch = window.forwardFetch");
+  wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
+  browser("press", "Escape");
+  browser("set", "viewport", "1440", "900", "2");
+
+  // A confirmed empty conversation has one empty state; unavailable originals
+  // and failed requests must never resurrect the card's cached original.
+  for (const mode of ["empty", "unavailable", "error"]) {
+    evaluate(`(() => {
+      let lookups = 0;
+      window.fetch = async (input, init) => {
+        if (!String(input).includes('/forwards/') || ++lookups === 1) return window.forwardFetch(input, init);
+        if (${JSON.stringify(mode)} === 'error') return Response.json({ error: 'TEST FIXTURE: conversation unavailable' }, { status: 503 });
+        const page = await (await window.forwardFetch(input, init)).json();
+        return Response.json({ ...page, root: ${JSON.stringify(mode)} === 'unavailable' ? null : { ...page.root, thread: undefined }, messages: [], hasMore: false });
+      };
+    })()`);
+    browser("click", `${wrapperRow} .chat-forward-card button`);
+    wait('!!document.querySelector(".chat-forward-body[aria-busy=false]")');
+    assert.equal(evaluate('document.querySelector(".chat-forward-body h3")'), null);
+    assert.equal(
+      evaluate('document.querySelectorAll(".chat-forward-dialog .chat-forward-original").length'),
+      mode === "empty" ? 1 : 0,
+    );
+    assert.equal(
+      evaluate('document.querySelector(".chat-forward-body").textContent.includes("No replies yet.")'),
+      mode === "empty",
+    );
+    screenshot(`forward-conversation-${mode}-desktop`);
+    if (mode === "empty") {
+      browser("set", "viewport", "390", "844", "2");
+      screenshot("forward-conversation-empty-mobile");
+      browser("set", "viewport", "1440", "900", "2");
+    }
+    evaluate("window.fetch = window.forwardFetch");
+    if (mode === "error") {
+      browser("click", ".chat-forward-error button");
+      wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
+    }
+    browser("press", "Escape");
+  }
   browser("click", `${wrapperRow} .chat-forward-card button`);
   wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
   assert.equal(
@@ -442,7 +505,7 @@ try {
   wait('document.querySelector("#chat-heading")?.textContent.includes("design")');
   assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
   console.log(
-    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
+    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
   );
 } finally {
   browser("close");

@@ -1,7 +1,33 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
+import { Route as SpacesRoute } from "../routes/spaces";
 import Call from "./Call";
+
+test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
+  const Pending = SpacesRoute.options.pendingComponent!;
+  const markup = renderToStaticMarkup(<Pending />);
+  expect(markup).toContain('aria-busy="true"');
+  expect(markup).toMatch(/<p[^>]*role="status"[^>]*>Loading your spaces…<\/p>/);
+  expect(markup).toContain('aria-label="Loading messages"');
+  expect(markup).not.toContain("sr-only");
+  expect(markup).not.toContain("<button");
+  expect(markup).not.toContain("<textarea");
+});
+
+test("the signed-in composer reserves a disabled attachment control before uploads or session are ready", () => {
+  const markup = renderToStaticMarkup(
+    <Call
+      initialAccount={{ id: "me", username: "me", displayName: "Me" }}
+      channel={{ id: "channel", name: "general", spaceName: "Space" }}
+    />,
+  );
+  expect(markup).toContain('aria-label="Loading messages"');
+  const attach = markup.match(/<button[^>]*aria-label="Attach files"[^>]*>/)?.[0];
+  expect(attach).toBeDefined();
+  expect(attach).toContain('disabled=""');
+  expect(attach).toContain('title="Checking file uploads…"');
+});
 
 test("audio controls remain available before joining, with a text-only Join action", () => {
   const markup = renderToStaticMarkup(<Call />);

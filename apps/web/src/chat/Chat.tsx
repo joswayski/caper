@@ -17,6 +17,7 @@ import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
@@ -228,6 +229,7 @@ export default function Chat({
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
   const clientRef = useRef<ChatClient | undefined>(undefined);
+  const followUpdatedRows = useRef(false);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
@@ -492,17 +494,6 @@ export default function Chat({
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
-  // Show "Loading messages…" only when loading takes a moment, so quick opens
-  // (such as DMs, which load on open) don't flash it.
-  const [loadingShown, setLoadingShown] = useState(false);
-  useEffect(() => {
-    if (state.phase !== "loading") {
-      setLoadingShown(false);
-      return;
-    }
-    const timer = setTimeout(() => setLoadingShown(true), 200);
-    return () => clearTimeout(timer);
-  }, [state.phase]);
   useEffect(() => {
     if (!state.author || readOnly) return;
     // Warm the code/data after chat settles, without mounting the picker or
@@ -516,8 +507,8 @@ export default function Chat({
   const [attachError, setAttachError] = useState<string>();
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // Present only when the API has uploads configured; carries its compression settings.
-  const [compression, setCompression] = useState<CompressionSettings>();
+  // undefined is checking; null means unavailable. Neither removes the paperclip.
+  const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
   // The sender's local copies of sent files, shown while the server processes them.
@@ -566,8 +557,22 @@ export default function Chat({
 
   useEffect(() => {
     let firstMessageId: string | undefined;
+    let previousRows = state.channelMessages;
     const client = new ChatClient(
       (next) => {
+        if (next.channelMessages !== previousRows) {
+          const scroller = scrollerRef.current;
+          // Read BEFORE React grows the row. Virtuoso's 80px tolerance can
+          // otherwise consider a newly clipped reaction bar still at bottom.
+          followUpdatedRows.current =
+            !!scroller &&
+            allowFollow.current &&
+            !next.hasNewer &&
+            previousRows?.length === next.channelMessages?.length &&
+            previousRows?.[0]?.id === next.channelMessages?.[0]?.id &&
+            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+          previousRows = next.channelMessages;
+        }
         if (next.phase !== "ready") {
           firstMessageId = undefined;
           setListReady(false);
@@ -650,7 +655,7 @@ export default function Chat({
     }
     let active = true;
     void uploadSettings().then((settings) => {
-      if (active) setCompression(settings);
+      if (active) setCompression(settings ?? null);
     });
     return () => {
       active = false;
@@ -1571,11 +1576,7 @@ export default function Chat({
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
-            {state.phase === "loading" && loadingShown && (
-              <p className="chat-state" role="status">
-                Loading messages…
-              </p>
-            )}
+            {state.phase === "loading" && <MessageSkeleton />}
             {state.phase === "error" && (
               <div className="chat-state" role="alert">
                 <p>{state.error}</p>
@@ -1619,6 +1620,11 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
+                totalListHeightChanged={() => {
+                  if (followUpdatedRows.current && allowFollow.current)
+                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                  followUpdatedRows.current = false;
+                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1635,7 +1641,14 @@ export default function Chat({
                 tabIndex={listReady ? 0 : -1}
                 role="region"
                 aria-label={`Messages in ${channelName}`}
+                onWheel={() => {
+                  followUpdatedRows.current = false;
+                }}
+                onTouchMove={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
+                  followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
                     listRef.current?.scrollToIndex({
@@ -1853,9 +1866,15 @@ export default function Chat({
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
               attachments={
-                canAttach || drafts.length
+                signedIn || drafts.length
                   ? {
                       enabled: canAttach,
+                      disabledReason:
+                        compression === undefined
+                          ? "Checking file uploads…"
+                          : compression === null
+                            ? "File uploads are unavailable"
+                            : "Waiting for the conversation…",
                       drafts,
                       error: attachError,
                       onAdd: addFiles,

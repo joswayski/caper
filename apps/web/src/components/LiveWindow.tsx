@@ -642,7 +642,7 @@ export default function LiveWindow() {
                             <div className="chat-forward-card">
                               <small className="chat-forward-label">
                                 <Forward size={12} aria-hidden="true" />
-                                Forwarded · live
+                                Forwarded
                               </small>
                               <div className="chat-forward-original">
                                 <header>

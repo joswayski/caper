@@ -36,6 +36,7 @@ import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
+import SpacesLoading from "./SpacesLoading";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
 import {
@@ -1290,27 +1291,6 @@ function BlockedBar({ conversation }: { conversation: DirectConversation }) {
   );
 }
 
-function SpacesLoading() {
-  return (
-    <main className="call-page" aria-busy="true">
-      <header className="call-header">
-        <Wordmark />
-      </header>
-      <section className="call-room spaces-room spaces-loading">
-        <div className="space-rail" aria-hidden="true" />
-        <ChannelSidebar>
-          <div className="sidebar-channels" />
-        </ChannelSidebar>
-        <div className="stage">
-          <p className="sr-only" role="status">
-            Loading your spaces…
-          </p>
-        </div>
-      </section>
-    </main>
-  );
-}
-
 function InvitationDialog({
   space,
   onClose,
@@ -1606,6 +1586,7 @@ export default function Spaces({
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
   const [directs, setDirects] = useState<DirectConversation[]>([]);
+  const [directsLoading, setDirectsLoading] = useState(true);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState<boolean>();
@@ -1823,7 +1804,7 @@ export default function Spaces({
     // The "not accessible" notice belongs to the DM that was asked for; leaving it clears it.
     const clearInaccessible = () =>
       setDirectError((current) => (current === INACCESSIBLE_DIRECT ? undefined : current));
-    if (loading || !selected.dmId) {
+    if (loading || directsLoading || !selected.dmId) {
       setPendingDirect(undefined);
       // Space navigation clears the DM when the target channel is ready.
       if (loading || !selected.spaceId) setDirectView(undefined);
@@ -1835,10 +1816,10 @@ export default function Spaces({
       directCache.current.forget(selected.dmId);
       setDirectView(undefined);
       setPendingDirect(undefined);
-      setDirectError(INACCESSIBLE_DIRECT);
+      setDirectError((current) => current ?? INACCESSIBLE_DIRECT);
       return;
     }
-    // A deep link checks before the list loads; drop that error once it arrives.
+    // A refreshed list can restore access after an earlier failure.
     clearInaccessible();
     const controller = new AbortController();
     const cached = directCache.current.peek(conversation.id);
@@ -1866,7 +1847,7 @@ export default function Spaces({
         setDirectError(errorMessage(reason));
       });
     return () => controller.abort();
-  }, [selected.dmId, loading, directAccessible]);
+  }, [selected.dmId, loading, directsLoading, directAccessible]);
 
   const readDirect = (seq: string) => {
     const conversation = directView?.conversation;
@@ -1932,15 +1913,18 @@ export default function Spaces({
         setSpaces(result.spaces);
         setInvitations(result.invitations ?? []);
         setLimits(result.limits);
-        try {
-          setDirects((await listDirectConversations()).conversations);
-        } catch (reason) {
-          if (current) setDirectError(errorMessage(reason));
-        }
-        if (!current) return;
+        // Opening the landing channel must not wait for the independent DM list.
         setLoading(false);
         if (![...result.spaces, ...(result.invitations ?? [])].some((space) => space.id === selected.spaceId))
           choose(result.spaces[0]?.id, undefined, true, selected.dmId);
+        try {
+          const conversations = (await listDirectConversations()).conversations;
+          if (current) setDirects(conversations);
+        } catch (reason) {
+          if (current) setDirectError(errorMessage(reason));
+        } finally {
+          if (current) setDirectsLoading(false);
+        }
       })
       .catch((reason) => {
         if (current) {

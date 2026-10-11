@@ -41,10 +41,10 @@ struct ForwardCardView: View {
     var body: some View {
         if let forward = message.forward {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Forwarded · live", systemImage: "arrowshape.turn.up.right").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                Label("Forwarded", systemImage: "arrowshape.turn.up.right").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 if let original = forward.message {
                     SharedOriginalView(message: original)
-                    Button("\(original.thread.map { "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " } ?? "")View conversation", action: open)
+                    Button("\(original.thread.flatMap { $0.replyCount > 0 ? "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " : nil } ?? "")View conversation", action: open)
                         .buttonStyle(CaperSecondaryButton())
                 } else { Text("Original conversation unavailable.").foregroundStyle(CaperTheme.muted) }
             }.padding(12).background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
@@ -78,7 +78,7 @@ struct ForwardPickerView: View {
             HStack { Text("Forward message").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.")
+                    Text("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     SharedOriginalView(message: message.forward?.message ?? message)
                     TextField("Find a space, channel or DM", text: $search).textFieldStyle(.roundedBorder).disabled(pending != nil)
@@ -160,21 +160,25 @@ struct ForwardConversationView: View {
     @State private var error: String?
     @State private var attempt = 0
     private var message: ChatMessage? { (chat.messages + chat.pinnedMessages).first { $0.id == messageID } }
+    private var root: ChatMessage? { if let conversation { conversation.root } else if error == nil { message?.forward?.message } else { nil } }
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Live · Read-only original. Replies to the forward stay in the destination.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    if let root = conversation?.root {
+                    Text("Heads up! New reactions and replies appear here automatically.")
+                        .font(CaperTheme.font(12)).foregroundStyle(Color(red: 232 / 255, green: 189 / 255, blue: 113 / 255))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 232 / 255, green: 189 / 255, blue: 113 / 255).opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+                    if let root {
                         SharedOriginalView(message: root)
-                        let count = root.thread?.replyCount ?? conversation?.messages.count ?? 0
-                        Text("\(count) \(count == 1 ? "reply" : "replies")").font(CaperTheme.font(13, weight: .bold))
+                        let count = conversation?.root?.thread?.replyCount ?? conversation?.messages.count ?? 0
+                        if count > 0 { Text("\(count) \(count == 1 ? "reply" : "replies")").font(CaperTheme.font(13, weight: .bold)) }
                         if conversation?.hasMore == true { Button("Load older replies") { pages += 1 }.disabled(loading) }
                         ForEach(conversation?.messages ?? []) { SharedOriginalView(message: $0) }
                         if conversation?.messages.isEmpty == true { Text("No replies yet.") }
                     } else if !loading && error == nil { Text("Original conversation unavailable.") }
-                    if loading { ProgressView("Updating conversation…") }
                     if let error {
                         Text(error).foregroundStyle(CaperTheme.terracottaBright)
                         Button("Retry") { attempt += 1 }

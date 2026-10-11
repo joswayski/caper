@@ -1510,18 +1510,25 @@
 .chat-composer textarea:disabled {
   opacity: 0.55;
 }
-.chat-composer form[data-attach] {
-  grid-template-columns: auto minmax(0, 1fr);
+.chat-composer form[data-attach] textarea {
+  grid-column: 1;
+  grid-row: 1;
+  padding-left: 48px;
 }
 .chat-attach {
-  width: 42px;
-  height: 42px;
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  z-index: 1;
+  width: 40px;
+  height: 40px;
+  margin: 1px 0 1px 4px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 8px;
   color: var(--text-muted);
-  background: var(--surface-composer);
+  background: none;
   cursor: pointer;
 }
 .chat-attach:hover:not(:disabled) {
@@ -1529,7 +1536,7 @@
 }
 .chat-attach:focus-visible {
   outline: 2px solid var(--terracotta);
-  outline-offset: 2px;
+  outline-offset: -4px;
 }
 .chat-attach:disabled {
   opacity: 0.45;
@@ -2624,6 +2631,15 @@ a.chat-file:hover {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.8rem;
+  line-height: 1.5;
+}
+.chat-forward-notice {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgb(232 189 113 / 7%);
+  color: #e8bd71;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 .chat-forward-body > label {

@@ -359,6 +359,8 @@ internal data class VoiceJoinIntent(
 @Composable private fun BrandLoading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Wordmark(); CircularProgressIndicator(color = Terracotta)
+        Text("Loading your spaces…", color = TextMuted, fontSize = 12.sp,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 
@@ -1581,11 +1583,17 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                    // Shown only when the server accepts uploads; read-only previews have no composer.
-                    if (state.uploadsEnabled) AttachButton(state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null, viewModel::addAttachments)
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                        // Reserve the icon inside the field while uploads/session become ready.
+                        // Read-only previews and locked DMs have no composer.
+                        leadingIcon = {
+                            AttachButton(
+                                state.uploadsEnabled && state.chatAuthorId != null && state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
+                                viewModel::addAttachments,
+                            )
+                        },
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
                         colors = composerFieldColors(),
@@ -1800,7 +1808,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
-        return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Loading messages…", color = TextMuted, fontSize = 13.sp) }
+        return MessageSkeleton(modifier.clipToBounds())
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1820,6 +1828,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
+        reactions = messages.lastOrNull()?.reactions.orEmpty(),
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -1873,17 +1882,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         if (skeleton) item("thread-loading") {
-            Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
-                repeat(2) { index ->
-                    Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Box(Modifier.size(34.dp).background(Border, CircleShape))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
-                            Box(Modifier.fillMaxWidth(if (index == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
-                        }
-                    }
-                }
-            }
+            MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
         listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -2021,6 +2020,7 @@ internal class TimelineFollow(var settled: Boolean = false) {
 internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
+    val reactions: List<MessageReaction> = emptyList(),
 )
 
 /**
@@ -2045,7 +2045,9 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
         now.pendingId != null && now.pendingId != last.pendingId -> latest.also { follow.sent = now.historical }
         last.historical && !now.historical -> if (last.loadingNewer && !follow.sent) null else latest.also { follow.sent = false }
         else -> (if (last.loadingOlder && !now.loadingOlder) anchor() else null)
-            ?: latest.takeIf { !now.historical && !last.historical && now.keys.lastOrNull() != last.keys.lastOrNull() && near() }
+            // Reaction chips can add/wrap a row without changing its key.
+            ?: latest.takeIf { !now.historical && !last.historical &&
+                (now.keys.lastOrNull() != last.keys.lastOrNull() || now.reactions != last.reactions) && near() }
     }
 }
 
@@ -2466,13 +2468,34 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
+/** Static, noninteractive placeholders shared by channel and thread loading. */
+@Composable private fun MessageSkeleton(modifier: Modifier = Modifier, rows: Int = 5, label: String = "Loading messages") {
+    Column(modifier.fillMaxWidth().clearAndSetSemantics {
+        contentDescription = label
+        progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+    }) {
+        repeat(rows) { index ->
+            Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(34.dp).background(Border, CircleShape))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
+                    Box(Modifier.fillMaxWidth(if (index % 2 == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
 @Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
     Box {
-        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
+        IconButton({ open = true }, Modifier.size(48.dp).semantics {
+            contentDescription = "Attach files"
+            if (!enabled) stateDescription = "File uploads are not ready or the attachment limit has been reached"
+        }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {

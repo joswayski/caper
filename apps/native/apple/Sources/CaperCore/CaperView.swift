@@ -102,6 +102,28 @@ private struct LoadingView: View {
     }
 }
 
+/// Static placeholders keep the message layout visible without introducing motion.
+private struct MessageSkeleton: View {
+    var rows = 5
+    var label = "Loading messages"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<rows, id: \.self) { index in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
+                    VStack(alignment: .leading, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border)
+                            .frame(width: index.isMultiple(of: 2) ? 180 : 128, height: 10)
+                    }
+                    Spacer(minLength: 0)
+                }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
+            }
+        }.accessibilityElement(children: .ignore).accessibilityLabel(label)
+    }
+}
+
 /// Web's first-space page: an account with no spaces names one here.
 private struct FirstSpaceView: View {
     @Bindable var model: AppModel
@@ -542,6 +564,8 @@ private struct WorkspaceView: View {
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
                         }
+                        // Returning from Browse must not reopen the keyboard on its own.
+                        .environment(\.composerCovered, showsBrowse)
                         // Full height, under the status bar and home indicator too, with a
                         // soft shadow cast from the conversation's edge onto Browse, like the web's.
                         .background {
@@ -1490,7 +1514,12 @@ private struct MembersOverlay: View {
                 .transaction(settle) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
-            MemberPresenceView(model: model, close: close)
+            Group {
+                // Only rendered while some of it is in view: hidden or transparent,
+                // the closed list's "Members" header stayed in the iOS accessibility
+                // tree for VoiceOver and the UI tests. Closing slides the empty panel away.
+                if shown > 0 { MemberPresenceView(model: model, close: close) } else { Color.clear }
+            }
                 .frame(width: width)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Outlined on every side, and lifted by the same shadow the conversation casts over Browse.
@@ -1500,7 +1529,7 @@ private struct MembersOverlay: View {
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                .transaction(settle) { $0.offset(x: (1 - shown) * travel) }
+                .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
@@ -1972,15 +2001,19 @@ private struct ConversationStage: View {
     }
 }
 
-/// Whether a timeline is scrolled to its end, and its viewport's height.
+/// The timeline's content/viewport heights and whether its end is visible.
 private struct TimelinePin: Equatable {
     var height: CGFloat
+    var contentHeight: CGFloat
     var atBottom: Bool
+    var firstID: String?
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
-    init(_ geometry: GeometryProxy, viewport: String) {
+    init(_ geometry: GeometryProxy, viewport: String, firstID: String?) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
+        contentHeight = geometry.size.height
         atBottom = visible.maxY >= geometry.size.height - 24
+        self.firstID = firstID
     }
 }
 
@@ -1988,11 +2021,13 @@ private struct TimelinePin: Equatable {
 /// never re-renders the conversation.
 private final class TimelinePinBox {
     private var last: TimelinePin?
-    /// Records `pin`; true when the viewport just got shorter while scrolled to the end.
-    func shortened(to pin: TimelinePin) -> Bool {
+    /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
+    /// A changed first row means history was prepended/replaced, not tail growth.
+    func needsReveal(to pin: TimelinePin) -> Bool {
         defer { last = pin }
         guard let last else { return false }
-        return pin.height < last.height && last.atBottom
+        return last.atBottom && last.firstID == pin.firstID &&
+            (pin.height < last.height || pin.contentHeight > last.contentHeight)
     }
 }
 
@@ -2098,7 +2133,7 @@ private struct ChatView: View {
     /// The newest message (or the pending send) at the bottom, as when one arrives.
     private func revealLatest(_ proxy: ScrollViewProxy) {
         if chat.pendingMessage != nil { revealPending(proxy) }
-        else if chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+        else if !chat.hasNewer, chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
     }
     /// Older history goes above the reader's place. Remember the first row so
     /// the page that arrives cannot push it (and what they were reading) away.
@@ -2284,7 +2319,7 @@ private struct ChatView: View {
                                 else { Text("Beginning of conversation") }
                             }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
                             if chat.loading && chat.messages.isEmpty {
-                                Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
+                                MessageSkeleton()
                             }
                             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 VStack(spacing: 0) {
@@ -2343,10 +2378,10 @@ private struct ChatView: View {
                     // Preceding history can move the pending row without
                     // changing that row's own height; observe the whole extent.
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
-                    // A growing draft, suggestions or the keyboard shorten the timeline
-                    // from below: keep the newest message in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin) { revealLatest(proxy) }
+                    // Reactions grow existing rows; a draft or keyboard shrinks
+                    // the viewport. Both retain a reader already at the bottom.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
@@ -2447,7 +2482,6 @@ private struct ChatView: View {
             }
             AttachmentDraftsView(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
-                if chat.canAttach { AttachmentPickerButton(chat: chat) }
                 VStack(spacing: 6) {
                     if let conversation = peerConversation, conversation.status == .outgoing {
                         Text(MessageRequests.waitingNotice(for: conversation.peer))
@@ -2464,25 +2498,27 @@ private struct ChatView: View {
                         }.font(CaperTheme.font(11))
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
-                    ZStack(alignment: .topLeading) {
-                        if chat.draft.isEmpty {
-                            Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                    HStack(alignment: .bottom, spacing: 0) {
+                        AttachmentPickerButton(chat: chat).padding(.leading, 4)
+                        ZStack(alignment: .topLeading) {
+                            if chat.draft.isEmpty {
+                                Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            }
+                            NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
+                                                  controller: composerAutocomplete, mentions: mentionSource,
+                                                  submit: { Task { await chat.send() } })
                         }
-                        NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                              controller: composerAutocomplete, mentions: mentionSource,
-                                              submit: { Task { await chat.send() } })
+                        .frame(minHeight: 42, maxHeight: 174)
+                        // Measure the text view instead of filling the 174-point maximum.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                        #if os(iOS)
+                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        #endif
                     }
-                    .frame(minHeight: 42, maxHeight: 174)
-                    // The flexible frame otherwise fills its proposal up to 174,
-                    // centering a one-line text view inside an oversized background.
-                    .fixedSize(horizontal: false, vertical: true)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
-                    #if os(iOS)
-                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
@@ -2734,18 +2770,7 @@ private struct NativeThreadView: View {
                             }
                         }
                         if chat.threadLoading && replies.isEmpty {
-                            VStack(spacing: 0) {
-                                ForEach(0..<2) { index in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
-                                        VStack(alignment: .leading, spacing: 12) {
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: index == 0 ? 180 : 128, height: 10)
-                                        }
-                                        Spacer(minLength: 0)
-                                    }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
-                                }
-                            }.accessibilityElement(children: .ignore).accessibilityLabel("Loading thread replies")
+                            MessageSkeleton(rows: 2, label: "Loading thread replies")
                         }
                         // Styled like the channel's "Load older messages" row.
                         if let error = chat.threadError {
@@ -2771,10 +2796,9 @@ private struct NativeThreadView: View {
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
-                    // A growing reply, suggestions or the keyboard shorten the panel
-                    // from below: keep the newest reply in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin), chat.focusedMessageID == nil, let id = replies.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    // Follow reaction height changes as well as a shorter viewport.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
                 .coordinateSpace(.named(MentionCard.timelineSpace))
