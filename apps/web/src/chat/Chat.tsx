@@ -226,6 +226,7 @@ export default function Chat({
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
   const clientRef = useRef<ChatClient | undefined>(undefined);
+  const followUpdatedRows = useRef(false);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
@@ -553,8 +554,22 @@ export default function Chat({
 
   useEffect(() => {
     let firstMessageId: string | undefined;
+    let previousRows = state.channelMessages;
     const client = new ChatClient(
       (next) => {
+        if (next.channelMessages !== previousRows) {
+          const scroller = scrollerRef.current;
+          // Read BEFORE React grows the row. Virtuoso's 80px tolerance can
+          // otherwise consider a newly clipped reaction bar still at bottom.
+          followUpdatedRows.current =
+            !!scroller &&
+            allowFollow.current &&
+            !next.hasNewer &&
+            previousRows?.length === next.channelMessages?.length &&
+            previousRows?.[0]?.id === next.channelMessages?.[0]?.id &&
+            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+          previousRows = next.channelMessages;
+        }
         if (next.phase !== "ready") {
           firstMessageId = undefined;
           setListReady(false);
@@ -1575,6 +1590,11 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
+                totalListHeightChanged={() => {
+                  if (followUpdatedRows.current && allowFollow.current)
+                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                  followUpdatedRows.current = false;
+                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1591,7 +1611,14 @@ export default function Chat({
                 tabIndex={listReady ? 0 : -1}
                 role="region"
                 aria-label={`Messages in ${channelName}`}
+                onWheel={() => {
+                  followUpdatedRows.current = false;
+                }}
+                onTouchMove={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
+                  followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
                     listRef.current?.scrollToIndex({

@@ -106,6 +106,64 @@ const reply = (text) => {
   );
 };
 
+async function checkReactionFollow(root, layout) {
+  const control = async (body) => {
+    const response = await fetch(`${api}/__fixture/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json", connection: "close" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+  };
+  for (let index = 0; index < 16; index++)
+    await control({ incomingReply: { rootId: root.id, text: `Reaction scroll fixture ${index}.\nSecond line.` } });
+  const page = await (
+    await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })
+  ).json();
+  const last = page.messages.at(-1);
+  wait(`!!document.querySelector('${thread(last.clientMessageId)}')`);
+  evaluate("new Promise(r => setTimeout(r, 300))");
+  const visible = `(() => {
+    const bounds = document.querySelector('.chat-thread-messages').getBoundingClientRect();
+    const chips = [...document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction')];
+    return chips.length > 0 && chips.every(chip => {
+      const rect = chip.getBoundingClientRect();
+      return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+    });
+  })()`;
+  for (const [index, emoji] of [
+    "👍",
+    "🎉",
+    "🚀",
+    "❤️",
+    "😂",
+    "🔥",
+    "👏",
+    "👀",
+    "✅",
+    "💯",
+    "🙌",
+    "🤔",
+    "⭐",
+  ].entries()) {
+    await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji } });
+    wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === ${index + 1}`);
+    wait(visible);
+  }
+  screenshot(`thread-reaction-${layout}-latest`);
+  const before = evaluate(`(() => {
+    const scroller = document.querySelector('.chat-thread-messages');
+    scroller.scrollTop -= 400;
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return scroller.scrollTop;
+  })()`);
+  await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji: "🦀" } });
+  wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === 14`);
+  evaluate("new Promise(r => setTimeout(r, 300))");
+  assert.equal(evaluate("document.querySelector('.chat-thread-messages').scrollTop"), before);
+  console.log(`PASS: ${layout}: first/wrapped thread reactions visible and history reader retained.`);
+}
+
 const checkThreadResize = (rootID) => {
   const handle = ".chat-thread-resize";
   const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
@@ -565,7 +623,9 @@ try {
     evaluate(
       '(() => { const rect = document.querySelector(".chat-thread-panel").getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height]; })()',
     ),
-    [0, 0, 390, 844],
+    // Classic-scrollbar Chromium reserves the root's stable gutter; a phone
+    // with overlay scrollbars has the full 390px layout viewport instead.
+    [0, 0, evaluate("document.documentElement.getBoundingClientRect().width"), 844],
   );
   alignedHeaders(390);
   assert.equal(evaluate('document.querySelector(".chat-thread-resize").checkVisibility()'), false);
@@ -607,6 +667,10 @@ try {
     423,
     "Preferred width survives a page reload and mobile layout",
   );
+  await checkReactionFollow(root, "desktop");
+  browser("set", "viewport", "390", "844", "2");
+  evaluate("document.querySelector('.chat-thread-messages').scrollTop = 1e9");
+  await checkReactionFollow(root, "narrow");
   console.log(
     "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
