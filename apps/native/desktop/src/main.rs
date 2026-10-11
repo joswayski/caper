@@ -8061,8 +8061,7 @@ impl CaperApp {
                                 ui.set_width(ui.available_width());
                                 ui.spacing_mut().item_spacing.y = 3.0;
                                 ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
-                                ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
-                                ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
+                                ui.label(RichText::new(format!("{} (@{}) invited you to private channel #{}.", invitation.inviter.display_name, invitation.inviter.username, invitation.channel.name)).size(11.0).color(MUTED));
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     if secondary_button(ui, "Decline", true).clicked() && let Some(space) = self.selected_space.clone() {

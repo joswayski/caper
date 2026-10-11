@@ -1441,12 +1441,10 @@ function BrowseChannelsDialog({
 
 function ChannelInvitationDialog({
   invitation,
-  spaceName,
   onClose,
   onRespond,
 }: {
   invitation: ChannelInvitation;
-  spaceName: string;
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
@@ -1478,12 +1476,9 @@ function ChannelInvitationDialog({
         <LockKeyhole aria-hidden="true" />
         <h3>Join #{invitation.channel.name}?</h3>
         <p>
-          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private
-          channel in <strong>{spaceName}</strong>.
-        </p>
-        <p>
-          Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations
-          expire seven days after they’re sent.
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to private
+          channel
+          <strong> #{invitation.channel.name}</strong>.
         </p>
         {error && (
           <p className="space-form-error" role="alert">
@@ -2614,7 +2609,6 @@ export default function Spaces({
         <ChannelInvitationDialog
           key={channelInvitation.channel.id}
           invitation={channelInvitation}
-          spaceName={detail.space.name}
           onClose={() => setChannelInvitation(undefined)}
           onRespond={(accept) =>
             changeChannelMembership(

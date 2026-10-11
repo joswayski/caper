@@ -6,6 +6,7 @@ internal const val DIRECT_MESSAGES_CHANNEL = "direct_messages"
 internal const val CHANNEL_MESSAGES_CHANNEL = "channel_messages"
 internal const val MENTIONS_CHANNEL = "mentions"
 internal const val INVITATIONS_CHANNEL = "invitations"
+internal const val MESSAGE_REQUESTS_CHANNEL = "message_requests"
 
 /** Android notification channels, in the order Settings lists them. */
 internal val pushChannels = listOf(
@@ -13,12 +14,14 @@ internal val pushChannels = listOf(
     CHANNEL_MESSAGES_CHANNEL to "Channel messages",
     MENTIONS_CHANNEL to "Mentions",
     INVITATIONS_CHANNEL to "Invitations",
+    MESSAGE_REQUESTS_CHANNEL to "Message requests",
 )
 
 /** Mentions use their own channel; every other kind, known or not, is a plain DM or channel message. */
 internal fun notificationChannelFor(kind: String, direct: Boolean): String = when (kind) {
     "mention.user", "mention.everyone" -> MENTIONS_CHANNEL
     "space.invitation", "channel.invitation" -> INVITATIONS_CHANNEL
+    "direct.request" -> MESSAGE_REQUESTS_CHANNEL
     else -> if (direct) DIRECT_MESSAGES_CHANNEL else CHANNEL_MESSAGES_CHANNEL
 }
 
@@ -44,9 +47,10 @@ internal data class PushPayload(
 ) {
     val direct: Boolean get() = conversationId != null
     val invitation: Boolean get() = kind == "space.invitation" || kind == "channel.invitation"
+    val consent: Boolean get() = invitation || kind == "direct.request"
 
     /** One notification per DM or channel, tagged with its ID. */
-    val tag: String get() = if (invitation) "invitation:$notificationId" else conversationId ?: checkNotNull(channelId)
+    val tag: String get() = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else conversationId ?: checkNotNull(channelId)
 
     val channel: String get() = notificationChannelFor(kind, direct)
 
@@ -62,8 +66,10 @@ internal data class PushPayload(
             fun value(key: String) = data[key]?.trim()?.takeIf { it.isNotEmpty() }
             val kind = value("kind").orEmpty()
             val invitation = kind == "space.invitation" || kind == "channel.invitation"
-            val notificationId = if (invitation) value("notificationId")?.takeIf { Regex("^[1-9][0-9]*$").matches(it) } ?: return null else null
-            val messageId = if (invitation) "invitation:$notificationId" else value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
+            val request = kind == "direct.request"
+            val consent = invitation || request
+            val notificationId = if (consent) value("notificationId")?.takeIf { Regex("^[1-9][0-9]*$").matches(it) } ?: return null else null
+            val messageId = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
             val conversationId = value("conversationId")
             val spaceId = value("spaceId")
             val channelId = value("channelId")
@@ -73,7 +79,7 @@ internal data class PushPayload(
                 if (kind == "channel.invitation" && (channelId == null || !externalId.matches(channelId))) return null
             } else if (conversationId != null) {
                 if (!externalId.matches(conversationId) || spaceId != null || channelId != null) return null
-            } else if (spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
+            } else if (request || spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
             val direct = conversationId != null
             val conversationTitle = if (direct) null else value("conversationTitle")?.limit(MAX_NAME)
             val sender = value("sender")?.limit(MAX_NAME)
@@ -92,7 +98,7 @@ internal data class PushPayload(
                 senderId = value("senderId"),
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
-                attachment = if (invitation) null else PushAttachment.parse(data),
+                attachment = if (consent) null else PushAttachment.parse(data),
             )
         }
 

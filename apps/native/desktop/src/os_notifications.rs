@@ -39,7 +39,7 @@ impl Alert {
         )
     }
     pub fn conversation(&self) -> Option<&str> {
-        if self.invitation() {
+        if self.invitation() || self.kind.as_deref() == Some("direct.request") {
             return None;
         }
         self.conversation_id
@@ -354,7 +354,12 @@ fn platform_show(
         .map_err(|_| "Couldn’t register desktop notifications.".to_owned())?;
     let mut toast = Toast::new();
     let tag = if let Some(id) = &alert.notification_id {
-        format!("invitation:{id}")
+        let prefix = if alert.kind.as_deref() == Some("direct.request") {
+            "request"
+        } else {
+            "invitation"
+        };
+        format!("{prefix}:{id}")
     } else {
         alert.message_id.clone().unwrap_or_default()
     };
@@ -426,6 +431,15 @@ mod tests {
         assert_eq!(alert.conversation(), None);
         assert!(alert.fresh());
         assert_eq!(alert.channel_id.as_deref(), Some("channel00001"));
+        let request: Alert = serde_json::from_value(json!({
+            "kind":"direct.request", "notificationId":"92", "title":"Message request",
+            "body":"Maya wants to message you.", "createdAt":Utc::now().to_rfc3339(),
+            "conversationId":"direct000001"
+        }))
+        .unwrap();
+        assert!(!request.invitation());
+        assert_eq!(request.conversation(), None);
+        assert_eq!(request.conversation_id.as_deref(), Some("direct000001"));
     }
 
     #[test]

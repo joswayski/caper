@@ -19,8 +19,9 @@ The Direct messages list is shared across spaces. Phone push is implemented behi
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
 tabs and running desktop apps also implement local OS notifications; alerts after
 desktop quit or browser close are not implemented. Space/private-channel invites
-notify recipients and open explicit Accept/Decline review. Real-provider and physical-device
-validation is still pending. See [notification behavior and rollout](docs/notifications.md).
+and new DM requests notify recipients and open explicit request review. Pending
+DM messages stay quiet until acceptance. Real-provider and physical-device validation
+is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.

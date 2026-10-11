@@ -995,9 +995,7 @@ private fun Modifier.browseDrag(
                 Surface(Modifier.fillMaxWidth().padding(top = 8.dp), color = SurfaceRaised, border = BorderStroke(1.dp, TerracottaBorder), shape = MaterialTheme.shapes.small) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text("Private invitation · #${invitation.channel.name}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text("${invitation.inviter.displayName} (@${invitation.inviter.username}) invited you to ${detail.space.name}.", color = TextMuted, fontSize = 11.sp)
-                        Text("Expires seven days after it was sent.", color = TextMuted, fontSize = 10.sp)
-                        Text("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.", color = TextMuted, fontSize = 10.sp)
+                        Text("${invitation.inviter.displayName} (@${invitation.inviter.username}) invited you to private channel #${invitation.channel.name}.", color = TextMuted, fontSize = 11.sp)
                         Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Accept") } }
                     }
                 }

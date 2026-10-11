@@ -5056,11 +5056,10 @@ private struct ChannelInvitationSheet: View {
     @State private var error: String?
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: "Private channel invitation", detail: "#\(invitation.channel.name) in \(model.detail?.space.name ?? "this space")", close: { if !pending { close() } })
+            SheetHeader(title: "Private channel invitation", detail: "#\(invitation.channel.name)", close: { if !pending { close() } })
             VStack(alignment: .leading, spacing: 14) {
-                Text("Invited by \(invitation.inviter.displayName) (@\(invitation.inviter.username)). This invitation expires after 7 days.")
+                Text("\(invitation.inviter.displayName) (@\(invitation.inviter.username)) invited you to private channel #\(invitation.channel.name).")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                Text("Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice.").font(CaperTheme.font(12))
                 if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                 HStack {
                     Spacer()

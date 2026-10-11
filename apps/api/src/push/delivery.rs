@@ -65,6 +65,7 @@ impl Claimed {
             "mention.user" => Kind::MentionUser,
             "mention.everyone" => Kind::MentionEveryone,
             "space.invitation" | "channel.invitation" => Kind::Invitation,
+            "direct.request" => Kind::DirectRequest,
             _ => return false,
         };
         let level = |value: &Option<String>| value.as_deref().and_then(Level::parse);
@@ -82,6 +83,15 @@ impl Claimed {
     }
 
     fn alert(&self, cdn: Option<&crate::assets::CdnSigner>) -> Alert {
+        if self.kind == "direct.request" {
+            return Alert::request(
+                self.notification_id,
+                &self.channel_id,
+                &self.sender,
+                &self.sender_id,
+                self.sender_avatar_id,
+            );
+        }
         if self.kind == "space.invitation" || self.kind == "channel.invitation" {
             return Alert::invitation(
                 self.notification_id,
@@ -163,7 +173,8 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 (dev.revoked_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > now()
                  AND a.user_id=dev.user_id AND dev.user_id=n.user_id) AS session_valid,
                 (s.deleted_at IS NULL AND (n.message_id IS NULL OR ch.deleted_at IS NULL)) AS conversation_live,
-                CASE WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false)
+                CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false)
+                WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false)
                 ELSE (recipient.deleted_at IS NULL AND author.id IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                      AND ((b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
@@ -202,6 +213,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          LEFT JOIN public.channels ch ON ch.id=n.channel_id
          LEFT JOIN public.spaces s ON s.id=n.space_id
          LEFT JOIN public.notification_invitation_sources inv ON inv.id=n.id
+         LEFT JOIN public.notification_request_sources req ON req.id=n.id
          JOIN public.users recipient ON recipient.id=n.user_id
          LEFT JOIN public.users author ON author.id=n.actor_id AND author.deleted_at IS NULL
          LEFT JOIN public.notification_settings ns ON ns.user_id=n.user_id
@@ -253,8 +265,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     if claimed.read {
         return Attempt::Dropped("read");
     }
-    let invitation = claimed.kind == "space.invitation" || claimed.kind == "channel.invitation";
-    if (claimed.held || invitation) && claimed.mobile != "always" {
+    let consent = matches!(
+        claimed.kind.as_str(),
+        "space.invitation" | "channel.invitation" | "direct.request"
+    );
+    if (claimed.held || consent) && claimed.mobile != "always" {
         // Still active on another session: that client already showed it.
         // Without presence the push goes out rather than being lost.
         let users = [claimed.recipient.clone()];

@@ -109,8 +109,8 @@ internal object CaperNotifications {
         val notification = NotificationCompat.Builder(context, payload.channel)
             .setSmallIcon(R.drawable.ic_caper_notification).setColor(Terracotta.toArgb())
             .setLargeIcon(avatar)
-            .setStyle(if (payload.invitation) NotificationCompat.BigTextStyle().bigText(payload.body) else style).setContentTitle(payload.title).setContentText(payload.body)
-            .setCategory(if (payload.invitation) NotificationCompat.CATEGORY_EVENT else NotificationCompat.CATEGORY_MESSAGE).setContentIntent(pending).setAutoCancel(true)
+            .setStyle(if (payload.consent) NotificationCompat.BigTextStyle().bigText(payload.body) else style).setContentTitle(payload.title).setContentText(payload.body)
+            .setCategory(if (payload.consent) NotificationCompat.CATEGORY_EVENT else NotificationCompat.CATEGORY_MESSAGE).setContentIntent(pending).setAutoCancel(true)
             .setDeleteIntent(dismiss).setTimeoutAfter(86_400_000)
             .addExtras(Bundle().apply {
                 putStringArrayList(MESSAGE_IDS, ArrayList((seen + payload.messageId).takeLast(MAX_MESSAGES)))

@@ -8,6 +8,8 @@ credentials. Desktop delivery needs no provider credentials. Closed-browser Web
 Push and notifications after desktop quit remain unimplemented.
 Space/private-channel invitation alerts are implemented (October 11); see
 [the invitation contract and rollout](#invitation-alerts-october-11-2026).
+New DM requests also alert once at creation; see
+[the message-request contract](#new-message-request-alerts-october-11-2026).
 Space/channel unread dots are implemented (October 11) on all clients; see
 [the unread contract and rollout](media.md#space-and-channel-unread-indicators-october-11-2026).
 These dots are independent of notification levels, OS permission and mutes;
@@ -41,7 +43,8 @@ Per committed message (edits never notify; demo spaces and guests never do):
 1. Never the author.
 2. **DMs** (`direct.message`): the other participant only. Personal notes, a DM
    that is still a message request (not accepted), and a DM where either person
-   blocked the other notify nobody.
+   blocked the other send no message alerts. Creating a new request sends a
+   separate `direct.request` consent alert, not a preview of its messages.
 3. **Space channels**: everyone who can read the channel (active members; for a
    private channel, the owner and people with a grant), minus anyone who blocked
    the author. Joining a channel is consent to hear from it, so readers who
@@ -218,7 +221,7 @@ reads only after the existing signature check, including cached responses.
 - APNs, FCM and the gateway carry a positive decimal-string `notificationId`,
   `kind`, `spaceId`, and `channelId` only for private-channel invitations; they
   carry no `messageId` or `conversationId`. Title is `You’re invited!`; body is
-  `Alice invited you to Studio.` or `Alice invited you to #planning in Studio.`
+  `Alice invited you to Studio.` or `Alice invited you to private channel #planning.`
   (the usual 180-character cutoff applies). IDs group each invitation separately
   from conversation notifications. Android adds an **Invitations** OS channel
   and a text/event notification; iOS uses a regular alert rather than donating
@@ -240,7 +243,29 @@ reads only after the existing signature check, including cached responses.
   Unavailable private invitations show a notice instead. Local alert delivery
   still requires an open browser tab or running desktop app and OS permission.
 
-#### Invitation deployment order
+### New message-request alerts (October 11, 2026)
+
+- Creating a new pending DM sends one recipient-only `direct.request` alert
+  atomically with the request. Reopening the same pair and later pending
+  messages do not send more request alerts. Accepted/shared-space DMs and
+  personal notes send no request alert; ordinary accepted-DM messages retain
+  their existing behavior. There is no historical backfill.
+- Title is `Message request`; body is `Alice wants to message you.` without
+  message previews or attachments. Payloads carry a decimal `notificationId`
+  and `conversationId`, not `messageId`, `spaceId` or `channelId`. Grouping is
+  `request:<notificationId>`, separate from ordinary DM messages. Android uses
+  a **Message requests** OS channel; iOS uses a regular alert, not a message
+  communication intent. Taps use the existing DM route and read-only incoming
+  request review with Accept/Decline/Block, without accepting or replying.
+- Account Off/pause suppresses request alerts; All/Mentions permits them.
+  Conversation mutes/levels remain message-only. Phone holds, the 24-hour
+  cutoff, device/session validity and gateway replay follow invitation rules.
+  Acceptance, decline, either block, deleted accounts/conversations, and changed
+  account notification preferences suppress queued requests and provider retries.
+  Already-sent alerts cannot be recalled. DM privacy/rate limits are enforced
+  at creation; later privacy changes do not revoke existing conversations.
+
+#### Invitation and request deployment order
 
 1. No infrastructure, secrets, new provider credentials or capability changes
    are needed. Existing account notification gateway, APNs/FCM enablement and
@@ -248,7 +273,7 @@ reads only after the existing signature check, including cached responses.
    and shared-state policy. Merging does not deploy anything.
 2. After merge and successful main image/native builds, set `MERGED_SHA` to that
    full merged commit. Release the compatible web/native readers before emitting
-   invitations from the server; they continue to handle existing message payloads.
+   invitations/requests from the server; they continue to handle existing message payloads.
    Web and native can release independently. Complete native build and physical
    Android/signed-iOS tap acceptance before distributing those builds. Older
    clients may ignore these new alerts or route a private-channel tap as an
@@ -262,8 +287,9 @@ reads only after the existing signature check, including cached responses.
    ```
 
 3. Deploy API. Its existing direct migration startup applies additive
-   `202610110003_invitation_notifications.sql`, permits non-message sources and
-   creates the shared eligibility view with runtime SELECT grants. No manual
+   `202610110003_invitation_notifications.sql` and
+   `202610110004_message_request_notifications.sql`, permits non-message sources and
+   creates the shared eligibility views with runtime SELECT grants. No manual
    database writes or backfill are required. Wait for the workflow for this SHA:
 
    ```bash
@@ -282,7 +308,8 @@ reads only after the existing signature check, including cached responses.
    ```
 
 5. With separate owner/recipient accounts, invite to a space and a private
-   channel. Confirm one alert, correct review target, no grant/history/voice
+   channel, then start a request between accounts without a shared space.
+   Confirm one alert, correct review target, no automatic acceptance, no private-channel grant/history or voice
    before acceptance, account Off, active-desktop phone hold, cancellation before
    retry, stale taps and logout. Check physical phones and minimized desktops;
    loopback APNs/FCM tests do not prove vendor delivery. Roll back clients with
@@ -393,6 +420,8 @@ presence holds, expiry and logout. Browser tap checks use labelled fixtures at
 desktop/mobile widths; Rust desktop tests and standalone Kotlin payload tests
 pass. The full Android build is blocked by the missing SDK; Apple/Windows builds,
 native tap/rendering checks and physical-phone invitation delivery remain unverified.
+The request matrix also checks one-time creation, quiet pending messages,
+acceptance/decline, both block directions, privacy, preferences, presence and logout.
 
 ### Rollout
 
@@ -673,6 +702,7 @@ Android notification channels and iOS thread identifiers map from the category.
 | Kind | Category | When | Available |
 | --- | --- | --- | --- |
 | `direct.message` | Direct messages | Someone messages you 1:1 | Phase 1 |
+| `direct.request` | Message requests | A new pending DM request is created | Built; see request contract above |
 | `channel.message` | Channel messages | New message where your level is *All* | Phase 1 |
 | `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Built; see invitation contract above |
 | `mention.user`, `mention.everyone` | Mentions | You are @mentioned, or `@everyone`/`@here` is used | Mentions first, then phase 1 |

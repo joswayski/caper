@@ -59,8 +59,8 @@ class PushPayloadTest {
         assertEquals(CHANNEL_MESSAGES_CHANNEL, PushPayload.parse(channel + ("kind" to "reaction.added"))?.channel)
         assertEquals(CHANNEL_MESSAGES_CHANNEL, PushPayload.parse(channel - "kind")?.channel)
         assertEquals(DIRECT_MESSAGES_CHANNEL, PushPayload.parse(direct + ("kind" to "something.new"))?.channel)
-        assertEquals(listOf(DIRECT_MESSAGES_CHANNEL, CHANNEL_MESSAGES_CHANNEL, MENTIONS_CHANNEL, INVITATIONS_CHANNEL), pushChannels.map { it.first })
-        assertEquals(listOf("Direct messages", "Channel messages", "Mentions", "Invitations"), pushChannels.map { it.second })
+        assertEquals(listOf(DIRECT_MESSAGES_CHANNEL, CHANNEL_MESSAGES_CHANNEL, MENTIONS_CHANNEL, INVITATIONS_CHANNEL, MESSAGE_REQUESTS_CHANNEL), pushChannels.map { it.first })
+        assertEquals(listOf("Direct messages", "Channel messages", "Mentions", "Invitations", "Message requests"), pushChannels.map { it.second })
     }
 
     @Test fun `invitations have independent tags and do not require a message or grant`() {
@@ -78,6 +78,22 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(invitation + ("channelId" to "channel00001")))
         assertNull(PushPayload.parse(privateInvite - "channelId"))
         assertNull(PushPayload.parse(privateInvite + ("conversationId" to "direct000001")))
+    }
+
+    @Test fun `message requests have independent tags and open the DM review without a message`() {
+        val request = mapOf("kind" to "direct.request", "notificationId" to "93",
+            "conversationId" to "direct000001", "title" to "Message request", "body" to "Maya wants to message you.")
+        val payload = requireNotNull(PushPayload.parse(request))
+        assertTrue(payload.consent)
+        assertFalse(payload.invitation)
+        assertEquals("direct000001", payload.conversationId)
+        assertEquals("request:93", payload.tag)
+        assertEquals(MESSAGE_REQUESTS_CHANNEL, payload.channel)
+        assertEquals("Maya wants to message you.", payload.body)
+        assertNull(payload.attachment)
+        assertNull(PushPayload.parse(request - "notificationId"))
+        assertNull(PushPayload.parse(request - "conversationId"))
+        assertNull(PushPayload.parse(request + ("spaceId" to "space0000001")))
     }
 
     @Test fun `empty text reads as sent a message and missing names fall back`() {

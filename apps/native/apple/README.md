@@ -47,6 +47,9 @@ The native UI and platform projects still require exact-head Apple CI before the
 - **Invitations.** Space/private-channel invitations are regular alerts with
   independent grouping. Tapping refreshes pending invitations and presents
   Accept/Decline review, never automatic acceptance, private history or voice.
+- **Message requests.** Each new incoming DM request sends one regular alert,
+  without message content or a communication intent. Tapping opens the existing
+  read-only request review; pending messages stay quiet until acceptance.
 - macOS receives local notifications from the account gateway while running;
   it has no APNs delivery after quit.
 

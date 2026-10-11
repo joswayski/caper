@@ -94,6 +94,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   with sender avatars and click navigation while the app runs, including minimized.
   Space/private-channel invitation taps refresh pending invitations and open
   Accept/Decline review, never automatic acceptance, private history or voice.
+  New DM requests alert once without message content and open the existing
+  read-only request review; pending messages stay quiet until acceptance.
   Quitting exits the app; there is no keep-running-in-tray behavior.
 - The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
   popup; the thread reply box and message editor do not yet. Space channels

@@ -863,6 +863,23 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   emit(14, { kind: "space.invitation", notificationId: "93" });
   emit(15, { kind: "channel.invitation", notificationId: "94", conversationId: "dm0000000001" });
   assert.equal(shown.length, 6, "malformed invitations cannot fall through to conversation navigation");
+  const request = {
+    kind: "direct.request",
+    notificationId: "95",
+    messageId: undefined,
+    spaceId: undefined,
+    channelId: undefined,
+    conversationId: "dm0000000001",
+  };
+  emit(16, request);
+  assert.equal(shown.length, 7, "a message request is an alert without a message preview");
+  assert.equal(shown[6].options.tag, "caper:account:request:95");
+  shown[6].onclick?.();
+  assert.equal(destination, "/spaces?dm=dm0000000001", "request taps open existing conversation review");
+  emit(17, request);
+  emit(18, { ...request, notificationId: undefined });
+  emit(19, { ...request, notificationId: "96", channelId: "chan00000001" });
+  assert.equal(shown.length, 7, "request replay and malformed requests cannot alert");
   let complete!: (response: Response) => void;
   vi.mocked(fetch).mockImplementationOnce(
     () =>
@@ -870,11 +887,11 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
         complete = resolve;
       }),
   );
-  emit(16, media);
+  emit(20, media);
   stop();
   complete(new Response("png"));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(shown.length, 6, "an original finishing after logout cannot create another notification");
+  assert.equal(shown.length, 7, "an original finishing after logout cannot create another notification");
   destination = undefined;
   shown[2].onclick?.();
   assert.equal(destination, undefined, "old-account notifications cannot navigate after logout");

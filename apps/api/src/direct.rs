@@ -206,6 +206,11 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
         .bind(&id).fetch_one(&mut *tx).await.map_err(|_|chat::unavailable())?;
     sqlx::query("INSERT INTO public.direct_conversations (channel_id,low_user_id,high_user_id,requested_by,accepted_at) VALUES ($1,$2,$3,$4,CASE WHEN $5 THEN now() END)")
         .bind(channel).bind(low).bind(high).bind(user).bind(accepted).execute(&mut *tx).await.map_err(|_|chat::unavailable())?;
+    if !accepted {
+        crate::push::consent(&mut tx, peer, user, "direct.request", None, Some(channel))
+            .await
+            .map_err(|_| chat::unavailable())?;
+    }
     tx.commit().await.map_err(|_| chat::unavailable())?;
     Ok(id)
 }

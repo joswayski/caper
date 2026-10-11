@@ -118,7 +118,7 @@ pub(crate) enum Conversation {
     },
 }
 
-/// Notification content, built at send time from the stored message.
+/// Notification content, built at send time from the message or consent request.
 #[derive(Clone, Debug)]
 pub(crate) struct Alert {
     pub kind: String,
@@ -182,7 +182,7 @@ impl Alert {
         avatar: Option<i16>,
     ) -> Self {
         let (kind, target) = match channel {
-            Some((_, name)) => ("channel.invitation", format!("#{name} in {space_name}")),
+            Some((_, name)) => ("channel.invitation", format!("private channel #{name}")),
             None => ("space.invitation", space_name.to_owned()),
         };
         let mut alert = Self::new(
@@ -197,6 +197,29 @@ impl Alert {
             avatar,
             &format!("{sender} invited you to {target}."),
         );
+        alert.notification_id = Some(id.to_string());
+        alert
+    }
+
+    pub(crate) fn request(
+        id: i64,
+        conversation: &str,
+        sender: &str,
+        sender_id: &str,
+        avatar: Option<i16>,
+    ) -> Self {
+        let mut alert = Self::new(
+            "direct.request",
+            "",
+            Conversation::Direct {
+                id: conversation.into(),
+            },
+            sender,
+            sender_id,
+            avatar,
+            &format!("{sender} wants to message you."),
+        );
+        alert.title = "Message request".into();
         alert.notification_id = Some(id.to_string());
         alert
     }
@@ -265,6 +288,10 @@ impl Alert {
     /// APNs `thread-id`, FCM `collapse_key`; invitations never group with messages.
     pub(crate) fn thread(&self) -> String {
         match &self.conversation {
+            Conversation::Direct { .. } if self.kind == "direct.request" => format!(
+                "request:{}",
+                self.notification_id.as_deref().unwrap_or_default()
+            ),
             Conversation::Direct { id } => id.clone(),
             Conversation::Channel { channel_id, .. } => channel_id.clone(),
             Conversation::Invitation { .. } => format!(
@@ -586,12 +613,13 @@ pub(crate) async fn enqueue(
 }
 
 /// The caller already holds the recipient lock, serializing account cursor IDs.
-/// The notification and its deliveries commit atomically with the invitation.
-pub(crate) async fn invite(
+/// The notification and its deliveries commit atomically with the consent request.
+pub(crate) async fn consent(
     connection: &mut sqlx::PgConnection,
     recipient: i64,
     actor: i64,
-    space: i64,
+    kind: &str,
+    space: Option<i64>,
     channel: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     let notification: Option<i64> = sqlx::query_scalar(
@@ -601,11 +629,7 @@ pub(crate) async fn invite(
            AND (default_level='nothing' OR paused_until>now())) RETURNING id",
     )
     .bind(recipient)
-    .bind(if channel.is_some() {
-        "channel.invitation"
-    } else {
-        "space.invitation"
-    })
+    .bind(kind)
     .bind(space)
     .bind(channel)
     .bind(actor)

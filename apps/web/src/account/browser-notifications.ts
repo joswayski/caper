@@ -44,6 +44,11 @@ export interface MessageNotification {
 
 export function notificationLocation(event: MessageNotification) {
   const id = /^[A-Za-z0-9]{12}$/;
+  if (event.kind === "direct.request") {
+    if (event.conversationId && id.test(event.conversationId) && !event.spaceId && !event.channelId)
+      return `/spaces?dm=${event.conversationId}`;
+    return;
+  }
   if (
     event.kind === "space.invitation" &&
     event.spaceId &&
@@ -107,11 +112,13 @@ export function watchBrowserNotifications(
   const receive = async (value: unknown) => {
     const event = value as MessageNotification;
     const invitation = event?.kind === "space.invitation" || event?.kind === "channel.invitation";
-    const identity = invitation
-      ? typeof event.notificationId === "string" && /^[1-9][0-9]*$/.test(event.notificationId)
-        ? `invitation:${event.notificationId}`
-        : undefined
-      : event?.messageId;
+    const request = event?.kind === "direct.request";
+    const identity =
+      invitation || request
+        ? typeof event.notificationId === "string" && /^[1-9][0-9]*$/.test(event.notificationId)
+          ? `${request ? "request" : "invitation"}:${event.notificationId}`
+          : undefined
+        : event?.messageId;
     if (
       !event ||
       event.type !== "notification.created" ||
@@ -127,7 +134,7 @@ export function watchBrowserNotifications(
       return Number.isFinite(age) && age >= -30_000 && age <= 120_000;
     };
     if (!location || !fresh()) return;
-    const subject = invitation ? identity : (event.conversationId ?? event.channelId);
+    const subject = invitation || request ? identity : (event.conversationId ?? event.channelId);
     const allowed = () => active && browserNotificationPermission() === "granted" && browserNotificationsEnabled();
     const reading = () => {
       visibility();
