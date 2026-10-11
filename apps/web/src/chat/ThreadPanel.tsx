@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
@@ -342,17 +343,10 @@ export default function ThreadPanel({
           </div>
         )}
         {state.thread.loading && !replies.length && (
-          <div className="chat-thread-skeleton" role="status" aria-label="Loading thread replies">
-            {Array.from({ length: Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2)) }, (_, index) => (
-              <div className="chat-thread-skeleton-row" key={index} aria-hidden="true">
-                <span className="chat-thread-skeleton-avatar" />
-                <div>
-                  <span className="chat-thread-skeleton-name" />
-                  <span className="chat-thread-skeleton-text" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <MessageSkeleton
+            label="Loading thread replies"
+            rows={Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2))}
+          />
         )}
         {state.thread.error && (
           <p className="chat-thread-status chat-inline-error" role="alert">

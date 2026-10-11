@@ -36,7 +36,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
 - File attachments, when the server has storage configured (otherwise the
-  attach control is hidden). Inline images show the uploaded preview, else
+  attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
   attachment id. Videos show their poster with a play button. Clicking an
   image or video opens the in-app viewer over the window (`viewer.rs`): the

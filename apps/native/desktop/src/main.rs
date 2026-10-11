@@ -650,7 +650,7 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
-    /// Compression settings while uploads are configured; `None` hides Attach.
+    /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
@@ -3299,7 +3299,7 @@ impl CaperApp {
         })
     }
 
-    /// Web `uploadsAvailable`: any failure hides Attach. Rechecked at most
+    /// Any failure disables Attach without changing composer width. Rechecked at most
     /// once a minute on channel loads while unavailable.
     fn check_uploads(&mut self) {
         let Some(token) = self.token.clone() else {
@@ -9433,7 +9433,8 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            let attach_width = if attach { 36.0 } else { 0.0 };
+            // Reserve the paperclip before upload settings or the session arrive.
+            let attach_width = 40.0;
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
@@ -9556,40 +9557,43 @@ impl CaperApp {
                                 RichText::new(placeholder)
                                     .color(Color32::from_rgb(142, 149, 152)),
                             )
-                            .background_color(COMPOSER)
+                            .frame(false)
                             .char_limit(4_000).show(ui)
                     );
-                    let editor = if attach {
-                        let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
-                        let mut pick = false;
-                        let editor = ui.horizontal_top(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(7.0);
-                                let enabled = !full && self.file_picker.is_none();
-                                let button = ui
-                                    .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
-                                    .inner;
-                                pick = button.clicked();
-                            });
-                            editor_area(ui, &mut self.draft)
-                        }).inner;
-                        if pick {
-                            self.pick_files(ui.ctx());
-                        }
-                        editor
-                    } else {
-                        editor_area(ui, &mut self.draft)
-                    };
-                    let mut output = editor.inner;
+                    let editor = egui::Frame::new()
+                        .fill(COMPOSER)
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin { left: 4, ..Default::default() })
+                        .show(ui, |ui| {
+                            let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
+                            let mut pick = false;
+                            let editor = ui.horizontal_top(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    let enabled = attach && !full && self.file_picker.is_none();
+                                    let button = ui
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                        .inner
+                                        .on_disabled_hover_text(if full { "You can attach up to 10 files." } else { "File uploads are not ready" });
+                                    pick = button.clicked();
+                                });
+                                editor_area(ui, &mut self.draft)
+                            }).inner;
+                            if pick {
+                                self.pick_files(ui.ctx());
+                            }
+                            editor
+                        });
+                    let mut output = editor.inner.inner;
                     let draft = self.draft.clone();
                     if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
                         self.draft = value;
                     }
                     let response = &output.response;
                     ui.painter().rect_stroke(
-                        editor.inner_rect,
-                        6.0,
-                        Stroke::new(1.0, BORDER),
+                        editor.response.rect,
+                        8.0,
+                        Stroke::new(1.0, if response.has_focus() { TERRACOTTA } else { BORDER }),
                         egui::StrokeKind::Inside,
                     );
                     if self.draft != before {
@@ -10249,7 +10253,7 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(12)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Forwarded · live").size(11.0).color(MUTED));
+                            ui.label(RichText::new("Forwarded").size(11.0).color(MUTED));
                             if let Some(original) = &forward.message {
                                 forwarding::original(ui, original, &mut self.reaction_textures);
                                 // The original's files as of the forward snapshot.
@@ -10262,6 +10266,7 @@ impl CaperApp {
                                 let count = original
                                     .thread
                                     .as_ref()
+                                    .filter(|summary| summary.reply_count > 0)
                                     .map(|summary| {
                                         format!(
                                             "{} {} · ",
@@ -24069,6 +24074,33 @@ mod tests {
         assert!(url.starts_with("file:///"));
         assert!(url.ends_with("/selected%20diagram%20%231.png"));
         assert_eq!(app.draft_files.len(), 3);
+
+        // Empty and multiline drafts share one message-box surface with Attach.
+        for draft in ["", "First line\nSecond line\nThird line"] {
+            app.draft = draft.into();
+            context.enable_accesskit();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let attach = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
+            )), "{draft:?}: Attach must be inside the message box");
+        }
     }
 
     #[test]
@@ -24124,6 +24156,51 @@ mod tests {
     }
 
     #[test]
+    fn attachment_readiness_never_moves_the_composer() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-account".into());
+        app.session = Some(session());
+        let mut bounds = None;
+        for ready in [false, true, false] {
+            app.uploads = ready.then(crate::compress::Compression::default);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let attach = &nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .expect("paperclip stays present")
+                .1;
+            assert_eq!(attach.is_disabled(), !ready);
+            let editor = &nodes
+                .iter()
+                .find(|(_, node)| node.role() == egui::accesskit::Role::MultilineTextInput)
+                .unwrap()
+                .1;
+            if let Some(previous) = bounds {
+                assert_eq!(
+                    editor.bounds(),
+                    Some(previous),
+                    "upload readiness must not move or resize the editor"
+                );
+            }
+            bounds = editor.bounds();
+            assert!(bounds.is_some());
+        }
+    }
+
+    #[test]
     fn attach_needs_uploads_and_a_writable_channel_and_drafts_gate_sending() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -24133,7 +24210,7 @@ mod tests {
         );
         assert!(app.can_attach());
         app.uploads = None;
-        assert!(!app.can_attach(), "usage failure hides Attach");
+        assert!(!app.can_attach(), "usage failure disables Attach");
         app.uploads = Some(crate::compress::Compression::default());
         let channel = app.selected_channel.clone().unwrap();
         app.detail

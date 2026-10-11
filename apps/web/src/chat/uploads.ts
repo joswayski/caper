@@ -168,7 +168,7 @@ export const browserTransport: UploadTransport = {
     }),
 };
 
-/** Uploads are optional server configuration: undefined hides the control.
+/** Uploads are optional server configuration: undefined disables the control.
  * Otherwise returns the server's compression settings from `/api/assets/usage`. */
 export async function uploadSettings(fetcher: typeof fetch = fetch): Promise<CompressionSettings | undefined> {
   const response = await fetcher("/api/assets/usage", { credentials: "same-origin", cache: "no-store" }).catch(

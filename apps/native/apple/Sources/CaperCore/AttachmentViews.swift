@@ -1516,8 +1516,8 @@ struct PickedAttachmentMedia: Transferable, Sendable {
     }
 }
 
-/// The composer's attach control: Photos, or any file. Shown only while
-/// uploads are available and the conversation accepts messages.
+/// Keep the attach control in place while capability/session checks finish.
+/// Photos and files remain disabled until the conversation accepts uploads.
 struct AttachmentPickerButton: View {
     @Bindable var chat: ChatModel
     @State private var showPhotos = false
@@ -1539,12 +1539,11 @@ struct AttachmentPickerButton: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .background(CaperTheme.composer)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-        .disabled(remaining == 0)
-        .help(remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : "Attach files")
+        .disabled(!chat.canAttach || remaining == 0)
+        .opacity(chat.canAttach ? 1 : 0.4)
+        .help(!chat.canAttach ? "File uploads are not ready" : remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : "Attach files")
         .accessibilityLabel("Attach files")
+        .accessibilityValue(chat.canAttach ? "" : "File uploads are not ready")
         .accessibilityIdentifier("attach-files-button")
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)

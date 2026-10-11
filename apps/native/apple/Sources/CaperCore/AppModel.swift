@@ -1672,7 +1672,7 @@ public final class ChatModel {
     private var windowEnd: String?
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
-    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
+    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays disabled.
     public private(set) var uploadsEnabled = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
@@ -2876,7 +2876,7 @@ public final class ChatModel {
     // MARK: Attachments
 
     /// Uploads are optional server configuration; only a successful usage
-    /// response shows the attach control.
+    /// response enables the attach control.
     public func checkUploadAvailability() async {
         do {
             let usage = try await api.assetUsage()
