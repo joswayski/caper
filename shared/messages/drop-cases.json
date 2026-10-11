@@ -1,0 +1,45 @@
+{
+  "description": "Text on the file drop overlay over a conversation. Every client's tests must produce exactly these strings. See apps/web/src/chat/drop.ts and docs/media.md#file-drop-overlay.",
+  "cases": [
+    {
+      "note": "channel with no drafts",
+      "channel": "general",
+      "direct": false,
+      "attached": 0,
+      "title": "Attach to #general",
+      "detail": "Up to 10 files. Add a message before sending."
+    },
+    {
+      "note": "direct message",
+      "channel": "Maya",
+      "direct": true,
+      "attached": 0,
+      "title": "Attach to Maya",
+      "detail": "Up to 10 files. Add a message before sending."
+    },
+    {
+      "note": "some drafts",
+      "channel": "design",
+      "direct": false,
+      "attached": 3,
+      "title": "Attach to #design",
+      "detail": "7 more files. Add a message before sending."
+    },
+    {
+      "note": "one slot left",
+      "channel": "design",
+      "direct": false,
+      "attached": 9,
+      "title": "Attach to #design",
+      "detail": "1 more file. Add a message before sending."
+    },
+    {
+      "note": "full",
+      "channel": "design",
+      "direct": false,
+      "attached": 10,
+      "title": "Attach to #design",
+      "detail": "10 files attached. Remove one to add another."
+    }
+  ]
+}

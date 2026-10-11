@@ -284,6 +284,17 @@ public enum AttachmentURLPolicy {
 public enum AttachmentPolicy {
     public static let maxAttachments = 10
 
+    /// The file drop overlay's title and detail line. Every client produces
+    /// the strings in shared/messages/drop-cases.json. Change them together.
+    public static func dropText(channel: String, direct: Bool, attached: Int) -> (title: String, detail: String) {
+        let room = max(0, maxAttachments - attached)
+        let detail: String
+        if room == 0 { detail = "\(maxAttachments) files attached. Remove one to add another." }
+        else if room == maxAttachments { detail = "Up to \(maxAttachments) files. Add a message before sending." }
+        else { detail = "\(room) more file\(room == 1 ? "" : "s"). Add a message before sending." }
+        return ("Attach to \(direct ? "" : "#")\(channel)", detail)
+    }
+
     /// Message display frame that reserves layout space before loading.
     public static func displaySize(width: Int?, height: Int?, maxWidth: Double = 360, maxHeight: Double = 300) -> (width: Double, height: Double)? {
         guard let width, let height, width > 0, height > 0 else { return nil }
