@@ -437,13 +437,17 @@ async fn signed_conversation_window(
         .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
         .collect();
     forwarding::hydrate(&mut tx, &mut rows).await?;
-    deliver(pool, cdn, &mut rows).await?;
     if let Some((_, root, avatar, name)) = thread_root {
         let mut roots = vec![enrich_author(root, avatar, name.as_deref())];
         forwarding::hydrate(&mut tx, &mut roots).await?;
-        deliver(pool, cdn, &mut roots).await?;
+        // Release the channel lock and connection before signing: delivery
+        // reads assets on another pooled connection.
+        drop(tx);
+        rows.append(&mut roots);
+        deliver(pool, cdn, &mut rows).await?;
+        let root = rows.pop().unwrap_or_default();
         return Ok(
-            json!({"root":roots[0],"messages":rows,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer}),
+            json!({"root":root,"messages":rows,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer}),
         );
     }
     // All pins are returned independently of the history page. The shared
@@ -459,8 +463,13 @@ async fn signed_conversation_window(
             .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
             .collect();
         forwarding::hydrate(&mut tx, &mut pins).await?;
-        deliver(pool, cdn, &mut pins).await?;
     }
+    drop(tx);
+    // One asset lookup for the page and its pins, without holding the lock.
+    let page = rows.len();
+    rows.append(&mut pins);
+    deliver(pool, cdn, &mut rows).await?;
+    let pins = rows.split_off(page);
     let mut channel_identity = json!({"id":channel,"name":channel_name});
     if space_id.is_none() {
         channel_identity["direct"] = json!(true);
