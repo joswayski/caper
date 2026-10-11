@@ -1214,7 +1214,7 @@
 .chat-mention-card-action {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 8px;
   width: 100%;
   min-height: 40px;
@@ -1225,8 +1225,13 @@
   background: transparent;
   font: inherit;
   font-size: 0.82rem;
-  text-align: left;
+  text-align: center;
   cursor: pointer;
+}
+/* Space rows pair the name with a small status, like native clients' rows. */
+.chat-profile-spaces .chat-mention-card-action {
+  justify-content: space-between;
+  text-align: left;
 }
 .chat-mention-card-action:disabled {
   opacity: 0.6;
@@ -1242,7 +1247,8 @@
   }
 }
 .chat-profile-block {
-  color: var(--terracotta-bright);
+  /* The error text colour, as on every client. */
+  color: #ff9b82;
 }
 .chat-profile-spaces {
   display: grid;

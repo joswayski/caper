@@ -214,7 +214,7 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
-  profileSpaces?: Space[];
+  profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
 }) {
@@ -509,7 +509,7 @@ export default function Chat({
   const [attachError, setAttachError] = useState<string>();
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // undefined is checking; null means unavailable. Neither removes the paperclip.
+  // undefined is checking; null means unavailable. Neither removes the attach button.
   const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
@@ -1721,7 +1721,7 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
-            spaces={profileSpaces}
+            spaces={profileSpaces?.(mentionCard.person.id)}
             onBlock={
               onBlockAuthor &&
               ((author) => {

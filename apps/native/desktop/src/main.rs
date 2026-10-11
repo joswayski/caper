@@ -331,7 +331,8 @@ struct MentionCard {
     choosing_space: bool,
     /// A membership revision and destination, independent of chat navigation.
     inviting: Option<(u64, String)>,
-    invited: BTreeSet<String>,
+    /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
+    invited: BTreeMap<String, &'static str>,
     status: Option<String>,
     error: Option<String>,
     /// Opened this pass: the click that opened it is not "outside".
@@ -2916,6 +2917,15 @@ impl CaperApp {
                 if matches!(self.dialog, Some(Dialog::Block { .. })) {
                     self.dialog = None;
                 }
+                // Web's card stays open after Unblock and says so.
+                if !blocked
+                    && let Some(card) = self
+                        .mention_card
+                        .as_mut()
+                        .filter(|card| card.pill.entry.id.as_deref() == Some(&account.id))
+                {
+                    card.status = Some("Unblocked.".into());
+                }
                 if blocked {
                     self.typers.remove(&account.id);
                     // Blocking also declines their pending request.
@@ -2955,10 +2965,16 @@ impl CaperApp {
                     card.inviting = None;
                     match result {
                         Ok(_) => {
-                            card.invited.insert(space.id);
+                            card.invited.insert(space.id, "Invited");
                             card.status = Some(format!("Invitation sent to {}.", space.name));
                         }
-                        Err(error) => card.error = Some(error),
+                        Err(error) => {
+                            // Redundant invitations still mark the row so it isn't retried.
+                            if let Some(already) = redundant_invitation(&error) {
+                                card.invited.insert(space.id, already);
+                            }
+                            card.error = Some(error);
+                        }
                     }
                 }
             }
@@ -9875,7 +9891,7 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            // Reserve the paperclip before upload settings or the session arrive.
+            // Reserve the attach button before upload settings or the session arrive.
             let attach_width = 40.0;
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
@@ -10615,7 +10631,7 @@ impl CaperApp {
                 opening: None,
                 choosing_space: false,
                 inviting: None,
-                invited: BTreeSet::new(),
+                invited: BTreeMap::new(),
                 status: None,
                 error: None,
                 fresh: true,
@@ -12474,7 +12490,7 @@ impl CaperApp {
             opening: None,
             choosing_space: false,
             inviting: None,
-            invited: BTreeSet::new(),
+            invited: BTreeMap::new(),
             status: None,
             error: None,
             fresh: true,
@@ -12533,6 +12549,16 @@ impl CaperApp {
             .id
             .as_deref()
             .is_some_and(|id| self.is_blocked(id));
+        // Don't offer the open space to someone who is already in it.
+        let member_of_open =
+            self.detail
+                .as_ref()
+                .filter(|detail| {
+                    card.pill.entry.id.as_deref().is_some_and(|person| {
+                        detail.members.iter().any(|member| member.id == person)
+                    })
+                })
+                .map(|detail| detail.space.id.as_str());
         let owned_spaces: Vec<_> = self
             .spaces
             .iter()
@@ -12542,6 +12568,7 @@ impl CaperApp {
                         .account
                         .as_ref()
                         .is_some_and(|account| account.id == space.owner_id)
+                    && member_of_open != Some(space.id.as_str())
             })
             .cloned()
             .collect();
@@ -12634,14 +12661,19 @@ impl CaperApp {
                                                     .is_some_and(|(_, id)| id == &space.id)
                                                 {
                                                     "Sending…".to_owned()
-                                                } else if card.invited.contains(&space.id) {
-                                                    format!("{} · Invited", space.name)
+                                                } else if let Some(already) =
+                                                    card.invited.get(&space.id)
+                                                {
+                                                    format!("{} · {already}", space.name)
                                                 } else {
                                                     space.name.clone()
                                                 };
                                                 if ui
                                                     .add_enabled(
-                                                        !busy && !card.invited.contains(&space.id),
+                                                        !busy
+                                                            && !card
+                                                                .invited
+                                                                .contains_key(&space.id),
                                                         egui::Button::new(label)
                                                             .min_size(egui::vec2(246.0, 36.0)),
                                                     )
@@ -12657,7 +12689,9 @@ impl CaperApp {
                                     let button = ui.add_enabled(
                                         !busy,
                                         egui::Button::new(
-                                            RichText::new(if blocked {
+                                            RichText::new(if blocked && self.block_busy {
+                                                "Unblocking…"
+                                            } else if blocked {
                                                 "Unblock"
                                             } else {
                                                 "Block"
@@ -15368,6 +15402,16 @@ fn admin_error(error: String) -> String {
     }
 }
 
+/// The invite-list label for `friendly_error`'s sentences for "user already
+/// in space" and "user already invited", so the row can't be retried.
+fn redundant_invitation(error: &str) -> Option<&'static str> {
+    match error {
+        "This person is already in the space." => Some("Member"),
+        "This person already has a pending invitation." => Some("Invited"),
+        _ => None,
+    }
+}
+
 /// Web's quick reactions in the message actions menu.
 const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "🎉", "👀"];
 
@@ -16557,7 +16601,8 @@ mod tests {
         RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
         TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
         normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
-        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
+        redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
+        timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -22894,6 +22939,10 @@ mod tests {
             "{card_labels:?}"
         );
         assert!(!card_labels.contains(&"Not owned") && !card_labels.contains(&"Owned demo"));
+        assert!(
+            !card_labels.contains(&"Fixture Studio"),
+            "Alex is already in the open space"
+        );
         click_at(
             &mut app,
             &context,
@@ -22957,11 +23006,76 @@ mod tests {
         receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
         assert!(
-            shows(&output, "Message")
-                && shows(&output, "Invite to space")
-                && shows(&output, "Block"),
+            shows(&output, "Message") && shows(&output, "Block") && shows(&output, "Unblocked."),
             "{:?}",
             text_shapes(&output)
+        );
+        // Alex is already in the only owned space, which is open.
+        assert!(!shows(&output, "Invite to space"));
+    }
+
+    #[test]
+    fn redundant_profile_invitations_mark_the_space_instead_of_retrying() {
+        let (base, _) = account_server(vec![(
+            "POST /api/spaces/another-space/members",
+            409,
+            r#"{"error":"user already invited"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.spaces.push(model::Space {
+            id: "another-space".into(),
+            name: "Another owned space".into(),
+            owner_id: "fixture-owner".into(),
+            inviter: None,
+            demo: false,
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Invite to space"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Another owned space"),
+        );
+        receive_until(&mut app, |app| {
+            app.mention_card
+                .as_ref()
+                .is_some_and(|card| card.error.is_some())
+        });
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(
+            &output,
+            "This person already has a pending invitation."
+        ));
+        assert!(shows(&output, "Another owned space · Invited"));
+        assert_eq!(
+            app.mention_card
+                .as_ref()
+                .unwrap()
+                .invited
+                .get("another-space"),
+            Some(&"Invited")
+        );
+        assert_eq!(
+            redundant_invitation("This person is already in the space."),
+            Some("Member")
         );
     }
 
@@ -25267,7 +25381,7 @@ mod tests {
             let attach = &nodes
                 .iter()
                 .find(|(_, node)| node.label() == Some("Attach files"))
-                .expect("paperclip stays present")
+                .expect("the attach button stays present")
                 .1;
             assert_eq!(attach.is_disabled(), !ready);
             let editor = &nodes
