@@ -671,6 +671,18 @@ try {
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
     evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
+    browser("scrollintoview", ".live-invite");
+    assert.ok(
+      evaluate(`
+        const pill = document.querySelector('.live-invite').getBoundingClientRect();
+        const stage = document.querySelector('.live-stage').getBoundingClientRect();
+        const x = pill.left + pill.width / 2, y = pill.top + pill.height / 2;
+        return Math.abs(x - (stage.left + stage.width / 2)) < 1
+          && Math.abs(y - (stage.top + stage.height / 2)) < 1
+          && document.elementFromPoint(x, y)?.closest('a')?.getAttribute('href') === '/spaces';
+      `),
+      `The join pill stays centered and tappable above the tilted demo at ${width}px`,
+    );
     checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
     assert.equal(
       evaluate('return getComputedStyle(document.querySelector(".sim-message > .chat-avatar + div")).paddingRight'),
