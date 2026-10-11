@@ -1,6 +1,6 @@
 import type { MessageNotification } from "./browser-notifications";
 
-/** Render one bounded original in memory. No upload or persistent thumbnail. */
+/** Render an image original or existing video poster. Never download video bytes. */
 export async function notificationImage(event: MessageNotification, signal: AbortSignal): Promise<string | undefined> {
   const { attachmentUrl, attachmentContentType, attachmentSize } = event;
   if (
@@ -9,21 +9,12 @@ export async function notificationImage(event: MessageNotification, signal: Abor
     !Number.isSafeInteger(attachmentSize) ||
     !attachmentSize ||
     attachmentSize < 1 ||
-    attachmentSize > 10_000_000 ||
-    ![
-      "image/png",
-      "image/jpeg",
-      "image/gif",
-      "image/webp",
-      "image/avif",
-      "video/mp4",
-      "video/webm",
-      "video/quicktime",
-    ].includes(attachmentContentType)
+    attachmentSize > 50_000_000 ||
+    !["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"].includes(attachmentContentType)
   )
     return;
   let original: string | undefined;
-  let media: HTMLImageElement | HTMLVideoElement | undefined;
+  let media: HTMLImageElement | undefined;
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal.addEventListener("abort", cancel, { once: true });
@@ -37,7 +28,7 @@ export async function notificationImage(event: MessageNotification, signal: Abor
       url.username ||
       url.password ||
       url.hash ||
-      !/^\/original\/[A-Za-z0-9]{1,64}$/.test(url.pathname)
+      !/^\/(original|preview)\/[A-Za-z0-9]{1,64}$/.test(url.pathname)
     )
       return;
     const response = await fetch(url, { credentials: "omit", redirect: "error", cache: "no-store", signal: timeout });
@@ -59,10 +50,10 @@ export async function notificationImage(event: MessageNotification, signal: Abor
     }
     if (total !== attachmentSize || timeout.aborted) return;
     original = URL.createObjectURL(new Blob(chunks, { type: attachmentContentType }));
-    media = attachmentContentType.startsWith("video/") ? document.createElement("video") : new Image();
+    media = new Image();
     const source = media;
     await new Promise<void>((resolve, reject) => {
-      const ready = source instanceof HTMLVideoElement ? "loadeddata" : "load";
+      const ready = "load";
       const finish = (error?: Event) => {
         source.removeEventListener(ready, loaded);
         source.removeEventListener("error", failed);
@@ -81,8 +72,8 @@ export async function notificationImage(event: MessageNotification, signal: Abor
       }
       source.src = original!;
     });
-    const width = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
-    const height = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
+    const width = source.naturalWidth;
+    const height = source.naturalHeight;
     if (!width || !height || timeout.aborted) return;
     const scale = Math.min(1, 1024 / Math.max(width, height));
     const canvas = document.createElement("canvas");
@@ -99,7 +90,6 @@ export async function notificationImage(event: MessageNotification, signal: Abor
     clearTimeout(timer);
     signal.removeEventListener("abort", cancel);
     media?.removeAttribute("src");
-    if (media && media instanceof HTMLVideoElement) media.load();
     if (original) URL.revokeObjectURL(original);
   }
 }

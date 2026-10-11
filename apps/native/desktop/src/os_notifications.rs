@@ -175,20 +175,15 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
-        || !url.path().strip_prefix("/original/").is_some_and(|id| {
-            !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        || !["/original/", "/preview/"].iter().any(|prefix| {
+            url.path().strip_prefix(prefix).is_some_and(|id| {
+                !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
         })
-        || !(1..=10_000_000).contains(&size)
+        || !(1..=50_000_000).contains(&size)
         || !matches!(
             content_type,
-            "image/png"
-                | "image/jpeg"
-                | "image/gif"
-                | "image/webp"
-                | "image/avif"
-                | "video/mp4"
-                | "video/webm"
-                | "video/quicktime"
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
         )
     {
         return None;
@@ -211,7 +206,7 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
     if bytes.len() as u64 != size {
         return None;
     }
-    let image = if content_type.starts_with("image/") && content_type != "image/avif" {
+    let image = if content_type != "image/avif" {
         let mut reader = image::ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .ok()?;

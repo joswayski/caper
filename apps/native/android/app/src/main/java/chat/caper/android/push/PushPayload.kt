@@ -92,17 +92,17 @@ internal data class PushPayload(
     }
 }
 
-/** One signed original, not an uploaded thumbnail or a public device file. */
+/** One signed image original or existing video poster, never a public device file. */
 internal data class PushAttachment(val url: String, val contentType: String, val size: Long) {
     companion object {
-        const val MAX_BYTES = 10_000_000L
+        const val MAX_BYTES = 50_000_000L
         fun parse(data: Map<String, String>): PushAttachment? {
             val raw = data["attachmentUrl"] ?: return null
             val url = runCatching { java.net.URI(raw) }.getOrNull() ?: return null
             if (url.scheme != "https" || url.host == null || url.rawUserInfo != null || url.rawFragment != null ||
-                !Regex("^/original/[A-Za-z0-9]{1,64}$").matches(url.path)) return null
+                !Regex("^/(original|preview)/[A-Za-z0-9]{1,64}$").matches(url.path)) return null
             val type = data["attachmentContentType"] ?: return null
-            if (type !in listOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "video/mp4", "video/webm", "video/quicktime")) return null
+            if (type !in listOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif")) return null
             val size = data["attachmentSize"]?.toLongOrNull()?.takeIf { it in 1..MAX_BYTES } ?: return null
             return PushAttachment(raw, type, size)
         }

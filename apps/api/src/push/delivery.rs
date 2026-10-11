@@ -192,7 +192,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
         return Ok(false);
     }
     let mut messages: Vec<_> = claimed.iter().map(|row| row.message.clone()).collect();
-    crate::assets::mark_deleted(&workers.pool, &mut messages)
+    crate::assets::notification_content(&workers.pool, &mut messages)
         .await
         .map_err(|_| ())?;
     for (row, message) in claimed.iter_mut().zip(messages) {

@@ -155,7 +155,7 @@ pub(crate) async fn read(
          WHERE n.user_id=$1 AND n.id>$2 AND n.id<=$3 ORDER BY n.id LIMIT 128"
     ).bind(user).bind(after).bind(head).fetch_all(pool).await?;
     let mut messages: Vec<_> = rows.iter().map(|row| row.message.clone()).collect();
-    crate::assets::mark_deleted(pool, &mut messages)
+    crate::assets::notification_content(pool, &mut messages)
         .await
         .map_err(|_| sqlx::Error::Protocol("attachment lookup unavailable".into()))?;
     for (row, message) in rows.iter_mut().zip(messages) {

@@ -120,35 +120,47 @@ offers the phone's platform, the app turns push on, unless the account turned
   `senderId`, optional decimal `senderAvatarId`, and `conversationTitle`
   (`#channel (Space)`, channels only).
 
-### Original-file previews
+### Uploaded-file previews
 
 APNs, FCM and the account gateway feed optionally include `attachmentUrl`,
 `attachmentContentType` and `attachmentSize` (decimal string in FCM; number
-elsewhere). The server selects the first available PNG/JPEG/GIF/WebP/AVIF image
-or MP4/WebM/QuickTime video no larger than 10,000,000 bytes, including attachments
-in forwarded snapshots. Multiple files remain supported; each notification
-previews at most one. Captions remain the body. Deleted files are not signed.
+elsewhere). The server selects one available PNG/JPEG/GIF/WebP/AVIF image
+original or a video's existing chat poster, including attachments in forwarded
+snapshots. Automatic downloads are capped at 50,000,000 bytes. Video posters
+already have the upload system's 512 KiB cap, so even a video larger than 50 MB
+can have a small notification preview. Multiple files remain supported; each
+message contributes at most one preview. Captions remain the body. Deleted
+files are not signed.
 
-The URL grants 15-minute access to the **existing original**, never `/preview`
-or a new stored rendition. API and gateway reuse `ASSET_CDN_ORIGIN` and
+The URL grants 15-minute access to **the existing image original** (`/original`)
+or **the existing video poster** (`/preview`), never a new notification-specific
+rendition. API and gateway read current poster type/size from the asset row, so
+older messages with only `preview:{}` still work. No video bytes are downloaded
+for notifications: a video without a usable poster gets text only, not an
+original-video download. API and gateway reuse `ASSET_CDN_ORIGIN` and
 `ASSET_CDN_SIGNING_SECRET`. No extra R2 objects, uploads or migrations are needed.
 URLs are bearer capabilities: access is checked before issuing them, but an
 already issued URL cannot be immediately recalled if access is later revoked.
+The 15 minutes start when the URL is signed, not when the file was uploaded.
+Expiry prevents a later download; it does not erase an already-downloaded
+notification image or delete the upload.
 
 Clients download without account credentials or redirects, cap bytes and allow
 about five seconds for the download. They create a PNG no larger than 1024 px
-on its long edge (a still frame for video), **only on the receiving device**.
+on its long edge from that image/poster, **only on the receiving device**.
 Web uses an in-memory blob; Android uses app-private files retained for the
-notification; Apple hands temporary attachments to UserNotifications; Rust
+notification; Apple streams the source to a temporary file to avoid holding a
+50 MB body in extension memory, then hands the PNG to UserNotifications; Rust
 desktop uses a private temporary directory until dismissal, expiry or logout.
 These local OS artifacts do not become additional server-side file versions.
 
 iPhone retains its sender communication intent; Android retains MessagingStyle
 and sender artwork. macOS shows the upload instead of its sender image
 attachment. Windows adds a hero image; Linux and browser presentation depend on
-the notification service/browser. Unsupported codecs (including video on
-Android 26), missing FFmpeg on Rust desktop, expiry, a failed download or an OS
-timeout preserve the text notification. The CDN allows credential-free CORS
+the notification service/browser. A missing poster, unsupported image decoder,
+expiry, a failed/slow download or an OS timeout preserve the caption or file
+description and sender artwork. This also works for video posters on Android 26
+without a video decoder. The CDN allows credential-free CORS
 reads only after the existing signature check, including cached responses.
 
 ### Local web and desktop notifications
@@ -340,7 +352,7 @@ physical Android or signed iOS devices. Keep each platform out of
    requires a reviewed build retaining the applied SQLx migration ledger (a
    pre-migration image rejects that ledger). No deployment was performed here.
 
-### Original-file preview deployment order
+### Uploaded-file preview deployment order
 
 1. No new infrastructure, secrets, database migrations or storage variants are
    required. Existing uploads, CDN signing configuration and phone credentials
@@ -372,7 +384,9 @@ physical Android or signed iOS devices. Keep each platform out of
    ```
 
 5. With separate accounts, send a captioned photo, a video, multiple files and a
-   document. Check one visual preview, intact caption/file fallback, tap routing,
+   document, including a video larger than 50 MB. Confirm video notifications
+   request only the already-uploaded poster; no poster must yield text only.
+   Check one visual preview, intact caption/file fallback, tap routing,
    focused reading and logout, then an expired URL/offline download. Check iOS
    expanded notifications and Android MessagingStyle on real devices. R2 must
    contain no notification-created objects. Roll back server/web images to the

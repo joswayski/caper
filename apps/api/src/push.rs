@@ -128,7 +128,7 @@ pub(crate) struct Alert {
     pub attachment: Option<Attachment>,
 }
 
-/// One existing original, never a notification-specific stored rendition.
+/// One existing upload object, never a notification-specific stored rendition.
 #[derive(Clone, Debug)]
 pub(crate) struct Attachment {
     pub url: String,
@@ -136,7 +136,7 @@ pub(crate) struct Attachment {
     pub size: u64,
 }
 
-const MAX_NOTIFICATION_ATTACHMENT_BYTES: u64 = 10_000_000;
+const MAX_NOTIFICATION_ATTACHMENT_BYTES: u64 = 50_000_000;
 
 impl Alert {
     pub(crate) fn new(
@@ -165,7 +165,7 @@ impl Alert {
         }
     }
 
-    /// Call only after recipient authorization and marking deleted assets.
+    /// Call only after recipient authorization and preparing notification content.
     pub(crate) fn with_content(mut self, message: &Value, cdn: Option<&CdnSigner>) -> Self {
         let files: Vec<&Value> = [
             "/content/attachments",
@@ -202,26 +202,22 @@ impl Alert {
                 if file["unavailable"] == true {
                     return None;
                 }
-                let content_type = file["contentType"].as_str()?;
-                if !matches!(
-                    content_type,
-                    "image/png"
-                        | "image/jpeg"
-                        | "image/gif"
-                        | "image/webp"
-                        | "image/avif"
-                        | "video/mp4"
-                        | "video/webm"
-                        | "video/quicktime"
-                ) {
+                let id = file["id"].as_str()?;
+                let (key, media) = if file["kind"] == "video" {
+                    (crate::assets::preview_key(id), file.get("preview")?)
+                } else {
+                    (crate::assets::original_key(id), file)
+                };
+                let content_type = media["contentType"].as_str()?;
+                if crate::assets::kind(content_type) != "image" {
                     return None;
                 }
-                let size = file["size"].as_u64()?;
+                let size = media["size"].as_u64()?;
                 if !(1..=MAX_NOTIFICATION_ATTACHMENT_BYTES).contains(&size) {
                     return None;
                 }
                 Some(Attachment {
-                    url: cdn.notification_url(file["id"].as_str()?, chrono::Utc::now().timestamp()),
+                    url: cdn.notification_url(&key, chrono::Utc::now().timestamp()),
                     content_type: content_type.into(),
                     size,
                 })
