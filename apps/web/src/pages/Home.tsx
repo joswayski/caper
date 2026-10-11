@@ -48,7 +48,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
 
   return (
     <main className="page">
-      <header className="site-header shell">
+      <header className="site-header">
         <Wordmark rotating={false} />
         <div className="site-header-actions">
           <AccountNav account={account} />
