@@ -2233,7 +2233,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     // A message that mentions you: terracotta wash with a 2dp leading edge.
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    Column(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+    val replyWash = message.replyTo != null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    Column(if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }) {
@@ -2471,12 +2472,13 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = if (hidden) "Blocked message" else "${reference.author.name} · ${reference.text.ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }}"
-    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "Go to replied message", onClick = onOpen)
-    Row(Modifier.fillMaxWidth().then(action).padding(start = 32.dp, end = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("↳", color = TextMuted, fontSize = 14.sp)
+    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
+    Row(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp).padding(start = 32.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("↱", color = TextMuted, fontSize = 14.sp)
         Spacer(Modifier.width(16.dp))
         if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
-        Text(text, color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(text, Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
     }
 }
 

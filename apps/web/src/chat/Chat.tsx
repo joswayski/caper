@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, MoreHorizontal, Pin, X } from "lucide-react";
+import { ArrowRight, Ban, MoreHorizontal, Pin, Reply, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -1040,6 +1040,22 @@ export default function Chat({
       .map((part) => part.value)
       .join("")
       .trim();
+  const replyToMessage = (message: ChatMessage, inThread: boolean) => {
+    const root = inThread
+      ? state.thread?.rootId
+      : message.threadRootId && !message.broadcast
+        ? message.threadRootId
+        : "channel";
+    if (!root) return;
+    setReplyTarget(root, replyReference(message));
+    setActionTarget(undefined);
+    setShowPins(false);
+    if (root !== "channel" && !inThread) openThread(root);
+    requestAnimationFrame(() => {
+      if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
+      else composerRef.current?.focus();
+    });
+  };
   const renderMessage = (
     index: number,
     message: (typeof messages)[number],
@@ -1270,6 +1286,18 @@ export default function Chat({
                   >
                     <MoreHorizontal size={14} aria-hidden="true" />
                   </button>
+                  {!readOnly && state.author && (
+                    <button
+                      type="button"
+                      className="chat-reply-message"
+                      aria-label={`Reply to ${message.author.name}`}
+                      title="Reply"
+                      disabled={!!state.pendingSend}
+                      onClick={() => replyToMessage(message, inThread)}
+                    >
+                      <Reply size={14} aria-hidden="true" />
+                    </button>
+                  )}
                   {!inThread && (
                     <button
                       type="button"
@@ -1845,22 +1873,7 @@ export default function Chat({
             }
             onReplyMessage={
               !readOnly && state.author && !state.pendingSend
-                ? () => {
-                    const root = actionTarget.inThread
-                      ? state.thread?.rootId
-                      : actionMessage.threadRootId && !actionMessage.broadcast
-                        ? actionMessage.threadRootId
-                        : "channel";
-                    if (!root) return;
-                    setReplyTarget(root, replyReference(actionMessage));
-                    setActionTarget(undefined);
-                    setShowPins(false);
-                    if (root !== "channel" && !actionTarget.inThread) openThread(root);
-                    requestAnimationFrame(() => {
-                      if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
-                      else composerRef.current?.focus();
-                    });
-                  }
+                ? () => replyToMessage(actionMessage, actionTarget.inThread)
                 : undefined
             }
             // The menu item is removed as the dialog opens; let the dialog return focus to the menu's trigger.

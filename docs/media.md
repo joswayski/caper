@@ -6522,6 +6522,14 @@ or have its own thread. **Reply in thread** remains a separate action. Channel
 composers retain their normal attachment support; thread composers remain
 text-only. Replying does not implicitly mention or ping the source author.
 
+Reply source rows use a right-facing context arrow and a visible **View
+original** affordance. Replies retain a faint neutral background; mentions,
+selected threads and source-jump highlights keep their stronger colors. Desktop
+message toolbars expose **Reply** beside **Reply in thread**, including Reply
+inside existing threads. Mobile long-press message actions offer both where
+applicable, and source rows keep a 44px touch target. Excerpts truncate before
+the source-view label on narrow layouts.
+
 `POST /api/chat/channels/:id/messages` accepts optional `replyToId`, independent
 of `threadRootId` and `broadcast`. The API resolves it within the authorized,
 locked channel. Channel replies can quote top-level/broadcast messages; thread
@@ -6541,8 +6549,8 @@ push rules are unchanged.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, Unicode truncation and transactional outbox snapshots. Low-memory builds use one job and zero debug information. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 572 tests across 55 files. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Existing `scripts/test-message-threads.mjs` passes. Inspected desktop, 390px and 320px Chromium renders with touch emulation and `(pointer: coarse)` verified; not Safari or physical-device acceptance. |
-| Rust desktop | 414 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture and hovered controls. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 572 tests across 55 files. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Extended `scripts/test-message-threads.mjs` passes, including channel/thread quick Reply, source jumps and touch long-press Reply selection. Inspected desktop, 390px and 320px Chromium renders of the updated source rows, composer, Pins, thread and action sheet. Coarse pointer, 44px source targets, non-overlapping desktop actions, zero horizontal overflow and stronger source-jump styling verified; not Safari or physical-device acceptance. |
+| Rust desktop | 414 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture, right-facing source arrows, source-view labels and hovered controls; clicking quick Reply selects the source while retaining the existing draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |

@@ -192,6 +192,7 @@ enum NavIcon {
     Users,
     Pin,
     Speech,
+    Reply,
     Mic,
     MicOff,
     Headphones,
@@ -10680,10 +10681,10 @@ impl CaperApp {
     fn reply_context(&mut self, ui: &mut egui::Ui, reference: &model::MessageReply) {
         let blocked = self.is_blocked(&reference.author.id);
         let label = if blocked {
-            "↪ Blocked message".into()
+            "Blocked message".into()
         } else {
             format!(
-                "↪ {} · {}{}",
+                "{} · {}{}",
                 reference.author.name,
                 reference.text.replace('\n', " "),
                 if reference.has_attachments {
@@ -10704,11 +10705,20 @@ impl CaperApp {
                 if ui
                     .add_enabled(
                         !blocked && !self.context_loading,
-                        egui::Button::new(RichText::new(label).size(11.0).color(MUTED))
-                            .frame(false)
-                            .truncate(),
+                        egui::Button::image_and_text(
+                            egui::Image::new(egui::include_image!(
+                                "../resources/icons/corner-up-right.svg"
+                            ))
+                            .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                            .tint(MUTED),
+                            RichText::new(label).size(11.0).color(MUTED),
+                        )
+                        .right_text(RichText::new("View original").size(11.0).color(MUTED))
+                        .min_size(egui::vec2(ui.available_width(), 24.0))
+                        .frame(false)
+                        .truncate(),
                     )
-                    .on_hover_text("Go to replied message")
+                    .on_hover_text("View original message")
                     .clicked()
                 {
                     self.showing_pins = false;
@@ -10809,7 +10819,7 @@ impl CaperApp {
         };
         let short = grouped.then(|| short_time(&message.created_at));
         let can_react = self.selected_is_joined() && self.session.is_some();
-        let action_width = if in_thread { 50.0 } else { 76.0 };
+        let action_width = if in_thread { 76.0 } else { 102.0 };
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -11099,6 +11109,16 @@ impl CaperApp {
                         egui::Sense::click(),
                     ))
                 };
+                let reply_message_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                let reply_message = ui.interact(
+                    reply_message_rect,
+                    ui.id().with((&message.id, "reply-action")),
+                    if self.pending.is_none() {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
                 let emoji_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                 let emoji = ui.interact(
                     emoji_rect,
@@ -11122,11 +11142,13 @@ impl CaperApp {
                     || picker_open
                     || emoji.has_focus()
                     || more.has_focus()
+                    || reply_message.has_focus()
                     || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
                     // Web's bordered surface buttons.
                     for (button, open) in [
                         (reply.as_ref(), false),
+                        (Some(&reply_message), false),
                         (Some(&emoji), picker_open),
                         (Some(&more), menu_open),
                     ] {
@@ -11157,6 +11179,16 @@ impl CaperApp {
                             icon(reply, false),
                         );
                     }
+                    paint_icon(
+                        ui.painter(),
+                        reply_message_rect.shrink(5.0),
+                        NavIcon::Reply,
+                        if self.pending.is_some() {
+                            MUTED.gamma_multiply(0.5)
+                        } else {
+                            icon(&reply_message, false)
+                        },
+                    );
                     if let Some(entry) = emoji::find("🙂") {
                         self.reaction_textures
                             .image(ui, entry, 14.0)
@@ -11181,6 +11213,16 @@ impl CaperApp {
                                 .unwrap_or_else(|| message.id.clone()),
                         );
                     }
+                }
+                reply_message.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        self.pending.is_none(),
+                        "Reply",
+                    )
+                });
+                if reply_message.on_hover_text("Reply").clicked() && self.pending.is_none() {
+                    self.select_reply(ui.ctx(), message, in_thread);
                 }
                 emoji.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
@@ -11436,20 +11478,33 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
-        } else if !in_pins {
-            // Web's faint row highlight while hovered, kept while the row's
-            // menu or picker is open. Thread and jump tints win.
+        } else {
+            // Reply context stays quietly marked. Thread and jump tints win.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
             );
-            let highlighted = self.focused_message.as_deref() == Some(&message.id)
+            let highlighted = (!in_pins && self.focused_message.as_deref() == Some(&message.id))
                 || (!in_thread
                     && self
                         .thread_view
                         .as_ref()
                         .is_some_and(|thread| thread.root == message.id));
-            if !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
+            if !highlighted && message.reply_to.is_some() {
+                ui.painter().set(
+                    tint,
+                    egui::Shape::rect_filled(
+                        rect,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(243, 244, 245, 8),
+                    ),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                    0.0,
+                    BORDER,
+                );
+            } else if !in_pins && !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(rect, 0.0, Color32::from_white_alpha(5)),
@@ -14849,6 +14904,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
         NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
+        NavIcon::Reply => egui::include_image!("../resources/icons/reply.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
         NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),

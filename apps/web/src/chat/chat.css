@@ -477,6 +477,7 @@
   outline-offset: 2px;
 }
 .chat-message {
+  --reply-context-height: 24px;
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -496,6 +497,7 @@
 .chat-reply-context {
   grid-column: 1 / -1;
   width: 100%;
+  min-height: var(--reply-context-height);
   margin-bottom: -5px;
   padding: 0 0 0 13px;
   border: 0;
@@ -505,11 +507,11 @@
 }
 .chat-message:has(> .chat-reply-context)
   > div
-  > :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread) {
-  margin-top: calc(0.75rem * 1.4 + 8px);
+  > :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread, .chat-reply-message) {
+  margin-top: calc(var(--reply-context-height) + 8px);
 }
 .chat-pinned-message:has(> .chat-reply-context) > .chat-message-actions-trigger {
-  margin-top: calc(0.75rem * 1.4 + 10px);
+  margin-top: calc(var(--reply-context-height) + 10px);
 }
 .chat-reply-context > svg,
 .chat-reply-draft > svg,
@@ -527,15 +529,27 @@
 }
 .chat-reply-context strong {
   flex-shrink: 0;
-  max-width: 35%;
+  max-width: 28%;
   color: var(--text);
 }
-.chat-reply-context > span:last-of-type,
+.chat-reply-excerpt,
 .chat-reply-context strong,
 .chat-reply-draft-excerpt {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.chat-reply-excerpt {
+  min-width: 0;
+}
+.chat-reply-view {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
 }
 .chat-reply-context:hover > span,
 .chat-reply-context:focus-visible > span {
@@ -571,7 +585,10 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-@media (max-width: 760px) {
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-message {
+    --reply-context-height: 44px;
+  }
   .chat-reply-draft-excerpt {
     display: none;
   }
@@ -592,6 +609,13 @@
    moved into it. :where() lets mention, thread and jump tints still win. */
 .chat-message:where(:has(> div > :is(.chat-add-reaction, .chat-message-actions-trigger)[aria-expanded="true"])) {
   background: rgb(255 255 255 / 2%);
+}
+/* Replies stay quietly marked; mention, thread and source-jump tints still win. */
+.chat-message:where(:has(> .chat-reply-context)),
+.chat-message:where(:has(> .chat-reply-context)):hover,
+.chat-message:where(:has(> .chat-reply-context)):focus-within {
+  background: rgb(243 244 245 / 3%);
+  box-shadow: inset 2px 0 var(--border);
 }
 /* Follow-ups from the same person (grouping.ts): no avatar or name, tighter
    spacing, and the time in the avatar column on hover. */
@@ -653,16 +677,17 @@
    :where() keeps specificity at main's `.chat-message header` level. */
 .chat-message > header,
 .chat-message > :where(:not(.chat-forward-card)) > header {
-  padding-right: 82px;
+  padding-right: 108px;
 }
-/* Thread rows have two hover actions, so a narrow panel keeps name and time on one line. */
+/* Thread rows have three hover actions (no Reply in thread). */
 .chat-message:where(.chat-thread-panel *) > header,
 .chat-message:where(.chat-thread-panel *) > :where(:not(.chat-forward-card)) > header {
-  padding-right: 56px;
+  padding-right: 82px;
 }
 .chat-add-reaction,
 .chat-message-actions-trigger,
-.chat-reply-thread {
+.chat-reply-thread,
+.chat-reply-message {
   position: absolute;
   right: 14px;
   top: 4px;
@@ -680,23 +705,30 @@
 .chat-add-reaction {
   right: 40px;
 }
-.chat-reply-thread {
+.chat-reply-message {
   right: 66px;
 }
-.chat-reply-thread:focus-visible {
+.chat-reply-thread {
+  right: 92px;
+}
+.chat-reply-thread:focus-visible,
+.chat-reply-message:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
-.chat-add-reaction:disabled {
+.chat-add-reaction:disabled,
+.chat-reply-message:disabled {
   cursor: default;
 }
-.chat-add-reaction:disabled > svg {
+.chat-add-reaction:disabled > svg,
+.chat-reply-message:disabled > svg {
   opacity: 0.5;
 }
 @media (hover: hover) and (pointer: fine) {
   .chat-add-reaction,
   .chat-message-actions-trigger,
-  .chat-reply-thread {
+  .chat-reply-thread,
+  .chat-reply-message {
     opacity: 0;
   }
   .chat-message:hover .chat-add-reaction,
@@ -707,9 +739,11 @@
   .chat-message-actions-trigger[aria-expanded="true"],
   .chat-message:hover .chat-reply-thread,
   .chat-message:has(:focus-visible) .chat-reply-thread,
+  .chat-message:hover .chat-reply-message,
+  .chat-message:has(:focus-visible) .chat-reply-message,
   /* The whole bar stays while its menu or picker is open, instead of
      collapsing to the one open trigger when the pointer moves into it. */
-  .chat-message:has(> div > [aria-expanded="true"]) :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread) {
+  .chat-message:has(> div > [aria-expanded="true"]) :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread, .chat-reply-message) {
     opacity: 1;
   }
 }
@@ -719,18 +753,19 @@
   .chat-message-grouped > .chat-grouped-time + div::before {
     content: "";
     float: right;
-    width: 82px;
+    width: 108px;
     height: 20px;
   }
-  /* Thread rows have two actions (no Reply in thread). */
+  /* Thread rows have three actions (no Reply in thread). */
   .chat-thread-panel .chat-message-grouped > .chat-grouped-time + div::before {
-    width: 56px;
+    width: 82px;
   }
 }
 @media (hover: hover) {
   .chat-add-reaction:hover:not(:disabled),
   .chat-message-actions-trigger:hover,
-  .chat-reply-thread:hover {
+  .chat-reply-thread:hover,
+  .chat-reply-message:hover:not(:disabled) {
     color: var(--text);
     border-color: var(--terracotta);
   }
@@ -1111,7 +1146,8 @@
   .chat-message-grouped > div > .chat-message-actions-trigger {
     top: -6px;
   }
-  .chat-reply-thread {
+  .chat-reply-thread,
+  .chat-reply-message {
     display: none;
   }
   /* Compact follow-ups too: their text would otherwise run under the trigger. */
@@ -1232,8 +1268,8 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  /* Clear the three hover actions, matching the message header. */
-  padding-right: 82px;
+  /* Clear the four hover actions, matching the message header. */
+  padding-right: 108px;
   color: var(--pin-gold);
   font-size: 0.68rem;
   font-weight: 700;
@@ -1242,7 +1278,7 @@
 .chat-pin-marker > svg {
   flex: 0 0 12px;
 }
-/* Clear the single 44px actions trigger shown instead of the three hover buttons. */
+/* Clear the single 44px actions trigger shown instead of the four hover buttons. */
 @media (max-width: 760px), (pointer: coarse) {
   .chat-pin-marker {
     padding-right: 44px;

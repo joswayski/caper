@@ -376,15 +376,21 @@ try {
     );
     assert.deepEqual(
       evaluate(
-        `['.chat-reply-thread', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`,
+        `['.chat-reply-thread', '.chat-reply-message', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`,
       ),
       [
+        [24, 24],
         [24, 24],
         [24, 24],
         [24, 24],
       ],
     );
   }
+  browser("click", `${channel(root.clientMessageId)} .chat-reply-message`);
+  wait('!!document.querySelector(".chat-composer .chat-reply-draft")');
+  assert.equal(evaluate('document.activeElement === document.querySelector(".chat-composer textarea")'), true);
+  assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), false, "Reply does not open a thread");
+  browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   actions(channel(root.clientMessageId), true);
   dismissActions();
   open(root.clientMessageId);
@@ -415,7 +421,19 @@ try {
   evaluate(`document.querySelector(".chat-thread-heading span").textContent = ${JSON.stringify(originalName)}`);
   actions(thread(root.clientMessageId), false);
   dismissActions();
+  browser("click", `${thread(root.clientMessageId)} .chat-reply-message`);
+  wait('!!document.querySelector(".chat-thread-panel .chat-reply-draft")');
+  assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
+  const quoted = (
+    await (await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })).json()
+  ).messages.at(-1);
+  assert.equal(quoted.replyTo.id, root.id, "The quick reply action quotes the selected thread message");
+  browser("click", `${thread(quoted.clientMessageId)} .chat-reply-context`);
+  wait(
+    `!document.querySelector('.chat-thread-panel, .chat-initial-messages') && document.querySelector('${channel(root.clientMessageId)}')?.classList.contains('chat-message-jump-target') && document.querySelector('${channel(root.clientMessageId)}')?.checkVisibility({ visibilityProperty: true })`,
+  );
+  open(root.clientMessageId);
   wait(
     `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
   );
@@ -647,7 +665,12 @@ try {
   await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
   assertReplyAction(false);
   screenshot("thread-actions-mobile-reply");
-  dismissActions();
+  browser("find", "role", "button", "click", "--name", "Reply", "--exact");
+  wait(
+    '!document.querySelector(".chat-message-actions") && !!document.querySelector(".chat-thread-panel .chat-reply-draft")',
+  );
+  assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
+  browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   evaluate("history.back()");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);

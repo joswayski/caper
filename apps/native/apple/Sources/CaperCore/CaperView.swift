@@ -3089,10 +3089,11 @@ private struct MessageRow: View {
     @State private var history = false
     #if os(macOS)
     /// Room the first line leaves for the hover actions: 24pt each, 2pt apart
-    /// (Reply in thread, Add reaction and ⋯; threads have no Reply), plus a gap.
-    private var actionsInset: CGFloat { inThread ? 56 : 82 }
+    /// (Reply in thread, Reply, Add reaction and ⋯), plus a gap.
+    private var actionsInset: CGFloat { inThread ? 82 : 108 }
     @State private var controlsHovered = false
     @FocusState private var replyFocused: Bool
+    @FocusState private var replyMessageFocused: Bool
     @FocusState private var reactionFocused: Bool
     @FocusState private var actionsFocused: Bool
     @FocusState private var threadLinkFocused: Bool
@@ -3225,6 +3226,11 @@ private struct MessageRow: View {
                         }.buttonStyle(.plain).focused($replyFocused).accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
+                    Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
+                        Image(systemName: "arrowshape.turn.up.left").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
+                    }.buttonStyle(.plain).focused($replyMessageFocused).accessibilityLabel("Reply")
+                        .modifier(ControlHover(isFocused: replyMessageFocused))
+                        .disabled(!chat.canInteract || chat.pendingMessage != nil)
                     Button(action: showReactionPicker) {
                         Image(systemName: "face.smiling").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
                             .contentShape(Rectangle())
@@ -3243,9 +3249,9 @@ private struct MessageRow: View {
                         .frame(width: 24, height: 24).focused($actionsFocused)
                         .modifier(ControlHover(isFocused: actionsFocused))
                         .accessibilityLabel("Message options")
-                }.opacity(controlsHovered || replyFocused || reactionFocused || actionsFocused ? 1 : 0)
-                    .allowsHitTesting(controlsHovered || replyFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : 28)
+                }.opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
+                    .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
+                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : 35)
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.
@@ -3312,6 +3318,7 @@ private struct MessageRow: View {
         if !inPins && chat.focusedMessageID == message.id { return CaperTheme.terracotta.opacity(0.15) }
         if !inThread && chat.threadRootID == message.id { return CaperTheme.pinGold.opacity(0.1) }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
+        if message.replyTo != nil { return CaperTheme.text.opacity(0.03) }
         return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
@@ -4452,7 +4459,7 @@ private struct NativeReplyContext: View {
     var body: some View {
         Button { Task { _ = await chat.goToReply(reference) } } label: {
             HStack(spacing: 6) {
-                Image(systemName: "arrow.turn.up.left").frame(width: 34)
+                Image(systemName: "arrow.turn.up.right").frame(width: 34)
                 if hidden { Text("Blocked message") }
                 else {
                     Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
@@ -4460,9 +4467,16 @@ private struct NativeReplyContext: View {
                     Text(reference.text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : reference.text)
                     if reference.hasAttachments { Image(systemName: "paperclip") }
                 }
+                Spacer(minLength: 4)
+                Text("View original").font(CaperTheme.font(11)).fixedSize()
             }.lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 24)
+                #endif
         }.buttonStyle(.plain).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            .accessibilityLabel(hidden ? "Go to blocked message" : "Go to message from \(reference.author.name)")
+            .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
     }
 }
 

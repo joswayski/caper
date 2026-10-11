@@ -1,4 +1,4 @@
-import { CornerUpLeft, Paperclip, X } from "lucide-react";
+import { CornerUpRight, Paperclip, X } from "lucide-react";
 import Avatar from "../components/Avatar";
 import { attachmentsOf, type ChatMessage, type ChatReplyReference } from "./types.ts";
 
@@ -28,21 +28,24 @@ export function ReplyContext({
       type="button"
       className="chat-reply-context"
       onClick={onOpen}
-      aria-label={hidden ? "Go to blocked message" : `Go to message from ${reference.author.name}`}
+      aria-label={hidden ? "View original blocked message" : `View original message from ${reference.author.name}`}
     >
-      <CornerUpLeft size={14} aria-hidden="true" />
+      <CornerUpRight size={14} aria-hidden="true" />
       {hidden ? (
-        <span>Blocked message</span>
+        <span className="chat-reply-excerpt">Blocked message</span>
       ) : (
         <>
           <span className="chat-reply-avatar">
             <Avatar avatarId={reference.author.avatarId} name={reference.author.name} />
           </span>
           <strong>{reference.author.name}</strong>
-          <span>{reference.text || (reference.hasAttachments ? "Attachment" : "Message")}</span>
+          <span className="chat-reply-excerpt">
+            {reference.text || (reference.hasAttachments ? "Attachment" : "Message")}
+          </span>
           {reference.hasAttachments && <Paperclip size={13} aria-label="Has attachments" />}
         </>
       )}
+      <span className="chat-reply-view">View original</span>
     </button>
   );
 }
@@ -58,7 +61,7 @@ export function ReplyDraft({
 }) {
   return (
     <div className="chat-reply-draft" role="status">
-      <CornerUpLeft size={14} aria-hidden="true" />
+      <CornerUpRight size={14} aria-hidden="true" />
       <span>
         Replying to <strong>{hidden ? "blocked message" : reference.author.name}</strong>
       </span>
