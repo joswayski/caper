@@ -1475,14 +1475,14 @@
 .chat-drafts li[data-error] {
   border-color: #8a4334;
 }
-.chat-drafts img,
-.chat-drafts svg {
+.chat-drafts li > img,
+.chat-drafts li > svg {
   width: 36px;
   height: 36px;
   object-fit: cover;
   border-radius: 6px;
 }
-.chat-drafts svg {
+.chat-drafts li > svg {
   padding: 8px;
 }
 .chat-drafts span {
