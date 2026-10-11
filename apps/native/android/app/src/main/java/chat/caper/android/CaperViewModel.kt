@@ -1282,7 +1282,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
             draftDirectories[key] = directory
-            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file"))
+            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString()))
             uploadJobs[key] = viewModelScope.launch {
                 try {
                     val picked = preparer.copy(uri, directory)

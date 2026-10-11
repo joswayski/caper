@@ -525,6 +525,8 @@ data class DraftAttachmentUi(
     val thumbnail: String? = null,
     /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
     val localUrl: String? = null,
+    /** The selected file URI, granted to the system opener for draft previews. */
+    val pickedUri: String? = null,
     /** The picked `content://` image, kept for the (dormant) server-processing placeholder. */
     val pickedImage: String? = null,
     val compressing: Boolean = true,

@@ -642,13 +642,17 @@ export default function Chat({
     setAttachError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
     for (const file of files.slice(0, room)) {
       const key = crypto.randomUUID();
-      const localKind = file.type.startsWith("image/")
-        ? ("image" as const)
-        : file.type.startsWith("video/")
-          ? ("video" as const)
-          : undefined;
-      const localUrl = localKind ? URL.createObjectURL(file) : undefined;
-      if (localUrl) objectUrls.current.add(localUrl);
+      const localKind =
+        file.type.startsWith("image/") && file.type !== "image/svg+xml"
+          ? ("image" as const)
+          : file.type.startsWith("video/")
+            ? ("video" as const)
+            : undefined;
+      // Keep active document formats from executing on the app's blob origin.
+      const previewable =
+        localKind || file.type.startsWith("audio/") || ["application/pdf", "text/plain"].includes(file.type);
+      const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
+      objectUrls.current.add(localUrl);
       const controller = new AbortController();
       uploads.current.set(key, controller);
       setDrafts((current) => [

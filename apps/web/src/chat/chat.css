@@ -1462,7 +1462,7 @@
 .chat-drafts li {
   position: relative;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: min(240px, 100%);
@@ -1475,14 +1475,40 @@
 .chat-drafts li[data-error] {
   border-color: #8a4334;
 }
-.chat-drafts li > img,
-.chat-drafts li > svg {
+.chat-draft-preview {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  text-decoration: none;
+}
+button.chat-draft-preview,
+a.chat-draft-preview {
+  cursor: pointer;
+}
+button.chat-draft-preview:hover strong,
+a.chat-draft-preview:hover strong {
+  text-decoration: underline;
+}
+.chat-draft-preview:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-draft-preview > img,
+.chat-draft-preview > svg {
   width: 36px;
   height: 36px;
   object-fit: cover;
   border-radius: 6px;
 }
-.chat-drafts li > svg {
+.chat-draft-preview > svg {
   padding: 8px;
 }
 .chat-drafts span {
@@ -1513,6 +1539,7 @@
   appearance: none;
   border: 0;
   background: var(--border);
+  pointer-events: none;
 }
 .chat-drafts progress::-webkit-progress-bar {
   background: var(--border);
@@ -1523,7 +1550,7 @@
 .chat-drafts progress::-moz-progress-bar {
   background: var(--terracotta);
 }
-.chat-drafts button {
+.chat-draft-remove {
   width: 24px;
   height: 24px;
   display: grid;
@@ -1534,7 +1561,7 @@
   background: transparent;
   cursor: pointer;
 }
-.chat-drafts button:hover {
+.chat-draft-remove:hover {
   color: var(--text);
   background: var(--surface-composer);
 }

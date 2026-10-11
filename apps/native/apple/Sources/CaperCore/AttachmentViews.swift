@@ -2,6 +2,7 @@ import AVKit
 import Combine
 import ImageIO
 import PhotosUI
+import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1412,48 +1413,63 @@ private struct MediaViewerAspect: ViewModifier {
 /// Draft files above the composer: thumbnail, name, size, upload progress, remove.
 struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
+    @State private var previewID: String?
 
     var body: some View {
         if !chat.attachmentDrafts.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(chat.attachmentDrafts) { draft in
-                        AttachmentDraftChip(draft: draft) { chat.removeAttachmentDraft(id: draft.id) }
+                        AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }) {
+                            chat.removeAttachmentDraft(id: draft.id)
+                        }
                     }
                 }
             }
             .accessibilityLabel("Files to send")
+            .quickLookPreview(Binding(
+                get: { chat.attachmentDrafts.first(where: { $0.id == previewID })?.localURL },
+                set: { if $0 == nil { previewID = nil } }
+            ))
         }
     }
 }
 
 private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
+    let preview: () -> Void
     let remove: () -> Void
     @State private var thumbnail: CGImage?
 
     var body: some View {
         HStack(spacing: 8) {
-            Group {
-                if let thumbnail {
-                    Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
-                } else {
-                    Image(systemName: icon).font(.system(size: 15)).foregroundStyle(CaperTheme.muted)
+            Button(action: preview) {
+                HStack(spacing: 8) {
+                    Group {
+                        if let thumbnail {
+                            Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        } else {
+                            Image(systemName: icon).font(.system(size: 15)).foregroundStyle(CaperTheme.muted)
+                        }
+                    }
+                    .frame(width: 36, height: 36)
+                    .background(CaperTheme.raised)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(draft.name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
+                        Text(draft.statusLabel).font(CaperTheme.font(10))
+                            .foregroundStyle(draft.error == nil ? CaperTheme.muted : CaperTheme.terracottaBright).lineLimit(2)
+                        if draft.attachment == nil && draft.error == nil {
+                            ProgressView(value: draft.progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
+                                .accessibilityLabel("Uploading \(draft.name)")
+                        }
+                    }
+                    .frame(maxWidth: 160, alignment: .leading)
                 }
+                .contentShape(Rectangle())
             }
-            .frame(width: 36, height: 36)
-            .background(CaperTheme.raised)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(draft.name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
-                Text(draft.statusLabel).font(CaperTheme.font(10))
-                    .foregroundStyle(draft.error == nil ? CaperTheme.muted : CaperTheme.terracottaBright).lineLimit(2)
-                if draft.attachment == nil && draft.error == nil {
-                    ProgressView(value: draft.progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
-                        .accessibilityLabel("Uploading \(draft.name)")
-                }
-            }
-            .frame(maxWidth: 160, alignment: .leading)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Preview \(draft.name)")
             Button(action: remove) {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 24, height: 24)
                     #if os(iOS)

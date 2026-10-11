@@ -1,7 +1,9 @@
 package chat.caper.android
 
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -315,29 +318,46 @@ internal fun durationLabel(durationMs: Long?): String? {
 @Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
+    val open: (String) -> Unit = { url ->
+        runCatching {
+            val uri = url.toUri()
+            val intent = if (uri.scheme == "content") {
+                Intent(Intent.ACTION_VIEW).setDataAndType(uri, context.contentResolver.getType(uri) ?: "*/*")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } else Intent(Intent.ACTION_VIEW, uri)
+            context.startActivity(intent)
+        }.onFailure {
+            Toast.makeText(context, "No app is available to preview this file.", Toast.LENGTH_SHORT).show()
+        }
+    }
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         drafts.forEach { draft ->
             Surface(Modifier.width(232.dp), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                 Row(Modifier.padding(start = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.size(40.dp).clip(MaterialTheme.shapes.extraSmall).background(SurfaceComposer), contentAlignment = Alignment.Center) {
-                        val thumbnail = draft.thumbnail
-                        if (thumbnail != null) AsyncImage(
-                            model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
-                            contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                        ) else Icon(painterResource(if (draft.kind == "video" || draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(draft.name, color = Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val status = draft.error ?: when {
-                            draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
-                            draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
-                            else -> "Uploading… ${(draft.progress * 100).toInt()}%"
+                    val url = draft.pickedUri ?: draft.attachment?.url
+                    Row(Modifier.weight(1f).clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview ${draft.name}") {
+                        url?.let(open)
+                    }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(40.dp).clip(MaterialTheme.shapes.extraSmall).background(SurfaceComposer), contentAlignment = Alignment.Center) {
+                            val thumbnail = draft.thumbnail
+                            if (thumbnail != null) AsyncImage(
+                                model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
+                                contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                            ) else Icon(painterResource(if (draft.kind == "video" || draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
                         }
-                        Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        if (draft.attachment == null && draft.error == null) LinearProgressIndicator(
-                            progress = { draft.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-                            color = Terracotta, trackColor = Border,
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(draft.name, color = Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val status = draft.error ?: when {
+                                draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
+                                draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
+                                else -> "Uploading… ${(draft.progress * 100).toInt()}%"
+                            }
+                            Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (draft.attachment == null && draft.error == null) LinearProgressIndicator(
+                                progress = { draft.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                                color = Terracotta, trackColor = Border,
+                            )
+                        }
                     }
                     IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }) {
                         Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted)
