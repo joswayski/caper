@@ -12,7 +12,7 @@ import {
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
-import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
+import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
@@ -209,6 +209,11 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  useEffect(() => {
+    // Start code/data and opening-grid artwork together, without waiting for a
+    // sending session or a pointer hover (which touch clients never provide).
+    if (signedIn && !readOnly) preloadReactionPicker();
+  }, [signedIn, readOnly]);
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
