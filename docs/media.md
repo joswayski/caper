@@ -1200,8 +1200,14 @@ the original loads, zoom with double-click/double-tap, pinch or Ctrl+scroll,
 and pan while zoomed; animated GIF/WebP play. Videos autoplay with sound and
 pause when you move away or close; GIF-style videos (`animated`) loop muted.
 Each viewer has Save/Download, Open in browser and Close (Esc, the dark area,
-or a swipe down on phones). URLs come from each client's existing fresh-URL
-cache, and a refused load asks for one refresh. Audio and other files keep
+or a swipe down on phones). The header shows the current file's stored size
+(`size`, what Save/Download fetches): after the author and time on web and
+Android, after the counter on Apple, and after the name on Rust desktop. Web and
+Android keep the size whole on narrow screens and truncate the author and time
+first; web drafts opened in the viewer show their final upload size once
+prepared. The client-reported pre-compression size (`assets.source_byte_size`)
+stays internal. URLs come from each client's existing fresh-URL cache, and a
+refused load asks for one refresh. Audio and other files keep
 their inline behaviour; pending rows never open the viewer.
 
 The iPhone/iPad swipe-dismiss implementation retains the file's release offset

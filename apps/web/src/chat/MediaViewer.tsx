@@ -17,6 +17,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import type { ChatAttachment } from "./types.ts";
+import { formatBytes } from "./uploads.ts";
 import {
   FIT,
   clampView,
@@ -352,6 +353,8 @@ export default function MediaViewer({
     date && !Number.isNaN(date.valueOf())
       ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
       : undefined;
+  // What download costs; message files always carry their stored size.
+  const size = current?.size ? formatBytes(current.size) : undefined;
 
   useEffect(() => {
     // Back closes the viewer on phones and tablets, like the thread panel.
@@ -418,11 +421,22 @@ export default function MediaViewer({
                 <strong id={titleId} title={named?.name}>
                   {named?.name ?? "File removed"}
                 </strong>
-                {(author || time) && (
+                {(author || time || size) && (
                   <small>
-                    {author}
-                    {author && time && " · "}
-                    {time && <time dateTime={sentAt}>{time}</time>}
+                    {(author || time) && (
+                      <span>
+                        {author}
+                        {author && time && " · "}
+                        {time && <time dateTime={sentAt}>{time}</time>}
+                      </span>
+                    )}
+                    {/* Kept whole on narrow screens; the author and time truncate first. */}
+                    {size && (
+                      <span className="chat-viewer-size">
+                        {(author || time) && " · "}
+                        {size}
+                      </span>
+                    )}
                   </small>
                 )}
               </div>

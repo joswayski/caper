@@ -59,6 +59,13 @@ class MediaViewerTest {
         assertEquals("5 / 5", viewerCounter(4, 5))
     }
 
+    @Test fun `the stored size follows the caption`() {
+        assertEquals(" · 1.2 MB", viewerSize(1_258_291, afterCaption = true))
+        assertEquals("1.2 MB", viewerSize(1_258_291, afterCaption = false))
+        assertNull(viewerSize(null, afterCaption = true))
+        assertNull(viewerSize(0, afterCaption = false))
+    }
+
     @Test fun `zoomed images pan only until their edges meet the screen's`() {
         assertEquals(1000f to 500f, fittedSize(4000f, 2000f, 1000f, 2000f))
         assertEquals(500f to 1000f, fittedSize(100f, 200f, 1000f, 1000f))

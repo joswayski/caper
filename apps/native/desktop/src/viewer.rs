@@ -414,12 +414,22 @@ impl Viewer {
             top.min + egui::vec2(20.0, 0.0),
             egui::pos2(top.right() - 150.0, top.bottom()),
         );
-        let galley = ui.painter().layout(
+        let mut job = egui::text::LayoutJob::single_section(
             title,
-            egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            TEXT,
-            title_rect.width(),
+            egui::TextFormat::simple(
+                egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                TEXT,
+            ),
         );
+        if let Some(size) = size_label(current) {
+            job.append(
+                &size,
+                0.0,
+                egui::TextFormat::simple(egui::FontId::proportional(13.0), MUTED),
+            );
+        }
+        job.wrap.max_width = title_rect.width();
+        let galley = ui.painter().layout_job(job);
         painter.galley(
             egui::pos2(title_rect.left(), top.center().y - galley.size().y / 2.0),
             galley,
@@ -1004,6 +1014,11 @@ fn hover_text(icon: NavIcon) -> &'static str {
     }
 }
 
+/// "  ·  1.2 MB" after the title: the stored size, which is what saving downloads.
+fn size_label(attachment: &Attachment) -> Option<String> {
+    (attachment.size > 0).then(|| format!("  ·  {}", crate::uploads::format_bytes(attachment.size)))
+}
+
 /// `natural` scaled to fit `bounds`, never enlarged.
 pub fn fit(natural: egui::Vec2, bounds: egui::Vec2) -> egui::Vec2 {
     let natural = natural.max(egui::vec2(1.0, 1.0));
@@ -1158,6 +1173,15 @@ mod tests {
         let mut unsigned = attachment("u", AttachmentKind::Image);
         unsigned.url = None;
         assert!(!viewable(&unsigned));
+    }
+
+    #[test]
+    fn the_title_shows_the_stored_size() {
+        let mut item = attachment("a", AttachmentKind::Image);
+        item.size = 1_258_291;
+        assert_eq!(size_label(&item).as_deref(), Some("  ·  1.2 MB"));
+        item.size = 0;
+        assert_eq!(size_label(&item), None);
     }
 
     #[test]
