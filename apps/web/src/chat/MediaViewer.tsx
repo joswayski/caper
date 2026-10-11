@@ -359,7 +359,8 @@ export default function MediaViewer({
     const key = crypto.randomUUID();
     // A viewer remounting elsewhere (pins opening or closing under it) takes over the entry its
     // last mount left, rather than pushing a second one that the first's Back would then close.
-    if (window.history.state?.caperViewer) window.history.replaceState({ ...window.history.state, caperViewer: key }, "");
+    if (window.history.state?.caperViewer)
+      window.history.replaceState({ ...window.history.state, caperViewer: key }, "");
     else window.history.pushState({ ...window.history.state, caperViewer: key }, "");
     const back = () => {
       if (window.history.state?.caperViewer !== key) onClose();
