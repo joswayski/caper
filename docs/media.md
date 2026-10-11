@@ -6169,3 +6169,38 @@ upload service is healthy.
    production. Roll back web with the previous known-good image SHA using the same
    deployment command; native rollback needs a corrected higher-build-number
    release. No data rollback is required.
+
+## Swipe release finish (October 11, 2026)
+
+Browse/conversation and phone member-drawer swipes now settle from the held pose
+with a velocity-matched, non-overshooting curve on web, Android and Apple. A held
+or slow release keeps a 320ms finish instead of shortening it with the remaining
+distance; a flick keeps a bounded 160–320ms finish. The initial speed cannot exceed
+three times the remaining distance divided by the finish duration. Halfway/fling
+commit rules, reduced motion, and button-triggered animations are unchanged.
+Rust desktop has no equivalent touch-swipe release path and is unchanged.
+
+In the unchanged Chromium implementation, a held drag released about 71% across
+the travel moved 68% of its remaining distance in its first 33ms. With the new
+curve it moved 8% in the same interval and landed at rest after 320ms.
+
+Run the focused regression beside the disposable fixture and Vite:
+
+```bash
+node scripts/test-navigation-release.mjs
+# Override NAVIGATION_TEST_WEB_URL / NAVIGATION_TEST_API_URL for nondefault ports.
+# Optional NAVIGATION_TEST_ARTIFACTS captures 2x images and release recordings.
+```
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (565 tests). Chromium with real CDP touch input and verified coarse-pointer media covers held commits both ways, below-halfway cancellation, flicks both ways, member-drawer releases, retained composer draft and reduced motion. Rendered 390px fixture states inspected. This is not Safari or physical-device acceptance. |
+| Android | Release calculation updated. `./gradlew :app:compileDebugKotlin` stops at configuration because the Android SDK is absent; no Kotlin build or device rendering was verified. |
+| Apple iOS/macOS | Shared swipe implementation updated. No Swift compiler or Xcode in this orb; no native build, simulator or physical-device validation. |
+| Containers/live | No Docker daemon; production web build checked directly. No backend, database, infrastructure or secret/configuration changes. No deployment performed. |
+
+Web and native releases can roll out independently after merge. Before native
+distribution, verify slow/held/fast drags at 51%, 70% and near the edge in both
+directions, below-halfway cancellation, Members and Reduce Motion on supported
+devices. Roll back web to its previous image; native rollback requires a corrected
+higher-build-number release. No data rollback is needed.
