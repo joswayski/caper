@@ -2474,7 +2474,7 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    // Visiting is not joining: no pins.
+    // The team takes part like a member: pins too.
     let (status, _) = call(
         &h.app,
         "PUT",
@@ -2484,7 +2484,7 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
         json!({"active": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::OK);
 
     // A thread reply that asks again reports into the same thread, and
     // mentioning a visitor by name reaches them, as feedback.
@@ -2586,7 +2586,7 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
         pairs(&[("jose", "feedback")])
     );
 
-    // Live updates follow read access; voice and typing need a join.
+    // Live updates, voice and typing work as for a joined member.
     assert_eq!(
         crate::spaces::session_channel_access(&pool, None, Some(jose.id), &private)
             .await
@@ -2595,6 +2595,11 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     );
     assert!(
         crate::spaces::channel_participation(&pool, &private, Some(jose.id))
+            .await
+            .is_ok()
+    );
+    assert!(
+        crate::spaces::channel_participation(&pool, &private, Some(other.id))
             .await
             .is_err()
     );

@@ -419,7 +419,7 @@ interface CallProps {
     direct?: boolean;
     directPeerId?: string;
     joined?: boolean;
-    /** A feedback team member reading without having joined: no voice of its own. */
+    /** A feedback team member taking part without having joined. */
     visitor?: boolean;
   };
   /**
@@ -567,7 +567,7 @@ export default function Call({
   const demo = channel?.demo ?? space?.demo;
   // DMs and a space without a joined channel have no voice of their own; the
   // space's joined channels still do.
-  const voiceless = !!channel?.direct || !!channel?.visitor || stage !== undefined;
+  const voiceless = !!channel?.direct || stage !== undefined;
   const mediaChannelId = voiceless ? voiceChannels?.[0]?.id : channel?.id;
   const mediaRoot =
     mediaChannelId && !demo ? `/api/channels/${encodeURIComponent(mediaChannelId)}/media` : "/api/media";

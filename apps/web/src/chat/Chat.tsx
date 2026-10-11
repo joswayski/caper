@@ -233,7 +233,7 @@ export default function Chat({
   focusMessage?: FocusTarget;
   /** Also open a focused channel message's own thread, where replies to it belong. */
   focusThread?: boolean;
-  /** Reading as the Caper team without having joined: no typing indicator or pins. */
+  /** The Caper team, taking part without having joined: the header also names the space. */
   visitor?: boolean;
   /** After one of the viewer's messages (or thread replies) is accepted. */
   onSent?: () => void;
@@ -585,9 +585,9 @@ export default function Chat({
   }, []);
   const setTyping = useCallback(
     (active: boolean) => {
-      if (!visitor) clientRef.current?.setTyping(active);
+      clientRef.current?.setTyping(active);
     },
-    [visitor],
+    [],
   );
 
   useEffect(() => {
@@ -1274,7 +1274,7 @@ export default function Chat({
                 onView={"content" in message ? viewFile(message.id) : undefined}
               />
               {"content" in message && reportsFeedback(message) && (
-                <p className="chat-feedback-note">Caper team notified</p>
+                <p className="chat-feedback-note">Caper team has been notified 🫡</p>
               )}
               {"content" in message && (
                 <>
@@ -1806,7 +1806,7 @@ export default function Chat({
             target={actionTarget}
             authorId={viewerId}
             canReact={!readOnly && !!state.author}
-            canPin={!readOnly && !visitor && !!state.author}
+            canPin={!readOnly && !!state.author}
             pinning={pinning.has(actionMessage.id)}
             onReact={react}
             onPin={pin}

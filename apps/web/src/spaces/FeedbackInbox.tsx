@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronDown, LifeBuoy } from "lucide-react";
 import Avatar from "../components/Avatar";
 import type { FeedbackReport } from "./client.ts";
+import type { VoiceSlot } from "../pages/Call";
 
 /** Each thread once, by its newest report: replies to all of them belong in that thread. */
 export function feedbackThreads(reports: FeedbackReport[]) {
@@ -36,6 +37,7 @@ export default function FeedbackInbox({
   loading,
   error,
   current,
+  voice,
   onOpen,
   onMore,
   onRetry,
@@ -47,6 +49,8 @@ export default function FeedbackInbox({
   error?: string;
   /** `channelId:threadRootId` of the visit on screen. */
   current?: string;
+  /** Voice in the visited channel, shown under its row like under a channel's. */
+  voice?: VoiceSlot | null;
   onOpen: (report: FeedbackReport) => void;
   onMore: () => void;
   onRetry: () => void;
@@ -81,30 +85,36 @@ export default function FeedbackInbox({
           <ul id="feedback-list">
             {visible.map((report) => {
               const key = `${report.channel.id}:${report.threadRootId}`;
+              const rowVoice = current === key ? voice : undefined;
               return (
-                <li key={key}>
-                  <button
-                    type="button"
-                    className="channel-select direct-select feedback-select"
-                    aria-current={current === key ? "page" : undefined}
-                    title={`${report.reporter.displayName} in ${feedbackPlace(report)}`}
-                    onClick={() => onOpen(report)}
-                  >
-                    <span className="direct-avatar" aria-hidden="true">
-                      <Avatar avatarId={report.reporter.avatarId} name={report.reporter.displayName} />
-                    </span>
-                    <span className="feedback-row">
-                      <span className="feedback-row-top">
-                        <span>{report.reporter.displayName}</span>
-                        <small data-waiting={report.answered ? undefined : ""}>
-                          {report.answered ? "Answered" : "Waiting"}
+                <li key={key} data-voice={rowVoice ? "" : undefined}>
+                  <div className="channel-line">
+                    <button
+                      type="button"
+                      className="channel-select direct-select feedback-select"
+                      aria-current={current === key ? "page" : undefined}
+                      title={`${report.reporter.displayName} in ${feedbackPlace(report)}`}
+                      onClick={() => onOpen(report)}
+                    >
+                      <span className="direct-avatar" aria-hidden="true">
+                        <Avatar avatarId={report.reporter.avatarId} name={report.reporter.displayName} />
+                      </span>
+                      <span className="feedback-row">
+                        <span className="feedback-row-top">
+                          <span>{report.reporter.displayName}</span>
+                          <small data-waiting={report.answered ? undefined : ""}>
+                            {report.answered ? "Answered" : "Waiting"}
+                          </small>
+                        </span>
+                        <small className="feedback-row-detail">
+                          {feedbackPlace(report)} — {feedbackPreview(report)}
                         </small>
                       </span>
-                      <small className="feedback-row-detail">
-                        {feedbackPlace(report)} — {feedbackPreview(report)}
-                      </small>
-                    </span>
-                  </button>
+                      {rowVoice?.timer}
+                    </button>
+                    {rowVoice?.summary}
+                  </div>
+                  {rowVoice?.list}
                 </li>
               );
             })}

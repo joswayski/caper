@@ -2658,9 +2658,3 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   color: var(--text-muted);
   font-size: 0.74rem;
 }
-.feedback-visiting {
-  margin: 0 0 8px;
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  line-height: 1.45;
-}

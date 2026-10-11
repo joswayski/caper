@@ -2416,18 +2416,20 @@ export default function Spaces({
     }
     setDirects((current) => current.filter((conversation) => conversation.id !== request.id));
   };
-  const feedbackNavigation = feedbackTeam && (
-    <FeedbackInbox
-      reports={feedback?.reports ?? []}
-      more={!!feedback?.cursor}
-      loading={feedbackLoading}
-      error={feedbackError}
-      current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
-      onOpen={openVisit}
-      onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
-      onRetry={() => void refreshFeedback()}
-    />
-  );
+  const feedbackNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) =>
+    feedbackTeam && (
+      <FeedbackInbox
+        reports={feedback?.reports ?? []}
+        more={!!feedback?.cursor}
+        loading={feedbackLoading}
+        error={feedbackError}
+        current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
+        voice={visitView ? voiceFor(visitView.target.channelId) : undefined}
+        onOpen={openVisit}
+        onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
+        onRetry={() => void refreshFeedback()}
+      />
+    );
   const directNavigation = (
     <section className="direct-section" aria-label="Direct messages">
       <div className="channel-section-heading">
@@ -3165,7 +3167,7 @@ export default function Spaces({
           ))}
         </div>
       )}
-      {feedbackNavigation}
+      {feedbackNavigation(voiceFor)}
       {directNavigation}
       {error && (
         <p className="space-sidebar-error" role="alert">
@@ -3303,13 +3305,7 @@ export default function Spaces({
           ) : undefined
         }
         composerBanner={
-          visitView ? (
-            visitHistory?.visitor && (
-              <p className="feedback-visiting" role="status">
-                Visiting as the Caper team — everyone here sees your replies.
-              </p>
-            )
-          ) : currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
+          visitView ? undefined : currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
             <p className="direct-waiting" role="status">
               Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.
             </p>

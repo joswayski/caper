@@ -2,9 +2,27 @@
 //! after whitespace or after `(`, `[` or `{`, followed by 1–32 ASCII word
 //! characters. Names compare case-insensitively.
 
-/// Names that ask the Caper team to look at a conversation. Both are reserved
-/// usernames, so they never shadow a person.
-pub(crate) const FEEDBACK_ALIASES: [&str; 2] = ["feedback", "caper"];
+/// Names that ask the Caper team to look at a conversation. All are reserved
+/// usernames, so they never shadow a new account.
+pub(crate) const FEEDBACK_ALIASES: [&str; 17] = [
+    "feedback",
+    "caper",
+    "capers",
+    "caperchat",
+    "caper_feedback",
+    "caper_support",
+    "support",
+    "team",
+    "staff",
+    "admin",
+    "admins",
+    "administrator",
+    "administrators",
+    "mod",
+    "mods",
+    "moderator",
+    "moderators",
+];
 
 /// Distinct user names resolved per message; later names stay plain text.
 pub(crate) const MAX_USER_MENTIONS: usize = 20;
@@ -15,7 +33,8 @@ pub(crate) enum Mention {
     User(String),
     Everyone,
     Here,
-    /// `@feedback` or `@caper`, anywhere: reports the message to the team.
+    /// `@feedback`, `@caper`, `@admin`, `@mods`… anywhere: reports the message
+    /// to the team.
     Feedback,
 }
 
@@ -134,6 +153,7 @@ mod tests {
         }
         assert!(parse("feedback@caper.chat", true).is_empty());
         assert_eq!(parse("@feedbacks", true), [user("feedbacks")]);
+        assert_eq!(parse("@Admin @mods @team", false), [Mention::Feedback]);
         let reserved = crate::accounts::ReservedUsernames::default();
         for alias in FEEDBACK_ALIASES {
             assert!(reserved.contains(alias), "{alias} must stay reserved");

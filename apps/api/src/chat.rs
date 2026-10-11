@@ -1293,7 +1293,8 @@ async fn persist_pin(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
+                OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =

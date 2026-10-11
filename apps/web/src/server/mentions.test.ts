@@ -140,12 +140,21 @@ test("pinner profiles match IDs, use canonical identities, and preserve unknown 
   assert.equal(mentionCardPerson(author, [], "pinner").self, true);
 });
 
-test("@feedback is suggested everywhere once typed, for either alias, and renders as a pill", () => {
+test("team names are suggested everywhere once typed, completing the name, and render as pills", () => {
   const names = (query: string, specials = true) => mentionSuggestions(members, query, specials).map(mentionName);
   assert.deepEqual(names("feed", false), ["feedback"]);
-  assert.deepEqual(names("cap"), ["feedback"]);
-  assert.deepEqual(names("c", false), ["cal", "feedback"]);
+  assert.deepEqual(names("cap"), ["caper"]);
+  assert.deepEqual(names("adm"), ["admin"]);
+  assert.deepEqual(names("admins"), ["admins"]);
+  assert.deepEqual(names("c", false), ["cal", "caper"]);
+  assert.deepEqual(names("mo"), ["mo", "mod"]);
   assert.ok(!names("").includes("feedback"), "a bare @ stays about people");
+  assert.deepEqual(
+    mentionSegments("ping @Admin and @mods", [{ type: "feedback" }])
+      .filter((s) => s.mention)
+      .map((s) => s.text),
+    ["@Admin", "@mods"],
+  );
   const text = "@Feedback uploads fail, @caper @feedbacks";
   const segments = mentionSegments(text, [{ type: "feedback" }]);
   assert.deepEqual(

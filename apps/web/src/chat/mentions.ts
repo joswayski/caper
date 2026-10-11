@@ -10,7 +10,8 @@ export interface MentionCandidate {
 
 export type MentionSuggestion =
   | { kind: "member"; member: MentionCandidate }
-  | { kind: "everyone" | "here" | "feedback" };
+  | { kind: "everyone" | "here" }
+  | { kind: "feedback"; alias: string };
 
 export interface MentionToken {
   start: number;
@@ -37,11 +38,29 @@ export function mentionToken(text: string, start: number, end = start): MentionT
 export const specialMentionLabels = {
   everyone: "Everyone in this channel",
   here: "Everyone online in this channel",
-  feedback: "Caper team · can read and reply here",
+  feedback: "Notify the Caper team",
 } as const;
 
-/** `@feedback` and `@caper` both ask the Caper team to look; reserved usernames, never people. */
-export const feedbackAliases = ["feedback", "caper"] as const;
+/** Every name that asks the Caper team to look; all reserved usernames, never people. Mirrors the API. */
+export const feedbackAliases = [
+  "feedback",
+  "caper",
+  "capers",
+  "caperchat",
+  "caper_feedback",
+  "caper_support",
+  "support",
+  "team",
+  "staff",
+  "admin",
+  "admins",
+  "administrator",
+  "administrators",
+  "mod",
+  "mods",
+  "moderator",
+  "moderators",
+] as const;
 
 export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
   const needle = query.toLowerCase();
@@ -49,7 +68,9 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
     ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
     : [];
   // Offered everywhere, once something is typed, so a bare `@` stays about people.
-  if (needle && feedbackAliases.some((alias) => alias.startsWith(needle))) special.push({ kind: "feedback" });
+  // It completes the name being typed: `@ad` becomes `@admin`.
+  const alias = needle ? feedbackAliases.find((name) => name.startsWith(needle)) : undefined;
+  if (alias) special.push({ kind: "feedback", alias });
   const ranked = members
     .flatMap((member) => {
       const username = member.username.toLowerCase();
@@ -74,7 +95,11 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
 }
 
 export function mentionName(suggestion: MentionSuggestion) {
-  return suggestion.kind === "member" ? suggestion.member.username : suggestion.kind;
+  return suggestion.kind === "member"
+    ? suggestion.member.username
+    : suggestion.kind === "feedback"
+      ? suggestion.alias
+      : suggestion.kind;
 }
 
 export function insertMention(text: string, token: MentionToken, name: string) {
