@@ -1,8 +1,3 @@
-:root {
-  /* A neutral wash that stays visible on every dark surface; --surface-raised
-     is too close to the sidebar and conversation backgrounds to read as hover. */
-  --surface-hover: rgb(255 255 255 / 6%);
-}
 .call-room.spaces-room {
   --channel-sidebar-inset: 12px;
   grid-template-columns: 60px auto minmax(0, 1fr);
@@ -481,7 +476,7 @@
   flex: 0 0 auto;
 }
 .space-actions .leave-space {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .channel-navigation > header > button {
   width: 30px;
@@ -925,7 +920,7 @@
 .space-sidebar-error {
   /* In line with the rows' leading icons. */
   margin: 14px 9px;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.7rem;
   line-height: 1.4;
 }
@@ -1125,7 +1120,7 @@
   width: 15px;
 }
 .navigation-toggle:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
@@ -1175,8 +1170,8 @@
 }
 /* These pages sit outside .call-page and its focus ring. */
 :is(.spaces-state, .spaces-empty) :focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 /* The first-run page shows the DM list outside the sidebar's list resets.
    :where() keeps these below the message-request group's own rules. */
@@ -1341,7 +1336,7 @@
   overflow-wrap: anywhere;
 }
 .invitation-consent .space-form-error {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .invitation-consent .space-dialog-actions {
   flex-wrap: wrap;
@@ -1438,7 +1433,7 @@
   background: var(--border);
 }
 .space-access-notice button:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 .space-access-notice svg {
@@ -1638,8 +1633,8 @@
   }
 }
 .channel-privacy input:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .channel-privacy input,
@@ -1686,7 +1681,7 @@
   cursor: not-allowed;
 }
 .space-form-error {
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.72rem;
   line-height: 1.4;
 }
@@ -2002,7 +1997,7 @@
 .channel-preview [role="alert"] {
   flex-basis: 100%;
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 
@@ -2055,8 +2050,8 @@
 }
 .space-dialog button:focus-visible,
 .delete-confirmation [data-initial-focus]:focus {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .space-dialog :is(.danger, .danger-outline):focus-visible {
   outline-color: #ff8c9a;
@@ -2546,7 +2541,7 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
 .direct-request-bar > [role="alert"] {
   flex-basis: 100%;
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 .direct-waiting {

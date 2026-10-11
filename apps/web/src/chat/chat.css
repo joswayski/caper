@@ -92,7 +92,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.72rem;
 }
 /* Refresh and pin errors can be shown together; stack them instead of overlapping. */
@@ -501,7 +501,7 @@
     background-color 120ms ease;
 }
 .chat-reaction[aria-pressed="true"] {
-  border-color: #b64d32;
+  border-color: var(--terracotta);
   background: rgb(182 77 50 / 16%);
   color: #f2ae9c;
 }
@@ -526,7 +526,7 @@
 }
 .chat-add-reaction:focus-visible,
 .chat-reaction-picker button:focus-visible {
-  outline: 2px solid #b64d32;
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 .chat-message-actions-trigger:focus-visible,
@@ -668,7 +668,7 @@
 }
 .chat-action-error {
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.8rem;
 }
 .chat-reaction-picker {
@@ -744,14 +744,14 @@
   --epr-bg-color: var(--surface);
   --epr-text-color: var(--text-muted);
   --epr-category-label-bg-color: var(--surface);
-  --epr-search-input-bg-color: var(--blackout, #0c0d0f);
+  --epr-search-input-bg-color: var(--blackout);
   --epr-search-input-text-color: var(--text);
   --epr-search-border-color: var(--border);
-  --epr-search-input-bg-color-active: #0c0d0f;
-  --epr-search-border-color-active: #b64d32;
-  --epr-highlight-color: #b64d32;
+  --epr-search-input-bg-color-active: var(--blackout);
+  --epr-search-border-color-active: var(--terracotta);
+  --epr-highlight-color: var(--terracotta);
   --epr-hover-bg-color: #292c2f;
-  --epr-focus-bg-color: #34383b;
+  --epr-focus-bg-color: var(--border);
   --epr-emoji-size: 26px;
   --epr-emoji-padding: 7px;
   --epr-category-navigation-button-size: 32px;
@@ -1269,7 +1269,7 @@
 .chat-message-mentioned:hover,
 .chat-message-mentioned:focus-within {
   background: rgb(182 77 50 / 8%);
-  box-shadow: inset 2px 0 0 var(--terracotta);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 .chat-send-status {
   display: flex;
@@ -1281,7 +1281,7 @@
   font-size: 0.7rem;
 }
 .chat-send-error {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .chat-send-status button {
   padding: 3px 7px;
@@ -1456,7 +1456,7 @@
 }
 .chat-inline-error {
   margin: 0 0 8px;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.72rem;
   line-height: 1.4;
 }
@@ -1616,7 +1616,7 @@ a.chat-draft-preview:focus-visible strong {
   }
 }
 .chat-drafts li[data-error] small {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .chat-drafts progress {
   position: absolute;
@@ -2044,7 +2044,7 @@ a.chat-file:hover {
   font-variant-numeric: tabular-nums;
 }
 .chat-counter[data-tone="yellow"] {
-  color: #e4c76a;
+  color: var(--pin-gold);
 }
 .chat-counter[data-tone="orange"] {
   color: #eda361;
@@ -2089,7 +2089,7 @@ a.chat-file:hover {
   padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--blackout, #0c0d0f);
+  background: var(--blackout);
   color: var(--text);
   box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
   font-size: 0.7rem;
@@ -2149,7 +2149,7 @@ a.chat-file:hover {
   cursor: pointer;
 }
 .chat-reactors-tabs button[aria-selected="true"] {
-  border-bottom-color: var(--terracotta, #b64d32);
+  border-bottom-color: var(--terracotta);
   color: var(--text);
 }
 @media (hover: hover) {
@@ -2230,7 +2230,7 @@ a.chat-file:hover {
 }
 .chat-reactors button:focus-visible,
 .chat-reactors-panel:focus-visible {
-  outline: 2px solid var(--terracotta, #b64d32);
+  outline: 2px solid var(--terracotta);
   outline-offset: -2px;
 }
 /* The open thread is a selection (terracotta); gold stays reserved for pins. */
@@ -2238,7 +2238,7 @@ a.chat-file:hover {
 .chat-message-thread-active:hover,
 .chat-message-thread-active:focus-within {
   background: rgb(182 77 50 / 12%);
-  box-shadow: inset 3px 0 var(--terracotta-bright);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 .chat-thread-summary {
   display: flex;
@@ -2729,7 +2729,7 @@ a.chat-file:hover {
 }
 .chat-forward-error {
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.8rem;
 }
 .chat-forward-error button {
@@ -2955,8 +2955,8 @@ a.chat-file:hover {
   --diffs-font-family: ui-monospace, monospace;
   --diffs-font-size: 13px;
   --diffs-line-height: 1.6;
-  --diffs-deletion-color-override: #b64d32;
-  --diffs-addition-color-override: #637a43;
+  --diffs-deletion-color-override: var(--terracotta);
+  --diffs-addition-color-override: var(--caper);
 }
 @media (max-width: 760px) {
   .chat-edit-dialog {

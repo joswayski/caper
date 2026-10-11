@@ -397,7 +397,7 @@
   padding: 10px 18px 10px 14px;
   border-radius: 999px;
   color: #121416;
-  background: #f3f4f5;
+  background: var(--text);
   box-shadow: 0 16px 36px rgb(0 0 0 / 0.5);
   font-size: 15px;
   font-weight: 700;

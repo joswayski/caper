@@ -24,7 +24,7 @@
   margin: 2px 0 0;
   padding: 7px 4px 3px 8px;
   border-top: 1px solid var(--border);
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.7rem;
   line-height: 1.4;
 }
@@ -107,7 +107,7 @@
   cursor: default;
 }
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) {
-  color: #8cb262;
+  color: var(--voice-session-green);
 }
 .connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) {
   color: #d9ab5c;
@@ -291,10 +291,9 @@
   text-decoration: none;
   cursor: pointer;
 }
-/* --surface-raised barely differs from the panel; use the app's menu hover wash. */
 @media (hover: hover) {
   .call-settings-panel :is(button:not(:disabled), a):hover {
-    background: var(--surface-hover, rgb(255 255 255 / 6%));
+    background: var(--surface-hover);
   }
 }
 .call-settings-panel button:disabled {
@@ -674,8 +673,8 @@
   cursor: default;
 }
 .range-slider-thumb:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 /* The thumb previously gave no feedback before it moved. */
 @media (hover: hover) {
@@ -704,11 +703,11 @@
   }
 }
 .call-page :focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .call-error {
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.9rem;
 }
 .noise-status {
@@ -1005,7 +1004,7 @@
   line-height: 1.45;
 }
 .mic-comparison article p[role="alert"] {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .mic-comparison audio {
   width: 100%;
@@ -1201,7 +1200,7 @@
 }
 @media (hover: hover) {
   .device-options label:hover {
-    background: var(--surface-hover, rgb(255 255 255 / 6%));
+    background: var(--surface-hover);
   }
 }
 .device-options input {
@@ -1585,13 +1584,13 @@
 .voice-stack > .voice-connected-icon {
   width: 16px;
   height: 16px;
-  color: #8cb262;
+  color: var(--voice-session-green);
 }
 .voice-stack[aria-expanded="false"] > .lucide-chevron-down {
   transform: rotate(-90deg);
 }
 .voice-stack:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 1px;
 }
 .voice-stack-avatar {
