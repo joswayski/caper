@@ -2544,7 +2544,9 @@ private struct ChatView: View {
                             Button("Review reply") { Task { await chat.openThread(root) } }
                         }.font(CaperTheme.font(11))
                     }
+                    #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
+                    #endif
                     HStack(alignment: .bottom, spacing: 0) {
                         AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
@@ -2566,6 +2568,14 @@ private struct ChatView: View {
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    #if os(macOS)
+                    // Suggestions cover history without resizing it or triggering bottom-follow.
+                    .overlay(alignment: .topLeading) {
+                        ComposerSuggestionsView(controller: composerAutocomplete)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .alignmentGuide(.top) { $0[.bottom] + 6 }
+                    }
+                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
@@ -2853,6 +2863,9 @@ private struct NativeThreadView: View {
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
+                #if os(macOS)
+                .accessibilityIdentifier("thread-timeline")
+                #endif
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id) { _, id in if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) } }
@@ -2883,7 +2896,9 @@ private struct NativeThreadView: View {
                             .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
                     }
                 }
+                #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
+                #endif
                 NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
                                       mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
@@ -2893,6 +2908,13 @@ private struct NativeThreadView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     #if os(iOS)
                     .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
+                    #if os(macOS)
+                    .overlay(alignment: .topLeading) {
+                        ComposerSuggestionsView(controller: composerAutocomplete)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .alignmentGuide(.top) { $0[.bottom] + 6 }
+                    }
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
