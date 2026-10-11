@@ -97,4 +97,8 @@ class RequestsTest {
         assertNull(directMessageError("rate_limited"))
         assertEquals(listOf("anyone", "spaces", "nobody"), directPrivacyOptions.map { it.first })
     }
+
+    @Test fun `privacy settings link to the account deletion instructions`() {
+        assertEquals("https://caper.chat/privacy#delete-account", DELETE_ACCOUNT_URL)
+    }
 }

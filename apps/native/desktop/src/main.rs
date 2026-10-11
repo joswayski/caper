@@ -57,6 +57,9 @@ use worker::{
 
 /// Longest the loading page waits for the first conversation at launch.
 const RESTORE_LIMIT: Duration = Duration::from_secs(5);
+/// How to request account deletion, linked from Privacy settings (Google Play
+/// requires an in-app path; requests go by email).
+const DELETE_ACCOUNT_URL: &str = "https://caper.chat/privacy#delete-account";
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
 const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
@@ -13530,6 +13533,8 @@ impl CaperApp {
             self.privacy_settings(ui);
             ui.add_space(14.0);
             self.blocked_settings(ui);
+            ui.add_space(14.0);
+            delete_account_settings(ui);
         }
     }
 
@@ -16673,6 +16678,20 @@ fn notices(ui: &mut egui::Ui, error: &Option<String>, warning: &Option<String>) 
     }
 }
 
+/// Part of the Privacy section: opens the account deletion instructions.
+fn delete_account_settings(ui: &mut egui::Ui) {
+    ui.label(RichText::new("Delete account").size(13.0).color(TEXT));
+    ui.add_space(6.0);
+    let link = RichText::new("How to delete your account")
+        .size(13.0)
+        .color(TEXT)
+        .underline();
+    if ui.link(link).clicked() {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(DELETE_ACCOUNT_URL));
+    }
+}
+
 fn endpoint(args: &[String], fixture: Option<&str>) -> Result<String, String> {
     let explicit = args
         .windows(2)
@@ -16773,9 +16792,9 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountOperation, CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent,
-        MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend, Phase,
-        RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
+        AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
+        GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
+        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
         TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
         normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
         redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
@@ -18232,6 +18251,16 @@ mod tests {
             labels.contains(&"You haven't blocked anyone."),
             "{labels:?}"
         );
+        assert_eq!(
+            click_opening(
+                &mut app,
+                &context,
+                text_position(&output, "How to delete your account"),
+            )
+            .as_deref(),
+            Some(DELETE_ACCOUNT_URL)
+        );
+        let output = scroll_modal_to_bottom(&mut app, &context);
         click(
             &mut app,
             &context,
@@ -18438,7 +18467,7 @@ mod tests {
         receive_until(&mut app, |app| app.notifications.ready());
         render(&mut app, &context, vec![]);
         scroll_modal_to_bottom(&mut app, &context);
-        // Up a little, to the Notifications heading.
+        // Up a little, past Privacy and Delete account, to the Notifications heading.
         let bounds =
             context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
         render(
@@ -18446,7 +18475,7 @@ mod tests {
             &context,
             vec![egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, 160.0),
+                delta: egui::vec2(0.0, 220.0),
                 modifiers: egui::Modifiers::NONE,
             }],
         );
@@ -18498,7 +18527,21 @@ mod tests {
             "level": "all", "mobile": "whenInactive", "overrides": []
         }));
         render(&mut app, &context, vec![]);
-        let output = scroll_modal_to_bottom(&mut app, &context);
+        scroll_modal_to_bottom(&mut app, &context);
+        // Up past Privacy and Delete account, as above.
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 120.0),
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
         click(
             &mut app,
             &context,

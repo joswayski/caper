@@ -5426,6 +5426,11 @@ on Android and Apple, Settings on Rust desktop), list **Blocked accounts** with
 - **People in my spaces**: only people who share an active space with you.
 - **No one new**: nobody can start a new conversation. Existing ones stay open.
 
+The same settings end with **Delete account → How to delete your account**,
+which opens `https://caper.chat/privacy#delete-account` (the web uses the
+same-origin `/privacy#delete-account`). Google Play requires this in-app path;
+deletion itself is an emailed request handled by hand, as that page describes.
+
 API contracts (account authentication required):
 
 - `GET /api/dms` adds `status`: `accepted`, `outgoing` (you asked) or `incoming`
