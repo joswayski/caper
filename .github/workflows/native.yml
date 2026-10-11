@@ -1,6 +1,8 @@
 name: Native development builds
 
 # Runs on main only; pull requests get no CI. Use "Run workflow" to test a branch.
+# Keep squash commit messages free of CI-skip directives, including quoted PR
+# text. A later unrelated push does not backfill a skipped path-filtered build.
 on:
   push:
     branches: [main]
