@@ -28,7 +28,7 @@ export async function notificationImage(event: MessageNotification, signal: Abor
       url.username ||
       url.password ||
       url.hash ||
-      !/^\/(original|preview)\/[A-Za-z0-9]{1,64}$/.test(url.pathname)
+      !/^\/(assets|original|preview)\/[A-Za-z0-9]{1,64}$/.test(url.pathname)
     )
       return;
     const response = await fetch(url, { credentials: "omit", redirect: "error", cache: "no-store", signal: timeout });
