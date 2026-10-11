@@ -1297,10 +1297,55 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Web (desktop and mobile layouts) | Yes: picker and drag and drop with an overlay (no paste) | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop with an overlay on macOS and iPad/iPhone (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop with an overlay, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### File drop overlay
+
+Dragging files over a channel or DM conversation that accepts uploads covers it
+with a drop overlay on every client: today's Caper character (the wordmark's
+daily branding art) hops in front of three neutral file cards (image, document,
+video Lucide glyphs) that fan out behind it, on a surface card with a dashed
+terracotta outline. Its title is `Attach to #channel` (`Attach to Name` in a DM)
+and its detail counts the remaining slots (`Up to 10 files…`, `7 more files…`,
+`10 files attached. Remove one to add another.`). Every client's tests run
+`shared/messages/drop-cases.json`. Dropping adds the files as drafts, exactly
+like the attach button; nothing uploads until the person sends. Only drags
+carrying files open it; text and link drags are ignored. The overlay never takes
+input. Motion is shared: a 140 ms fade, the card rising 10 px, the cards fanning
+from the middle with a 420 ms overshoot, the character rising, then a 1.6 s hop
+and a 2.4 s card sway. Reduced motion (web `prefers-reduced-motion`, Apple
+Reduce Motion, Android "Remove animations") shows the resting pose.
+
+- Web: `DropOverlay.tsx` over `.chat-panel`. A file dropped elsewhere in the app
+  is refused instead of the browser navigating to it. Thread panels do not
+  accept drops (they have no attachments).
+- Rust desktop: `file_drop.rs`, painted from egui's hovered files over the
+  conversation. `--fixture parity-file-drop` (and `-narrow`) hold it open for
+  rendering checks.
+- Apple: `FileDropOverlay` on the conversation's `dropDestination`, now on iOS
+  as well as macOS, taking photos/videos/audio/PDFs as media and other files as
+  file URLs. The macOS composer (`NSTextView`) accepts only text drags, so files
+  dropped on it attach instead of typing their paths.
+- Android: Compose `dragAndDropTarget` on the conversation for drags from other
+  apps (split screen, freeform/desktop windows, ChromeOS), with
+  `requestDragAndDropPermissions` before copying. Android names a drag only by
+  MIME type until the drop, so plain-text files are attached with the attach
+  button rather than by dragging.
+
+Validation: web unit tests plus Chromium with synthetic `DragEvent`s and a
+mocked `/api/assets/usage` at 1280px and 390px (overlay, counts, child
+enter/leave, text drags ignored, drop adds a draft, outside drops refused); not
+a real OS drag. Rust desktop unit tests (shared text, timing, overlay shown
+only while files hover a writable conversation) and the fixture rendered under
+Xvfb at 1440×900 and 390×844; no real Windows/X11 drag. Android compiles with
+the pinned toolchain and its JVM tests cover the shared text, MIME filter and
+timing; the overlay was not rendered on a device or emulator. Swift was written
+without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
+text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
+Windows/X11 drags and physical devices remain to be checked.
 
 Composer thumbnails and filenames are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the

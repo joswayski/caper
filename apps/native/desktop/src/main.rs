@@ -12,6 +12,7 @@ mod edits;
 mod effects;
 mod emoji;
 mod ffmpeg;
+mod file_drop;
 mod forwarding;
 mod gateway;
 mod grouping;
@@ -560,6 +561,10 @@ fn projected_reactions(
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
+    /// When files were first dragged over the window, for the drop overlay's animation.
+    file_drop_since: Option<f64>,
+    /// The `parity-file-drop` fixture shows the overlay without a drag.
+    file_drop_fixture: bool,
     worker: Worker,
     voice: Voice,
     effects: Effects,
@@ -805,6 +810,8 @@ impl CaperApp {
         let now = Instant::now();
         let mut app = Self {
             daily_icon: None,
+            file_drop_since: None,
+            file_drop_fixture: false,
             worker,
             voice,
             effects: Effects::new(fixture.is_none()),
@@ -1085,6 +1092,10 @@ impl CaperApp {
                         .expect("valid reaction fixture");
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
+                } else if name.starts_with("parity-file-drop") {
+                    // Holds the drop overlay open for rendering checks; no file is dragged.
+                    app.install_attachments_fixture();
+                    app.file_drop_fixture = true;
                 } else if name.starts_with("parity-thread") {
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     let root = messages[0].id.clone();
@@ -6095,6 +6106,36 @@ impl CaperApp {
         .paint_at(ui, character);
     }
 
+    /// Covers the conversation while the window has files dragged over it.
+    fn file_drop_overlay(&mut self, context: &egui::Context, conversation: egui::Rect) {
+        let now = context.input(|input| input.time);
+        let hovering =
+            self.file_drop_fixture || context.input(|input| !input.raw.hovered_files.is_empty());
+        if !self.can_attach() || !hovering {
+            self.file_drop_since = None;
+            return;
+        }
+        let since = *self.file_drop_since.get_or_insert(now);
+        let (title, detail) = file_drop::text(
+            self.channel_name(),
+            self.selected_direct.is_some(),
+            self.draft_files.len(),
+        );
+        let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
+        file_drop::paint(
+            context,
+            conversation,
+            (now - since) as f32,
+            (
+                format!("bytes://caper-branding-v1/{index}.svg"),
+                avatar_images::BRANDING[index],
+            ),
+            &title,
+            &detail,
+        );
+        context.request_repaint();
+    }
+
     /// Whether the loading page still covers the first navigation.
     fn restoring(&mut self, context: &egui::Context) -> bool {
         let Some(started) = self.restoring else {
@@ -9946,6 +9987,7 @@ impl CaperApp {
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_width(320.0);
             ui.set_height(ui.available_height());
+            let conversation = ui.max_rect();
             ui.spacing_mut().item_spacing.y = 0.0;
             let heading = egui::TopBottomPanel::top("chat-heading")
                 .exact_height(54.0)
@@ -10436,19 +10478,7 @@ impl CaperApp {
                         });
                     }
                 });
-            if self.can_attach() && ui.ctx().input(|input| !input.raw.hovered_files.is_empty()) {
-                let rect = history.inner_rect.shrink(12.0);
-                let painter = ui.painter();
-                painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(12, 13, 15, 225));
-                painter.rect_stroke(rect, 8.0, Stroke::new(1.5, TERRACOTTA), egui::StrokeKind::Inside);
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("Drop files to attach (up to {})", uploads::MAX_ATTACHMENTS),
-                    egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
-                    TEXT,
-                );
-            }
+            self.file_drop_overlay(ui.ctx(), conversation);
             self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -16697,6 +16727,7 @@ fn main() -> eframe::Result {
                 | "parity-invitation-narrow"
                 | "parity-update-narrow"
                 | "parity-update-download"
+                | "parity-file-drop-narrow"
         )
     }) {
         [390.0, 844.0]
@@ -25424,6 +25455,67 @@ mod tests {
             opened = opened.or_else(|| opened_url(&output).map(str::to_owned));
         }
         opened
+    }
+
+    #[test]
+    fn hovering_files_shows_the_drop_overlay_until_they_leave() {
+        fn hover(
+            app: &mut CaperApp,
+            context: &egui::Context,
+            hovered_files: Vec<egui::HoveredFile>,
+            time: f64,
+        ) -> egui::FullOutput {
+            context.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    hovered_files,
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            )
+        }
+        let has_text = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        assert!(app.can_attach());
+        hover(&mut app, &context, vec![], 0.0);
+        let (title, detail) =
+            crate::file_drop::text(app.channel_name(), false, app.draft_files.len());
+        let file = egui::HoveredFile {
+            path: Some("TEST FIXTURE photo.png".into()),
+            mime: String::new(),
+        };
+        // It fades in from the moment the drag arrives.
+        hover(&mut app, &context, vec![file.clone()], 1.0);
+        assert_eq!(app.file_drop_since, Some(1.0));
+        let output = hover(&mut app, &context, vec![file.clone()], 2.0);
+        assert!(has_text(&output, &title) && has_text(&output, &detail));
+        assert_eq!(app.file_drop_since, Some(1.0));
+        // The animation keeps the frames coming while the drag stays.
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            std::time::Duration::ZERO
+        );
+        let output = hover(&mut app, &context, vec![], 3.0);
+        assert!(!has_text(&output, &title));
+        assert!(app.file_drop_since.is_none());
+
+        // Nowhere to attach: no overlay.
+        app.uploads = None;
+        let output = hover(&mut app, &context, vec![file], 4.0);
+        assert!(!has_text(&output, &title));
     }
 
     #[test]

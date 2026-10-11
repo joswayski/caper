@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
@@ -67,6 +69,10 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -129,6 +135,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
 import chat.caper.android.data.MAX_CODE_RESENDS
 import chat.caper.android.data.RESEND_COOLDOWN_MILLIS
@@ -1478,170 +1485,200 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
     if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
-    Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
-        // Web waits a second before announcing a lost connection.
-        val live = state.gateway == GatewayStatus.LIVE
-        var showConnection by remember(channel.id) { mutableStateOf(false) }
-        LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-        // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp)
-            .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+    // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
+    val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
+    val attachable by rememberUpdatedState(canAttach)
+    // Held, not delegated, so the remembered target below always updates this conversation.
+    val dropping = remember { mutableStateOf(false) }
+    val activity = LocalActivity.current
+    val dropTarget = remember(viewModel, activity, dropping) {
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) { dropping.value = true }
+            override fun onExited(event: DragAndDropEvent) { dropping.value = false }
+            override fun onEnded(event: DragAndDropEvent) { dropping.value = false }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                dropping.value = false
+                val drag = event.toAndroidDragEvent()
+                val clip = drag.clipData ?: return false
+                val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                if (uris.isEmpty() || !attachable) return false
+                // Lets this activity read another app's content URIs while the copy runs.
+                activity?.requestDragAndDropPermissions(drag)
+                viewModel.addAttachments(uris)
+                return true
             }
-            // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
-            if (narrow && direct != null) Box(Modifier.weight(1f)) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
-                    .clickable(role = Role.Button) { channelMenuOpen = true }
-                    .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
-                    Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+        }
+    }
+    Box(modifier.fillMaxHeight().dragAndDropTarget({ attachable && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)) {
+        Column(Modifier.fillMaxSize().background(SurfaceConversation)) {
+            // Web waits a second before announcing a lost connection.
+            val live = state.gateway == GatewayStatus.LIVE
+            var showConnection by remember(channel.id) { mutableStateOf(false) }
+            LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
+            // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
+            Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp)
+                .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
                 }
-                DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
-                        onClick = { channelMenuOpen = false; toggleBlock() })
-                }
-            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
-            }
-            // Right of Pins on every width, and the same size, as on web.
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
-                    Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
-            }
-            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-                Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-            if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
-            if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        HorizontalDivider(color = Border)
-        if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            Text(buildAnnotatedString {
-                append("Join ")
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
-                append(" to interact with people here")
-            }, color = TextMuted, fontSize = 12.sp)
-        }
-        state.refreshError?.let { error ->
-            Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small) { Text("Retry", color = Text, fontSize = 12.sp) }
-                }
-            }
-        }
-        // The dock (and its voice error row) is hidden behind Browse on phones.
-        (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
-            Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
-        }
-        // Web shows a pending message's status inline, under the message itself.
-        val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
-        if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
-            Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
-                Column(Modifier.heightIn(max = 560.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
-                        TextButton({ showingPins = false }, shape = MaterialTheme.shapes.small) { Text("Close") }
+                // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
+                if (narrow && direct != null) Box(Modifier.weight(1f)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                        .clickable(role = Role.Button) { channelMenuOpen = true }
+                        .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                        Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                     }
-                    HorizontalDivider(color = Border)
-                    PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
-                }
-            }
-        }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
-            // A left swipe opens the member list, as a right one opens Browse.
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
-            listState = timelineState, follow = timelineFollow) {
-            channelPending?.error?.let { pending ->
-                val editable = canEditRejectedMessage(draft.text, channelPending.text)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-                    TextButton({
-                        if (channelPending.rejected) {
-                            if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
-                        } else viewModel.send(channelPending.text)
-                    }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
-                        enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
-                        Text(if (channelPending.rejected) "Edit" else "Retry send")
+                    DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                        DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
+                            onClick = { channelMenuOpen = false; toggleBlock() })
                     }
-                    if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
                 }
-                if (channelPending.rejected && !editable)
-                    Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
+                // Right of Pins on every width, and the same size, as on web.
+                if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
+                        Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
+                }
+                if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
+                if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
-        }
-        if (joined) TypingLine(state.typingAuthors)
-        if (joined) HorizontalDivider(color = Border)
-        val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
-        // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
-        if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
-        else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-        else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
-            if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-            state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
-                pending.threadRootId?.let { root ->
+            HorizontalDivider(color = Border)
+            if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(buildAnnotatedString {
+                    append("Join ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
+                    append(" to interact with people here")
+                }, color = TextMuted, fontSize = 12.sp)
+            }
+            state.refreshError?.let { error ->
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                    Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small) { Text("Retry", color = Text, fontSize = 12.sp) }
+                    }
+                }
+            }
+            // The dock (and its voice error row) is hidden behind Browse on phones.
+            (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
+                Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
+            }
+            // Web shows a pending message's status inline, under the message itself.
+            val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
+            if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
+                Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
+                    Column(Modifier.heightIn(max = 560.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
+                            TextButton({ showingPins = false }, shape = MaterialTheme.shapes.small) { Text("Close") }
+                        }
+                        HorizontalDivider(color = Border)
+                        PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
+                    }
+                }
+            }
+            MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                // A left swipe opens the member list, as a right one opens Browse.
+                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
+                listState = timelineState, follow = timelineFollow) {
+                channelPending?.error?.let { pending ->
+                    val editable = canEditRejectedMessage(draft.text, channelPending.text)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                        TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
+                        Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                        TextButton({
+                            if (channelPending.rejected) {
+                                if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
+                            } else viewModel.send(channelPending.text)
+                        }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
+                            enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
+                            Text(if (channelPending.rejected) "Edit" else "Retry send")
+                        }
+                        if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                    }
+                    if (channelPending.rejected && !editable)
+                        Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
+                }
+            }
+            if (joined) TypingLine(state.typingAuthors)
+            if (joined) HorizontalDivider(color = Border)
+            val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
+            // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
+            if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
+            else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
+            else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                if (direct?.outgoing == true) OutgoingRequestNotice(direct)
+                state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                    pending.threadRootId?.let { root ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                            TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
+                        }
                     }
                 }
-            }
-            state.sessionError?.let { error ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
+                state.sessionError?.let { error ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
+                    }
                 }
-            }
-            state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-            DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
-            val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
-            fun sendDraft() {
-                if (hasContent && state.pendingMessage == null) {
-                    val sent = draft.text
-                    viewModel.setTyping(false)
-                    if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
+                val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
+                fun sendDraft() {
+                    if (hasContent && state.pendingMessage == null) {
+                        val sent = draft.text
+                        viewModel.setTyping(false)
+                        if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                    }
                 }
-            }
-            fun submit() {
-                val pending = state.pendingMessage
-                // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                if (state.chatAuthorId != null) {
-                    if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                    else sendDraft()
+                fun submit() {
+                    val pending = state.pendingMessage
+                    // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                    if (state.chatAuthorId != null) {
+                        if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                        else sendDraft()
+                    }
                 }
-            }
-            SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                    OutlinedTextField(
-                        draft, change, modifier = Modifier.weight(1f).then(field),
-                        placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
-                        // Reserve the icon inside the field while uploads/session become ready.
-                        // Read-only previews and locked DMs have no composer.
-                        leadingIcon = {
-                            AttachButton(attachDisabledReason(state), viewModel::addAttachments)
-                        },
-                        enabled = !state.messagesLoading && state.messagesError == null,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
-                        colors = composerFieldColors(),
-                    )
-                    FilledIconButton(
-                        { sendDraft() },
-                        // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                        modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
-                        shape = MaterialTheme.shapes.small,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = Terracotta, contentColor = Color.White,
-                            disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
-                        ),
-                    ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                        OutlinedTextField(
+                            draft, change, modifier = Modifier.weight(1f).then(field),
+                            placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                            // Reserve the icon inside the field while uploads/session become ready.
+                            // Read-only previews and locked DMs have no composer.
+                            leadingIcon = {
+                                AttachButton(attachDisabledReason(state), viewModel::addAttachments)
+                            },
+                            enabled = !state.messagesLoading && state.messagesError == null,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
+                            colors = composerFieldColors(),
+                        )
+                        FilledIconButton(
+                            { sendDraft() },
+                            // Centred on a one-line field (56dp), and near the bottom as the field grows.
+                            modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
+                            shape = MaterialTheme.shapes.small,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Terracotta, contentColor = Color.White,
+                                disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                            ),
+                        ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                    }
                 }
+                DraftCounter(draft.text)
             }
-            DraftCounter(draft.text)
+        }
+        if (dropping.value && canAttach) {
+            val (title, detail) = FileDrop.text(channel.name, channel.direct, state.drafts.size)
+            FileDropOverlay(title, detail, caperBrandingResources[LocalBrandAvatar.current])
         }
     }
 }

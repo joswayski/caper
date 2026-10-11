@@ -32,6 +32,8 @@ import {
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import DropOverlay from "./DropOverlay.tsx";
+import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
 import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -1353,6 +1355,28 @@ export default function Chat({
   };
 
   const canAttach = signedIn && uploadsEnabled && !readOnly && state.phase === "ready" && !!state.channelId;
+  // Child elements fire their own enter/leave pairs; the overlay stays up until the last leave.
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+  const endDrop = () => {
+    dragDepth.current = 0;
+    setDropping(false);
+  };
+  useEffect(() => {
+    // A file dropped beside the conversation would otherwise replace the app with it.
+    const refuse = (event: DragEvent) => {
+      if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.type === "dragover" && event.dataTransfer) event.dataTransfer.dropEffect = "none";
+      if (event.type === "drop") endDrop();
+    };
+    window.addEventListener("dragover", refuse);
+    window.addEventListener("drop", refuse);
+    return () => {
+      window.removeEventListener("dragover", refuse);
+      window.removeEventListener("drop", refuse);
+    };
+  }, []);
   const pinsToggle = state.phase === "ready" && (
     <button
       type="button"
@@ -1425,15 +1449,29 @@ export default function Chat({
       <section
         className="chat-panel"
         aria-labelledby="chat-heading"
+        onDragEnter={(event) => {
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          dragDepth.current += 1;
+          setDropping(true);
+        }}
+        onDragLeave={() => {
+          if (!dragDepth.current) return;
+          dragDepth.current -= 1;
+          if (!dragDepth.current) setDropping(false);
+        }}
         onDragOver={(event) => {
-          if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault();
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
         }}
         onDrop={(event) => {
+          endDrop();
           if (!canAttach || !event.dataTransfer.files.length) return;
           event.preventDefault();
           addFiles([...event.dataTransfer.files]);
         }}
       >
+        {dropping && canAttach && <DropOverlay channelName={channelName} direct={direct} attached={drafts.length} />}
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>

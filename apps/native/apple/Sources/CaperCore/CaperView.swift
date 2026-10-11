@@ -2101,6 +2101,8 @@ private struct ChatView: View {
     /// sheet on iPhone. Opening another pill replaces it.
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
+    /// Files are being dragged over the conversation.
+    @State private var fileDropTargeted = false
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -2606,15 +2608,23 @@ private struct ChatView: View {
         }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
-            #if os(macOS)
-            .dropDestination(for: URL.self) { urls, _ in
-                guard chat.canAttach else { return false }
-                let files = urls.filter(\.isFileURL).prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
-                guard !files.isEmpty else { return false }
-                chat.addAttachments(files)
+            // Finder, Files, Photos and other apps (iPad split view and Slide Over).
+            // addAttachments keeps the first files that fit and removes the rest.
+            .dropDestination(for: DroppedAttachment.self) { items, _ in
+                guard chat.canAttach, !items.isEmpty else {
+                    items.forEach { AttachmentStaging.remove($0.file.url) }
+                    return false
+                }
+                chat.addAttachments(items.map(\.file))
                 return true
+            } isTargeted: { fileDropTargeted = $0 }
+            .overlay {
+                if fileDropTargeted && chat.canAttach {
+                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil,
+                                                         attached: chat.attachmentDrafts.count)
+                    FileDropOverlay(title: text.title, detail: text.detail)
+                }
             }
-            #endif
             #if os(macOS)
             // Drawn above the whole conversation so the timeline's clipping
             // and later rows never cover a hovered chip's tooltip.
