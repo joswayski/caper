@@ -23006,13 +23006,12 @@ mod tests {
         receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
         assert!(
-            shows(&output, "Message")
-                && shows(&output, "Invite to space")
-                && shows(&output, "Block")
-                && shows(&output, "Unblocked."),
+            shows(&output, "Message") && shows(&output, "Block") && shows(&output, "Unblocked."),
             "{:?}",
             text_shapes(&output)
         );
+        // Alex is already in the only owned space, which is open.
+        assert!(!shows(&output, "Invite to space"));
     }
 
     #[test]
