@@ -177,6 +177,97 @@ fn previews_trim_truncate_to_180_characters_and_name_empty_messages() {
 }
 
 #[test]
+fn file_notifications_use_one_original_and_keep_text_without_media() {
+    let signer = CdnSigner::new("https://cdn.test".into(), vec![7; 32]);
+    let photo = json!({"id":"photo1","kind":"image","contentType":"image/webp","size":50_000_000});
+    let document = json!({"id":"doc1","kind":"file","contentType":"application/pdf","size":400,"name":"plan.pdf"});
+    let mut oversized = photo.clone();
+    oversized["size"] = json!(50_000_001);
+    let mut deleted = photo.clone();
+    deleted["unavailable"] = json!(true);
+    for (text, files, expected, media) in [
+        ("", vec![photo.clone()], "Sent a photo", true),
+        (
+            "Sent a message",
+            vec![photo.clone()],
+            "Sent a message",
+            true,
+        ),
+        ("", vec![document.clone()], "Sent a file: plan.pdf", false),
+        ("", vec![document, photo.clone()], "Sent 2 files", true),
+        ("", vec![oversized], "Sent a photo", false),
+        ("", vec![deleted], "Sent a photo", false),
+    ] {
+        let message = json!({"content":{"text":text,"attachments":files}});
+        let alert = channel_alert(text).with_content(&message, Some(&signer));
+        let apns = apns::payload(&alert);
+        let fcm = fcm::message("device", &alert)["message"]["data"].clone();
+        assert_eq!(apns["aps"]["alert"]["body"], expected);
+        assert_eq!(fcm["body"], expected);
+        if media {
+            let url = apns["attachmentUrl"].as_str().unwrap();
+            assert!(url.starts_with("https://cdn.test/assets/photo1?exp="));
+            let expires: i64 = url
+                .split("exp=")
+                .nth(1)
+                .unwrap()
+                .split('&')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((899..=900).contains(&(expires - now())));
+            assert_eq!(fcm["attachmentUrl"], url);
+            assert_eq!(apns["attachmentContentType"], "image/webp");
+            assert_eq!(apns["attachmentSize"], 50_000_000);
+            assert_eq!(fcm["attachmentSize"], "50000000");
+        } else {
+            assert!(apns.get("attachmentUrl").is_none());
+            assert!(fcm.get("attachmentUrl").is_none());
+        }
+        let unsigned = apns::payload(&channel_alert(text).with_content(&message, None));
+        assert_eq!(unsigned["aps"]["alert"]["body"], expected);
+        assert!(unsigned.get("attachmentUrl").is_none());
+    }
+    let forwarded = json!({"forward":{"message":{"content":{"attachments":[photo]}}}});
+    let alert = apns::payload(&channel_alert("").with_content(&forwarded, Some(&signer)));
+    assert_eq!(alert["aps"]["alert"]["body"], "Sent a photo");
+    assert!(
+        alert["attachmentUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/assets/photo1?")
+    );
+    let video = json!({"id":"video1","kind":"video","contentType":"video/mp4","size":120_000_000,
+        "preview":{"contentType":"image/jpeg","size":321}});
+    for forwarded in [false, true] {
+        let message = if forwarded {
+            json!({"forward":{"message":{"content":{"attachments":[video.clone()]}}}})
+        } else {
+            json!({"content":{"attachments":[video.clone()]}})
+        };
+        let alert = channel_alert("").with_content(&message, Some(&signer));
+        let apns = apns::payload(&alert);
+        let fcm = fcm::message("device", &alert)["message"]["data"].clone();
+        assert_eq!(apns["aps"]["alert"]["body"], "Sent a video");
+        assert!(
+            apns["attachmentUrl"]
+                .as_str()
+                .unwrap()
+                .contains("/preview/video1?")
+        );
+        assert_eq!(apns["attachmentContentType"], "image/jpeg");
+        assert_eq!(apns["attachmentSize"], 321);
+        assert_eq!(fcm["attachmentUrl"], apns["attachmentUrl"]);
+        assert_eq!(fcm["attachmentSize"], "321");
+    }
+    let without_poster = json!({"content":{"attachments":[{"id":"video1","kind":"video","contentType":"video/mp4","size":400}]}});
+    let fallback = apns::payload(&channel_alert("").with_content(&without_poster, Some(&signer)));
+    assert_eq!(fallback["aps"]["alert"]["body"], "Sent a video");
+    assert!(fallback.get("attachmentUrl").is_none());
+}
+
+#[test]
 fn platforms_need_the_flag_the_list_and_credentials_that_load() {
     let (p8, _) = testing::p8();
     let (rsa, _) = testing::rsa();
@@ -1992,7 +2083,11 @@ async fn fanout_preserves_per_device_holds_for_mixed_recipients(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(pool: PgPool) {
-    let h = harness(&pool).await;
+    let mut h = harness(&pool).await;
+    h.workers.cdn = Some(Arc::new(CdnSigner::new(
+        "https://cdn.test".into(),
+        vec![7; 32],
+    )));
     let alice = person(&pool, "alice").await;
     let bob = person(&pool, "bob").await;
     let carol = person(&pool, "carol").await;
@@ -2023,6 +2118,15 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
 
     let long = format!("  {}  ", "word ".repeat(60));
     let first = send(&h, &alice, &general, &long, None).await;
+    // An old snapshot only has preview:{}; use the existing poster's database metadata,
+    // not the 120 MB video, and do not change the stored message to hydrate it.
+    sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,channel_id,message_id,kind,content_type,filename,byte_size,preview_content_type,preview_byte_size,uploaded_at)
+        SELECT 'pushvideo0001',$1,'attachment',channel_id,id,'video','video/mp4','clip.mp4',120000000,'image/png',123,now()
+        FROM public.messages WHERE external_id=$2")
+        .bind(alice.id).bind(&first).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE public.messages SET payload=jsonb_set(payload,'{content,attachments}',$2) WHERE external_id=$1")
+        .bind(&first).bind(json!([{"id":"pushvideo0001","kind":"video","contentType":"video/mp4","size":120000000,"name":"clip.mp4","preview":{}}]))
+        .execute(&pool).await.unwrap();
     expand(&h).await;
     // Profile changes after sending must not use a historical message avatar.
     sqlx::query("UPDATE public.users SET avatar_id=317 WHERE id=$1")
@@ -2039,6 +2143,14 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     assert_eq!(body["aps"]["mutable-content"], 1);
     assert_eq!(body["senderAvatarId"], 317);
     assert_eq!(body["recipientCount"], 2);
+    assert!(
+        body["attachmentUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://cdn.test/preview/pushvideo0001?")
+    );
+    assert_eq!(body["attachmentContentType"], "image/png");
+    assert_eq!(body["attachmentSize"], 123);
     let preview = body["aps"]["alert"]["body"].as_str().unwrap();
     assert_eq!(preview.chars().count(), 180);
     assert!(preview.ends_with('…') && !preview.starts_with(' '));
@@ -2060,6 +2172,14 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     let data = &fcm_requests[0].body["message"]["data"];
     assert_eq!(fcm_requests[0].body["message"]["token"], "fcm:carol");
     assert_eq!(data["senderAvatarId"], "317");
+    assert!(
+        data["attachmentUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://cdn.test/preview/pushvideo0001?")
+    );
+    assert_eq!(data["attachmentContentType"], "image/png");
+    assert_eq!(data["attachmentSize"], "123");
     assert_eq!(
         (
             data["sender"].as_str(),
@@ -2073,6 +2193,44 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
         )
     );
     assert!(state(first.clone(), bob.id).await.2);
+
+    let head: i64 = sqlx::query_scalar("SELECT max(id) FROM public.notifications WHERE user_id=$1")
+        .bind(bob.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let events = live::read(&pool, bob.id, 0, head, h.workers.cdn.as_deref())
+        .await
+        .unwrap();
+    assert!(
+        events[0].1.as_ref().unwrap()["attachmentUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/preview/pushvideo0001?")
+    );
+    assert_eq!(events[0].1.as_ref().unwrap()["attachmentSize"], 123);
+    let stored: Value =
+        sqlx::query_scalar("SELECT payload FROM public.messages WHERE external_id=$1")
+            .bind(&first)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored["content"]["attachments"][0]["preview"], json!({}));
+    // No poster metadata means text only, even when the original exists.
+    sqlx::query("UPDATE public.assets SET preview_content_type=NULL,preview_byte_size=NULL WHERE external_id='pushvideo0001'")
+        .execute(&pool).await.unwrap();
+    let events = live::read(&pool, bob.id, 0, head, h.workers.cdn.as_deref())
+        .await
+        .unwrap();
+    assert!(events[0].1.as_ref().unwrap().get("attachmentUrl").is_none());
+    sqlx::query("UPDATE public.assets SET preview_content_type='image/png',preview_byte_size=123,deleted_at=now() WHERE external_id='pushvideo0001'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let events = live::read(&pool, bob.id, 0, head, h.workers.cdn.as_deref())
+        .await
+        .unwrap();
+    assert!(events[0].1.as_ref().unwrap().get("attachmentUrl").is_none());
 
     // A dead APNs token revokes bob's device; FCM throttling is retried after
     // Retry-After, then a 5xx doubles the backoff, then it goes through.

@@ -1,5 +1,6 @@
 package chat.caper.android
 
+import chat.caper.android.model.MessageReaction
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -63,6 +64,22 @@ class TimelineFollowTest {
         assertEquals(latest, follow.next(FollowFrame(listOf("a", "b", "c")), near = true))
         assertEquals(latest, follow.next(FollowFrame(listOf("a", "b", "c"), pendingId = "p1")))
         assertNull(follow.next(FollowFrame(listOf("a", "b", "c"), pendingId = "p1")))
+    }
+
+    @Test fun `recent row reactions follow only a reader at latest`() {
+        val follow = TimelineFollow().apply { next(FollowFrame(listOf("a", "b"), reactions = listOf(emptyList(), emptyList()))) }
+        val thumbs = MessageReaction("👍", listOf("peer"))
+        val reacted = FollowFrame(listOf("a", "b"), reactions = listOf(emptyList(), listOf(thumbs)))
+        assertEquals(latest, follow.next(reacted, near = true))
+        // Same snapshot must not override the reader's position again.
+        assertNull(follow.next(reacted, near = true))
+        assertNull(follow.next(reacted.copy(reactions = listOf(emptyList(), listOf(thumbs, MessageReaction("🎉", listOf("me")))))))
+        assertEquals(latest, follow.next(reacted, near = true))
+        // Chips wrapping on the row above the last still push the latest message down.
+        assertEquals(latest, follow.next(reacted.copy(reactions = listOf(listOf(thumbs), listOf(thumbs))), near = true))
+        assertEquals(latest, follow.next(reacted.copy(reactions = emptyList()), near = true))
+        assertNull(follow.next(reacted.copy(historical = true), near = true))
+        assertNull(follow.next(reacted.copy(jump = 1), near = true))
     }
 
     @Test fun `older pages anchor before following`() {

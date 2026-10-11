@@ -42,7 +42,7 @@ struct Claimed {
     read: bool,
     kind: String,
     message_id: String,
-    text: Option<String>,
+    message: serde_json::Value,
     channel_id: String,
     channel_name: String,
     space_id: Option<String>,
@@ -79,7 +79,7 @@ impl Claimed {
         )
     }
 
-    fn alert(&self) -> Alert {
+    fn alert(&self, cdn: Option<&crate::assets::CdnSigner>) -> Alert {
         let conversation = match (&self.space_id, &self.space_name) {
             (Some(space_id), Some(space_name)) => Conversation::Channel {
                 space_id: space_id.clone(),
@@ -98,8 +98,12 @@ impl Claimed {
             &self.sender,
             &self.sender_id,
             self.sender_avatar_id,
-            self.text.as_deref().unwrap_or_default(),
+            self.message
+                .pointer("/content/text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
         )
+        .with_content(&self.message, cdn)
     }
 }
 
@@ -116,7 +120,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
     // One statement claims a batch under a lease and reads what sending needs,
     // including current access, blocks, preferences and the DM read cursor.
     // Holds and provider retries must not preserve revoked notification consent.
-    let claimed: Vec<Claimed> = sqlx::query_as(
+    let mut claimed: Vec<Claimed> = sqlx::query_as(
         "WITH due AS (
              SELECT id FROM public.notification_deliveries
              WHERE delivered_at IS NULL AND abandoned_at IS NULL AND available_at <= now()
@@ -126,6 +130,18 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
              UPDATE public.notification_deliveries d SET locked_at=now(), attempts=LEAST(d.attempts+1, 32767)
              FROM due WHERE d.id=due.id
              RETURNING d.id, d.attempts, d.held, d.device_id, d.notification_id
+         ), audience AS (
+             -- One message fans out to a delivery per recipient device: count
+             -- each channel's audience once per batch, not once per delivery.
+             SELECT p.channel_id, p.actor_id,
+                    (SELECT count(*) FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
+                     WHERE sm.space_id=ch.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL AND sm.user_id<>p.actor_id
+                     AND (NOT ch.private OR s.owner_id=sm.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
+                          WHERE cm.channel_id=ch.id AND cm.user_id=sm.user_id AND cm.deleted_at IS NULL))) AS recipient_count
+             FROM (SELECT DISTINCT n.channel_id, n.actor_id FROM claimed c
+                   JOIN public.notifications n ON n.id=c.notification_id) p
+             JOIN public.channels ch ON ch.id=p.channel_id
+             LEFT JOIN public.spaces s ON s.id=ch.space_id
          )
          SELECT c.id, c.attempts, c.held, c.device_id, dev.transport, dev.address,
                 encode(substring(dev.account_session_hash FROM 1 FOR 8), 'hex') AS device_tag,
@@ -153,16 +169,13 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
                 m.created_at AS message_at,
                 (ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq) AS read,
-                n.kind, m.external_id AS message_id, m.payload->'content'->>'text' AS text,
+                n.kind, m.external_id AS message_id, m.payload AS message,
                 ch.external_id AS channel_id, ch.name AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
                 COALESCE(author.display_name, m.payload->'author'->>'name', '') AS sender,
                 author.avatar_id AS sender_avatar_id,
-                (SELECT count(*) FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
-                 WHERE sm.space_id=ch.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL AND sm.user_id<>n.actor_id
-                 AND (NOT ch.private OR s.owner_id=sm.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
-                      WHERE cm.channel_id=ch.id AND cm.user_id=sm.user_id AND cm.deleted_at IS NULL))) AS recipient_count,
+                COALESCE(rc.recipient_count, 0) AS recipient_count,
                 recipient.external_id AS recipient,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile
          FROM claimed c
@@ -178,6 +191,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          LEFT JOIN public.notification_overrides co ON co.user_id=n.user_id AND co.channel_id=ch.id
          LEFT JOIN public.notification_overrides so ON so.user_id=n.user_id AND so.space_id=ch.space_id
          LEFT JOIN public.direct_reads r ON r.channel_id=n.channel_id AND r.user_id=n.user_id
+         LEFT JOIN audience rc ON rc.channel_id=n.channel_id AND rc.actor_id IS NOT DISTINCT FROM n.actor_id
          ORDER BY c.id",
     )
     .bind(BATCH)
@@ -186,6 +200,13 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
     .map_err(|_| ())?;
     if claimed.is_empty() {
         return Ok(false);
+    }
+    let mut messages: Vec<_> = claimed.iter().map(|row| row.message.clone()).collect();
+    crate::assets::notification_content(&workers.pool, &mut messages)
+        .await
+        .map_err(|_| ())?;
+    for (row, message) in claimed.iter_mut().zip(messages) {
+        row.message = message;
     }
     stream::iter(claimed)
         .for_each_concurrent(CONCURRENCY, |claimed| async move {
@@ -233,7 +254,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     Attempt::Sent(
         workers
             .push
-            .send(platform, &claimed.address, &claimed.alert())
+            .send(
+                platform,
+                &claimed.address,
+                &claimed.alert(workers.cdn.as_deref()),
+            )
             .await,
     )
 }

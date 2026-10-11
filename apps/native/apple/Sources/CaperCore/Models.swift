@@ -52,6 +52,20 @@ public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
     public let inviter: Inviter
 }
 
+public struct UnreadChannel: Codable, Equatable, Sendable {
+    public let id: String
+    public let lastSeq: String
+}
+
+public struct UnreadSpace: Codable, Equatable, Sendable {
+    public let id: String
+    public var channels: [UnreadChannel]
+}
+
+public struct UnreadSpacesResponse: Codable, Sendable {
+    public let spaces: [UnreadSpace]
+}
+
 public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public let id: String
     public let username: String
@@ -455,11 +469,16 @@ public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let direct: Bool
 }
 public struct ForwardDestinations: Decodable, Sendable { public let destinations: [ForwardDestination] }
+public struct ForwardSource: Decodable, Sendable {
+    public let spaceId: String?
+    public let message: ChatMessage
+}
 public struct ForwardConversationHistory: Decodable, Sendable {
     public let root: ChatMessage?
     public var messages: [ChatMessage]
     public let cursor: String
     public var hasMore: Bool
+    public let source: ForwardSource?
 }
 public struct MessageForwardEvent: Decodable, Sendable {
     public let type: String

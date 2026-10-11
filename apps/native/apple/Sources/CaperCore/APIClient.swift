@@ -134,6 +134,14 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func unreadSpaces() async throws -> [UnreadSpace] {
+        let response: UnreadSpacesResponse = try await request("api/spaces/unread")
+        return response.spaces
+    }
+    public func markChannelRead(spaceID: String, channelID: String, seq: String) async throws {
+        _ = try Sequence.compare(seq, "0")
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/read", method: "POST", body: ReadInput(seq: seq))
+    }
     public func directMessages() async throws -> [DirectMessageConversation] {
         let response: DirectMessagesResponse = try await request("api/dms")
         guard response.conversations.allSatisfy({

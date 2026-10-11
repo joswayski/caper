@@ -183,6 +183,16 @@ object AttachmentPolicy {
     }
 
     /**
+     * [targetKbps], but never above the source's own [sourceBitrate] (bits per second): a
+     * compatibility transcode of a lean HEVC clip must not grow it. The floor still applies.
+     */
+    fun outputKbps(targetKbps: Int, sourceBitrate: Long?, settings: CompressionSettings): Int {
+        if (sourceBitrate == null || sourceBitrate <= 0) return targetKbps
+        val source = (sourceBitrate / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return max(minOf(targetKbps, source), minOf(VIDEO_BITRATE_FLOOR_KBPS, settings.videoBitrateKbps))
+    }
+
+    /**
      * Transcode only when needed: the short edge is above `videoMaxHeight`, the codec is not
      * H.264, the container cannot play inline, or the bitrate is above 1.25x the target. HDR
      * that this device cannot tone map uploads unchanged (null) rather than washed out.
@@ -198,7 +208,7 @@ object AttachmentPolicy {
         val heavy = facts.bitrate != null && facts.bitrate > target * 1000L * VIDEO_BITRATE_HEADROOM
         if (!shrink && !incompatible && !heavy) return null
         if (facts.hdr && !toneMapSupported) return null
-        return VideoPlan(outputHeight.takeIf { shrink }, target, sizeOnly = !shrink && !incompatible, toneMap = facts.hdr)
+        return VideoPlan(outputHeight.takeIf { shrink }, outputKbps(target, facts.bitrate, settings), sizeOnly = !shrink && !incompatible, toneMap = facts.hdr)
     }
 
     /**
@@ -213,10 +223,9 @@ object AttachmentPolicy {
         else -> true
     }
 
-    /** "1.6 MB → 143 KB" once compression saved space, otherwise the stored size. */
+    /** The final upload size, falling back to the source size for unchanged/restored files. */
     fun sizeLabel(sourceSize: Long, storedSize: Long?): String =
-        if (storedSize != null && storedSize < sourceSize) "${formatBytes(sourceSize)} → ${formatBytes(storedSize)}"
-        else formatBytes(storedSize ?: sourceSize)
+        formatBytes(storedSize ?: sourceSize)
 
     fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"

@@ -23,6 +23,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null)
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
+@Serializable data class UnreadChannel(val id: String, val lastSeq: String)
+@Serializable data class UnreadSpace(val id: String, val channels: List<UnreadChannel>)
+@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>)
 @Serializable data class Channel(
     val id: String,
     val spaceId: String,
@@ -209,7 +212,8 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class MessageForward(val message: ChatMessage?, val seq: String)
 @Serializable data class ForwardDestination(val id: String, val name: String, val spaceName: String, val direct: Boolean)
 @Serializable data class ForwardDestinations(val destinations: List<ForwardDestination>)
-@Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean)
+@Serializable data class ForwardSource(val spaceId: String? = null, val message: ChatMessage)
+@Serializable data class ForwardConversation(val root: ChatMessage?, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val source: ForwardSource? = null)
 @Serializable data class ForwardUpdate(val type: String, val schemaVersion: Int, val channelId: String, val seq: String, val message: ChatMessage)
 @Serializable data class EditUpdate(
     val type: String,
@@ -375,6 +379,7 @@ data class AppUiState(
     val restoring: Boolean = false,
     val account: Account? = null,
     val spaces: List<Space> = emptyList(),
+    val unreadSpaces: List<UnreadSpace> = emptyList(),
     val invitations: List<Space> = emptyList(),
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
@@ -443,6 +448,8 @@ data class AppUiState(
     val chatAuthorId: String? = null,
     /** `GET /api/assets/usage` succeeded: show the attach control. */
     val uploadsEnabled: Boolean = false,
+    /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
+    val uploadsChecked: Boolean = false,
     val drafts: List<DraftAttachmentUi> = emptyList(),
     val attachmentError: String? = null,
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
@@ -525,6 +532,8 @@ data class DraftAttachmentUi(
     val thumbnail: String? = null,
     /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
     val localUrl: String? = null,
+    /** The selected file URI, granted to the system opener for draft previews. */
+    val pickedUri: String? = null,
     /** The picked `content://` image, kept for the (dormant) server-processing placeholder. */
     val pickedImage: String? = null,
     val compressing: Boolean = true,

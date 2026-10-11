@@ -12,6 +12,7 @@ import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
 import chat.caper.android.push.ForegroundConversation
+import chat.caper.android.push.PushActivity
 import chat.caper.android.push.PushOffer
 import chat.caper.android.push.PushRegistration
 import chat.caper.android.push.pushOffer
@@ -73,6 +74,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var pendingChannelIntent: Pair<String, String>? = null
+    private val directHistories = linkedMapOf<String, ChatHistory>()
+    private var directHistoryJob: Job? = null
+    private var openingDirectId: String? = null
+    private var directOpeningRevision = 0L
+    private var openingForward = false
     private var notificationEdits: NotificationEdits? = null
     private var foreground = false
     private val uploader = AttachmentUploader(api)
@@ -96,6 +102,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var membershipChanges = 0
     private var membershipRevision = 0L
     private var membershipRefresh: Job? = null
+    private var unreadRevision = 0L
+    private var unreadRefreshScheduled: Job? = null
+    private val channelReads = mutableMapOf<String, String>()
+    private var conversationVisible = true
 
     init {
         loadHome()
@@ -104,12 +114,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
         viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
         viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation() } }
+        viewModelScope.launch { PushActivity.received.collect { scheduleUnreadRefresh() } }
     }
 
     private fun loadHome() {
         val requestAccountGeneration = accountGeneration
         notificationEdits = null
         lastChannelBySpace.clear()
+        cancelDirectOpening()
+        directHistories.clear()
         mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
         viewModelScope.launch {
             try {
@@ -229,6 +242,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         accountToken = null
         chatToken = null
         chatAuthor = null
+        channelReads.clear(); ++unreadRevision
         directRefresh?.cancel(); directRefresh = null
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
@@ -319,7 +333,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * its first joined channel; [notice] is shown once it opens. Choosing the space already shown keeps it.
      */
     fun selectSpace(id: String, preferredChannelId: String? = null, notice: String? = null) {
+        cancelDirectOpening()
         if (mutable.value.spaces.none { it.id == id } || preferredChannelId == null && showsSpace(mutable.value, id)) return
+        rememberDirectHistory()
         ++spaceAccessGeneration
         val request = ++generation
         closeChannel(clearPending = true)
@@ -360,11 +376,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retryOpening() { retryOpen?.invoke() }
 
     fun selectChannel(channel: Channel) {
+        cancelDirectOpening()
         // Choosing the conversation already shown keeps it, with its draft, scroll and live connection.
         if (showsChannel(mutable.value, channel)) {
             if (mutable.value.selectedChannel != channel) mutable.value = mutable.value.copy(selectedChannel = channel)
             return
         }
+        rememberDirectHistory()
         if (!channel.direct) lastChannelBySpace[channel.spaceId] = channel.id
         val request = ++generation
         closeChannel(clearPending = true)
@@ -386,24 +404,67 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectDirect(conversation: DirectConversation) {
-        val request = ++generation
-        closeChannel(clearPending = true)
-        val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id, messages = emptyList(), busy = true, error = null, messagesLoading = true)
-        refreshPeople()
-        viewModelScope.launch {
+        if (openingDirectId == conversation.id) return
+        cancelDirectOpening()
+        if (mutable.value.selectedDirectId == conversation.id && mutable.value.messagesError == null) return
+        val request = generation
+        val accountRequest = accountGeneration
+        val navigation = directOpeningRevision
+        openingDirectId = conversation.id
+        mutable.value = mutable.value.copy(error = null)
+        directHistoryJob = viewModelScope.launch {
             try {
-                val history = api.history(requireAccountToken(), conversation.id)
-                if (request != generation) return@launch
-                require(history.channel?.direct == true) { "Direct-message history was not marked direct." }
+                val history = directHistories[conversation.id] ?: api.history(requireAccountToken(), conversation.id)
+                if (request != generation || accountRequest != accountGeneration || navigation != directOpeningRevision) return@launch
+                require(history.space?.id == "" && history.channel?.id == conversation.id && history.channel?.direct == true) { "Caper returned another conversation." }
+                rememberDirectHistory()
+                openingDirectId = null
+                directHistoryJob = null
+                val committed = ++generation
+                closeChannel(clearPending = true)
+                val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
+                mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
-                openGateway(conversation.id, history.cursor, request)
-                markDirectRead(conversation.id, history.cursor)
+                openGateway(conversation.id, history.cursor, committed)
+                refreshPeople()
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Throwable) {
-                if (request == generation) mutable.value = mutable.value.copy(busy = false, messagesLoading = false, restoring = false, messagesError = message(error))
+                if (request == generation && accountRequest == accountGeneration && navigation == directOpeningRevision) {
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) directHistories.remove(conversation.id)
+                    mutable.value = mutable.value.copy(busy = false, restoring = false, error = message(error))
+                }
+            } finally {
+                if (navigation == directOpeningRevision) { openingDirectId = null; directHistoryJob = null }
             }
         }
+    }
+
+    private fun cancelDirectOpening() {
+        directOpeningRevision++
+        if (openingDirectId != null) mutable.value = mutable.value.copy(busy = false)
+        openingDirectId = null
+        directHistoryJob?.cancel(); directHistoryJob = null
+    }
+
+    private fun rememberDirectHistory() {
+        val state = mutable.value
+        val id = state.selectedDirectId ?: return
+        val cursor = durableReplayCursor ?: return
+        if (state.directConversations.none { it.id == id } || state.messagesError != null || state.messagesLoading || state.contextStart != null) {
+            directHistories.remove(id)
+            return
+        }
+        directHistories.remove(id)
+        directHistories[id] = ChatHistory(
+            messages = authoritativeMessages().filter { (it.threadRootId == null || it.broadcast) && it.id !in state.threadOnlyRows },
+            cursor = cursor, hasMore = state.hasMoreMessages,
+            pinnedMessages = pinSnapshots.values.filter { it.pin != null },
+            space = ChatRoom("", "Direct messages"),
+            channel = ChatRoom(id, state.selectedChannel?.name.orEmpty(), direct = true),
+        )
+        while (directHistories.size > 20) directHistories.remove(directHistories.keys.first())
     }
 
     fun startDirect(username: String, done: () -> Unit = {}, failed: ((String) -> Unit)? = null) = launchAction { request ->
@@ -418,10 +479,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** `POST /api/dms` by username (it returns an existing DM), then opens it unless you navigated meanwhile. */
     private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit) {
         val navigation = generation
+        val directNavigation = directOpeningRevision
         val conversation = api.startDirectConversation(requireAccountToken(), username)
         if (request != accountGeneration) return
         mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
-        if (navigation == generation) { done(); selectDirect(conversation) }
+        if (navigation == generation && directNavigation == directOpeningRevision) { done(); selectDirect(conversation) }
     }
 
     /**
@@ -499,6 +561,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Drops a declined (or blocked) request and leaves it if it is open, back toward the requests list. */
     private fun removeRequest(id: String) {
+        directHistories.remove(id)
+        if (openingDirectId == id) cancelDirectOpening()
         val directs = mutable.value.directConversations.filter { it.id != id }
         mutable.value = mutable.value.copy(directConversations = directs, requestsOpen = if (messageRequests(directs).isNotEmpty()) true else null)
         if (mutable.value.selectedDirectId != id) return
@@ -651,7 +715,55 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startDirectRefresh() {
         directRefresh?.cancel()
-        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshMembership() } }
+        refreshUnreadSpaces()
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+    }
+
+    /** Pushes refresh unread state between polls; a burst coalesces into one request about a second after the first. */
+    private fun scheduleUnreadRefresh() {
+        if (accountToken == null || unreadRefreshScheduled?.isActive == true) return
+        unreadRefreshScheduled = viewModelScope.launch { delay(1_000); refreshUnreadSpaces() }
+    }
+
+    private fun refreshUnreadSpaces() {
+        val token = accountToken ?: return
+        val account = accountGeneration; val revision = ++unreadRevision
+        viewModelScope.launch {
+            runCatching { api.unreadSpaces(token) }.onSuccess {
+                if (account == accountGeneration && revision == unreadRevision) {
+                    mutable.value = mutable.value.copy(unreadSpaces = it.spaces)
+                    if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
+                }
+            }
+        }
+    }
+
+    fun setConversationVisible(visible: Boolean) {
+        conversationVisible = visible
+        if (visible && !mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
+    }
+
+    private fun markConversationRead(id: String, seq: String?) {
+        if (seq == null) return
+        val current = mutable.value
+        if (!foreground || !conversationVisible || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
+        // An older window (jumped to a reply or search result) is not the latest, for channels and DMs alike.
+        if (current.hasNewerMessages) return
+        if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
+        val space = current.selectedSpace?.space?.id?.takeIf { it.isNotEmpty() } ?: return
+        val token = accountToken ?: return
+        if ((channelReads[id] ?: "0").toBigInteger() >= seq.toBigInteger()) return
+        val account = accountGeneration
+        viewModelScope.launch {
+            runCatching { api.markChannelRead(token, space, id, seq) }.onSuccess {
+                if (account != accountGeneration) return@onSuccess
+                ++unreadRevision
+                channelReads[id] = maxOf((channelReads[id] ?: "0").toBigInteger(), seq.toBigInteger()).toString()
+                mutable.value = mutable.value.copy(unreadSpaces = mutable.value.unreadSpaces.map { entry ->
+                    if (entry.id != space) entry else entry.copy(channels = entry.channels.filter { it.id != id || it.lastSeq.toBigInteger() > seq.toBigInteger() })
+                }.filter { it.channels.isNotEmpty() })
+            }
+        }
     }
 
     /**
@@ -718,10 +830,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshDirectConversations()
         refreshExpiringUrls()
         refreshMembership()
+        refreshUnreadSpaces()
         val current = mutable.value
-        if (!current.messagesLoading) current.selectedDirectId?.let { id ->
-            current.messages.lastOrNull()?.let { markDirectRead(id, it.seq) }
-        }
+        if (!current.messagesLoading) current.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
     }
 
     private fun markDirectRead(id: String, seq: String) {
@@ -809,6 +920,55 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request == generation && anchorRequest == historyAnchorRequest) mutable.value = mutable.value.copy(loadingOlder = false, olderError = message(error))
             }
+        }
+    }
+
+    fun openForwardedConversation(wrapper: ChatMessage, readOnly: () -> Unit, onOpened: () -> Unit = {}) {
+        if (openingForward) return
+        openingForward = true
+        val request = generation; val accountRequest = accountGeneration; val navigation = directOpeningRevision
+        viewModelScope.launch {
+            try {
+                val token = requireAccountToken()
+                val conversation = forwardedConversation(wrapper)
+                if (request != generation || accountRequest != accountGeneration || navigation != directOpeningRevision) return@launch
+                val source = conversation.source
+                if (source == null) { readOnly(); return@launch }
+                require(source.message.id == conversation.root?.id && source.message.channelId == conversation.root?.channelId) { "Conversation is unavailable." }
+                val target = source.message
+                if (mutable.value.selectedChannel?.id != target.channelId) {
+                    // Prepare before replacing the destination, just as voice-context navigation does.
+                    val detail = source.spaceId?.let { api.space(token, it) }
+                    val direct = if (detail == null) api.directConversations(token).conversations.first { it.id == target.channelId } else null
+                    val channel = detail?.channels?.first { it.id == target.channelId }
+                        ?: Channel(target.channelId, "", requireNotNull(direct).peer.displayName, private = true, direct = true)
+                    val history = api.history(token, target.channelId)
+                    require(history.channel?.id == target.channelId && history.space?.id == (source.spaceId ?: "")) { "Conversation is unavailable." }
+                    if (request != generation || accountRequest != accountGeneration || navigation != directOpeningRevision) return@launch
+                    rememberDirectHistory(); cancelDirectOpening()
+                    val previousSpace = mutable.value.selectedSpace?.space?.id
+                    val committed = ++generation
+                    if (detail != null && previousSpace != detail.space.id) ++spaceAccessGeneration
+                    closeChannel(clearPending = true)
+                    if (detail != null) lastChannelBySpace[detail.space.id] = channel.id
+                    installHistoryPins(history)
+                    mutable.value = mutable.value.copy(
+                        selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
+                        directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
+                        messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
+                        presencePage = if (detail == null || previousSpace == detail.space.id) mutable.value.presencePage else 0,
+                        deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
+                        busy = false, error = null, messagesLoading = false,
+                    )
+                    openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
+                    if (direct != null) refreshPeople()
+                }
+                goToMessage(target, onOpened)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request == generation && accountRequest == accountGeneration && navigation == directOpeningRevision)
+                    mutable.value = mutable.value.copy(error = "Couldn’t open the conversation. Try again.")
+            } finally { openingForward = false }
         }
     }
 
@@ -1261,7 +1421,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val usage = try { api.assetUsage(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
             if (request != accountGeneration) return@launch
             usage?.let { compression = it.compression }
-            mutable.value = mutable.value.copy(uploadsEnabled = usage != null)
+            mutable.value = mutable.value.copy(uploadsEnabled = usage != null, uploadsChecked = true)
         }
     }
 
@@ -1282,7 +1442,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
             draftDirectories[key] = directory
-            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file"))
+            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString()))
             uploadJobs[key] = viewModelScope.launch {
                 try {
                     val picked = preparer.copy(uri, directory)
@@ -1400,6 +1560,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
         durableReplayCursor = cursor
+        markConversationRead(channel, cursor)
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
             onMessage = { value -> viewModelScope.launch {
@@ -1496,13 +1657,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
-        if (mutable.value.selectedDirectId == message.channelId) markDirectRead(message.channelId, message.seq)
+        markConversationRead(message.channelId, message.seq)
     }
 
     private fun receiveReaction(update: ReactionUpdate, sequenced: Boolean = true) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
-        if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        if (sequenced) markConversationRead(update.channelId, update.seq)
         pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeReaction(it, update) }
         val current = authoritativeReactionMessages[update.messageId]
             ?: (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == update.messageId }
@@ -1527,7 +1688,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun receiveAttachments(update: AttachmentsUpdate) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = update.seq
-        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        markConversationRead(update.channelId, update.seq)
         // Pinned snapshots can hold messages outside the loaded page; keep their files current too.
         pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = mergeAttachments(it, update) }
         val pinned = mutable.value.pinnedMessages.map { mergeAttachments(it, update) }
@@ -1558,7 +1719,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun receiveEdit(update: EditUpdate) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = update.seq
-        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        markConversationRead(update.channelId, update.seq)
         applyEditSnapshot(update.message)
     }
 
@@ -1621,7 +1782,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun receivePin(update: PinUpdate, sequenced: Boolean = true) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = replayCursorAfterPin(durableReplayCursor, update, sequenced)
-        if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        if (sequenced) markConversationRead(update.channelId, update.seq)
         update.message.reactionSeq?.let { seq ->
             receiveReaction(ReactionUpdate("message.reactions", 1, update.channelId, seq, update.message.id, update.message.reactions), sequenced = false)
         }
@@ -1642,7 +1803,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun receiveForward(update: ForwardUpdate) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         durableReplayCursor = update.seq
-        if (mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        markConversationRead(update.channelId, update.seq)
         val previous = forwardSnapshots[update.message.id] ?: mutable.value.messages.firstOrNull { it.id == update.message.id }
         val snapshot = previous?.let { mergeForward(it, update.message) } ?: update.message
         forwardSnapshots[update.message.id] = snapshot
@@ -1739,7 +1900,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 openGateway(channel.id, history.cursor, request, channel.joined)
                 if (mutable.value.thread != null) loadThread()
-                if (channel.direct) markDirectRead(channel.id, history.cursor)
             } catch (error: Throwable) {
                 if (generation == request) {
                     if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
@@ -1817,6 +1977,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val member = memberRequest(request, failed) { api.addSpaceMember(requireAccountToken(), detail.space.id, username) } ?: return@launchAction
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+        done()
+    }
+    /**
+     * A profile invitation targets an owned space without changing the open conversation.
+     * [already] gets "Member" or "Invited" when the server says it is redundant, before [failed].
+     */
+    fun inviteToSpace(spaceId: String, username: String, done: () -> Unit, already: (String) -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        val current = mutable.value
+        check(current.spaces.any { it.id == spaceId && it.ownerId == current.account?.id && !it.demo }) { "Only space owners can invite people." }
+        val member = try { api.addSpaceMember(token, spaceId, username) }
+        catch (error: ApiException) {
+            redundantInvitations[error.message]?.let { if (request == accountGeneration) already(it) }
+            throw error
+        }
+        if (request != accountGeneration) return@accountRequest
+        if (mutable.value.selectedSpace?.space?.id == spaceId)
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
         done()
     }
     fun loadSpaceInvitations() = launchAction { request ->
@@ -1970,6 +2147,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun revokeChannel() {
+        mutable.value.selectedDirectId?.let { directHistories.remove(it) }
         mutable.value.selectedChannel?.id?.let { VoiceCallService.stopIfChannel(getApplication(), it) }
         ++generation
         closeChannel(clearPending = true)
@@ -1977,6 +2155,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun closeChannel(clearPending: Boolean) {
+        cancelDirectOpening()
         ++historyAnchorRequest
         gateway?.close(); gateway = null
         ++threadRequest
@@ -2075,6 +2254,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
 /** The longest launch keeps the loading screen up while restoring the last conversation. */
 internal const val RESTORE_LIMIT_MS = 5_000L
+
+/** The server's redundant-invitation errors -> the profile card's label for that space. */
+private val redundantInvitations = mapOf("user already in space" to "Member", "user already invited" to "Invited")
 
 /** Web/Apple: [preferred] when the space has it, else the channel last opened there while still joined, else the first joined channel. */
 internal fun spaceLandingChannel(channels: List<Channel>, preferred: String?, remembered: String?): Channel? =

@@ -183,6 +183,7 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.direct_conversations, public.direct_reads TO {role}"
         ),
+        format!("GRANT SELECT, INSERT, UPDATE ON public.channel_reads TO {role}"),
         format!("GRANT SELECT, INSERT, UPDATE ON public.user_blocks TO {role}"),
         // Devices are revoked and preferences updated in place; only finished
         // jobs and deliveries (operational state) are pruned.

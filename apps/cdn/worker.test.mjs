@@ -40,6 +40,10 @@ const env = {
       body: new TextEncoder().encode("0123456789"),
       headers: { "content-type": "image/png", "content-disposition": 'attachment; filename="a.png"' },
     },
+    "preview/abc": {
+      body: new TextEncoder().encode("preview"),
+      headers: { "content-type": "image/png" },
+    },
     "original/doc": {
       body: new TextEncoder().encode("<html>"),
       headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="page.html"' },
@@ -51,8 +55,12 @@ const env = {
   }),
 };
 
-async function signed(key, expires = Math.floor(Date.now() / 1000) + 3600) {
-  return `https://cdn.test/${key}?exp=${expires}&sig=${await sign(SECRET, key, expires)}`;
+async function signed(
+  key,
+  expires = Math.floor(Date.now() / 1000) + 3600,
+  path = key.replace(/^original\//, "assets/"),
+) {
+  return `https://cdn.test/${path}?exp=${expires}&sig=${await sign(SECRET, key, expires)}`;
 }
 
 test("signatures match the API's HMAC-SHA256 of key and expiry", async () => {
@@ -62,14 +70,21 @@ test("signatures match the API's HMAC-SHA256 of key and expiry", async () => {
   assert.equal(await sign(SECRET, "original/abc", 172800), expected);
 });
 
-test("valid URLs stream allowlisted media inline", async () => {
-  const response = await worker.fetch(new Request(await signed("original/abc")), env);
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("content-type"), "image/png");
-  assert.equal(response.headers.get("content-disposition"), "inline");
-  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(response.headers.get("cache-control"), "private, max-age=86400, immutable");
-  assert.equal(await response.text(), "0123456789");
+test("assets, legacy originals and previews stream the correct media inline", async () => {
+  for (const [key, path, body] of [
+    ["original/abc", "assets/abc", "0123456789"],
+    ["original/abc", "original/abc", "0123456789"],
+    ["preview/abc", "preview/abc", "preview"],
+  ]) {
+    const response = await worker.fetch(new Request(await signed(key, undefined, path)), env);
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.equal(response.headers.get("content-disposition"), "inline");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("cache-control"), "private, max-age=86400, immutable");
+    assert.equal(response.headers.get("access-control-allow-origin"), "*");
+    assert.equal(await response.text(), body);
+  }
 });
 
 test("other types download as opaque bytes with their name", async () => {
@@ -106,9 +121,10 @@ test("tampered, expired, overlong, foreign-key and unknown requests are refused"
   for (const url of [
     tampered,
     otherKey,
+    await signed("assets/abc"),
     await signed("original/abc", now - 1),
     await signed("original/abc", now + 4 * 24 * 3600),
-    "https://cdn.test/original/abc",
+    "https://cdn.test/assets/abc",
     "https://cdn.test/other/abc?exp=1&sig=x",
     await signed("original/missing"),
   ]) {

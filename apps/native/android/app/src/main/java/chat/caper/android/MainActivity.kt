@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,6 +17,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -26,7 +28,13 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.background
@@ -36,6 +44,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
@@ -60,6 +69,10 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -87,6 +100,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -119,6 +135,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
 import chat.caper.android.data.MAX_CODE_RESENDS
 import chat.caper.android.data.RESEND_COOLDOWN_MILLIS
@@ -350,6 +367,8 @@ internal data class VoiceJoinIntent(
 @Composable private fun BrandLoading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Wordmark(); CircularProgressIndicator(color = Terracotta)
+        Text("Loading your spaces…", color = TextMuted, fontSize = 12.sp,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 
@@ -436,6 +455,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
+            LaunchedEffect(narrow, navigationOpen) { viewModel.setConversationVisible(!narrow || !navigationOpen) }
             // 60 rail + 280 channels + 320 minimum chat + 220 members.
             val medium = maxWidth < 880.dp
             var membersVisible by remember { mutableStateOf(false) }
@@ -450,7 +470,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 if (narrow) {
                     val drawer = rememberBrowseDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
-                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen, quick = true) }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
@@ -465,11 +485,10 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             // Leaves room for the account bar, which rises over the conversation.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
-                                Row(Modifier.weight(1f)) {
+                                Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
-                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
-                                            .browseSwipeRegion(drawer, enabled = state.selectedChannel != null),
+                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
@@ -484,6 +503,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 if (membersShown || membersInView) {
                                     Box(Modifier.fillMaxSize().padding(top = 54.dp).graphicsLayer { alpha = members.progress.value }
                                         .background(Color.Black.copy(alpha = 0.25f))
+                                        .browseSwipeRegion(members, enabled = membersShown)
                                         .then(if (membersShown) Modifier.clickable(
                                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                                             indication = null,
@@ -532,19 +552,33 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
     val progress = Animatable(if (open) 1f else 0f)
     var dragging = false
-    /** Set when a touch lands on the timeline or channel list; elsewhere keeps its own drags. */
+    /** Set when a touch lands on content or its header; editors and audio controls keep their own drags. */
     var regionTouched = false
+    /** Set when a touch lands on an editor inside a region, which keeps its own drags. */
+    var regionExcluded = false
 
     fun drag(value: Float) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
     }
 
-    /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float = 0f) {
+    /** Buttons use a quick slide; swipes carry on at `velocity` (progress per second). */
+    fun settle(open: Boolean, velocity: Float? = null, quick: Boolean = false) {
         val target = if (open) 1f else 0f
         if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+            if (velocity == null) {
+                progress.animateTo(target,
+                    if (quick) tween(220, easing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f))
+                    else spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
+            } else {
+                val remaining = target - progress.value
+                val distance = abs(remaining)
+                val speed = if (remaining > 0f) velocity else -velocity
+                // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
+                val duration = if (speed > 0f) (3000f * distance / speed).coerceIn(160f, 320f).toInt() else 320
+                val slope = if (distance > 0f) (speed * duration / 1000f / distance).coerceIn(0f, 3f) else 0f
+                progress.animateTo(target, tween(duration, easing = CubicBezierEasing(0.2f, 0.2f * slope, 0.35f, 1f)))
+            }
         }
     }
 }
@@ -586,13 +620,24 @@ private fun Modifier.membersLayer(drawer: BrowseDrawer): Modifier = graphicsLaye
     shadowElevation = 16.dp.toPx()
 }
 
-// Only the timeline/sidebar starts this gesture; the composer and audio controls
+// Content, headers and drawer backdrops start this gesture; the composer and audio controls
 // keep their native drags.
 private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean): Modifier =
     if (drawer == null || !enabled) this else pointerInput(drawer) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
-            drawer.regionTouched = true
+            // An excluded child sees the touch first.
+            drawer.regionTouched = !drawer.regionExcluded
+            drawer.regionExcluded = false
+        }
+    }
+
+// Editors inside a swipe region keep their text drags, as the web's and Apple's excluded starts.
+private fun Modifier.browseSwipeExcluded(drawer: BrowseDrawer?): Modifier =
+    if (drawer == null) this else pointerInput(drawer) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            drawer.regionExcluded = true
         }
     }
 
@@ -609,6 +654,7 @@ private fun Modifier.browseDrag(
             val down = awaitFirstDown(requireUnconsumed = false)
             val allowed = drawer.regionTouched
             drawer.regionTouched = false
+            drawer.regionExcluded = false
             if (!allowed) return@awaitEachGesture
             val opening = drawer.progress.targetValue < 0.5f
             val width = (travel?.invoke() ?: size.width.toFloat()).coerceAtLeast(1f)
@@ -664,6 +710,7 @@ private fun Modifier.browseDrag(
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
+            val unread = state.unreadSpaces.any { it.id == space.id }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
@@ -671,11 +718,12 @@ private fun Modifier.browseDrag(
                     Surface(
                         // Clipped first, so the press ripple keeps the tile's corners.
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                     ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(space.name), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
+                    if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }
@@ -779,7 +827,7 @@ private fun Modifier.browseDrag(
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
-            if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
+            if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp).browseSwipeExcluded(LocalBrowseDrawer.current), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
@@ -864,6 +912,7 @@ private fun Modifier.browseDrag(
                             .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (state.unreadSpaces.any { it.channels.any { it.id == channel.id } }) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
                             if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                             sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }
@@ -1178,6 +1227,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
 @Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false, close: (() -> Unit)? = null) {
     val members = state.selectedSpace?.members ?: return
     val detail = state.selectedSpace ?: return
+    var profile by remember(detail.space.id) { mutableStateOf<MentionCard?>(null) }
     val pages = ((members.size + 24) / 25).coerceAtLeast(1)
     val shown = members.drop(state.presencePage * 25).take(25)
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
@@ -1194,7 +1244,9 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
             items(shown, key = { it.id }) { member ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
+                    .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         Avatar(member.displayName, 30.dp, avatarId = member.avatarId)
                         PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, SurfaceSidebar, Modifier.align(Alignment.BottomEnd))
@@ -1207,6 +1259,13 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }
             Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
             TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages, shape = MaterialTheme.shapes.small) { Text("Next", fontSize = 10.sp) }
+        }
+    }
+    profile?.let { card ->
+        key(card.id) {
+            MentionCardSheet(card, { done, failed -> card.username?.let { username ->
+                viewModel.messageMentioned(card.id, username, { profile = null; close?.invoke(); done() }, failed)
+            } }, state = state, viewModel = viewModel) { profile = null }
         }
     }
 }
@@ -1286,10 +1345,55 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openNavigation: () -> Unit,
 ) {
     val threadDrafts = rememberSaveableStateHolder()
-    Row(modifier) {
-        ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
-        if (!narrow && state.thread != null) threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            ThreadConversation(state, viewModel, Modifier.width(340.dp).fillMaxHeight())
+    val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("layout", android.content.Context.MODE_PRIVATE) }
+    var preferredWidth by rememberSaveable { mutableFloatStateOf(preferences.getFloat("threadWidth", 340f).coerceIn(300f, 600f)) }
+    val density = LocalDensity.current.density
+    val resizeFocus = remember { FocusRequester() }
+    var resizeFocused by remember { mutableStateOf(false) }
+    BoxWithConstraints(modifier) {
+        val maximum = minOf(600f, maxWidth.value - minOf(300f, maxWidth.value / 2))
+        val minimum = minOf(300f, maximum)
+        val width = preferredWidth.coerceIn(minimum, maximum)
+        fun saveWidth() { preferences.edit().putFloat("threadWidth", preferredWidth.coerceIn(300f, 600f)).apply() }
+        fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
+        Row(Modifier.fillMaxSize()) {
+            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
+            if (!narrow && state.thread != null) Box(Modifier.width(width.dp).fillMaxHeight()) {
+                threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
+                    ThreadConversation(state, viewModel, Modifier.fillMaxSize())
+                }
+                Box(Modifier.align(Alignment.CenterStart).width(12.dp).fillMaxHeight()
+                    .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)))
+                    .drawBehind { if (resizeFocused) drawRect(Terracotta, size = Size(2.dp.toPx(), size.height)) }
+                    .focusRequester(resizeFocus).onFocusChanged { resizeFocused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) false else {
+                            val next = when (event.key) {
+                                Key.DirectionLeft -> width + 10f
+                                Key.DirectionRight -> width - 10f
+                                Key.MoveHome -> minimum
+                                Key.MoveEnd -> maximum
+                                else -> null
+                            }
+                            if (next == null) false else { resize(next); true }
+                        }
+                    }
+                    .focusable()
+                    .semantics {
+                        contentDescription = "Thread width"
+                        stateDescription = "${width.toInt()} dp"
+                        progressBarRangeInfo = ProgressBarRangeInfo(width, minimum..maximum)
+                        setProgress { resize(it); true }
+                        customActions = listOf(CustomAccessibilityAction("Reset thread width") { resize(340f); true })
+                    }
+                    .draggable(rememberDraggableState { delta ->
+                        preferredWidth = (preferredWidth.coerceIn(minimum, maximum) - delta / density).coerceIn(minimum, maximum).coerceAtLeast(300f)
+                    }, Orientation.Horizontal, onDragStarted = { resizeFocus.requestFocus() }, onDragStopped = { saveWidth() })
+                    .pointerInput(maximum) {
+                        detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resize(340f); resizeFocus.requestFocus() })
+                    })
+            }
         }
     }
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
@@ -1381,164 +1485,200 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
     if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
-    Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
-        // Web waits a second before announcing a lost connection.
-        val live = state.gateway == GatewayStatus.LIVE
-        var showConnection by remember(channel.id) { mutableStateOf(false) }
-        LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-        // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+    // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
+    val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
+    val attachable by rememberUpdatedState(canAttach)
+    // Held, not delegated, so the remembered target below always updates this conversation.
+    val dropping = remember { mutableStateOf(false) }
+    val activity = LocalActivity.current
+    val dropTarget = remember(viewModel, activity, dropping) {
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) { dropping.value = true }
+            override fun onExited(event: DragAndDropEvent) { dropping.value = false }
+            override fun onEnded(event: DragAndDropEvent) { dropping.value = false }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                dropping.value = false
+                val drag = event.toAndroidDragEvent()
+                val clip = drag.clipData ?: return false
+                val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                if (uris.isEmpty() || !attachable) return false
+                // Lets this activity read another app's content URIs while the copy runs.
+                activity?.requestDragAndDropPermissions(drag)
+                viewModel.addAttachments(uris)
+                return true
             }
-            // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
-            if (narrow && direct != null) Box(Modifier.weight(1f)) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
-                    .clickable(role = Role.Button) { channelMenuOpen = true }
-                    .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
-                    Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+        }
+    }
+    Box(modifier.fillMaxHeight().dragAndDropTarget({ attachable && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)) {
+        Column(Modifier.fillMaxSize().background(SurfaceConversation)) {
+            // Web waits a second before announcing a lost connection.
+            val live = state.gateway == GatewayStatus.LIVE
+            var showConnection by remember(channel.id) { mutableStateOf(false) }
+            LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
+            // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
+            Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp)
+                .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
                 }
-                DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
-                        onClick = { channelMenuOpen = false; toggleBlock() })
-                }
-            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
-            }
-            // Right of Pins on every width, and the same size, as on web.
-            if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
-                    Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
-            }
-            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-                Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-            if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
-            if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        HorizontalDivider(color = Border)
-        if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            Text(buildAnnotatedString {
-                append("Join ")
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
-                append(" to interact with people here")
-            }, color = TextMuted, fontSize = 12.sp)
-        }
-        state.refreshError?.let { error ->
-            Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small) { Text("Retry", color = Text, fontSize = 12.sp) }
-                }
-            }
-        }
-        // The dock (and its voice error row) is hidden behind Browse on phones.
-        (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
-            Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
-        }
-        // Web shows a pending message's status inline, under the message itself.
-        val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
-        if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
-            Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
-                Column(Modifier.heightIn(max = 560.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
-                        TextButton({ showingPins = false }, shape = MaterialTheme.shapes.small) { Text("Close") }
+                // Phones keep Block in a 1:1 DM's title menu; Members is a header button.
+                if (narrow && direct != null) Box(Modifier.weight(1f)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                        .clickable(role = Role.Button) { channelMenuOpen = true }
+                        .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
+                        Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
                     }
-                    HorizontalDivider(color = Border)
-                    PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
-                }
-            }
-        }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
-            // A left swipe opens the member list, as a right one opens Browse.
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
-            listState = timelineState, follow = timelineFollow) {
-            channelPending?.error?.let { pending ->
-                val editable = canEditRejectedMessage(draft.text, channelPending.text)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-                    TextButton({
-                        if (channelPending.rejected) {
-                            if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
-                        } else viewModel.send(channelPending.text)
-                    }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
-                        enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
-                        Text(if (channelPending.rejected) "Edit" else "Retry send")
+                    DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                        DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
+                            onClick = { channelMenuOpen = false; toggleBlock() })
                     }
-                    if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
                 }
-                if (channelPending.rejected && !editable)
-                    Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
+                // Right of Pins on every width, and the same size, as on web.
+                if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
+                        Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
+                }
+                if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
+                if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
-        }
-        if (joined) TypingLine(state.typingAuthors)
-        if (joined) HorizontalDivider(color = Border)
-        val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
-        // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
-        if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
-        else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-        else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
-            if (direct?.outgoing == true) OutgoingRequestNotice(direct)
-            state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
-                pending.threadRootId?.let { root ->
+            HorizontalDivider(color = Border)
+            if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(buildAnnotatedString {
+                    append("Join ")
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
+                    append(" to interact with people here")
+                }, color = TextMuted, fontSize = 12.sp)
+            }
+            state.refreshError?.let { error ->
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                    Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small) { Text("Retry", color = Text, fontSize = 12.sp) }
+                    }
+                }
+            }
+            // The dock (and its voice error row) is hidden behind Browse on phones.
+            (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
+                Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
+            }
+            // Web shows a pending message's status inline, under the message itself.
+            val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
+            if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
+                Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
+                    Column(Modifier.heightIn(max = 560.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
+                            TextButton({ showingPins = false }, shape = MaterialTheme.shapes.small) { Text("Close") }
+                        }
+                        HorizontalDivider(color = Border)
+                        PinnedMessages(state, viewModel, Modifier.weight(1f, fill = false)) { showingPins = false }
+                    }
+                }
+            }
+            MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                // A left swipe opens the member list, as a right one opens Browse.
+                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
+                listState = timelineState, follow = timelineFollow) {
+                channelPending?.error?.let { pending ->
+                    val editable = canEditRejectedMessage(draft.text, channelPending.text)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                        TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
+                        Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                        TextButton({
+                            if (channelPending.rejected) {
+                                if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
+                            } else viewModel.send(channelPending.text)
+                        }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
+                            enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
+                            Text(if (channelPending.rejected) "Edit" else "Retry send")
+                        }
+                        if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                    }
+                    if (channelPending.rejected && !editable)
+                        Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
+                }
+            }
+            if (joined) TypingLine(state.typingAuthors)
+            if (joined) HorizontalDivider(color = Border)
+            val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
+            // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
+            if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
+            else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
+            else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                if (direct?.outgoing == true) OutgoingRequestNotice(direct)
+                state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
+                    pending.threadRootId?.let { root ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (pending.rejected) "A thread reply wasn’t sent." else "A thread reply couldn’t be confirmed.", Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                            TextButton({ viewModel.openThread(root) }, shape = MaterialTheme.shapes.small) { Text("Review reply") }
+                        }
                     }
                 }
-            }
-            state.sessionError?.let { error ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
-                    TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
+                state.sessionError?.let { error ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                        TextButton(viewModel::retrySession, shape = MaterialTheme.shapes.small) { Text("Retry session", fontSize = 12.sp) }
+                    }
                 }
-            }
-            state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-            DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
-            val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
-            fun sendDraft() {
-                if (hasContent && state.pendingMessage == null) {
-                    val sent = draft.text
-                    viewModel.setTyping(false)
-                    if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
+                val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
+                fun sendDraft() {
+                    if (hasContent && state.pendingMessage == null) {
+                        val sent = draft.text
+                        viewModel.setTyping(false)
+                        if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                    }
                 }
-            }
-            fun submit() {
-                val pending = state.pendingMessage
-                // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                if (state.chatAuthorId != null) {
-                    if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                    else sendDraft()
+                fun submit() {
+                    val pending = state.pendingMessage
+                    // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                    if (state.chatAuthorId != null) {
+                        if (pending != null) { if (pending.threadRootId == null && !pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                        else sendDraft()
+                    }
                 }
-            }
-            SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                    // Shown only when the server accepts uploads; read-only previews have no composer.
-                    if (state.uploadsEnabled) AttachButton(state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null, viewModel::addAttachments)
-                    OutlinedTextField(
-                        draft, change, modifier = Modifier.weight(1f).then(field),
-                        placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
-                        enabled = !state.messagesLoading && state.messagesError == null,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
-                        colors = composerFieldColors(),
-                    )
-                    FilledIconButton(
-                        { sendDraft() },
-                        // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                        modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
-                        shape = MaterialTheme.shapes.small,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = Terracotta, contentColor = Color.White,
-                            disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
-                        ),
-                    ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                        OutlinedTextField(
+                            draft, change, modifier = Modifier.weight(1f).then(field),
+                            placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                            // Reserve the icon inside the field while uploads/session become ready.
+                            // Read-only previews and locked DMs have no composer.
+                            leadingIcon = {
+                                AttachButton(attachDisabledReason(state), viewModel::addAttachments)
+                            },
+                            enabled = !state.messagesLoading && state.messagesError == null,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
+                            colors = composerFieldColors(),
+                        )
+                        FilledIconButton(
+                            { sendDraft() },
+                            // Centred on a one-line field (56dp), and near the bottom as the field grows.
+                            modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
+                            shape = MaterialTheme.shapes.small,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Terracotta, contentColor = Color.White,
+                                disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                            ),
+                        ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                    }
                 }
+                DraftCounter(draft.text)
             }
-            DraftCounter(draft.text)
+        }
+        if (dropping.value && canAttach) {
+            val (title, detail) = FileDrop.text(channel.name, channel.direct, state.drafts.size)
+            FileDropOverlay(title, detail, caperBrandingResources[LocalBrandAvatar.current])
         }
     }
 }
@@ -1697,8 +1837,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
-    // The tapped person's `user` mention entry; another pill replaces it.
-    var mentionTarget by remember { mutableStateOf<MessageMention?>(null) }
+    // Mentions, author avatars and author names share the same profile sheet.
+    var mentionTarget by remember { mutableStateOf<MentionCard?>(null) }
     // Above the list, so new messages scrolling a row away don't close its viewer.
     val viewerHost = remember { MediaViewerHost() }
     val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
@@ -1736,7 +1876,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
-        return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Loading messages…", color = TextMuted, fontSize = 13.sp) }
+        return MessageSkeleton(modifier.clipToBounds())
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1756,6 +1896,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
+        reactions = messages.takeLast(FOLLOW_REACTION_ROWS).map { it.reactions },
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -1791,9 +1932,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
-                        openMention = { mentionTarget = it },
+                        openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
+                        openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
-                        openConversation = { conversationTarget = it },
+                        openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
@@ -1808,17 +1950,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         if (skeleton) item("thread-loading") {
-            Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
-                repeat(2) { index ->
-                    Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Box(Modifier.size(34.dp).background(Border, CircleShape))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
-                            Box(Modifier.fillMaxWidth(if (index == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
-                        }
-                    }
-                }
-            }
+            MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
         listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -1893,10 +2025,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
         }
     }
-    mentionTarget?.let { target ->
-        val card = mentionCard(target.id, target.username.orEmpty(), state)
-        key(target) {
-            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }) { mentionTarget = null }
+    mentionTarget?.let { card ->
+        key(card.id) {
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }, state = state, viewModel = viewModel) { mentionTarget = null }
         }
     }
     pickerTarget?.let { target ->
@@ -1952,12 +2083,17 @@ internal class TimelineFollow(var settled: Boolean = false) {
 
 /**
  * One composition of a message list: its row keys, your pending send, paging state, whether it shows a historical
- * context window rather than the newest messages, and the Go to message revision whose target it contains.
+ * context window rather than the newest messages, the Go to message revision whose target it contains, and the
+ * reactions on the last [FOLLOW_REACTION_ROWS] messages.
  */
 internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
+    val reactions: List<List<MessageReaction>> = emptyList(),
 )
+
+/** Recent rows whose reaction chips can grow the bottom of the list: more than a screen of short messages. */
+internal const val FOLLOW_REACTION_ROWS = 20
 
 /**
  * Web's timeline following, as the `(index, offset)` to request (or null to stay), updating [follow]. A Go to
@@ -1981,7 +2117,9 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
         now.pendingId != null && now.pendingId != last.pendingId -> latest.also { follow.sent = now.historical }
         last.historical && !now.historical -> if (last.loadingNewer && !follow.sent) null else latest.also { follow.sent = false }
         else -> (if (last.loadingOlder && !now.loadingOlder) anchor() else null)
-            ?: latest.takeIf { !now.historical && !last.historical && now.keys.lastOrNull() != last.keys.lastOrNull() && near() }
+            // Reaction chips can add/wrap a row without changing its key.
+            ?: latest.takeIf { !now.historical && !last.historical &&
+                (now.keys.lastOrNull() != last.keys.lastOrNull() || now.reactions != last.reactions) && near() }
     }
 }
 
@@ -2076,6 +2214,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     openHistory: (ChatMessage) -> Unit = {},
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: (MessageMention) -> Unit = {},
+    openAuthor: ((ChatAuthor) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
     openActions: (ChatMessage) -> Unit,
@@ -2094,7 +2233,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, grouped) { if (message.forward == null) openHistory(message) } }
+        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
@@ -2239,7 +2378,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
-                    openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
+                    openAuthor = { pinnerTarget = it },
+                    openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
@@ -2259,7 +2399,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     pinnerTarget?.let { author ->
         val card = authorCard(author, state)
         key(author.id) {
-            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }) { pinnerTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }, state = state, viewModel = viewModel) { pinnerTarget = null }
         }
     }
     actionTarget?.let { target ->
@@ -2318,6 +2458,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
+    openAuthor: ((ChatAuthor) -> Unit)? = null,
     grouped: Boolean = false, openHistory: () -> Unit = {},
 ) = MessageRow(
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
@@ -2326,6 +2467,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     edited = message.forward == null && message.revision > 1, openHistory = openHistory,
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
     openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
+    openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2335,9 +2477,19 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
     grouped: Boolean = false,
+    openAuthor: (() -> Unit)? = null,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
+    // TalkBack keeps reading the name; the click label names the action.
+    val profile = if (openAuthor == null) Modifier else Modifier
+        .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
+    // A round ripple and a 48dp touch target that spills into the row's padding,
+    // so the layout still matches grouped rows. TalkBack uses the name instead.
+    val avatarProfile = if (openAuthor == null) Modifier else Modifier
+        .size(34.dp).wrapContentSize(unbounded = true).minimumInteractiveComponentSize()
+        .clearAndSetSemantics {}.clip(CircleShape)
+        .clickable(role = Role.Button, onClickLabel = "Open profile for $author", onClick = openAuthor)
     Row(Modifier.fillMaxWidth().hoverable(hover).padding(start = 18.dp, end = 18.dp, top = if (grouped) 2.dp else 10.dp, bottom = 10.dp)) {
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
@@ -2347,12 +2499,12 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             contentAlignment = Alignment.TopCenter,
         ) {
             if (hovered) Text(shortTimeLabel(createdAt), color = TextMuted, fontSize = 10.sp, lineHeight = 21.sp, maxLines = 1, softWrap = false)
-        } else Avatar(author, 34.dp, avatarId = avatarId)
+        } else Avatar(author, 34.dp, modifier = avatarProfile, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
                 // A long name gives way first, so the time and tags stay whole.
-                Text(author, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(author, Modifier.weight(1f, fill = false).then(profile), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }
@@ -2394,14 +2546,47 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
+/** Static, noninteractive placeholders shared by channel and thread loading. */
+@Composable private fun MessageSkeleton(modifier: Modifier = Modifier, rows: Int = 5, label: String = "Loading messages") {
+    Column(modifier.fillMaxWidth().clearAndSetSemantics {
+        contentDescription = label
+        progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+    }) {
+        repeat(rows) { index ->
+            Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(34.dp).background(Border, CircleShape))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
+                    Box(Modifier.fillMaxWidth(if (index % 2 == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Why Attach is disabled, or null when it can be used, worded as on every client: checking while upload settings
+ * or the conversation load, unavailable once either fails, and the attachment limit.
+ */
+internal fun attachDisabledReason(state: AppUiState): String? = when {
+    (state.uploadsChecked && !state.uploadsEnabled) || state.messagesError != null || state.sessionError != null -> "File uploads are unavailable"
+    !state.uploadsEnabled || state.chatAuthorId == null || state.messagesLoading -> "Checking file uploads…"
+    state.drafts.size >= AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
+    else -> null
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
-@Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
+@Composable private fun AttachButton(disabledReason: String?, add: (List<android.net.Uri>) -> Unit) {
+    val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
     Box {
-        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
-            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+        IconButton({ open = true }, Modifier.size(48.dp).semantics {
+            contentDescription = "Attach files"
+            if (disabledReason != null) stateDescription = disabledReason
+        }, enabled = enabled) {
+            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {

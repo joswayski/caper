@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { createSpaceNavigation } from "../spaces/navigation.ts";
+import { createDirectNavigation, createSpaceNavigation } from "../spaces/navigation.ts";
 import {
   SpacesApiError,
   channelNameError,
@@ -100,6 +100,84 @@ const history = (id: string) => ({
   messages: [],
   cursor: "7",
   hasMore: false,
+});
+
+const directHistory = (id: string) => ({
+  ...history(id),
+  space: { id: "", name: "Direct messages" },
+  channel: { id, name: id, direct: true },
+});
+
+test("DM hover/click shares a read and revisits retain each live history and replay cursor", async () => {
+  const paths: string[] = [];
+  let release!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(init?.method, undefined, "speculation never creates sessions or marks messages read");
+    paths.push(String(input));
+    return new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  });
+  const navigation = createDirectNavigation();
+  navigation.prefetch("direct000001");
+  navigation.prefetch("direct000001");
+  const first = navigation.take("direct000001", new AbortController().signal);
+  assert.deepEqual(paths, ["/api/chat/channels/direct000001/messages"]);
+  assert.equal(navigation.peek("direct000001"), undefined, "unfinished history cannot replace the current chat");
+  release(Response.json(directHistory("direct000001")));
+  navigation.remember("direct000001", await first);
+  const second = navigation.take("direct000002", new AbortController().signal);
+  release(Response.json(directHistory("direct000002")));
+  navigation.remember("direct000002", await second);
+  const live = { ...directHistory("direct000001"), cursor: "9007199254740993", hasMore: true };
+  navigation.rememberHistory(live);
+  navigation.prefetch("direct000001");
+  assert.deepEqual((await navigation.take("direct000001", new AbortController().signal)).history, live);
+  assert.equal((await navigation.take("direct000002", new AbortController().signal)).history?.cursor, "7");
+  assert.equal(paths.length, 2, "visited DMs resume replay without another first-page read");
+  navigation.rememberHistory({ ...live, hasNewer: true });
+  assert.equal(navigation.peek("direct000001"), undefined, "an older search window cannot seed latest navigation");
+  navigation.remember("direct000001", { history: live });
+  navigation.forget("direct000001");
+  navigation.rememberHistory(live);
+  assert.equal(navigation.peek("direct000001"), undefined, "cleanup cannot resurrect revoked data");
+  navigation.clear();
+  assert.equal(navigation.peek("direct000002"), undefined, "account/page cleanup releases private snapshots");
+});
+
+test("DM preparation cancels abandoned reads, preserves explicit load errors, and rejects inaccessible history", async () => {
+  const navigation = createDirectNavigation();
+  const controller = new AbortController();
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      }),
+  );
+  navigation.prefetch("direct000001");
+  const abandoned = navigation.take("direct000001", controller.signal);
+  controller.abort();
+  await assert.rejects(abandoned, { name: "AbortError" });
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "Unavailable" }, { status: 503 }));
+  assert.deepEqual(await navigation.take("direct000001", new AbortController().signal), {
+    historyError: "Unavailable",
+  });
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "Access removed" }, { status: 404 }));
+  await assert.rejects(navigation.take("direct000001", new AbortController().signal), /Access removed/);
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(history("direct000001")));
+  assert.deepEqual(await navigation.take("direct000001", new AbortController().signal), {
+    historyError: "The chat service returned the wrong conversation.",
+  });
+  let prefetchSignal: AbortSignal | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    prefetchSignal = init?.signal ?? undefined;
+    return new Promise<Response>((_resolve, reject) => {
+      prefetchSignal?.addEventListener("abort", () => reject(prefetchSignal!.reason), { once: true });
+    });
+  });
+  navigation.prefetch("direct000002");
+  navigation.clear();
+  assert.equal(prefetchSignal?.aborted, true, "page cleanup cancels speculative reads");
 });
 
 test("hover and click share one read, wait for history, and consume the snapshot only once", async () => {

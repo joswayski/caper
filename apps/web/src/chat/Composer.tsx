@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
-import { Paperclip } from "lucide-react";
+import { Plus } from "lucide-react";
 import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
@@ -11,6 +11,8 @@ import { MAX_ATTACHMENTS } from "./uploads.ts";
 export interface ComposerAttachments {
   /** Whether new files can be added (uploads configured, conversation writable). */
   enabled: boolean;
+  /** Why the stable attachment control cannot be used yet. */
+  disabledReason?: string;
   drafts: DraftAttachment[];
   /** A problem adding files, such as too many. */
   error?: string;
@@ -174,30 +176,38 @@ export default function Composer({
       )}
       {attachments && <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} />}
       <form
-        data-attach={canAttach || undefined}
+        data-attach={!!attachments || undefined}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        {canAttach && (
+        {attachments && (
           <>
             <button
               type="button"
               className="chat-attach"
               aria-label="Attach files"
-              title="Attach files"
-              disabled={attachments.drafts.length >= MAX_ATTACHMENTS}
+              title={
+                !canAttach
+                  ? (attachments.disabledReason ?? "Checking file uploads…")
+                  : attachments.drafts.length >= MAX_ATTACHMENTS
+                    ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                    : "Attach files"
+              }
+              disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
             >
-              <Paperclip size={17} aria-hidden="true" />
+              <Plus size={17} aria-hidden="true" />
             </button>
             <input
               ref={fileInputRef}
               type="file"
               multiple
               hidden
+              disabled={!canAttach || disabled}
               onChange={(event) => {
+                if (!canAttach || disabled) return;
                 attachments.onAdd([...(event.target.files ?? [])]);
                 event.target.value = "";
               }}

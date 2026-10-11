@@ -13,6 +13,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -364,9 +365,23 @@ impl CdnSigner {
 
     pub(crate) fn url(&self, key: &str, now: i64) -> String {
         let expires = (now.div_euclid(DAY) + 2) * DAY;
+        self.signed_url(key, expires)
+    }
+
+    /// Short-lived access to an existing upload object for notification rendering.
+    pub(crate) fn notification_url(&self, key: &str, now: i64) -> String {
+        self.signed_url(key, now + 15 * 60)
+    }
+
+    fn signed_url(&self, key: &str, expires: i64) -> String {
         let signature =
             URL_SAFE_NO_PAD.encode(hmac(&self.secret, format!("{key}\n{expires}").as_bytes()));
-        format!("{}/{key}?exp={expires}&sig={signature}", self.origin)
+        // Public URLs need not expose the R2 prefix; signatures still bind the
+        // stored object, so the Worker can also honor already-issued URLs.
+        let path = key
+            .strip_prefix("original/")
+            .map_or_else(|| key.to_owned(), |id| format!("assets/{id}"));
+        format!("{}/{path}?exp={expires}&sig={signature}", self.origin)
     }
 }
 
@@ -1018,15 +1033,17 @@ pub(crate) async fn link(
     ids: &[String],
     message_id: i64,
 ) -> Result<(), ApiError> {
-    for (position, id) in ids.iter().enumerate() {
-        sqlx::query("UPDATE public.assets SET message_id=$2, position=$3 WHERE external_id=$1")
-            .bind(id)
-            .bind(message_id)
-            .bind(i16::try_from(position).unwrap_or(i16::MAX))
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| crate::chat::unavailable())?;
-    }
+    // One statement, positions in request order (ORDINALITY counts from 1).
+    sqlx::query(
+        "UPDATE public.assets a SET message_id=$2, position=u.position-1
+         FROM unnest($1::text[]) WITH ORDINALITY AS u(external_id, position)
+         WHERE a.external_id=u.external_id",
+    )
+    .bind(ids)
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| crate::chat::unavailable())?;
     Ok(())
 }
 
@@ -1076,6 +1093,60 @@ pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Resul
     Ok(())
 }
 
+/// Hydrate existing video posters only in notification copies, including old
+/// snapshots whose `preview` marker carries no type or byte size. Never upload.
+pub(crate) async fn notification_content(
+    pool: &PgPool,
+    messages: &mut [Value],
+) -> Result<(), ApiError> {
+    mark_deleted(pool, messages).await?;
+    let ids: Vec<String> = messages
+        .iter()
+        .flat_map(|message| {
+            attachment_pointers(message)
+                .iter()
+                .filter_map(|p| message.pointer(p))
+        })
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|file| file["kind"] == "video")
+        .filter_map(|file| file["id"].as_str().map(str::to_owned))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let posters: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT external_id,preview_content_type,preview_byte_size FROM public.assets
+         WHERE external_id=ANY($1) AND kind='video' AND uploaded_at IS NOT NULL
+           AND deleted_at IS NULL AND preview_content_type IS NOT NULL
+           AND preview_byte_size BETWEEN 1 AND $2",
+    )
+    .bind(&ids)
+    .bind(PREVIEW_MAX_BYTES)
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?;
+    for message in messages {
+        for pointer in attachment_pointers(message) {
+            let Some(files) = message.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for file in files.iter_mut().filter(|file| file["kind"] == "video") {
+                // Only database-verified poster metadata is eligible; no original-video fallback.
+                file.as_object_mut()
+                    .expect("attachment object")
+                    .remove("preview");
+                if let Some((_, content_type, size)) =
+                    posters.iter().find(|(id, _, _)| file["id"] == *id)
+                {
+                    file["preview"] = json!({"contentType":content_type,"size":size});
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Abandoned and rejected uploads lose their objects immediately; files
 /// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain.
 pub(crate) fn spawn_purger(assets: Assets) {
@@ -1099,33 +1170,40 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     .execute(&assets.pool)
     .await
     .map_err(|_| ())?;
-    let mut tx = assets.pool.begin().await.map_err(|_| ())?;
+    // Don't hold a transaction or row locks across object-store calls. Purges
+    // are idempotent, so a replica repeating one only repeats its deletes.
     let rows: Vec<(i64, String, bool)> = sqlx::query_as(
         "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
          WHERE deleted_at IS NOT NULL AND purged_at IS NULL
            AND (message_id IS NULL OR deleted_at < now() - make_interval(hours => $1))
-         ORDER BY deleted_at LIMIT 25 FOR UPDATE SKIP LOCKED",
+         ORDER BY deleted_at LIMIT 25",
     )
     .bind(PURGE_DELAY_HOURS)
-    .fetch_all(&mut *tx)
+    .fetch_all(&assets.pool)
     .await
     .map_err(|_| ())?;
-    let mut purged = 0;
-    for (id, external, preview) in rows {
-        let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
-        if preview {
-            ok &= assets.r2.delete(&preview_key(&external)).await.is_ok();
-        }
-        if ok {
-            sqlx::query("UPDATE public.assets SET purged_at=now() WHERE id=$1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| ())?;
-            purged += 1;
-        }
+    let done: Vec<i64> = futures_util::stream::iter(rows)
+        .map(|(id, external, preview)| async move {
+            let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
+            if preview {
+                ok &= assets.r2.delete(&preview_key(&external)).await.is_ok();
+            }
+            ok.then_some(id)
+        })
+        .buffer_unordered(8)
+        .filter_map(std::future::ready)
+        .collect()
+        .await;
+    let purged = done.len();
+    if purged > 0 {
+        sqlx::query(
+            "UPDATE public.assets SET purged_at=now() WHERE id = ANY($1) AND purged_at IS NULL",
+        )
+        .bind(&done)
+        .execute(&assets.pool)
+        .await
+        .map_err(|_| ())?;
     }
-    tx.commit().await.map_err(|_| ())?;
     if purged > 0 {
         tracing::info!(
             event_name = "assets_purged",

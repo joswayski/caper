@@ -23,8 +23,15 @@ const BAR_NAME = "browse-bar";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
 const BAR = ":scope > .people-panel > .voice-panel";
 export const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
-/** An ease-out whose initial speed is three times its average, to carry on from a finger. */
-export const RELEASE_EASING = "cubic-bezier(0.2, 0.6, 0.35, 1)";
+
+/** Carries on from a finger without accelerating a held drag or slamming a short remainder into the edge. */
+export function releaseTiming(distance: number, velocity: number) {
+  const duration = velocity > 0 ? Math.min(SETTLE.duration, Math.max(160, (3 * distance) / velocity)) : SETTLE.duration;
+  // Match the initial speed to the release, capped at three times the average.
+  // A held or reversing finger starts at rest; every curve lands at rest too.
+  const slope = distance > 0 ? Math.min(3, Math.max(0, (velocity * duration) / distance)) : 0;
+  return { duration, easing: `cubic-bezier(0.2, ${0.2 * slope}, 0.35, 1)` };
+}
 
 export interface BrowseDrag {
   /** Share of the way to the other view, from 0 to 1. */
@@ -109,7 +116,7 @@ class Slide implements BrowseDrag {
   constructor(
     private readonly opening: boolean,
     private readonly update: (open: boolean) => void,
-    interactive: boolean,
+    private readonly interactive: boolean,
   ) {
     const root = document.documentElement;
     const room = (this.room = document.querySelector<HTMLElement>(ROOM));
@@ -192,10 +199,7 @@ class Slide implements BrowseDrag {
     const { commit, velocity } = this.released!;
     const distance = Math.abs((commit ? 1 : 0) - this.progress),
       speed = commit ? velocity : -velocity;
-    const timing =
-      speed > 0
-        ? { duration: Math.min(SETTLE.duration, Math.max(160, (3 * distance) / speed)), easing: RELEASE_EASING }
-        : { duration: Math.max(160, SETTLE.duration * distance), easing: SETTLE.easing };
+    const timing = this.interactive ? releaseTiming(distance, speed) : { duration: 220, easing: SETTLE.easing };
     try {
       // Settled poses would end the transition before a cancelled swipe
       // restores its view; this keeps it alive until that update is in.
@@ -241,12 +245,14 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
 }
 
 export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
+// Tappable rows, links and buttons can start a swipe; their release click is
+// suppressed only after a horizontal drag wins. Composer/audio controls own drags.
 export const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
+  ".chat-composer, .voice-panel, input, textarea, select, [contenteditable=true], [role=slider], audio, video";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left
- * from Browse returns. Text entry, links, controls, open menus and selections
+ * from Browse returns. Text entry, sliders, open menus and selections
  * keep their own gestures. `change` sets Browse at once; the slide animates it.
  */
 export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: boolean) => void) | undefined) {
@@ -361,6 +367,8 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
     onClickCapture(event: ReactMouseEvent) {
       if (!suppressClick.current) return;
       suppressClick.current = false;
+      // As in the member drawer: keyboard and assistive activations pass.
+      if (event.detail === 0) return;
       event.preventDefault();
       event.stopPropagation();
     },

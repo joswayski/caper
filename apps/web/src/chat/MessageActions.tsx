@@ -39,9 +39,15 @@ export interface MessageActionTarget {
 }
 
 const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
+let cachedPicker: ComponentType<{ onSelect: (emoji: string) => void }> | undefined;
 
 export function preloadReactionPicker() {
-  void import("./ReactionPicker.tsx").catch(() => {});
+  void import("./ReactionPicker.tsx").then(
+    (module) => {
+      cachedPicker = module.default;
+    },
+    () => {},
+  );
   void preloadEmojiImages();
 }
 
@@ -86,7 +92,10 @@ export default function MessageActions({
   block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
 }) {
   const [mode, setMode] = useState(target.mode);
-  const [Picker, setPicker] = useState<ComponentType<{ onSelect: (emoji: string) => void }>>();
+  const [loadedPicker, setPicker] = useState<typeof cachedPicker>();
+  // Reuse the evaluated module on the first render, including when an action
+  // menu switches modes after startup preloading finishes.
+  const Picker = cachedPicker ?? loadedPicker;
   const [loadError, setLoadError] = useState(false);
   const [copyError, setCopyError] = useState<string>();
   const returnFocus = useRef(target.anchor);
@@ -121,6 +130,7 @@ export default function MessageActions({
     let current = true;
     import("./ReactionPicker.tsx").then(
       (module) => {
+        cachedPicker = module.default;
         if (current) setPicker(() => module.default);
       },
       () => {

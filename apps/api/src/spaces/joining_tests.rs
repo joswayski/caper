@@ -444,3 +444,176 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
         .await
         .unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_reads(pool: PgPool) {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let mut users = vec![];
+    for name in ["reader", "author", "blocked"] {
+        let id = sqlx::query_scalar(
+            "INSERT INTO users(external_id,username,display_name) VALUES($1,$2,$2) RETURNING id",
+        )
+        .bind(format!("{name:0<12}"))
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        users.push(principal(id, name));
+    }
+    let reader = &users[0];
+    let space: i64 = sqlx::query_scalar("INSERT INTO spaces(external_id,name,owner_id) VALUES('space1234567','Test unread',$1) RETURNING id")
+        .bind(users[1].user.id).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(reader.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (id, private, joined) in [
+        ("first1234567", false, true),
+        ("other1234567", false, true),
+        ("quiet1234567", false, false),
+        ("privt1234567", true, true),
+    ] {
+        let channel: i64 = sqlx::query_scalar("INSERT INTO channels(external_id,space_id,name,private,last_seq) VALUES($1,$2,$1,$3,10) RETURNING id")
+            .bind(id).bind(space).bind(private).fetch_one(&pool).await.unwrap();
+        if joined {
+            sqlx::query("INSERT INTO channel_joins(channel_id,user_id) VALUES($1,$2)")
+                .bind(channel)
+                .bind(reader.user.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    sqlx::query("INSERT INTO user_blocks(blocker_id,blocked_id) VALUES($1,$2)")
+        .bind(reader.user.id)
+        .bind(users[2].user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (channel, seq, author, mentions) in [
+        ("first1234567", 1, 1, json!([])),
+        ("first1234567", 3, 0, json!([])),
+        ("other1234567", 2, 1, json!([])),
+        ("other1234567", 8, 2, json!([])),
+        ("quiet1234567", 4, 1, json!([])),
+        (
+            "quiet1234567",
+            7,
+            1,
+            json!([{"type":"user","id":reader.user.external_id}]),
+        ),
+        (
+            "privt1234567",
+            9,
+            1,
+            json!([{"type":"user","id":reader.user.external_id}]),
+        ),
+    ] {
+        let session: i64 = sqlx::query_scalar("INSERT INTO chat_sessions(external_id,token_hash,user_id,name) VALUES($1,$2,$3,'Test') RETURNING id")
+            .bind(random_id(12)).bind(random_id(16).as_bytes()).bind(users[author].user.id).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) SELECT $1,id,$2,$3,''::bytea,$4,$5 FROM channels WHERE external_id=$6")
+            .bind(random_id(12)).bind(session).bind(Uuid::new_v4()).bind(seq).bind(json!({"content":{"mentions":mentions}})).bind(channel).execute(&pool).await.unwrap();
+    }
+    // Non-broadcast replies need a personal mention. Broadcast replies are
+    // channel messages; copied mention metadata on forwards never notifies.
+    for (seq, broadcast) in [(5, false), (6, true)] {
+        sqlx::query("INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,thread_root_id,broadcast) SELECT $1,m.channel_id,m.session_id,$2,''::bytea,$3,m.payload,m.id,$4 FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.external_id='other1234567' AND m.channel_seq=2")
+            .bind(random_id(12)).bind(Uuid::new_v4()).bind(seq).bind(broadcast).execute(&pool).await.unwrap();
+    }
+    pool.execute("UPDATE messages SET thread_root_id=(SELECT m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.external_id='quiet1234567' AND m.channel_seq=4) WHERE channel_seq=7").await.unwrap();
+    sqlx::query("INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) SELECT $1,m.channel_id,m.session_id,$2,''::bytea,9,m.payload,m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.external_id='quiet1234567' AND m.channel_seq=7")
+        .bind(random_id(12)).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+    let state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    let app = routes().layer(Extension(reader.clone())).with_state(state);
+    async fn call(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+    let snapshot = |channels: Value| json!({"spaces":[{"id":"space1234567","channels":channels}]});
+    assert_eq!(
+        call(&app, "GET", "/api/spaces/unread", Value::Null).await,
+        (
+            StatusCode::OK,
+            snapshot(json!([
+                {"id":"first1234567","lastSeq":"1"},{"id":"other1234567","lastSeq":"6"},{"id":"quiet1234567","lastSeq":"7"}
+            ]))
+        )
+    );
+    let read = "/api/spaces/space1234567/channels/first1234567/read";
+    for seq in ["1", "0"] {
+        assert_eq!(
+            call(&app, "POST", read, json!({"seq":seq})).await.0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
+        snapshot(json!([
+            {"id":"other1234567","lastSeq":"6"},{"id":"quiet1234567","lastSeq":"7"}
+        ])),
+        "reading one channel must preserve the space's other unread channels"
+    );
+    for (path, status) in [
+        (
+            "/api/spaces/space1234567/channels/privt1234567/read",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/api/spaces/wrong1234567/channels/other1234567/read",
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(call(&app, "POST", path, json!({"seq":"9"})).await.0, status);
+    }
+    assert_eq!(
+        call(&app, "POST", read, json!({"seq":"-1"})).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "POST", read, json!({"seq":"999"})).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT seq FROM channel_reads")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        10,
+        "future reads are clamped"
+    );
+    pool.execute("UPDATE space_members SET deleted_at=now()")
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
+        json!({"spaces":[]})
+    );
+    assert_eq!(
+        call(&app, "POST", read, json!({"seq":"10"})).await.0,
+        StatusCode::NOT_FOUND
+    );
+}

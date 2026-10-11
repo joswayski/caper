@@ -42,6 +42,30 @@ const request = async (path, body, who = "owner", method = body ? "POST" : "GET"
   return { status: response.status, value: await response.json() };
 };
 const control = (body) => request("/__fixture/control", body);
+const checkReactionLayout = () => {
+  assert.equal(
+    evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.chat-forward-reactions')];
+      const center = rect => rect.top + rect.height / 2;
+      return rows.length > 0 && rows.every(row => {
+        const bounds = row.getBoundingClientRect();
+        const previous = row.previousElementSibling.getBoundingClientRect();
+        return bounds.top - previous.bottom >= 7 && [...row.children].every(chip => {
+          const box = chip.getBoundingClientRect();
+          const emoji = chip.querySelector('img').getBoundingClientRect();
+          const count = chip.querySelector('span').getBoundingClientRect();
+          return box.height === (innerWidth <= 600 ? 36 : 30)
+            && emoji.width === 18 && emoji.height === 18
+            && Math.abs(center(emoji) - center(box)) < 0.1
+            && Math.abs(center(count) - center(box)) < 0.1
+            && Math.abs(count.left - emoji.right - 6) < 0.1;
+        });
+      });
+    })()`),
+    true,
+    "Forwarded reactions have standard chip sizing, centered emoji/counts and a gap below content",
+  );
+};
 
 try {
   assert.equal((await request("/health")).value.fixture, true);
@@ -224,6 +248,40 @@ try {
   screenshot("forward-read-only-actions");
   browser("press", "Escape");
   const session = (await request("/api/chat/session", { name: "Fixture Owner" })).value;
+  for (const [width, height, name] of [
+    [1440, 900, "desktop"],
+    [390, 844, "narrow"],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("click", `${wrapperRow} .chat-forward-card button`);
+    wait(
+      `document.querySelector('#chat-heading')?.textContent.includes('planning') && !!document.querySelector('${sourceRow}.chat-message-jump-target')`,
+    );
+    assert.equal(
+      evaluate('!!document.querySelector(".chat-forward-dialog")'),
+      false,
+      "Source members navigate without a modal",
+    );
+    assert.equal(new URL(browser("get", "url").url).searchParams.get("channel"), source.channelId);
+    screenshot(`forward-source-${name}`);
+    browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+    wait(
+      `!!document.querySelector('${wrapperRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+    );
+  }
+  browser("set", "viewport", "1440", "900", "2");
+  // An outage is not a lack-of-access result and must not open the excerpt modal.
+  await control({
+    failure: {
+      path: `/api/chat/channels/${wrapper.channelId}/forwards/${wrapper.id}/thread`,
+      method: "GET",
+      status: 503,
+    },
+  });
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait('document.querySelector(".chat-action-status")?.textContent.includes("Couldn’t open")');
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  assert.equal(evaluate('document.querySelector("#chat-heading").textContent.includes("general")'), true);
   assert.equal(
     (
       await request(
@@ -245,6 +303,69 @@ try {
     (await request(`/api/chat/channels/${source.channelId}/messages/${source.id}/versions`, undefined, "other")).status,
     404,
   );
+  // Let source-access resolution finish, then hold the excerpt's replies fetch.
+  // The card's original stays visible while those replies fetch.
+  evaluate(`(() => {
+    window.forwardFetch = window.fetch.bind(window);
+    let lookups = 0;
+    window.fetch = (input, init) => {
+      if (!String(input).includes('/forwards/') || ++lookups === 1) return window.forwardFetch(input, init);
+      return new Promise(resolve => { window.releaseForward = () => resolve(window.forwardFetch(input, init)); });
+    };
+  })()`);
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait('!!window.releaseForward && !!document.querySelector(".chat-forward-body[aria-busy=true]")');
+  assert.equal(evaluate('document.querySelectorAll(".chat-forward-dialog .chat-forward-original").length'), 1);
+  assert.equal(evaluate('document.querySelector(".chat-forward-body h3, .chat-forward-status")'), null);
+  assert.equal(evaluate('document.querySelector(".chat-forward-body [role=status]").className'), "sr-only");
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-notice").textContent'),
+    "Heads up! New reactions and replies appear here automatically.",
+  );
+  screenshot("forward-conversation-fetching-desktop");
+  browser("set", "viewport", "390", "844", "2");
+  screenshot("forward-conversation-fetching-mobile");
+  evaluate("window.releaseForward(); window.fetch = window.forwardFetch");
+  wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
+  browser("press", "Escape");
+  browser("set", "viewport", "1440", "900", "2");
+
+  // A confirmed empty conversation has one empty state; unavailable originals
+  // and failed requests must never resurrect the card's cached original.
+  for (const mode of ["empty", "unavailable", "error"]) {
+    evaluate(`(() => {
+      let lookups = 0;
+      window.fetch = async (input, init) => {
+        if (!String(input).includes('/forwards/') || ++lookups === 1) return window.forwardFetch(input, init);
+        if (${JSON.stringify(mode)} === 'error') return Response.json({ error: 'TEST FIXTURE: conversation unavailable' }, { status: 503 });
+        const page = await (await window.forwardFetch(input, init)).json();
+        return Response.json({ ...page, root: ${JSON.stringify(mode)} === 'unavailable' ? null : { ...page.root, thread: undefined }, messages: [], hasMore: false });
+      };
+    })()`);
+    browser("click", `${wrapperRow} .chat-forward-card button`);
+    wait('!!document.querySelector(".chat-forward-body[aria-busy=false]")');
+    assert.equal(evaluate('document.querySelector(".chat-forward-body h3")'), null);
+    assert.equal(
+      evaluate('document.querySelectorAll(".chat-forward-dialog .chat-forward-original").length'),
+      mode === "empty" ? 1 : 0,
+    );
+    assert.equal(
+      evaluate('document.querySelector(".chat-forward-body").textContent.includes("No replies yet.")'),
+      mode === "empty",
+    );
+    screenshot(`forward-conversation-${mode}-desktop`);
+    if (mode === "empty") {
+      browser("set", "viewport", "390", "844", "2");
+      screenshot("forward-conversation-empty-mobile");
+      browser("set", "viewport", "1440", "900", "2");
+    }
+    evaluate("window.fetch = window.forwardFetch");
+    if (mode === "error") {
+      browser("click", ".chat-forward-error button");
+      wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
+    }
+    browser("press", "Escape");
+  }
   browser("click", `${wrapperRow} .chat-forward-card button`);
   wait('document.querySelector(".chat-forward-body h3")?.textContent === "1 reply"');
   assert.equal(
@@ -262,17 +383,27 @@ try {
   );
   assert.equal(saved.status, 200);
   assert.equal(saved.value.revision, 3);
-  await control({ incomingReaction: { channelId: source.channelId, messageId: source.id, emoji: "👀" } });
+  for (const [emoji, userId] of [
+    ["😜", "member000002"],
+    ["😜", "member000001"],
+    ["👀", "member000002"],
+    ["👍🏽", "member000002"],
+  ]) {
+    await control({ incomingReaction: { channelId: source.channelId, messageId: source.id, emoji, userId } });
+  }
   await control({ incomingReply: { rootId: source.id, text: "A future reply shared automatically." } });
   wait(
     'document.querySelector(".chat-forward-body h3")?.textContent === "2 replies" && document.querySelector(".chat-forward-body").textContent.includes("A future reply") && document.querySelector(".chat-forward-body").textContent.includes("The original changed") && !!document.querySelector(".chat-forward-reactions")',
   );
   screenshot("forward-conversation-desktop");
+  checkReactionLayout();
   browser("set", "viewport", "390", "844", "2");
   screenshot("forward-conversation-mobile");
+  checkReactionLayout();
   assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
   browser("press", "Escape");
   wait('!document.querySelector(".chat-forward-dialog")');
+  checkReactionLayout();
   if (evaluate('!!document.querySelector(".member-list-close")')) {
     browser("click", ".member-list-close");
     // The phone member list slides out before it is removed.
@@ -295,8 +426,86 @@ try {
     2,
   );
   screenshot("forward-destination-thread-mobile");
+  // A forwarded reply uses its authorized parent, not the stripped shared snapshot.
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  const originalThread = (await request(`/api/chat/channels/${source.channelId}/messages/${source.id}/thread`)).value;
+  const reply = originalThread.messages[0];
+  const replyForward = (
+    await request(
+      `/api/chat/channels/${wrapper.channelId}/forwards`,
+      {
+        sourceChannelId: source.channelId,
+        sourceMessageId: reply.id,
+        clientMessageId: crypto.randomUUID(),
+      },
+      "owner",
+      "POST",
+      session.token,
+    )
+  ).value;
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  const replyForwardRow = `[data-message-key="${replyForward.clientMessageId}"]`;
+  wait(
+    `!!document.querySelector('${replyForwardRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  browser("click", `${replyForwardRow} .chat-forward-card button`);
+  wait(
+    `!!document.querySelector('[data-message-key="${reply.clientMessageId}"].chat-message-jump-target') && !!document.querySelector('#chat-thread-reply')`,
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  screenshot("forward-source-reply-narrow");
+
+  // DMs use their original channel id without a space/channel route.
+  await control({ incomingMessage: { channelId: "dm0000000001", text: "Forward navigation DM source" } });
+  const dmSource = (await request("/api/chat/channels/dm0000000001/messages")).value.messages.at(-1);
+  const dmForward = (
+    await request(
+      `/api/chat/channels/${wrapper.channelId}/forwards`,
+      {
+        sourceChannelId: dmSource.channelId,
+        sourceMessageId: dmSource.id,
+        clientMessageId: crypto.randomUUID(),
+      },
+      "owner",
+      "POST",
+      session.token,
+    )
+  ).value;
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  const dmForwardRow = `[data-message-key="${dmForward.clientMessageId}"]`;
+  wait(
+    `!!document.querySelector('${dmForwardRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  browser("click", `${dmForwardRow} .chat-forward-card button`);
+  wait(`!!document.querySelector('[data-message-key="${dmSource.clientMessageId}"].chat-message-jump-target')`);
+  assert.equal(new URL(browser("get", "url").url).searchParams.get("dm"), dmSource.channelId);
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  screenshot("forward-source-dm-narrow");
+
+  // A delayed lookup cannot override navigation chosen while it was pending.
+  browser("set", "viewport", "1440", "900", "2");
+  browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+  wait(
+    `!!document.querySelector('${wrapperRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+  );
+  evaluate(`document.querySelector('${wrapperRow}').scrollIntoView({ block: 'center' })`);
+  evaluate(`(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (String(input).includes('/forwards/') && String(input).endsWith('/thread'))
+        await new Promise(resolve => { window.releaseForwardLookup = resolve; });
+      return response;
+    };
+  })()`);
+  browser("click", `${wrapperRow} .chat-forward-card button`);
+  wait("!!window.releaseForwardLookup");
+  browser("find", "text", "design", "click", "--exact");
+  evaluate("window.releaseForwardLookup()");
+  wait('document.querySelector("#chat-heading")?.textContent.includes("design")');
+  assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
   console.log(
-    "Forwarding browser checks passed: aligned 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread, desktop/narrow layouts.",
+    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
   );
 } finally {
   browser("close");

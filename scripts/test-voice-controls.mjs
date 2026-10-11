@@ -1,6 +1,7 @@
 // Real Call/Chat components and voice client; synthetic audio and mocked HTTP,
 // WebSocket and WebRTC. This is UI regression coverage, not live SFU validation.
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
+// Desktop hover states need VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh".
 // Focus on DM navigation, hover menus and ringless focus with VOICE_TEST_SIDEBAR=1.
 // Focus on stable channel rows with VOICE_TEST_CHANNEL_ROWS=1.
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
@@ -40,7 +41,14 @@ function browser(...args) {
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 const wait = (code) => browser("wait", "--fn", `Boolean(${code})`);
-const click = (label) => browser("click", `[aria-label="${label}"]`);
+// Browse slides the conversation with a view transition; clicks and hit tests
+// during it land on its snapshot, so settle any slide before and after.
+const settleBrowse = () => wait(`!document.documentElement.dataset.browseTransition`);
+const click = (label) => {
+  settleBrowse();
+  browser("click", `[aria-label="${label}"]`);
+  if (["Back to Browse", "Close navigation"].includes(label)) settleBrowse();
+};
 const screenshot = (name) => {
   if (!artifacts) return;
   evaluate(
@@ -48,13 +56,20 @@ const screenshot = (name) => {
   );
   browser("screenshot", "--full", `${artifacts}/${name}.png`);
 };
-const centeredDialog = () =>
+// Whether a channel row in the current space shows the active call's roster.
+const connectedRow = (name) =>
+  `[...document.querySelectorAll('#space-channel-list > li')].some(li => li.querySelector('.channel-select')?.textContent === ${JSON.stringify(name)} && li.querySelector('.channel-voice[data-active]'))`;
+const centeredDialog = () => {
+  // Measure after the dialog's entrance animation (a short translate) settles.
+  wait(`!document.querySelector('dialog[open]').getAnimations().some(a => a.playState === 'running')`);
   assert.ok(
     evaluate(
-      `const r = document.querySelector('dialog[open]').getBoundingClientRect(); return Math.abs(r.left + r.width / 2 - innerWidth / 2) < 1 && Math.abs(r.top + r.height / 2 - innerHeight / 2) < 1;`,
+      // Center within the page width: the root reserves a stable scrollbar gutter (#465).
+      `const r = document.querySelector('dialog[open]').getBoundingClientRect(), width = document.documentElement.getBoundingClientRect().width; return Math.abs(r.left + r.width / 2 - width / 2) < 1 && Math.abs(r.top + r.height / 2 - innerHeight / 2) < 1;`,
     ),
     "Dialog must stay centered within the viewport",
   );
+};
 
 async function fixture() {
   const { default: React } = await import("/node_modules/.vite/deps/react.js");
@@ -112,6 +127,11 @@ async function fixture() {
   const respond = async (input, options = {}) => {
     const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
     if (path === "/api/account/me") return Response.json(account);
+    // Profile settings load notification, DM privacy and block settings.
+    if (path === "/api/notifications/settings")
+      return Response.json({ level: "all", mobile: "whenInactive", overrides: [] });
+    if (path === "/api/account/privacy") return Response.json({ directMessages: "anyone" });
+    if (path === "/api/blocks") return Response.json({ blocks: [] });
     if (path === "/api/dms") return Response.json({ conversations: [selfDirect] });
     if (path === "/api/people") return Response.json({ people: [account] });
     if (path === "/api/spaces")
@@ -131,7 +151,12 @@ async function fixture() {
     if (path === "/api/spaces/workspace123/channels/private00000/members") return Response.json({ members: [account] });
     if (path.startsWith("/api/chat/channels/") && path.endsWith("/messages"))
       return Response.json({
-        space: path.includes(otherChannel.id) ? otherSpace : space,
+        // DM history belongs to no space (unified DMs).
+        space: path.includes(`/${selfDirect.id}/`)
+          ? { id: "", name: "Direct messages" }
+          : path.includes(otherChannel.id)
+            ? otherSpace
+            : space,
         channel: path.includes(`/${selfDirect.id}/`)
           ? { id: selfDirect.id, name: account.displayName, direct: true }
           : [...channels, otherChannel].find((channel) => path.includes(`/${channel.id}/`)),
@@ -226,8 +251,8 @@ async function fixture() {
         this.subscriptions.set(request.id, request);
         const room = snapshot(request.channelId);
         const event =
-          request.kind === "chat"
-            ? { type: "ready", cursor: request.after }
+          request.kind === "chat" || request.kind === "notifications"
+            ? { type: "ready", cursor: request.after ?? "0" }
             : request.kind === "presence"
               ? { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status: "online" })) }
               : {
@@ -320,9 +345,16 @@ async function fixture() {
   };
   f.addRemoteAudio = () => {
     const createGain = AudioContext.prototype.createGain;
+    // Capture the remote playback gain (it feeds a stream destination), not the
+    // gains that join/leave sound effects create at the same time.
     AudioContext.prototype.createGain = function () {
-      f.outputGain = createGain.call(this);
-      return f.outputGain;
+      const node = createGain.call(this);
+      const connect = node.connect.bind(node);
+      node.connect = (target, ...rest) => {
+        if (target instanceof MediaStreamAudioDestinationNode) f.outputGain = node;
+        return connect(target, ...rest);
+      };
+      return node;
     };
     f.people.push({ id: peer.id, name: peer.name, muted: false, deafened: false, tracks: [] });
     f.client.participants = [...f.people];
@@ -1187,7 +1219,7 @@ try {
         wait(`getComputedStyle(document.querySelector('[aria-label="Join voice"]')).color === 'rgb(243, 244, 245)'`);
         assert.ok(
           evaluate(
-            `const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgb(28, 31, 33)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`,
+            `const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgba(255, 255, 255, 0.06)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`,
           ),
           "Hover gives neutral feedback, not a primary-action fill",
         );
@@ -1571,7 +1603,11 @@ try {
     );
     assert.ok(
       evaluate(
-        `const a = document.querySelector('.call-account').getBoundingClientRect(), b = document.querySelector('#chat-message').getBoundingClientRect(); return a.top === b.top && a.bottom === b.bottom;`,
+        // The 40px account row plus its panel/dock border pixels matches the 42px field (#451).
+        `const panel = document.querySelector('.voice-panel'), dock = panel.querySelector('.voice-dock');
+        const px = (element, side) => parseFloat(getComputedStyle(element)['border' + side + 'Width']);
+        const a = document.querySelector('.call-account').getBoundingClientRect(), b = document.querySelector('#chat-message').getBoundingClientRect();
+        return a.top - (dock ? px(dock, 'Bottom') : px(panel, 'Top')) === b.top && a.bottom + px(panel, 'Bottom') === b.bottom;`,
       ),
       "Account bar and single-line composer must align",
     );
@@ -1679,6 +1715,10 @@ try {
       "true",
       "Deafen must work before joining",
     );
+    assert.ok(
+      evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`),
+      'Hover states need VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh"',
+    );
     browser("hover", '[aria-label="Undeafen audio"]');
     wait(`getComputedStyle(document.querySelector('[aria-label="Undeafen audio"]')).color === 'rgb(255, 113, 130)'`);
     assert.equal(
@@ -1697,7 +1737,7 @@ try {
     evaluate(`voiceFixture.addRemoteAudio();`);
     wait(`voiceFixture.outputGain`);
     const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
-    assert.ok(Math.abs(gain() - 0.9) < 0.00001, "Master volume must reach the audio graph");
+    assert.ok(Math.abs(gain() - 0.9) < 0.00001, `Master volume must reach the audio graph (gain ${gain()})`);
     if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
       browser("click", ".chat-heading");
       assert.equal(
@@ -1716,7 +1756,8 @@ try {
       browser("click", ".chat-heading");
     }
     browser("hover", ".participant:has(.participant-menu-button)");
-    assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), "1");
+    // Hover reveals Audio through a short opacity transition.
+    wait(`getComputedStyle(document.querySelector('.participant-menu-button')).opacity === '1'`);
     click("Audio controls for Peach Donkey");
     browser("focus", '[aria-label="Peach Donkey volume"]');
     browser("press", "PageUp");
@@ -1838,20 +1879,27 @@ try {
     evaluate(
       `voiceFixture.client.participants = [...voiceFixture.people]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`,
     );
-    assert.equal(evaluate(`return voiceFixture.effectStarts;`), 1, "An arrival must not play the departure sound");
+    // Arrivals chime with the join sound (#179), never the departure sound.
+    wait(`voiceFixture.effectStarts >= 2`);
+    assert.equal(evaluate(`return voiceFixture.effectStarts;`), 2, "An arrival plays one sound");
+    assert.notEqual(
+      evaluate(`return voiceFixture.effectDurations[1];`),
+      evaluate(`return voiceFixture.effectDurations[0];`),
+      "An arrival must not play the departure sound",
+    );
     console.log(
       "PASS participant audio visibility/dismissal, resized roster toggles, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)",
     );
 
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Mic test", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] .mic-test-button')`);
     assert.deepEqual(bounds(), initialBounds, "Mic test must not reflow messages");
     browser("click", ".mic-test-button");
     wait(`document.querySelector('.recording-clock')`);
     centeredDialog();
     screenshot("voice-mic-test");
-    click("Close audio settings");
+    click("Close audio test");
     wait(`!document.querySelector('dialog[open]')`);
     assert.equal(
       evaluate(`return voiceFixture.recorders.at(-1).state;`),
@@ -1912,15 +1960,18 @@ try {
     screenshot("voice-settings-narrow");
     browser("press", "Escape");
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Mic test", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] .mic-test-button')`);
     centeredDialog();
     screenshot("voice-mic-test-narrow");
+    // The narrow dialog scrolls; reveal the button inside it before clicking, or
+    // the click lands on the backdrop beneath its clipped position.
+    browser("scrollintoview", ".mic-test-button");
     browser("click", ".mic-test-button");
     wait(`document.querySelector('.recording-clock')`);
     evaluate(`await new Promise(resolve => setTimeout(resolve, 1000));`);
     browser("click", ".mic-test-button");
-    wait(`document.querySelector('audio[aria-label="Natural microphone sample"]')`);
+    wait(`document.querySelector('audio[aria-label="Natural audio sample"]')`);
     wait(`voiceFixture.sampleGains.length > 0`);
     assert.ok(
       evaluate(`return voiceFixture.sampleGains.every(node => Math.abs(node.gain.value - 1.9) < 0.00001);`),
@@ -1944,9 +1995,9 @@ try {
     );
     console.log("PASS supplied self-disconnect sound is distinct from remote departure");
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Mic test", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] .mic-test-button')`);
-    click("Close audio settings");
+    click("Close audio test");
     wait(`!document.querySelector('dialog[open]')`);
     assert.equal(
       evaluate(`return voiceFixture.captures.at(-1).readyState;`),
@@ -1955,12 +2006,12 @@ try {
     );
     evaluate(`voiceFixture.holdCapture = true;`);
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Mic test", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] [role="status"]')`);
-    click("Close audio settings");
+    click("Close audio test");
     evaluate(`voiceFixture.holdCapture = false; voiceFixture.captureError = 'NotFoundError';`);
     click("User Settings");
-    browser("find", "role", "button", "click", "--name", "Mic test", "--exact");
+    browser("find", "role", "button", "click", "--name", "Audio test", "--exact");
     wait(`document.querySelector('dialog[open] [role="alert"]')`);
     assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Connect a microphone');`));
     assert.equal(
@@ -1978,7 +2029,7 @@ try {
       true,
       "Late cancelled capture must not disturb the successful retry",
     );
-    click("Close audio settings");
+    click("Close audio test");
     assert.equal(
       evaluate(
         `return !!document.querySelector('.call-controls') || /huddle/i.test(document.querySelector('.call-page').textContent);`,
@@ -2017,7 +2068,9 @@ try {
       "Navigation must not send Leave",
     );
     assert.ok(
-      evaluate(`return document.querySelector('.connected-channel').textContent.includes('Test space / alpha');`),
+      // Since #408 the call's roster and Leave stay under its channel in the
+      // same space; the dock appears only when that row is not shown.
+      evaluate(`return ${connectedRow("alpha")} && !!document.querySelector('[aria-label="Leave voice"]');`),
       "Connected channel must remain visible",
     );
     assert.ok(
@@ -2030,12 +2083,8 @@ try {
       ),
     );
     screenshot("voice-browsing-another-channel");
-    browser("click", ".voice-dock-channel");
-    assert.equal(
-      evaluate(`return document.querySelector('.channel-select[aria-current="page"]')?.textContent;`),
-      "beta",
-      "Connection status must not act as channel navigation",
-    );
+    // The dock's connection status is not shown while alpha's row holds the call
+    // (#408); it is a plain role=status element wherever it does appear.
     assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`));
     click("Switch voice to #beta");
     wait(`document.querySelector('[aria-label="Leave voice"]')`);
@@ -2057,18 +2106,17 @@ try {
       "beta00000000",
     );
     assert.ok(
-      evaluate(
-        `return document.querySelector('.connected-channel').textContent.includes('Test space / beta') && voiceFixture.client.muted;`,
-      ),
+      evaluate(`return ${connectedRow("beta")} && voiceFixture.client.muted;`),
       "Voice switch must preserve mute",
     );
     click("Leave voice");
-    wait(`!document.querySelector('.connected-channel')`);
+    wait(`!document.querySelector('.connected-channel, .channel-voice[data-active]')`);
     evaluate(`voiceFixture.captureError = 'NotReadableError';`);
     click("Join voice");
-    wait(`document.querySelector('.room-error')`);
+    // Capture failures show in the voice panel beside the controls.
+    wait(`document.querySelector('.voice-error')`);
     assert.ok(
-      evaluate(`return document.querySelector('.room-error').textContent.includes('another app');`),
+      evaluate(`return document.querySelector('.voice-error').textContent.includes('another app');`),
       "Busy microphone errors must be actionable",
     );
     assert.ok(

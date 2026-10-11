@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
+import MediaViewer from "./MediaViewer.tsx";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes } from "./uploads.ts";
 
@@ -307,7 +308,7 @@ export function MessageAttachments({
 export interface DraftAttachment {
   key: string;
   name: string;
-  /** Local thumbnail for the chip, and the sender's preview while processing. */
+  /** Local file for previewing before sending, also used by the pending row. */
   localUrl?: string;
   localKind?: "image" | "video";
   sourceSize: number;
@@ -321,39 +322,107 @@ export interface DraftAttachment {
 }
 
 export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment[]; onRemove: (key: string) => void }) {
+  const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
+  const closeViewer = useCallback(() => setViewing(undefined), []);
+  const media: ChatAttachment[] = drafts.flatMap((draft) => {
+    const kind = draft.localUrl ? draft.localKind : draft.attachment?.kind;
+    const url = draft.localUrl ?? draft.attachment?.url;
+    if (!url || (kind !== "image" && kind !== "video")) return [];
+    return [
+      {
+        ...draft.attachment,
+        id: draft.key,
+        name: draft.name,
+        kind,
+        contentType: draft.attachment?.contentType ?? `${kind}/*`,
+        // The size that will be sent, once known; the viewer omits a zero.
+        size: draft.storedSize ?? draft.attachment?.size ?? 0,
+        url,
+        status: draft.localUrl ? "ready" : draft.attachment?.status,
+      },
+    ];
+  });
   if (!drafts.length) return null;
   return (
-    <ul className="chat-drafts" aria-label="Files to send">
-      {drafts.map((draft) => (
-        <li key={draft.key} data-error={draft.error ? true : undefined}>
-          {draft.localUrl && draft.localKind === "image" ? (
-            <img src={draft.localUrl} alt="" />
-          ) : (
-            <FileText aria-hidden="true" size={18} />
-          )}
-          <span>
-            <strong title={draft.name}>{draft.name}</strong>
-            <small>
-              {draft.error ??
-                (draft.attachment
-                  ? draft.storedSize !== undefined && draft.storedSize < draft.sourceSize
-                    ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}`
-                    : formatBytes(draft.storedSize ?? draft.sourceSize)
-                  : draft.storedSize === undefined
-                    ? draft.compressing !== undefined
-                      ? `Compressing… ${Math.round(draft.compressing * 100)}%`
-                      : "Preparing…"
-                    : `Uploading… ${Math.round(draft.progress * 100)}%`)}
-            </small>
-          </span>
-          {!draft.attachment && !draft.error && (
-            <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
-          )}
-          <button type="button" aria-label={`Remove ${draft.name}`} onClick={() => onRemove(draft.key)}>
-            <X size={14} aria-hidden="true" />
-          </button>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="chat-drafts" aria-label="Files to send">
+        {drafts.map((draft) => {
+          const content = (
+            <>
+              {draft.localUrl && draft.localKind === "image" ? (
+                <img src={draft.localUrl} alt="" />
+              ) : (
+                <FileText aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong title={draft.name}>{draft.name}</strong>
+                <small>
+                  {draft.error ??
+                    (draft.attachment ? (
+                      <>
+                        {draft.storedSize !== undefined && draft.storedSize < draft.sourceSize && (
+                          <span className="chat-draft-source-size">{formatBytes(draft.sourceSize)} → </span>
+                        )}
+                        {formatBytes(draft.storedSize ?? draft.sourceSize)}
+                      </>
+                    ) : draft.storedSize === undefined ? (
+                      draft.compressing !== undefined ? (
+                        `Compressing… ${Math.round(draft.compressing * 100)}%`
+                      ) : (
+                        "Preparing…"
+                      )
+                    ) : (
+                      `Uploading… ${Math.round(draft.progress * 100)}%`
+                    ))}
+                </small>
+              </span>
+            </>
+          );
+          const url = draft.localUrl ?? draft.attachment?.url;
+          const viewable = media.some((attachment) => attachment.id === draft.key);
+          return (
+            <li key={draft.key} data-error={draft.error ? true : undefined}>
+              {viewable ? (
+                <button
+                  type="button"
+                  className="chat-draft-preview"
+                  aria-label={`Preview ${draft.name}`}
+                  aria-haspopup="dialog"
+                  onClick={(event) => setViewing({ key: draft.key, anchor: event.currentTarget })}
+                >
+                  {content}
+                </button>
+              ) : url ? (
+                <a
+                  className="chat-draft-preview"
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${draft.name}`}
+                >
+                  {content}
+                </a>
+              ) : (
+                <div className="chat-draft-preview">{content}</div>
+              )}
+              {!draft.attachment && !draft.error && (
+                <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
+              )}
+              <button
+                type="button"
+                className="chat-draft-remove"
+                aria-label={`Remove ${draft.name}`}
+                onClick={() => onRemove(draft.key)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {viewing && media.some((attachment) => attachment.id === viewing.key) && (
+        <MediaViewer attachments={media} attachmentId={viewing.key} anchor={viewing.anchor} onClose={closeViewer} />
+      )}
+    </>
   );
 }

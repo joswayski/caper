@@ -204,6 +204,11 @@ pub(super) fn message(token: &str, alert: &Alert) -> Value {
     if let Some(id) = alert.sender_avatar_id {
         data["senderAvatarId"] = json!(id.to_string());
     }
+    if let Some(attachment) = &alert.attachment {
+        data["attachmentUrl"] = json!(attachment.url);
+        data["attachmentContentType"] = json!(attachment.content_type);
+        data["attachmentSize"] = json!(attachment.size.to_string());
+    }
     match &alert.conversation {
         Conversation::Direct { id } => data["conversationId"] = json!(id),
         Conversation::Channel {

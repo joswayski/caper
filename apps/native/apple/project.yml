@@ -302,6 +302,7 @@ targets:
     platform: iOS
     sources:
       - Sources/CaperNotificationService
+      - Sources/CaperCore/NotificationAttachment.swift
       - path: Sources/CaperCore/CaperAvatars.xcassets
         buildPhase: resources
     info:
@@ -353,6 +354,7 @@ targets:
       - Tests/CaperCoreTests/NotificationSettingsTests.swift
       - Tests/CaperCoreTests/FriendlyErrorTests.swift
       - Tests/CaperCoreTests/MessageLinksTests.swift
+      - Tests/CaperCoreTests/FileDropTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift
       - Tests/CaperCoreTests/CodeResendTests.swift
       - Tests/CaperCoreTests/MediaViewerTests.swift

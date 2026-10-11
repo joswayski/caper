@@ -1,9 +1,10 @@
 // Delivery for Caper uploads at the CDN origin (for example cdn.caper.chat).
-// The API signs `/{original|preview}/{assetId}?exp=&sig=` with HMAC-SHA256 over
-// "{key}\n{exp}" (apps/api/src/assets.rs); this Worker only checks that
-// signature and streams the private R2 object. It never lists or writes.
+// The API issues `/{assets|preview}/{assetId}?exp=&sig=` with HMAC-SHA256 over
+// "{storageKey}\n{exp}" (apps/api/src/assets.rs). `assets/` maps to `original/`
+// in R2; legacy `/original/` URLs remain valid. This Worker checks the signature
+// and streams the private R2 object. It never lists or writes.
 
-const KEY = /^\/(original|preview)\/([A-Za-z0-9]{1,64})$/;
+const KEY = /^\/(assets|original|preview)\/([A-Za-z0-9]{1,64})$/;
 // Same allowlist as `assets::kind`. Anything else downloads, never renders.
 const INLINE = new Set([
   "image/png",
@@ -90,6 +91,8 @@ function headersFor(object) {
   headers.set("x-content-type-options", "nosniff");
   if (!VIEWABLE.has(type)) headers.set("content-security-policy", "default-src 'none'; sandbox");
   headers.set("cross-origin-resource-policy", "cross-origin");
+  // Signed GETs can be read by clients to render a device-only notification image.
+  headers.set("access-control-allow-origin", "*");
   // Objects never change once uploaded; the signed URL itself rotates daily.
   headers.set("cache-control", PRIVATE);
   return headers;
@@ -103,7 +106,7 @@ export default {
     const expires = Number(url.searchParams.get("exp"));
     const now = Math.floor(Date.now() / 1000);
     if (!match || !Number.isSafeInteger(expires) || expires <= now || expires > now + MAX_LIFETIME) return deny(404);
-    const key = `${match[1]}/${match[2]}`;
+    const key = `${match[1] === "assets" ? "original" : match[1]}/${match[2]}`;
     if (!(await verified(env.ASSET_CDN_SIGNING_SECRET, key, expires, url.searchParams.get("sig")))) return deny(404);
 
     // Authorization is the signature above; the edge cache is keyed by object
@@ -116,6 +119,7 @@ export default {
       if (hit) {
         const response = new Response(hit.body, hit);
         response.headers.set("cache-control", PRIVATE);
+        response.headers.set("access-control-allow-origin", "*");
         return response;
       }
     }

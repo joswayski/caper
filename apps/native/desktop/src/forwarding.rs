@@ -122,6 +122,12 @@ fn validate(page: &ForwardConversation) -> Result<(), ApiError> {
             .messages
             .iter()
             .any(|message| message.validate().is_err())
+        || page.source.as_ref().is_some_and(|source| {
+            source.message.validate().is_err()
+                || page.root.as_ref().is_none_or(|root| {
+                    root.id != source.message.id || root.channel_id != source.message.channel_id
+                })
+        })
     {
         return Err(invalid());
     }
@@ -153,6 +159,7 @@ pub struct Forwarding {
     view: Option<View>,
     request: u64,
     busy: bool,
+    resolving: bool,
     error: Option<String>,
 }
 
@@ -166,7 +173,16 @@ impl Forwarding {
         self.view = None;
         self.request += 1;
         self.busy = false;
+        self.resolving = false;
         self.error = None;
+    }
+    pub fn resolving(&self, request: u64) -> bool {
+        self.resolving && request == self.request
+    }
+    pub fn cancel_conversation(&mut self) {
+        if matches!(self.view, Some(View::Conversation { .. })) {
+            self.close();
+        }
     }
     fn dispatch(&mut self, worker: &Worker, generation: u64, operation: Operation) {
         self.request += 1;
@@ -179,6 +195,7 @@ impl Forwarding {
         });
     }
     pub fn picker(&mut self, worker: &Worker, generation: u64, token: String, source: Message) {
+        self.resolving = false;
         self.view = Some(View::Picker {
             source: Box::new(source),
             destinations: vec![],
@@ -198,6 +215,10 @@ impl Forwarding {
         token: String,
         wrapper: Message,
     ) {
+        if self.resolving {
+            return;
+        }
+        self.resolving = true;
         let revision = wrapper
             .forward
             .as_ref()
@@ -230,6 +251,7 @@ impl Forwarding {
             return None;
         }
         self.busy = false;
+        self.resolving = false;
         match result {
             Ok(Response::Sent(message)) => {
                 if let Some(View::Picker {
@@ -313,6 +335,10 @@ impl Forwarding {
             self.close();
             return;
         };
+        // Resolve access before displaying anything; authorized readers navigate.
+        if self.resolving {
+            return;
+        }
         if let Some(View::Conversation {
             wrapper,
             revision,
@@ -352,7 +378,7 @@ impl Forwarding {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match view {
                     View::Picker { source, destinations, selected, search, text, pending, session, .. } => {
-                        ui.label(RichText::new("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
+                        ui.label(RichText::new("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
                         original(ui, source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(source), textures);
                         ui.add_enabled(pending.is_none(), egui::TextEdit::singleline(search).hint_text("Find a space, channel or DM"));
                         let query = search.to_lowercase();
@@ -386,18 +412,22 @@ impl Forwarding {
                         if self.error.is_some() && destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
-                        ui.label(RichText::new("Live · Read-only original. Replies to the forward stay in the destination.").size(12.0).color(crate::MUTED));
+                        egui::Frame::new().fill(crate::PIN_WASH).corner_radius(8).inner_margin(8).show(ui, |ui| {
+                            ui.label(RichText::new("Heads up! New reactions and replies appear here automatically.").size(12.0).color(crate::PIN_GOLD));
+                        });
                         if let Some(page) = page {
                             if let Some(root) = &page.root { original(ui, root, textures); }
                             if page.has_more && ui.add_enabled(!self.busy, egui::Button::new("Load older replies")).clicked() { *pages += 1; operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
                             for message in &page.messages { original(ui, message, textures); }
                             if page.root.is_none() { ui.label("Original conversation unavailable."); }
                             else if page.messages.is_empty() { ui.label("No replies yet."); }
+                        } else if self.error.is_none() && let Some(root) = wrapper.forward.as_ref().and_then(|forward| forward.message.as_ref()) {
+                            original(ui, root, textures);
                         }
                         if self.error.is_some() && ui.add_enabled(!self.busy, egui::Button::new("Retry")).clicked() { operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
                     }
                 }
-                if self.busy { ui.spinner(); }
+                if self.busy && matches!(view, View::Picker { .. }) { ui.spinner(); }
                 if let Some(error) = &self.error { ui.colored_label(crate::ERROR, error); }
             });
         });
@@ -456,6 +486,7 @@ mod tests {
             }),
             request: 7,
             busy: true,
+            resolving: false,
             error: None,
         };
         state.receive(
@@ -543,6 +574,7 @@ mod tests {
             }),
             request: 7,
             busy: true,
+            resolving: false,
             error: None,
         };
         assert!(

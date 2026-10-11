@@ -22,6 +22,24 @@ pub struct Inviter {
     pub display_name: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadChannel {
+    pub id: String,
+    pub last_seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct UnreadSpace {
+    pub id: String,
+    pub channels: Vec<UnreadChannel>,
+}
+
+#[derive(Deserialize)]
+pub struct UnreadSpaces {
+    pub spaces: Vec<UnreadSpace>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Space {
@@ -745,11 +763,19 @@ pub struct ForwardDestinations {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ForwardSource {
+    pub space_id: Option<String>,
+    pub message: Message,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ForwardConversation {
     pub root: Option<Message>,
     pub messages: Vec<Message>,
     pub cursor: String,
     pub has_more: bool,
+    pub source: Option<ForwardSource>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

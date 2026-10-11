@@ -12,11 +12,12 @@ import {
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
-import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
+import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { dateDivider } from "./dates.ts";
@@ -31,6 +32,8 @@ import {
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import DropOverlay from "./DropOverlay.tsx";
+import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
 import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -40,6 +43,7 @@ import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandid
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
+import type { Space } from "../spaces/client.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -162,6 +166,7 @@ export default function Chat({
   direct = false,
   directPeerId,
   onReadCursor,
+  readActive = true,
   initialHistory,
   initialHistoryError,
   showTitle = false,
@@ -179,6 +184,9 @@ export default function Chat({
   mentionMembers,
   mentionDirectory = [],
   onMessagePerson,
+  profileSpaces,
+  onOpenForward,
+  focusMessage,
 }: {
   name: string;
   signedIn: boolean;
@@ -190,6 +198,7 @@ export default function Chat({
   direct?: boolean;
   directPeerId?: string;
   onReadCursor?: (seq: string) => void;
+  readActive?: boolean;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
   showTitle?: boolean;
@@ -207,8 +216,16 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
+  profileSpaces?: (personId: string) => Space[];
+  onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
+  focusMessage?: GeneralChatHistory["messages"][number];
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  useEffect(() => {
+    // Start code/data and opening-grid artwork together, without waiting for a
+    // sending session or a pointer hover (which touch clients never provide).
+    if (signedIn && !readOnly) preloadReactionPicker();
+  }, [signedIn, readOnly]);
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -216,10 +233,12 @@ export default function Chat({
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
   const clientRef = useRef<ChatClient | undefined>(undefined);
+  const followUpdatedRows = useRef(false);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
   const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
+  const openingForward = useRef(false);
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
   const [viewerTarget, setViewerTarget] = useState<ViewerTarget>();
@@ -385,6 +404,19 @@ export default function Chat({
     : undefined;
   const closeForward = useCallback(() => setForwardTarget(undefined), []);
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
+  const openConversation = async (message: GeneralChatHistory["messages"][number], anchor: HTMLElement) => {
+    if (openingForward.current) return;
+    openingForward.current = true;
+    const client = clientRef.current;
+    try {
+      const navigated = await onOpenForward?.(message);
+      if (!navigated && clientRef.current === client) setConversationTarget({ messageId: message.id, anchor });
+    } catch {
+      if (clientRef.current === client) setActionStatus("Couldn’t open the conversation. Try again.");
+    } finally {
+      openingForward.current = false;
+    }
+  };
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
   // Forwarded originals live on the forwarding message; the viewer closes if either goes.
@@ -466,17 +498,6 @@ export default function Chat({
   // Virtuoso needs browser APIs; the server and first client render use the plain list.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
-  // Show "Loading messages…" only when loading takes a moment, so quick opens
-  // (such as DMs, which load on open) don't flash it.
-  const [loadingShown, setLoadingShown] = useState(false);
-  useEffect(() => {
-    if (state.phase !== "loading") {
-      setLoadingShown(false);
-      return;
-    }
-    const timer = setTimeout(() => setLoadingShown(true), 200);
-    return () => clearTimeout(timer);
-  }, [state.phase]);
   useEffect(() => {
     if (!state.author || readOnly) return;
     // Warm the code/data after chat settles, without mounting the picker or
@@ -490,8 +511,8 @@ export default function Chat({
   const [attachError, setAttachError] = useState<string>();
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  // Present only when the API has uploads configured; carries its compression settings.
-  const [compression, setCompression] = useState<CompressionSettings>();
+  // undefined is checking; null means unavailable. Neither removes the attach button.
+  const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
   // The sender's local copies of sent files, shown while the server processes them.
@@ -520,12 +541,18 @@ export default function Chat({
   readCallback.current = onReadCursor;
   useEffect(() => {
     const read = () => {
-      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(readCursor);
+      if (readActive && state.phase === "ready" && !state.hasNewer && document.visibilityState === "visible")
+        readCallback.current?.(readCursor);
     };
     read();
     document.addEventListener("visibilitychange", read);
-    return () => document.removeEventListener("visibilitychange", read);
-  }, [state.phase, readCursor, channelId]);
+    // Retry a failed acknowledgement even if no new message arrives.
+    const timer = setInterval(read, 15_000);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
 
   // The composer resizes itself; keep the conversation pinned to the newest
   // message when it already was. Read the position before resizing, not a
@@ -540,8 +567,22 @@ export default function Chat({
 
   useEffect(() => {
     let firstMessageId: string | undefined;
+    let previousRows = state.channelMessages;
     const client = new ChatClient(
       (next) => {
+        if (next.channelMessages !== previousRows) {
+          const scroller = scrollerRef.current;
+          // Read BEFORE React grows the row. Virtuoso's 80px tolerance can
+          // otherwise consider a newly clipped reaction bar still at bottom.
+          followUpdatedRows.current =
+            !!scroller &&
+            allowFollow.current &&
+            !next.hasNewer &&
+            previousRows?.length === next.channelMessages?.length &&
+            previousRows?.[0]?.id === next.channelMessages?.[0]?.id &&
+            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
+          previousRows = next.channelMessages;
+        }
         if (next.phase !== "ready") {
           firstMessageId = undefined;
           setListReady(false);
@@ -570,6 +611,27 @@ export default function Chat({
       clientRef.current = undefined;
     };
   }, [channelId]);
+
+  const handledFocus = useRef<{ client: ChatClient; message: GeneralChatHistory["messages"][number] } | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!focusMessage) {
+      handledFocus.current = undefined;
+      return;
+    }
+    const client = clientRef.current;
+    if (
+      !client ||
+      state.phase !== "ready" ||
+      jumping ||
+      focusMessage.channelId !== state.channelId ||
+      (handledFocus.current?.message === focusMessage && handledFocus.current.client === client)
+    )
+      return;
+    handledFocus.current = { client, message: focusMessage };
+    void goToMessage(focusMessage);
+  }, [focusMessage, state.phase, state.channelId, jumping]);
 
   const blockedIdsRef = useRef(blockedIds);
   useEffect(() => {
@@ -603,7 +665,7 @@ export default function Chat({
     }
     let active = true;
     void uploadSettings().then((settings) => {
-      if (active) setCompression(settings);
+      if (active) setCompression(settings ?? null);
     });
     return () => {
       active = false;
@@ -642,13 +704,17 @@ export default function Chat({
     setAttachError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
     for (const file of files.slice(0, room)) {
       const key = crypto.randomUUID();
-      const localKind = file.type.startsWith("image/")
-        ? ("image" as const)
-        : file.type.startsWith("video/")
-          ? ("video" as const)
-          : undefined;
-      const localUrl = localKind ? URL.createObjectURL(file) : undefined;
-      if (localUrl) objectUrls.current.add(localUrl);
+      const localKind =
+        file.type.startsWith("image/") && file.type !== "image/svg+xml"
+          ? ("image" as const)
+          : file.type.startsWith("video/")
+            ? ("video" as const)
+            : undefined;
+      // Keep active document formats from executing on the app's blob origin.
+      const previewable =
+        localKind || file.type.startsWith("audio/") || ["application/pdf", "text/plain"].includes(file.type);
+      const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
+      objectUrls.current.add(localUrl);
       const controller = new AbortController();
       uploads.current.set(key, controller);
       setDrafts((current) => [
@@ -741,6 +807,19 @@ export default function Chat({
     if (state.pendingSend && !state.pendingSend.threadRootId)
       listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [state.pendingSend?.clientMessageId]);
+
+  // An updated row that keeps the list height never reaches totalListHeightChanged.
+  // Drop the follow intent once Virtuoso has measured it (its ResizeObserver
+  // defers size updates by a frame), so a later scrollbar drag is not snapped back.
+  useLayoutEffect(() => {
+    if (!followUpdatedRows.current) return;
+    let frames = 3;
+    let frame = requestAnimationFrame(function settle() {
+      if (--frames) frame = requestAnimationFrame(settle);
+      else followUpdatedRows.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [state.channelMessages]);
 
   const loadOlder = () => {
     void clientRef.current?.loadOlder();
@@ -1085,13 +1164,11 @@ export default function Chat({
                 {compactTime(message.createdAt)}
               </div>
             ) : (
-              <div className="chat-avatar">
-                <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
-              </div>
+              authorAvatar(author)
             )}
             <div>
               <header className={grouped ? "sr-only" : undefined}>
-                <strong>{author?.name ?? name}</strong>
+                {grouped ? <strong>{author?.name ?? name}</strong> : authorName(author)}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}
@@ -1157,7 +1234,7 @@ export default function Chat({
                 <>
                   <ForwardCard
                     message={message}
-                    onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                    onOpen={(anchor) => void openConversation(message, anchor)}
                     onView={viewFile(message.id, true)}
                   />
                   <button
@@ -1278,6 +1355,28 @@ export default function Chat({
   };
 
   const canAttach = signedIn && uploadsEnabled && !readOnly && state.phase === "ready" && !!state.channelId;
+  // Child elements fire their own enter/leave pairs; the overlay stays up until the last leave.
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+  const endDrop = () => {
+    dragDepth.current = 0;
+    setDropping(false);
+  };
+  useEffect(() => {
+    // A file dropped beside the conversation would otherwise replace the app with it.
+    const refuse = (event: DragEvent) => {
+      if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.type === "dragover" && event.dataTransfer) event.dataTransfer.dropEffect = "none";
+      if (event.type === "drop") endDrop();
+    };
+    window.addEventListener("dragover", refuse);
+    window.addEventListener("drop", refuse);
+    return () => {
+      window.removeEventListener("dragover", refuse);
+      window.removeEventListener("drop", refuse);
+    };
+  }, []);
   const pinsToggle = state.phase === "ready" && (
     <button
       type="button"
@@ -1290,14 +1389,45 @@ export default function Chat({
       <Pin size={18} aria-hidden="true" />
     </button>
   );
-  const openPinner = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+  const openAuthor = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+    setActionTarget(undefined);
     setMentionCard({
-      person: mentionCardPerson(author, mentionDirectory, state.author?.id),
+      person: mentionCardPerson(author, mentionDirectory, viewerId),
       anchor,
       drawer: isTouchLayout(),
       focusOnOpen,
     });
   };
+  const authorAvatar = (author: ChatAuthor | undefined) => {
+    const image = <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />;
+    return author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-avatar chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        {image}
+      </button>
+    ) : (
+      <div className="chat-avatar">{image}</div>
+    );
+  };
+  const authorName = (author: ChatAuthor | undefined) =>
+    author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-author-name chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        <strong>{author.name}</strong>
+      </button>
+    ) : (
+      <strong>{author?.name ?? name}</strong>
+    );
 
   const pinsOpen = showPins && state.phase === "ready";
   // Opened from pins, the viewer renders inside that dialog, which then treats it as its own layer.
@@ -1319,15 +1449,29 @@ export default function Chat({
       <section
         className="chat-panel"
         aria-labelledby="chat-heading"
+        onDragEnter={(event) => {
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          dragDepth.current += 1;
+          setDropping(true);
+        }}
+        onDragLeave={() => {
+          if (!dragDepth.current) return;
+          dragDepth.current -= 1;
+          if (!dragDepth.current) setDropping(false);
+        }}
         onDragOver={(event) => {
-          if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault();
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
         }}
         onDrop={(event) => {
+          endDrop();
           if (!canAttach || !event.dataTransfer.files.length) return;
           event.preventDefault();
           addFiles([...event.dataTransfer.files]);
         }}
       >
+        {dropping && canAttach && <DropOverlay channelName={channelName} direct={direct} attached={drafts.length} />}
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
@@ -1405,10 +1549,10 @@ export default function Chat({
                             className="chat-pin-author"
                             aria-label={`Open profile for ${message.pin.author.name}`}
                             aria-haspopup="dialog"
-                            onClick={(event) => openPinner(message.pin!.author, event.currentTarget)}
+                            onClick={(event) => openAuthor(message.pin!.author, event.currentTarget)}
                             onPointerEnter={(event) => {
                               if (event.pointerType === "mouse")
-                                openPinner(message.pin!.author, event.currentTarget, false);
+                                openAuthor(message.pin!.author, event.currentTarget, false);
                             }}
                             onPointerDown={(event) => {
                               cancelPress();
@@ -1420,7 +1564,7 @@ export default function Chat({
                                 pointerId: event.pointerId,
                                 timer: setTimeout(() => {
                                   suppressClick.current = true;
-                                  openPinner(message.pin!.author, anchor);
+                                  openAuthor(message.pin!.author, anchor);
                                 }, 500),
                               };
                             }}
@@ -1443,11 +1587,9 @@ export default function Chat({
                           </button>
                         </small>
                       )}
-                      <div className="chat-avatar chat-pinned-avatar">
-                        <Avatar avatarId={message.author.avatarId} name={message.author.name} />
-                      </div>
+                      {authorAvatar(message.author)}
                       <header>
-                        <strong>{message.author.name}</strong>
+                        {authorName(message.author)}
                         <time dateTime={message.createdAt}>
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>
@@ -1466,12 +1608,7 @@ export default function Chat({
                       />
                       <ForwardCard
                         message={message}
-                        onOpen={(anchor) =>
-                          setConversationTarget({
-                            messageId: message.id,
-                            anchor,
-                          })
-                        }
+                        onOpen={(anchor) => void openConversation(message, anchor)}
                         onView={viewFile(message.id, true)}
                       />
                       <div className="chat-pinned-navigation">
@@ -1498,11 +1635,7 @@ export default function Chat({
             </PinsDialog>
           )}
           <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
-            {state.phase === "loading" && loadingShown && (
-              <p className="chat-state" role="status">
-                Loading messages…
-              </p>
-            )}
+            {state.phase === "loading" && <MessageSkeleton />}
             {state.phase === "error" && (
               <div className="chat-state" role="alert">
                 <p>{state.error}</p>
@@ -1546,6 +1679,11 @@ export default function Chat({
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
+                totalListHeightChanged={() => {
+                  if (followUpdatedRows.current && allowFollow.current)
+                    listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+                  followUpdatedRows.current = false;
+                }}
                 startReached={() => {
                   if (!state.olderError) loadOlder();
                 }}
@@ -1562,7 +1700,18 @@ export default function Chat({
                 tabIndex={listReady ? 0 : -1}
                 role="region"
                 aria-label={`Messages in ${channelName}`}
+                onWheel={() => {
+                  followUpdatedRows.current = false;
+                }}
+                onTouchMove={() => {
+                  followUpdatedRows.current = false;
+                }}
+                // Covers scrollbar drags, which send no wheel or touch events.
+                onPointerDown={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
+                  followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
                     event.preventDefault();
                     listRef.current?.scrollToIndex({
@@ -1627,6 +1776,15 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
+            spaces={profileSpaces?.(mentionCard.person.id)}
+            onBlock={
+              onBlockAuthor &&
+              ((author) => {
+                setMentionCard(undefined);
+                setShowPins(false);
+                onBlockAuthor(author);
+              })
+            }
           />
         )}
 
@@ -1771,9 +1929,14 @@ export default function Chat({
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
               attachments={
-                canAttach || drafts.length
+                signedIn || drafts.length
                   ? {
                       enabled: canAttach,
+                      // Like every client: checking while settings or the conversation load, else unavailable.
+                      disabledReason:
+                        compression === null || state.phase === "error" || readOnly || !signedIn
+                          ? "File uploads are unavailable"
+                          : "Checking file uploads…",
                       drafts,
                       error: attachError,
                       onAdd: addFiles,

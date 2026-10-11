@@ -170,6 +170,11 @@ class CompressionPolicyTest {
         assertEquals(1920, portrait.outputHeight)
         val hevc = AttachmentPolicy.videoPlan(facts(1920, 1080, mime = "video/hevc", kbps = 3_000), defaults, true)!!
         assertNull(hevc.outputHeight); assertFalse(hevc.sizeOnly)
+        assertEquals("never above the source's own bitrate", 3000, hevc.bitrateKbps)
+        val iphone = AttachmentPolicy.videoPlan(facts(1440, 1920, mime = "video/hevc", kbps = 10_683), defaults, true)!!
+        assertEquals(1440, iphone.outputHeight); assertEquals(4500, iphone.bitrateKbps)
+        assertEquals(6000, AttachmentPolicy.outputKbps(6000, null, defaults))
+        assertEquals("floor", 1500, AttachmentPolicy.outputKbps(6000, 800_000, defaults))
         assertTrue(AttachmentPolicy.keepTranscoded(hevc, 1_000, 1_500, audioBefore = true, audioAfter = true, outputHdr = false))
         assertFalse(AttachmentPolicy.keepTranscoded(hevc, 1_000, 0, audioBefore = true, audioAfter = true, outputHdr = false))
         assertNotNull("VP9 WebM", AttachmentPolicy.videoPlan(facts(1280, 720, mime = "video/x-vnd.on2.vp9", kbps = 1_000, type = "video/webm"), defaults, true))
@@ -185,10 +190,11 @@ class CompressionPolicyTest {
         assertNull("HDR alone is no reason to transcode", AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 6_000, hdr = true), defaults, true))
     }
 
-    @Test fun `size labels show the compression saving`() {
-        assertEquals("1.6 MB → 143 KB", AttachmentPolicy.sizeLabel(1_677_722, 146_432))
+    @Test fun `size labels show only the final upload size`() {
+        assertEquals("143 KB", AttachmentPolicy.sizeLabel(1_677_722, 146_432))
         assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, 146_432))
         assertEquals("143 KB", AttachmentPolicy.sizeLabel(146_432, null))
+        assertEquals("1.5 KB", AttachmentPolicy.sizeLabel(512, 1536))
     }
 
     @Test fun `animated webp and apng are detected so they upload unchanged`() {

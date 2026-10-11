@@ -32,6 +32,41 @@ interface Conversation {
   messages: ChatMessage[];
   cursor: string;
   hasMore: boolean;
+  source?: { spaceId: string | null; message: ChatMessage } | null;
+}
+
+export async function forwardedConversation(
+  message: ChatMessage,
+  signal: AbortSignal,
+  before?: string,
+): Promise<Conversation> {
+  const path = `/api/chat/channels/${encodeURIComponent(message.channelId)}/forwards/${encodeURIComponent(message.id)}/thread`;
+  const response = await fetch(`${path}${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
+    cache: "no-store",
+    signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+  });
+  if (!response.ok) throw await apiError(response, "Conversation is unavailable.");
+  const data = (await response.json()) as Conversation;
+  if (
+    !data ||
+    !(data.root === null || isChatMessage(data.root)) ||
+    !Array.isArray(data.messages) ||
+    !data.messages.every(isChatMessage) ||
+    typeof data.hasMore !== "boolean" ||
+    typeof data.cursor !== "string" ||
+    (data.source != null &&
+      (!(data.source.spaceId === null || typeof data.source.spaceId === "string") ||
+        !isChatMessage(data.source.message) ||
+        data.source.message.id !== data.root?.id ||
+        data.source.message.channelId !== data.root?.channelId))
+  )
+    throw new Error("Conversation is unavailable.");
+  try {
+    sequence(data.cursor);
+  } catch {
+    throw new Error("Conversation is unavailable.");
+  }
+  return data;
 }
 
 // fetch rejects with a TypeError when offline and a TimeoutError after AbortSignal.timeout;
@@ -134,7 +169,7 @@ export function ForwardCard({
     <div className="chat-forward-card">
       <small className="chat-forward-label">
         <Forward size={12} aria-hidden="true" />
-        Forwarded · live
+        Forwarded
       </small>
       {original ? (
         <>
@@ -280,7 +315,7 @@ export function ForwardPicker({
     <ForwardDialog title="Forward message" anchor={target.anchor} onClose={onClose}>
       <div className="chat-forward-body">
         <p className="chat-forward-disclosure">
-          Shares this message and its conversation live, including future edits, reactions and replies. People in the
+          Shares this message and its conversation, including future edits, reactions and replies. People in the
           destination can read and forward it.
         </p>
         <OriginalMessage
@@ -389,33 +424,13 @@ export function ForwardConversation({
   const closeViewer = useCallback(() => setViewer(undefined), []);
   const view = (messageId: string) => (attachmentId: string, anchor: HTMLElement) =>
     setViewer({ messageId, attachmentId, anchor });
+  // The card already has the original. Don't hide it while fetching replies;
+  // a fetched null or an error must still revoke access to that cached original.
+  const root = conversation ? conversation.root : error ? undefined : message.forward?.message;
   // Live: the viewer follows reloads of the conversation and closes if its message goes.
-  const viewed =
-    viewer && [conversation?.root, ...(conversation?.messages ?? [])].find((item) => item?.id === viewer.messageId);
+  const viewed = viewer && [root, ...(conversation?.messages ?? [])].find((item) => item?.id === viewer.messageId);
   const path = `/api/chat/channels/${encodeURIComponent(message.channelId)}/forwards/${encodeURIComponent(message.id)}/thread`;
-  const page = async (signal: AbortSignal, before?: string): Promise<Conversation> => {
-    const response = await fetch(`${path}${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
-      cache: "no-store",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-    });
-    if (!response.ok) throw await apiError(response, "Conversation is unavailable.");
-    const data = (await response.json()) as Conversation;
-    if (
-      !data ||
-      !(data.root === null || isChatMessage(data.root)) ||
-      !Array.isArray(data.messages) ||
-      !data.messages.every(isChatMessage) ||
-      typeof data.hasMore !== "boolean" ||
-      typeof data.cursor !== "string"
-    )
-      throw new Error("Conversation is unavailable.");
-    try {
-      sequence(data.cursor);
-    } catch {
-      throw new Error("Conversation is unavailable.");
-    }
-    return data;
-  };
+  const page = (signal: AbortSignal, before?: string) => forwardedConversation(message, signal, before);
   useEffect(() => {
     controller.current?.abort();
     const request = new AbortController();
@@ -480,31 +495,33 @@ export function ForwardConversation({
   const replyCount = conversation?.root?.thread?.replyCount ?? conversation?.messages.length ?? 0;
   return (
     <ForwardDialog title="Forwarded conversation" anchor={target.anchor} onClose={onClose}>
-      <div className="chat-forward-body">
-        <p className="chat-forward-disclosure">
-          Live · Read-only original. Replies you add to the forward stay in the destination conversation.
+      <div className="chat-forward-body" aria-busy={loading}>
+        <p className="chat-forward-notice">
+          <strong>Heads up!</strong> New reactions and replies appear here automatically.
         </p>
-        {conversation?.root ? (
+        {root ? (
           <>
-            <OriginalMessage message={conversation.root} onView={view(conversation.root.id)} />
-            <h3>
-              {replyCount} {replyCount === 1 ? "reply" : "replies"}
-            </h3>
-            {conversation.hasMore && (
+            <OriginalMessage message={root} onView={view(root.id)} />
+            {replyCount > 0 && (
+              <h3>
+                {replyCount} {replyCount === 1 ? "reply" : "replies"}
+              </h3>
+            )}
+            {conversation?.hasMore && (
               <button type="button" disabled={loading} onClick={() => void loadOlder()}>
                 Load older replies
               </button>
             )}
-            {conversation.messages.map((reply) => (
+            {conversation?.messages.map((reply) => (
               <OriginalMessage key={reply.id} message={reply} onView={view(reply.id)} />
             ))}
-            {!conversation.messages.length && <p className="chat-forward-status">No replies yet.</p>}
+            {conversation?.messages.length === 0 && <p className="chat-forward-status">No replies yet.</p>}
           </>
         ) : (
           !loading && !error && <p className="chat-forward-status">Original conversation unavailable.</p>
         )}
         {loading && (
-          <p className="chat-forward-status" role="status">
+          <p className="sr-only" role="status">
             {conversation ? "Updating conversation…" : "Loading conversation…"}
           </p>
         )}

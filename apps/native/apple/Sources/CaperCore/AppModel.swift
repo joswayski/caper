@@ -97,7 +97,20 @@ public final class AppModel {
     public private(set) var restoringWorkspace = false
     static let restoreLimit: Duration = .seconds(5)
     public var spacesError: String?
-    public var navigationOpen = false
+    public var navigationOpen = false {
+        didSet { if !navigationOpen { markSelectedDirectRead() } }
+    }
+    /// Phone-width windows slide Browse over the conversation; wider ones show
+    /// both, so an open Browse only hides the conversation on narrow layouts.
+    public var narrowLayout = false {
+        didSet { if narrowLayout != oldValue { markSelectedDirectRead() } }
+    }
+    private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
+    public private(set) var unreadSpaces: [UnreadSpace] = []
+    public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
+    @ObservationIgnored private var unreadRevision = 0
+    @ObservationIgnored private var unreadRefreshScheduled = false
+    @ObservationIgnored private var channelReads: [String: String] = [:]
     public var openingSpaceID: String?
     public var openingChannelID: String?
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
@@ -113,12 +126,15 @@ public final class AppModel {
     private let preferredInitialSpaceID: String?
     private var generation = 0
     private var navigationGeneration = 0
+    private var openingForward = false
     private var voiceJoinGeneration = 0
     private var peopleRequest = 0
     private var navigationCacheEpoch = 0
     private var navigationTarget: (space: Space, channelID: String?)?
+    private var openingDirectID: String?
+    private var directHistoryTask: Task<PreparedNavigation, Error>?
     private struct PreparedNavigation {
-        let detail: SpaceDetail
+        let detail: SpaceDetail?
         let channelID: String?
         let history: ChatHistory?
     }
@@ -155,6 +171,7 @@ public final class AppModel {
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
         chatModel.onDirectMessageBlocked = { [weak self] in
@@ -353,9 +370,10 @@ public final class AppModel {
             // The displayed conversation remains usable while another target
             // opens. Clicking it cancels that transition, not the live chat.
             // Notes creation keeps the current chat visible while `busy`.
-            if navigationTarget != nil || busy {
+            if navigationTarget != nil || openingDirectID != nil || busy {
                 navigationGeneration += 1
                 navigationTarget = nil
+                directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
                 openingSpaceID = nil; openingChannelID = nil
                 navigationError = nil
             }
@@ -435,22 +453,51 @@ public final class AppModel {
     }
 
     public func select(directMessage conversation: DirectMessageConversation) async {
+        if openingDirectID == conversation.id { return }
+        directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
+        if selectedDirectMessageID == conversation.id, !chat.loadFailed,
+           chat.isPreview == (conversation.status == .incoming) {
+            navigationGeneration += 1
+            navigationTarget = nil; navigationError = nil
+            openingSpaceID = nil; openingChannelID = nil
+            navigationOpen = false
+            return
+        }
+        rememberCurrentNavigation()
         let attempt = generation
         navigationGeneration += 1
         let navigation = navigationGeneration
+        let epoch = navigationCacheEpoch
+        openingDirectID = conversation.id
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
+        defer {
+            if navigationGeneration == navigation { openingDirectID = nil; directHistoryTask = nil }
+        }
         do {
-            let history = try await api.history(channelID: conversation.id)
-            guard generation == attempt, navigationGeneration == navigation,
+            let key = navigationKey(spaceID: "", channelID: conversation.id)
+            let prepared: PreparedNavigation
+            if let retained = visited[key] { prepared = retained }
+            else {
+                prefetch(directMessage: conversation)
+                let entry = prefetches[key]!
+                removePrefetch(key)
+                directHistoryTask = entry.task
+                prepared = try await entry.task.value
+            }
+            guard generation == attempt, navigationGeneration == navigation, navigationCacheEpoch == epoch else { return }
+            guard let history = prepared.history,
                   history.space?.id == "", history.channel?.id == conversation.id,
                   history.channel?.direct == true else {
                 throw APIError(status: 502, message: "Caper returned another conversation.")
             }
+            rememberCurrentNavigation()
+            remember(prepared)
+            await presence.stop(); await voicePresence.stop()
+            guard generation == attempt, navigationGeneration == navigation, navigationCacheEpoch == epoch else { return }
             selectedDirectMessageID = conversation.id; selectedChannelID = nil
             navigationOpen = false
             Task { [weak self] in await self?.refreshPeople() }
-            await presence.stop(); await voicePresence.stop()
             // An incoming request opens read-only: no chat session, no composer,
             // no read cursor and no chimes. Opening it never accepts it.
             let current = directMessages.first { $0.id == conversation.id } ?? conversation
@@ -459,7 +506,55 @@ public final class AppModel {
             else { await chat.open(history: history, displayName: account?.displayName ?? "") }
             guard generation == attempt, navigationGeneration == navigation else { return }
             markSelectedDirectRead()
-        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = FriendlyError.message(for: error) } }
+        } catch is CancellationError {} catch {
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            if let error = error as? APIError, [401, 403, 404].contains(error.status) { invalidateNavigation(channelID: conversation.id) }
+            navigationError = FriendlyError.message(for: error)
+        }
+    }
+
+    public func openForwardedConversation(_ wrapper: ChatMessage) async -> Bool {
+        guard !openingForward else { return false }
+        openingForward = true
+        defer { openingForward = false }
+        let attempt = generation; let navigation = navigationGeneration
+        do {
+            let conversation = try await chat.forwardedConversation(message: wrapper)
+            guard generation == attempt, navigationGeneration == navigation else { return false }
+            guard let source = conversation.source else {
+                chat.forwardConversationTarget = wrapper
+                return false
+            }
+            guard source.message.id == conversation.root?.id, source.message.channelId == conversation.root?.channelId else {
+                throw APIError(status: 502, message: "Conversation is unavailable.")
+            }
+            if chat.channelID != source.message.channelId {
+                if let spaceID = source.spaceId {
+                    // navigate(space:) rechecks membership itself; fetch only a space this list lacks.
+                    let space: Space
+                    if let known = spaces.first(where: { $0.id == spaceID }) { space = known } else {
+                        space = try await api.space(spaceID).space
+                        guard generation == attempt, navigationGeneration == navigation else { return false }
+                    }
+                    await navigate(space: space, channelID: source.message.channelId)
+                } else {
+                    let conversations = try await api.directMessages()
+                    guard generation == attempt, navigationGeneration == navigation else { return false }
+                    guard let direct = conversations.first(where: { $0.id == source.message.channelId }) else {
+                        throw APIError(status: 404, message: "Conversation is unavailable.")
+                    }
+                    directMessages = conversations
+                    await select(directMessage: direct)
+                }
+                guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
+            }
+            guard chat.channelID == source.message.channelId else { return false }
+            return await chat.goToMessage(source.message)
+        } catch is CancellationError { return false }
+        catch {
+            if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
+            return false
+        }
     }
 
     public func openDirectMessage(id: String) async {
@@ -498,6 +593,7 @@ public final class AppModel {
         let attempt = generation
         try await api.declineDirectMessage(id: conversation.id)
         guard generation == attempt else { return }
+        invalidateNavigation(channelID: conversation.id)
         directMessages.removeAll { $0.id == conversation.id }
         if selectedDirectMessageID == conversation.id { await leaveRequest() }
     }
@@ -511,6 +607,9 @@ public final class AppModel {
         try await api.block(accountID: target.id)
         guard generation == attempt else { return }
         let leavingRequest = selectedDirectMessage.map { $0.peer.id == target.id && $0.status == .incoming } ?? false
+        for request in directMessages where request.peer.id == target.id && request.status == .incoming {
+            invalidateNavigation(channelID: request.id)
+        }
         if !blockedIDs.contains(target.id) {
             blockedAccounts.insert(BlockedAccount(id: target.id, username: target.username ?? "", displayName: target.displayName,
                                                   avatarId: target.avatarId), at: 0)
@@ -596,7 +695,7 @@ public final class AppModel {
         if active, account != nil {
             markSelectedDirectRead()
             removeShownNotifications()
-            Task { await refreshDirectMessages() }
+            Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
             refreshNotificationSettingsIfStale()
             refreshMembership()
         }
@@ -609,8 +708,10 @@ public final class AppModel {
     }
 
     private func markSelectedDirectRead() {
-        guard foreground, account != nil, let id = selectedDirectMessageID, selectedDirectMessage?.status != .incoming,
-              let history = chat.currentSnapshot(), history.channel?.id == id,
+        markSelectedChannelRead()
+        guard foreground, !browseCoversConversation, account != nil, let id = selectedDirectMessageID,
+              selectedDirectMessage?.status != .incoming,
+              let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               let index = directMessages.firstIndex(where: { $0.id == id }),
               (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
         let attempt = generation
@@ -622,6 +723,52 @@ public final class AppModel {
                 let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
                 directMessages[current] = old.with(readSeq: seq)
             } catch { /* A later foreground refresh retries the read cursor. */ }
+        }
+    }
+
+    /// Live notifications refresh unread state between polls; a burst of them
+    /// coalesces into one request about a second after the first.
+    public func scheduleUnreadRefresh() {
+        guard account != nil, !unreadRefreshScheduled else { return }
+        unreadRefreshScheduled = true
+        let attempt = generation
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.unreadRefreshScheduled = false
+            guard self?.generation == attempt else { return }
+            await self?.refreshUnreadSpaces()
+        }
+    }
+
+    public func refreshUnreadSpaces() async {
+        guard account != nil else { return }
+        unreadRevision += 1
+        let attempt = generation, revision = unreadRevision
+        guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
+        unreadSpaces = snapshot
+        markSelectedChannelRead()
+    }
+
+    private func markSelectedChannelRead() {
+        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
+              let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
+              let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
+              (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
+        let attempt = generation, cursor = history.cursor
+        Task {
+            do {
+                try await api.markChannelRead(spaceID: spaceID, channelID: id, seq: cursor)
+                guard generation == attempt else { return }
+                unreadRevision += 1
+                if (try? Sequence.compare(cursor, channelReads[id] ?? "0")) == .orderedDescending { channelReads[id] = cursor }
+                unreadSpaces = unreadSpaces.compactMap { space in
+                    var next = space
+                    if space.id == spaceID {
+                        next.channels.removeAll { $0.id == id && (try? Sequence.compare($0.lastSeq, cursor)) != .orderedDescending }
+                    }
+                    return next.channels.isEmpty ? nil : next
+                }
+            } catch { /* Retry on the next foreground poll or committed cursor. */ }
         }
     }
 
@@ -648,6 +795,7 @@ public final class AppModel {
             var reconcile = false
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
+                await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
                 reconcile = true
                 try? await Task.sleep(for: .seconds(15))
@@ -711,6 +859,35 @@ public final class AppModel {
         }
     }
 
+    /// DM hover/focus reads share the channel cache's bounds and account lifetime.
+    public func prefetch(directMessage conversation: DirectMessageConversation) {
+        let key = navigationKey(spaceID: "", channelID: conversation.id)
+        if visited[key] != nil { return }
+        if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation { return }
+        prefetches[key]?.task.cancel()
+        let api = self.api
+        let cacheGeneration = generation
+        let task = Task<PreparedNavigation, Error> {
+            let history = try await api.history(channelID: conversation.id)
+            guard history.space?.id == "", history.channel?.id == conversation.id, history.channel?.direct == true else {
+                throw APIError(status: 502, message: "Caper returned another conversation.")
+            }
+            return PreparedNavigation(detail: nil, channelID: conversation.id, history: history)
+        }
+        let entryID = UUID()
+        prefetches[key] = PrefetchEntry(id: entryID, expires: Date().addingTimeInterval(5), generation: cacheGeneration, task: task)
+        prefetchOrder.removeAll { $0 == key }; prefetchOrder.append(key)
+        while prefetchOrder.count > 4 { prefetches.removeValue(forKey: prefetchOrder.removeFirst())?.task.cancel() }
+        Task { [weak self] in
+            do { _ = try await task.value }
+            catch {
+                guard let self, self.generation == cacheGeneration, self.prefetches[key]?.id == entryID else { return }
+                self.removePrefetch(key)
+                if let failure = error as? APIError, [401, 403, 404].contains(failure.status) { self.invalidateNavigation(channelID: conversation.id) }
+            }
+        }
+    }
+
     /// Performs read-only speculative work. It never opens chat, starts a socket, or creates a chat session.
     public func prefetch(space: Space, channelID: String? = nil) {
         if selectedSpaceID == space.id, selectedDirectMessageID == nil,
@@ -762,6 +939,7 @@ public final class AppModel {
     }
 
     private func navigate(space: Space, channelID: String?) async {
+        directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
         rememberCurrentNavigation()
         navigationGeneration += 1
         let navigation = navigationGeneration
@@ -871,21 +1049,28 @@ public final class AppModel {
     private func visitedNavigation(spaceID: String, channelID: String?) -> PreparedNavigation? {
         if let channelID { return visited[navigationKey(spaceID: spaceID, channelID: channelID)] }
         if let last = lastChannelBySpace[spaceID] { return visited[navigationKey(spaceID: spaceID, channelID: last)] }
-        return visitedOrder.reversed().compactMap { visited[$0] }.first { $0.detail.space.id == spaceID }
+        return visitedOrder.reversed().compactMap { visited[$0] }.first { $0.detail?.space.id == spaceID }
     }
     private func remember(_ value: PreparedNavigation) {
-        let key = navigationKey(spaceID: value.detail.space.id, channelID: value.channelID)
+        let key = navigationKey(spaceID: value.detail?.space.id ?? "", channelID: value.channelID)
         visited[key] = value; visitedOrder.removeAll { $0 == key }; visitedOrder.append(key)
         while visitedOrder.count > 20 { visited.removeValue(forKey: visitedOrder.removeFirst()) }
         lastChannelBySpace = lastChannelBySpace.filter { visited[navigationKey(spaceID: $0.key, channelID: $0.value)] != nil }
     }
     private func rememberCurrentNavigation() {
-        guard let detail, let snapshot = chat.currentSnapshot(), snapshot.space?.id == detail.space.id else { return }
+        guard let snapshot = chat.currentSnapshot(), snapshot.hasNewer != true else { return }
+        if let id = selectedDirectMessageID, snapshot.channel?.id == id, snapshot.space?.id == "" {
+            guard directMessages.contains(where: { $0.id == id }) else { return }
+            remember(PreparedNavigation(detail: nil, channelID: id, history: snapshot))
+            return
+        }
+        guard let detail, snapshot.space?.id == detail.space.id else { return }
         lastChannelBySpace[detail.space.id] = snapshot.channel?.id
         remember(PreparedNavigation(detail: detail, channelID: snapshot.channel?.id, history: snapshot))
     }
     private func clearNavigationCache() {
         navigationCacheEpoch += 1
+        directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
         prefetches.values.forEach { $0.task.cancel() }
         prefetches.removeAll(); prefetchOrder.removeAll(); visited.removeAll(); visitedOrder.removeAll(); lastChannelBySpace.removeAll()
     }
@@ -961,14 +1146,16 @@ public final class AppModel {
         await removeCurrentSpace(id: id)
     }
 
-    public func addSpaceMember(username: String) async throws {
-        guard let detail else { return }
+    public func addSpaceMember(username: String, spaceID: String? = nil) async throws {
+        guard let spaceID = spaceID ?? detail?.space.id else { return }
         if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         let attempt = generation
-        let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
-        guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        pendingMembers.removeAll { $0.id == member.id }
-        pendingMembers.append(member)
+        let member = try await api.addSpaceMember(spaceID: spaceID, username: username)
+        guard generation == attempt else { throw CancellationError() }
+        if self.detail?.space.id == spaceID {
+            pendingMembers.removeAll { $0.id == member.id }
+            pendingMembers.append(member)
+        }
     }
 
     public func loadSpaceInvitations() async throws {
@@ -1501,6 +1688,7 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        unreadSpaces = []; channelReads = [:]; unreadRevision += 1
         #if os(macOS)
         desktopNotifications.stop()
         #endif
@@ -1553,8 +1741,10 @@ public final class ChatModel {
     private var windowEnd: String?
     public var typingNames: [String] = []
     public var reactionErrors: [String: String] = [:]
-    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
+    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays disabled.
     public private(set) var uploadsEnabled = false
+    /// A usage check has answered, so a disabled control is unavailable rather than still checking.
+    public private(set) var uploadsChecked = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
     public private(set) var attachmentDrafts: [AttachmentDraft] = []
@@ -1563,6 +1753,11 @@ public final class ChatModel {
     /// Composer-level attachment message, such as the 10-file limit.
     public var attachmentNotice: String?
     public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
+    /// Every client's wording for a disabled attach control: checking while
+    /// usage or the conversation loads, otherwise unavailable.
+    public var attachUnavailableReason: String {
+        (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
+    }
     /// The send control's enabled state: text or uploaded files, nothing still uploading.
     public var canSubmit: Bool {
         if sending || delivery.rejected { return false }
@@ -1620,6 +1815,7 @@ public final class ChatModel {
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     @ObservationIgnored public var onReadCursor: (() -> Void)?
+    @ObservationIgnored public var onOpenForward: ((ChatMessage) async -> Bool)?
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.
     public private(set) var blockedAuthorIDs: Set<String> = []
@@ -1641,7 +1837,8 @@ public final class ChatModel {
     @ObservationIgnored public var onDirectMessageBlocked: (() -> Void)?
     public var viewerID: String? { session?.author.id ?? viewerAccountID() }
     private let api: APIClient
-    private var channelID: String?
+    /// Read by AppModel to follow a forwarded message to its conversation.
+    private(set) var channelID: String?
     private var spaceID: String?
     private var session: ChatSession?
     private var subscriptionID: String?
@@ -1770,10 +1967,10 @@ public final class ChatModel {
 
     /// A token-free copy of only the timeline currently retained by this model.
     public func currentSnapshot() -> ChatHistory? {
-        guard session != nil, let channelID, let spaceID else { return nil }
+        guard session != nil || isPreview, let channelID, let spaceID else { return nil }
         return ChatHistory(
             space: HistoryIdentity(id: spaceID, name: spaceName),
-            channel: HistoryIdentity(id: channelID, name: channelName),
+            channel: HistoryIdentity(id: channelID, name: channelName, direct: spaceID.isEmpty ? true : nil),
             messages: channelMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
             pinnedMessages: pinnedMessages.map { attachmentSnapshots.overlay(forwardSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay($0)))) },
             cursor: delivery.cursor,
@@ -1797,10 +1994,6 @@ public final class ChatModel {
         subscriptionID = nil
         clearLocal(preservingPending: false)
         isPreview = true
-        if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
-        let signedIn = await api.isSignedIn
-        guard generation == requestGeneration else { return }
-        canForward = signedIn
         channelID = history.channel?.id; spaceID = history.space?.id
         seedSnapshots(history.messages + history.pinnedMessages)
         pinSnapshots.replace(history.messages + history.pinnedMessages, cursor: history.cursor)
@@ -1811,6 +2004,10 @@ public final class ChatModel {
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
+        if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
+        let signedIn = await api.isSignedIn
+        guard generation == requestGeneration else { return }
+        canForward = signedIn
         guard let actualChannel = channelID else { return }
         let subscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
             self?.receive(event, generation: requestGeneration, channelID: actualChannel)
@@ -2755,8 +2952,10 @@ public final class ChatModel {
     // MARK: Attachments
 
     /// Uploads are optional server configuration; only a successful usage
-    /// response shows the attach control.
+    /// response enables the attach control.
     public func checkUploadAvailability() async {
+        // A cancelled check (switching conversations) is superseded, not an answer.
+        defer { if !Task.isCancelled { uploadsChecked = true } }
         do {
             let usage = try await api.assetUsage()
             attachmentCompression = usage.compression

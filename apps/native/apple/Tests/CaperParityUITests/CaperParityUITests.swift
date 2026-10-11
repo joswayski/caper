@@ -314,6 +314,63 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["emoji-suggestion-1f345"].exists)
     }
 
+    #if os(macOS)
+    func testComposerSuggestionsDoNotResizeOrMoveChannelAndThreadHistory() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["incomingReply": ["rootId": "chan00000001m01", "text": "Stationary thread reply"]])
+        let app = launch()
+        let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                               "Missing fixture thread root")
+        for inThread in [false, true] {
+            if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
+            let timeline = try require(app.scrollViews[inThread ? "thread-timeline" : "chat-timeline"], timeout: 5,
+                                       "Missing conversation viewport")
+            let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", inThread ? "Reply to thread" : "Message #")).firstMatch,
+                                       timeout: 5, "Missing composer")
+            XCTAssertTrue(focus(composer))
+            composer.typeText("Before ")
+            let viewport = timeline.frame
+            let editor = composer.frame
+            let lastText = inThread ? "TEST FIXTURE — Stationary thread reply"
+                : "Agreed, @fixture_owner. Let’s check the narrow layout and the management dialogs too."
+            let lastMessage = try require(staticTexts(lastText, in: timeline).firstMatch, timeout: 5, "Missing latest message")
+            let messageY = lastMessage.frame.minY
+            let scope = inThread ? "thread" : "channel"
+            func assertStationary() {
+                XCTAssertEqual(timeline.frame.minY, viewport.minY, accuracy: 1)
+                XCTAssertEqual(timeline.frame.height, viewport.height, accuracy: 1, "Suggestions must overlay, not shrink, history")
+                XCTAssertEqual(lastMessage.frame.minY, messageY, accuracy: 1, "Suggestions must not scroll messages")
+                XCTAssertEqual(composer.frame.minY, editor.minY, accuracy: 1)
+                XCTAssertEqual(composer.frame.height, editor.height, accuracy: 1)
+            }
+            capture("\(scope)-autocomplete-closed", app: app)
+            composer.typeText(":")
+            let thumbsUp = try require(app.buttons["emoji-suggestion-1f44d"], timeout: 5, "Missing default emoji choices")
+            XCTAssertTrue(thumbsUp.isHittable, "The overlaid popup must accept clicks")
+            XCTAssertLessThan(thumbsUp.frame.maxY, composer.frame.minY, "Suggestions belong above the composer")
+            assertStationary()
+            capture("\(scope)-autocomplete-defaults", app: app)
+            composer.typeText("tomato")
+            let tomato = try require(app.buttons["emoji-suggestion-1f345"], timeout: 5, "Missing narrowed emoji choice")
+            assertStationary()
+            capture("\(scope)-autocomplete-narrowed", app: app)
+            tomato.click()
+            XCTAssertEqual(composer.value as? String, "Before 🍅")
+            XCTAssertTrue(hasKeyboardFocus(composer))
+            assertStationary()
+            composer.typeText(" @")
+            _ = try require(app.buttons["mention-suggestion-everyone"], timeout: 5, "Missing mention choices")
+            assertStationary()
+            capture("\(scope)-autocomplete-mentions", app: app)
+            composer.typeKey(.escape, modifierFlags: [])
+            XCTAssertFalse(app.buttons["mention-suggestion-everyone"].exists)
+            XCTAssertEqual(composer.value as? String, "Before 🍅 @", "Dismissing suggestions must retain the draft")
+            assertStationary()
+        }
+    }
+    #endif
+
     func testAtMentionSuggestionsInsertUsernameWithoutSending() throws {
         let app = launch()
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
@@ -387,15 +444,15 @@ final class CaperParityUITests: XCTestCase {
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
-                       "The composer must meet the keyboard without an extra bottom margin")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
+                       "The composer must keep 12 points of breathing room above the keyboard")
         capture("composer-empty-keyboard", app: app)
 
         let short = "Compact draft"
         composer.typeText(short)
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
         let multiline = "\nSecond line\nThird line"
@@ -404,7 +461,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
         XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-multiline-keyboard", app: app)
 
         let overflow = String(repeating: "\nmore", count: 16)
@@ -413,7 +470,7 @@ final class CaperParityUITests: XCTestCase {
                        "Scrolling must retain lines beyond the visible height")
         XCTAssertEqual(composer.frame.height, 174, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         XCTAssertTrue(send.isHittable, "Send must remain available above the keyboard at the height cap")
         capture("composer-capped-keyboard", app: app)
 
@@ -430,11 +487,12 @@ final class CaperParityUITests: XCTestCase {
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         try require(app.buttons["Close navigation"], timeout: 5, "Missing conversation return target").tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Returning from Browse must not reopen the keyboard")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Dismissing the keyboard must restore the safe-area layout")
         capture("composer-keyboard-dismissed", app: app)
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-keyboard-reopened", app: app)
     }
 
@@ -490,8 +548,7 @@ final class CaperParityUITests: XCTestCase {
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
-        // By label: the channel's composer is still in the tree, and the thread
-        // panel's "message-thread" identifier replaces this text view's own.
+        // By label: the channel's composer is still in the tree too.
         let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
                                    timeout: 5, "Missing thread composer")
         XCTAssertTrue(focus(composer))
@@ -503,8 +560,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(send.frame.maxY, try keyboardTop(in: app), accuracy: 2,
-                       "Thread controls must meet the keyboard without an extra bottom margin")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
+                       "Thread controls must keep the same 12-point keyboard spacing")
         capture("thread-composer-single-line-keyboard", app: app)
 
         let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
@@ -1188,6 +1245,61 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(macOS)
+    func testThreadResizeDragKeyboardAndSavedWidth() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["incomingReply": ["rootId": "chan00000001m01", "text": "Resize fixture reply"]])
+        let app = Self.configuredApp()
+        app.launchArguments += ["-AppleKeyboardUIMode", "2"]
+        app.launch(); launchedApp = app
+        func openThread(_ application: XCUIApplication) throws {
+            let row = try require(application.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
+            try require(row.buttons["View thread"], timeout: 5, "Missing thread link").click()
+        }
+        try openThread(app)
+        let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
+        let panel = app.descendants(matching: .any)["message-thread"]
+        // The widest the thread may be: 600, or less when the window leaves the
+        // timeline too little room (CI windows are narrower than a desktop's).
+        handle.click()
+        handle.typeKey(.end, modifierFlags: [])
+        let maximum = try XCTUnwrap(sidebarWidth(of: handle))
+        XCTAssertLessThanOrEqual(maximum, 600)
+        XCTAssertGreaterThanOrEqual(maximum, 350, "The window leaves room to widen the thread")
+        handle.doubleClick()
+        XCTAssertEqual(sidebarWidth(of: handle), 340)
+        let initialEdge = panel.frame.minX
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: handle.frame.midX - window.frame.minX, dy: handle.frame.midY - window.frame.minY
+        ))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -63, dy: 0)))
+        let dragged = try XCTUnwrap(sidebarWidth(of: handle))
+        XCTAssertEqual(Double(dragged), Double(min(403, maximum)), accuracy: 2, "Dragging left widens the thread")
+        XCTAssertEqual(initialEdge - panel.frame.minX, CGFloat(dragged - 340), accuracy: 2)
+        handle.doubleClick(); handle.click()
+        handle.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 350)
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 340)
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 300)
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), maximum)
+        handle.doubleClick()
+        handle.typeKey(.leftArrow, modifierFlags: [])
+        app.buttons["Back to channel"].click()
+        try openThread(app)
+        XCTAssertEqual(sidebarWidth(of: handle), 350, "Closing does not discard the width")
+        app.terminate()
+        let reopened = launch()
+        try openThread(reopened)
+        let saved = try require(reopened.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing saved handle")
+        XCTAssertEqual(sidebarWidth(of: saved), 350, "Width survives relaunch")
+        capture("thread-resized", app: reopened)
+        saved.doubleClick()
+    }
+
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()
         let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
@@ -2087,15 +2199,27 @@ final class CaperParityUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
-        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
-        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.2)), withVelocity: .fast, thenHoldForDuration: 0)
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.isHittable, "A vertical scroll must stay in chat")
-        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
-        XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline edge opens Browse")
+        start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline center opens Browse")
         let browser = app.descendants(matching: .any)["channel-browser"]
-        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
-            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
-        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's edge returns to chat")
+        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        navigation.tap()
+        app.descendants(matching: .any)["selected-space-name"].tap()
+        app.buttons["Browse channels"].tap()
+        let search = app.textFields["Search channels"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: search.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.buttons["Close navigation"].isHittable, "The search editor keeps its horizontal gestures")
+        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).press(forDuration: 0.01,
+            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.85)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
         members.tap()
@@ -2103,15 +2227,15 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        // Like Browse from the leading edge, the member list follows a finger: in from the trailing edge, out from the panel.
-        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).press(forDuration: 0.01,
-            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        // Members uses the same center-start gestures as Browse.
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         assertStaticText("Members", in: app, timeout: 3)
         XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 0.01,
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["Hide member list"])
-        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the panel right closes the member list")
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the backdrop right closes the member list")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         let pins = app.buttons["channel-pins"]
         XCTAssertTrue(pins.waitForExistence(timeout: 2))

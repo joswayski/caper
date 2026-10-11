@@ -42,6 +42,7 @@ import {
 import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { MentionCandidate } from "../chat/mentions";
+import type { Space } from "../spaces/client";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
@@ -457,6 +458,9 @@ interface CallProps {
   mentionDirectory?: MentionCandidate[];
   /** Opens (or starts) a DM from a mention's profile card. */
   onMessagePerson?: (username: string) => Promise<void>;
+  profileSpaces?: (personId: string) => Space[];
+  onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
+  focusMessage?: GeneralChatHistory["messages"][number];
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -486,6 +490,9 @@ export default function Call({
   mentionMembers,
   mentionDirectory,
   onMessagePerson,
+  profileSpaces,
+  onOpenForward,
+  focusMessage,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -1629,6 +1636,7 @@ export default function Call({
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
               onReadCursor={onReadCursor}
+              readActive={engaged && !browsing}
               readOnly={!channelJoined}
               composerNotice={channelActions}
               composerBanner={composerBanner}
@@ -1638,6 +1646,9 @@ export default function Call({
               mentionMembers={mentionMembers}
               mentionDirectory={mentionDirectory}
               onMessagePerson={onMessagePerson}
+              profileSpaces={profileSpaces}
+              onOpenForward={onOpenForward}
+              focusMessage={focusMessage}
               channelId={channel?.id}
               channelName={channel?.name}
               initialHistory={initialHistory}

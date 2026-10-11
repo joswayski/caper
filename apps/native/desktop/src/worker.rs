@@ -61,6 +61,18 @@ pub enum Command {
         id: String,
         seq: String,
     },
+    LoadUnread {
+        epoch: u64,
+        revision: u64,
+        token: String,
+    },
+    ReadChannel {
+        epoch: u64,
+        token: String,
+        space: String,
+        channel: String,
+        seq: String,
+    },
     Restore {
         generation: u64,
     },
@@ -276,6 +288,12 @@ pub enum AccountOperation {
         blocked: bool,
         request: Option<String>,
     },
+    InviteToSpace {
+        space: Space,
+        username: String,
+        user: String,
+        request: u64,
+    },
     Accept(String),
     Decline(String),
     LoadPrivacy,
@@ -301,6 +319,12 @@ pub enum AccountResult {
         blocked: bool,
         request: Option<String>,
         result: Result<(), String>,
+    },
+    Invitation {
+        space: Space,
+        user: String,
+        request: u64,
+        result: Result<Member, String>,
     },
     Accepted {
         id: String,
@@ -441,6 +465,10 @@ pub enum Event {
         epoch: u64,
         alert: crate::os_notifications::Alert,
     },
+    /// A live notification arrived, shown or not: unread state changed.
+    NotificationActivity {
+        epoch: u64,
+    },
     NotificationError {
         epoch: u64,
         error: String,
@@ -453,6 +481,18 @@ pub enum Event {
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
+    },
+    UnreadLoaded {
+        epoch: u64,
+        revision: u64,
+        result: Result<Vec<crate::model::UnreadSpace>, String>,
+    },
+    ChannelRead {
+        epoch: u64,
+        space: String,
+        channel: String,
+        seq: String,
+        result: Result<(), String>,
     },
     MembershipRefreshed {
         epoch: u64,
@@ -747,6 +787,21 @@ fn prepare_navigation(
             Some(history) => Some(history),
             None => Some(api.history(token, &selected.id, None)?),
         }
+    } else if let Some(id) = channel.filter(|_| space.is_none()) {
+        let history = match cached
+            .filter(|history| history.space.id.is_empty() && history.channel.id == id)
+        {
+            Some(history) => history,
+            None => api.history(token, id, None)?,
+        };
+        if !history.space.id.is_empty() || history.channel.id != id {
+            return Err(LoadError {
+                message: "Caper returned another conversation.".into(),
+                access_denied: false,
+                space_access_denied: false,
+            });
+        }
+        Some(history)
     } else {
         None
     };
@@ -785,7 +840,8 @@ fn prepare_navigation(
                 code: None,
             })?;
     }
-    let joined = selected.is_some_and(|channel| channel.joined);
+    let joined =
+        selected.is_some_and(|channel| channel.joined) || space.is_none() && channel.is_some();
     let conversation = history
         .map(|history| {
             if joined {
@@ -845,6 +901,16 @@ fn prepare_navigation_read(
     }
     let history = if let Some(selected) = selected {
         Some(api.history(token, &selected.id, None)?)
+    } else if let Some(id) = channel.filter(|_| space.is_none()) {
+        let history = api.history(token, id, None)?;
+        if !history.space.id.is_empty() || history.channel.id != id {
+            return Err(LoadError {
+                message: "Caper returned another conversation.".into(),
+                access_denied: false,
+                space_access_denied: false,
+            });
+        }
+        Some(history)
     } else {
         None
     };
@@ -913,6 +979,7 @@ fn manage(
                 notifications = Some((
                     epoch,
                     crate::os_notifications::watch(api.base(), token, move |alert, stopped| {
+                        send(&events, &context, Event::NotificationActivity { epoch });
                         // A focused UI publishes a short lease. If minimized
                         // windows stop repainting, stale focus cannot suppress alerts.
                         if !alert.fresh()
@@ -925,12 +992,22 @@ fn manage(
                         }
                         let events = events.clone();
                         let context = context.clone();
+                        let visible = visible.clone();
                         thread::spawn(move || {
                             let target = alert.clone();
+                            let conversation = alert.conversation().map(str::to_owned);
                             let clicks = events.clone();
                             let repaint = context.clone();
-                            if let Err(error) =
-                                crate::os_notifications::show(alert, stopped, move || {
+                            if let Err(error) = crate::os_notifications::show(
+                                alert,
+                                stopped,
+                                || {
+                                    visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
+                                        Some(id.as_str()) == conversation.as_deref()
+                                            && at.elapsed() < Duration::from_secs(2)
+                                    })
+                                },
+                                move || {
                                     repaint
                                         .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                                     repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -942,8 +1019,8 @@ fn manage(
                                             alert: target.clone(),
                                         },
                                     );
-                                })
-                            {
+                                },
+                            ) {
                                 send(&events, &context, Event::NotificationError { epoch, error });
                             }
                         });
@@ -1191,6 +1268,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             let _ = api.read_direct(&token, &id, &seq);
             return;
         }
+        Command::LoadUnread {
+            epoch,
+            revision,
+            token,
+        } => Event::UnreadLoaded {
+            epoch,
+            revision,
+            result: api
+                .unread_spaces(&token)
+                .map(|value| value.spaces)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReadChannel {
+            epoch,
+            token,
+            space,
+            channel,
+            seq,
+        } => Event::ChannelRead {
+            epoch,
+            result: api
+                .read_channel(&token, &space, &channel, &seq)
+                .map_err(|error| error.to_string()),
+            space,
+            channel,
+            seq,
+        },
         Command::PrepareVoice { token, channel } => {
             api.prepare_voice(&token, &channel);
             return;
@@ -1619,6 +1723,19 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
             blocked,
             request,
         },
+        AccountOperation::InviteToSpace {
+            space,
+            username,
+            user,
+            request,
+        } => AccountResult::Invitation {
+            result: api
+                .add_member(token, &space.id, None, &username)
+                .map_err(text),
+            space,
+            user,
+            request,
+        },
         AccountOperation::Accept(id) => AccountResult::Accepted {
             result: api.accept_direct(token, &id).map_err(text),
             id,
@@ -1941,6 +2058,72 @@ mod tests {
         });
         let read = super::prefetch_navigation(&api, Some("account"), Some("s"), Some("c")).unwrap();
         assert_eq!(read.history.unwrap().cursor, "7");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn direct_prefetch_is_read_only_and_cached_navigation_does_not_read_history_again() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (path, body) in [
+                (
+                    "GET /api/chat/channels/dm0000000001/messages",
+                    r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Alpha","direct":true},"messages":[],"cursor":"9007199254740993","hasMore":true}"#,
+                ),
+                (
+                    "POST /api/chat/session",
+                    r#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#,
+                ),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let read =
+            super::prefetch_navigation(&api, Some("account"), None, Some("dm0000000001")).unwrap();
+        assert!(read.detail.is_none());
+        let first = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("dm0000000001"),
+            "User",
+            read.history,
+        )
+        .unwrap();
+        let mut retained = first.conversation.unwrap().0;
+        retained.cursor = "9007199254740994".into();
+        let revisited = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("dm0000000001"),
+            "User",
+            Some(retained),
+        )
+        .unwrap();
+        assert!(revisited.detail.is_none());
+        let history = revisited.conversation.unwrap().0;
+        assert_eq!(history.channel.id, "dm0000000001");
+        assert_eq!(history.cursor, "9007199254740994");
+        assert!(history.has_more);
         worker.join().unwrap();
     }
 

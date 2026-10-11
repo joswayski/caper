@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import CoreMedia
+import CoreVideo
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -474,12 +475,12 @@ public enum AttachmentPreparer {
         var finalAsset = asset
 
         let plan = AttachmentPolicy.videoPlan(probe.facts, settings: settings)
-        if plan != .keep, let output = await export(asset, plan: plan, name: file.name) {
+        if plan != .keep, let output = await export(asset, plan: plan, name: file.name, audioBitrateKbps: settings.audioBitrateKbps) {
             let transcoded = AVURLAsset(url: output.url)
             let result = await probeVideo(transcoded, contentType: "video/mp4", fileSize: output.size)
             let required: Bool
             switch plan {
-            case .transcode(_, let isRequired): required = isRequired
+            case .transcode(_, _, _, let isRequired): required = isRequired
             case .remux, .keep: required = true
             }
             if let result, AttachmentPolicy.keepTranscoded(required: required, originalSize: file.size, outputSize: output.size,
@@ -522,40 +523,34 @@ public enum AttachmentPreparer {
     }
 
     /// Runs one export into a new staging directory; nil on any failure.
-    ///
-    /// Transcodes use an H.264/AAC size preset with a video composition whose
-    /// colour properties are explicitly BT.709. With SDR colour properties the
-    /// built-in compositor converts HDR (HLG/PQ) sources to SDR before
-    /// compositing, and Apple recommends the H.264 presets for HDR→SDR
-    /// conversion (WWDC20 10009 and 10010). The caller still re-probes the
-    /// output and discards anything that is not SDR H.264.
-    static func export(_ asset: AVURLAsset, plan: AttachmentPolicy.VideoPlan, name: String) async -> (url: URL, size: Int)? {
-        let presetName: String
-        var composition: AVMutableVideoComposition?
+    static func export(_ asset: AVURLAsset, plan: AttachmentPolicy.VideoPlan, name: String,
+                       audioBitrateKbps: Int) async -> (url: URL, size: Int)? {
+        guard let directory = try? AttachmentStaging.newDirectory() else { return nil }
+        let output = directory.appendingPathComponent(AttachmentStaging.sanitized(AttachmentPolicy.renamed(name, contentType: "video/mp4")))
+        let written: Bool
         switch plan {
-        case .keep: return nil
-        case .remux: presetName = AVAssetExportPresetPassthrough
-        case .transcode(let preset, _):
-            presetName = preset
-            // Instructions that apply each track's preferred transform at its
-            // natural frame rate, then a mutable copy to set the colour space.
-            guard let base = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset),
-                  let built = base.mutableCopy() as? AVMutableVideoComposition else { return nil }
-            built.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
-            built.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
-            built.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-            composition = built
+        case .keep: written = false
+        case .remux: written = await remux(asset, to: output)
+        case .transcode(let width, let height, let bitrateKbps, _):
+            written = await transcode(asset, to: output, width: width, height: height, bitrateKbps: bitrateKbps,
+                                      audioBitrateKbps: audioBitrateKbps)
         }
-        guard let session = AVAssetExportSession(asset: asset, presetName: presetName),
-              let directory = try? AttachmentStaging.newDirectory() else { return nil }
-        let outputName = AttachmentStaging.sanitized(AttachmentPolicy.renamed(name, contentType: "video/mp4"))
-        let output = directory.appendingPathComponent(outputName)
+        let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard written, size > 0, !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: directory)
+            return nil
+        }
+        return (output, size)
+    }
+
+    /// Copies the H.264 samples into MP4 unchanged.
+    private static func remux(_ asset: AVURLAsset, to output: URL) async -> Bool {
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else { return false }
         session.outputURL = output
         session.outputFileType = .mp4
         session.shouldOptimizeForNetworkUse = true
         // Drops location and personal metadata (the output is also byte-patched).
         session.metadataItemFilter = AVMetadataItemFilter.forSharing()
-        if let composition { session.videoComposition = composition }
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 session.exportAsynchronously { continuation.resume() }
@@ -563,12 +558,146 @@ public enum AttachmentPreparer {
         } onCancel: {
             session.cancelExport()
         }
-        let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard session.status == .completed, size > 0, !Task.isCancelled else {
-            try? FileManager.default.removeItem(at: directory)
-            return nil
+        return session.status == .completed
+    }
+
+    /// Re-encodes to H.264/AAC at exactly `width`×`height` and `bitrateKbps`,
+    /// as the other clients do. (Export presets cannot take a bitrate, and a
+    /// video composition overrides their size: an iPhone 1440×1920 HEVC clip
+    /// came out unscaled at twice the original's bitrate.)
+    ///
+    /// Frames come from a video composition that applies the track's
+    /// orientation and whose colour properties are BT.709, so the compositor
+    /// converts HDR (HLG/PQ) to SDR (WWDC20 10009 and 10010); the writer then
+    /// scales and encodes them. The caller re-probes the output and discards
+    /// anything that is not SDR H.264.
+    private static func transcode(_ asset: AVURLAsset, to output: URL, width: Int, height: Int, bitrateKbps: Int,
+                                  audioBitrateKbps: Int) async -> Bool {
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let base = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset),
+              let composition = base.mutableCopy() as? AVMutableVideoComposition,
+              let reader = try? AVAssetReader(asset: asset),
+              let writer = try? AVAssetWriter(outputURL: output, fileType: .mp4) else { return false }
+        composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+        composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+        composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+        writer.shouldOptimizeForNetworkUse = true
+
+        let frames = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        ])
+        frames.videoComposition = composition
+        frames.alwaysCopiesSampleData = false
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
+            AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+            ],
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitrateKbps * 1000,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalDurationKey: 2,
+            ] as [String: Any],
+        ]
+        // Unsupported settings raise an Objective-C exception; check first.
+        guard reader.canAdd(frames), writer.canApply(outputSettings: videoSettings, forMediaType: .video) else { return false }
+        reader.add(frames)
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(videoInput) else { return false }
+        writer.add(videoInput)
+        var pairs: [(AVAssetReaderOutput, AVAssetWriterInput)] = [(frames, videoInput)]
+
+        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        if !audioTracks.isEmpty {
+            // Every audio track mixed to mono or stereo AAC at 44.1 or 48 kHz.
+            var sourceRate = 48_000.0, sourceChannels = 2
+            if let format = (try? await audioTracks[0].load(.formatDescriptions))?.first,
+               let description = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee {
+                sourceRate = description.mSampleRate
+                sourceChannels = Int(description.mChannelsPerFrame)
+            }
+            let rate = sourceRate == 44_100 ? 44_100.0 : 48_000.0
+            let channels = sourceChannels == 1 ? 1 : 2
+            let samples = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: rate,
+                AVNumberOfChannelsKey: channels,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+            ])
+            samples.alwaysCopiesSampleData = false
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: rate,
+                AVNumberOfChannelsKey: channels,
+                AVEncoderBitRateKey: min(audioBitrateKbps, channels == 1 ? 128 : 256) * 1000,
+            ]
+            // Never trade a smaller file for silently losing the soundtrack.
+            guard reader.canAdd(samples), writer.canApply(outputSettings: audioSettings, forMediaType: .audio) else { return false }
+            reader.add(samples)
+            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioInput.expectsMediaDataInRealTime = false
+            guard writer.canAdd(audioInput) else { return false }
+            writer.add(audioInput)
+            pairs.append((samples, audioInput))
         }
-        return (output, size)
+
+        guard writer.startWriting() else { return false }
+        guard reader.startReading() else {
+            writer.cancelWriting()
+            return false
+        }
+        writer.startSession(atSourceTime: .zero)
+        await withTaskCancellationHandler {
+            await copy(pairs, from: reader, to: writer)
+        } onCancel: {
+            reader.cancelReading()
+        }
+        guard reader.status == .completed, writer.status == .writing, !Task.isCancelled else {
+            writer.cancelWriting()
+            return false
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            writer.finishWriting { continuation.resume() }
+        }
+        return writer.status == .completed
+    }
+
+    /// Feeds each reader output into its writer input until all run out, on
+    /// one background thread. Polling (rather than per-input ready callbacks)
+    /// also ends the copy when the writer fails or the reader is cancelled.
+    private static func copy(_ pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], from reader: AVAssetReader,
+                             to writer: AVAssetWriter) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var open = Array(pairs.indices)
+                copying: while !open.isEmpty, writer.status == .writing, reader.status == .reading {
+                    var progressed = false
+                    for index in open {
+                        let (output, input) = pairs[index]
+                        while input.isReadyForMoreMediaData {
+                            progressed = true
+                            guard let buffer = output.copyNextSampleBuffer() else {
+                                input.markAsFinished()
+                                open.removeAll { $0 == index }
+                                break
+                            }
+                            guard input.append(buffer) else { break copying }
+                        }
+                    }
+                    if !progressed { Thread.sleep(forTimeInterval: 0.005) }
+                }
+                continuation.resume()
+            }
+        }
     }
 
     static func durationMs(_ asset: AVURLAsset) async -> Int? {

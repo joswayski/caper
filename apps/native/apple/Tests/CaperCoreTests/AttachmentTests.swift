@@ -431,9 +431,17 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(draft.statusLabel, "Uploading… 42%")
         draft.storedSize = 146_432
         draft.attachment = ChatAttachment(id: "A", kind: .image, contentType: "image/webp", name: "shot.webp", size: 146_432)
+        #if os(iOS)
+        XCTAssertEqual(draft.statusLabel, "143 KB")
+        #else
         XCTAssertEqual(draft.statusLabel, "1.6 MB → 143 KB")
+        #endif
         draft.storedSize = 1_677_722
         XCTAssertEqual(draft.statusLabel, "1.6 MB", "no arrow when nothing was saved")
+        draft.storedSize = 2_097_152
+        XCTAssertEqual(draft.statusLabel, "2.0 MB", "show the stored size even if conversion made the file larger")
+        draft.storedSize = nil
+        XCTAssertEqual(draft.statusLabel, "1.6 MB", "restored files can fall back to their source size")
         draft.error = "You’ve used all of your file storage."
         XCTAssertEqual(draft.statusLabel, "You’ve used all of your file storage.")
     }
@@ -660,16 +668,23 @@ final class AttachmentTests: XCTestCase {
         XCTAssertTrue(AttachmentPolicy.fitWithin(width: 200, height: 100, edge: 640) == (200, 100), "never enlarged")
     }
 
-    func testVideoPresetKeepsShortEdgeWithinLimit() {
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 3840, height: 2160, maxHeight: 1080), "AVAssetExportPreset1920x1080")
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 1920, height: 1080, maxHeight: 720), "AVAssetExportPreset1280x720")
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 1080, height: 1920, maxHeight: 1080), "AVAssetExportPreset3840x2160",
-                       "the limit bounds the short edge, so portrait 1080p is re-encoded without scaling")
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 2160, height: 3840, maxHeight: 1080), "AVAssetExportPreset1920x1080")
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 640, height: 360, maxHeight: 1080), "AVAssetExportPreset3840x2160",
-                       "small videos are never enlarged, only re-encoded")
-        XCTAssertNil(AttachmentPolicy.videoPreset(width: 1920, height: 1080, maxHeight: 0), "0 disables transcoding")
-        XCTAssertNil(AttachmentPolicy.videoPreset(width: 1920, height: 1080, maxHeight: 200))
+    func testVideoOutputKeepsShortEdgeWithinLimit() {
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 3840, height: 2160, maxHeight: 1080) == (1920, 1080))
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 1920, height: 1080, maxHeight: 720) == (1280, 720))
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 1080, height: 1920, maxHeight: 1080) == (1080, 1920),
+                      "the limit bounds the short edge, so portrait 1080p keeps its size")
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 2160, height: 3840, maxHeight: 1080) == (1080, 1920))
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 1440, height: 1920, maxHeight: 1080) == (1080, 1440),
+                      "iPhone 1440×1920 clips shrink to 1080 wide")
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 640, height: 360, maxHeight: 1080) == (640, 360), "never enlarged")
+        XCTAssertTrue(AttachmentPolicy.videoOutputSize(width: 641, height: 361, maxHeight: 1080) == (640, 360), "even dimensions")
+    }
+
+    func testOutputBitrateNeverExceedsTheSource() {
+        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: nil), 6000)
+        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 10_683), 6000)
+        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 2500), 2500)
+        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 800), 1500, "floor")
     }
 
     func testVideoIsTranscodedOnlyWhenNeeded() {
@@ -680,26 +695,32 @@ final class AttachmentTests: XCTestCase {
         func plan(_ facts: AttachmentPolicy.VideoFacts, _ settings: AttachmentCompression = AttachmentCompression()) -> AttachmentPolicy.VideoPlan {
             AttachmentPolicy.videoPlan(facts, settings: settings)
         }
-        let full = "AVAssetExportPreset3840x2160", hd = "AVAssetExportPreset1920x1080"
+        func transcode(_ width: Int, _ height: Int, _ kbps: Int, required: Bool) -> AttachmentPolicy.VideoPlan {
+            .transcode(width: width, height: height, bitrateKbps: kbps, required: required)
+        }
         XCTAssertEqual(plan(facts(1920, 1080)), .keep, "efficient 1080p H.264 is never re-compressed")
         XCTAssertEqual(plan(facts(1920, 1080, kbps: 7500)), .keep, "up to 1.25 × the 6000 kbps target")
-        XCTAssertEqual(plan(facts(1920, 1080, kbps: 7600)), .transcode(preset: full, required: false), "bitrate only: size-only transcode")
-        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), .transcode(preset: hd, required: false), "short edge above 1080")
-        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), .transcode(preset: hd, required: false), "portrait 4K")
-        XCTAssertEqual(plan(facts(1080, 1920, h264: false, kbps: 8000)), .transcode(preset: full, required: true), "HEVC portrait 1080p keeps its size")
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false, hdr: true, kbps: 10_000)), .transcode(preset: full, required: true), "iPhone HDR (HEVC HLG)")
-        XCTAssertEqual(plan(facts(1920, 1080, hdr: true)), .transcode(preset: full, required: true), "HDR H.264 is tone mapped too")
+        XCTAssertEqual(plan(facts(1920, 1080, kbps: 7600)), transcode(1920, 1080, 6000, required: false), "bitrate only: size-only transcode")
+        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), transcode(1920, 1080, 6000, required: false), "short edge above 1080")
+        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), transcode(1080, 1920, 6000, required: false), "portrait 4K")
+        XCTAssertEqual(plan(facts(1080, 1920, h264: false, kbps: 8000)), transcode(1080, 1920, 6000, required: true), "HEVC portrait 1080p keeps its size")
+        XCTAssertEqual(plan(facts(1440, 1920, h264: false, kbps: 10_683)), transcode(1080, 1440, 4500, required: true),
+                       "iPhone 1440×1920 HEVC shrinks at the scaled target")
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, kbps: 3000)), transcode(1920, 1080, 3000, required: true),
+                       "a lean HEVC clip is never encoded above its own bitrate")
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, hdr: true, kbps: 10_000)), transcode(1920, 1080, 6000, required: true), "iPhone HDR (HEVC HLG)")
+        XCTAssertEqual(plan(facts(1920, 1080, hdr: true)), transcode(1920, 1080, 4000, required: true), "HDR H.264 is tone mapped too")
         XCTAssertEqual(plan(facts(640, 360, kbps: 1875)), .keep, "small videos get the 1500 kbps floor")
-        XCTAssertEqual(plan(facts(640, 360, kbps: 1900)), .transcode(preset: full, required: false))
+        XCTAssertEqual(plan(facts(640, 360, kbps: 1900)), transcode(640, 360, 1500, required: false))
         XCTAssertEqual(plan(facts(1920, 1080, kbps: nil)), .keep, "unknown bitrate is not a reason")
         XCTAssertEqual(plan(facts(1920, 1080, playable: false)), .remux, "H.264 in an unplayable container is only rewrapped")
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false, playable: false)), .transcode(preset: full, required: true))
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, playable: false)), transcode(1920, 1080, 4000, required: true))
         var off = settings
         off.videoMaxHeight = 0
         XCTAssertEqual(plan(facts(3840, 2160, h264: false, hdr: true), off), .keep, "0 uploads videos unchanged")
         var tiny = settings
         tiny.videoMaxHeight = 200
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false), tiny), .keep, "no preset fits: keep the original")
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false), tiny), transcode(356, 200, 1500, required: true), "any limit is honoured")
 
         XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1920, height: 1080, settings: settings), 6000)
         XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1280, height: 720, settings: settings), 6000 * 921_600 / 2_073_600, accuracy: 0.001)
@@ -1432,6 +1453,7 @@ final class AttachmentTests: XCTestCase {
         let chat = ChatModel(api: client())
         await chat.open(channelID: channelID, displayName: "Me")
         XCTAssertFalse(chat.canAttach, "hidden until usage succeeds")
+        XCTAssertEqual(chat.attachUnavailableReason, "Checking file uploads…")
         await chat.checkUploadAvailability()
         XCTAssertTrue(chat.canAttach)
         XCTAssertEqual(chat.attachmentCompression.imageQuality, 90, "the server's settings are applied")

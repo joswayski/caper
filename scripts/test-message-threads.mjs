@@ -106,6 +106,120 @@ const reply = (text) => {
   );
 };
 
+async function checkReactionFollow(root, layout) {
+  const control = async (body) => {
+    const response = await fetch(`${api}/__fixture/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json", connection: "close" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+  };
+  for (let index = 0; index < 16; index++)
+    await control({ incomingReply: { rootId: root.id, text: `Reaction scroll fixture ${index}.\nSecond line.` } });
+  const page = await (
+    await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })
+  ).json();
+  const last = page.messages.at(-1);
+  wait(`!!document.querySelector('${thread(last.clientMessageId)}')`);
+  evaluate("new Promise(r => setTimeout(r, 300))");
+  const visible = `(() => {
+    const bounds = document.querySelector('.chat-thread-messages').getBoundingClientRect();
+    const chips = [...document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction')];
+    return chips.length > 0 && chips.every(chip => {
+      const rect = chip.getBoundingClientRect();
+      return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+    });
+  })()`;
+  for (const [index, emoji] of [
+    "👍",
+    "🎉",
+    "🚀",
+    "❤️",
+    "😂",
+    "🔥",
+    "👏",
+    "👀",
+    "✅",
+    "💯",
+    "🙌",
+    "🤔",
+    "⭐",
+  ].entries()) {
+    await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji } });
+    wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === ${index + 1}`);
+    wait(visible);
+  }
+  screenshot(`thread-reaction-${layout}-latest`);
+  const before = evaluate(`(() => {
+    const scroller = document.querySelector('.chat-thread-messages');
+    scroller.scrollTop -= 400;
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return scroller.scrollTop;
+  })()`);
+  await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji: "🦀" } });
+  wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === 14`);
+  evaluate("new Promise(r => setTimeout(r, 300))");
+  assert.equal(evaluate("document.querySelector('.chat-thread-messages').scrollTop"), before);
+  console.log(`PASS: ${layout}: first/wrapped thread reactions visible and history reader retained.`);
+}
+
+const checkThreadResize = (rootID) => {
+  const handle = ".chat-thread-resize";
+  const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
+  const drag = (delta) => {
+    const point = evaluate(
+      `(() => { const r = document.querySelector('${handle}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 120 }; })()`,
+    );
+    browser("mouse", "move", String(point.x), String(point.y));
+    browser("mouse", "down", "left");
+    browser("mouse", "move", String(point.x + delta), String(point.y));
+    browser("mouse", "up", "left");
+  };
+  browser("dblclick", handle);
+  assert.equal(width(), 340);
+  browser("fill", "#chat-thread-reply", "TEST FIXTURE — resizing keeps the draft");
+  drag(-83);
+  assert.equal(width(), 423, "Dragging the left edge left widens the actual thread");
+  assert.equal(evaluate(`document.querySelector('${handle}').getAttribute('aria-valuenow')`), "423");
+  assert.equal(
+    evaluate('document.querySelector("#chat-thread-reply").value'),
+    "TEST FIXTURE — resizing keeps the draft",
+  );
+  browser("mouse", "move", "1400", "30");
+  screenshot("threads-desktop-resized");
+  drag(600);
+  assert.equal(width(), 300, "Pointer capture works outside the moving handle and clamps at minimum");
+  browser("focus", handle);
+  browser("press", "ArrowLeft");
+  assert.equal(width(), 310);
+  browser("press", "ArrowRight");
+  assert.equal(width(), 300);
+  browser("press", "ArrowLeft");
+  browser("press", "Home");
+  assert.equal(width(), 300, "Home selects the minimum");
+  browser("press", "End");
+  assert.equal(width(), 600);
+  browser("press", "ArrowLeft");
+  assert.equal(width(), 600, "Keyboard cannot exceed the maximum");
+  browser("set", "viewport", "1024", "900", "2");
+  wait('Number(document.querySelector(".chat-thread-resize").getAttribute("aria-valuemax")) < 600');
+  const room = evaluate('document.querySelector(".chat-layout").clientWidth');
+  assert.equal(width(), Math.floor(room - 300), "A smaller window reserves 300px for the channel");
+  assert.ok(evaluate('document.querySelector(".chat-panel").getBoundingClientRect().width') >= 300);
+  screenshot("threads-desktop-constrained");
+  browser("set", "viewport", "1440", "900", "2");
+  wait('document.querySelector(".chat-thread-panel").getBoundingClientRect().width === 600');
+  close();
+  open(rootID);
+  assert.equal(width(), 600, "Reopening and temporary window constraints preserve the preferred width");
+  browser("dblclick", handle);
+  assert.equal(width(), 340);
+  drag(-83);
+  assert.equal(width(), 423);
+  browser("fill", "#chat-thread-reply", "");
+};
+
 const checkReplyDelivery = async (root, other, layout) => {
   // Hold before fixture delivery so neither HTTP nor gateway can confirm the reply.
   evaluate(`(() => {
@@ -228,6 +342,8 @@ try {
   browser("set", "viewport", "1440", "900", "2");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
+  evaluate('localStorage.removeItem("caper:thread-panel-width")');
+  browser("open", `${web}/spaces`);
   wait(
     `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
   );
@@ -334,7 +450,10 @@ try {
   wait(
     `document.querySelector('${thread(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true' && document.querySelector('${channel(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`,
   );
+  browser("focus", "#chat-thread-reply");
+  browser("mouse", "move", "1400", "30");
   screenshot("threads-desktop");
+  checkThreadResize(root.clientMessageId);
   browser("fill", "#chat-thread-reply", "Saved draft for Alex");
   const requestCount = evaluate("window.threadRequests.length");
   const positions = () =>
@@ -504,9 +623,12 @@ try {
     evaluate(
       '(() => { const rect = document.querySelector(".chat-thread-panel").getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height]; })()',
     ),
-    [0, 0, 390, 844],
+    // Classic-scrollbar Chromium reserves the root's stable gutter; a phone
+    // with overlay scrollbars has the full 390px layout viewport instead.
+    [0, 0, evaluate("document.documentElement.getBoundingClientRect().width"), 844],
   );
   alignedHeaders(390);
+  assert.equal(evaluate('document.querySelector(".chat-thread-resize").checkVisibility()'), false);
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
   browser("set", "viewport", "320", "844", "2");
@@ -534,8 +656,23 @@ try {
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   await checkReplyDelivery(root, other, "mobile");
+  browser("set", "viewport", "1440", "900", "2");
+  browser("open", `${web}/spaces`);
+  wait(
+    `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
+  );
+  open(root.clientMessageId);
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width'),
+    423,
+    "Preferred width survives a page reload and mobile layout",
+  );
+  await checkReactionFollow(root, "desktop");
+  browser("set", "viewport", "390", "844", "2");
+  evaluate("document.querySelector('.chat-thread-messages').scrollTop = 1e9");
+  await checkReactionFollow(root, "narrow");
   console.log(
-    "PASS: repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

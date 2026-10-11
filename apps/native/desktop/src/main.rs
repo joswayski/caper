@@ -12,6 +12,7 @@ mod edits;
 mod effects;
 mod emoji;
 mod ffmpeg;
+mod file_drop;
 mod forwarding;
 mod gateway;
 mod grouping;
@@ -69,9 +70,115 @@ const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
+const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
+/// `--pin-wash`: pin gold at 6%.
+const PIN_WASH: Color32 = Color32::from_rgba_unmultiplied_const(228, 199, 106, 15);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;
+
+#[derive(Clone, Copy)]
+enum NavigationSlide {
+    Browse(bool),
+    Members(bool),
+}
+
+impl NavigationSlide {
+    fn members(self) -> bool {
+        matches!(self, Self::Members(_))
+    }
+
+    fn open(self) -> bool {
+        match self {
+            Self::Browse(open) | Self::Members(open) => open,
+        }
+    }
+
+    fn direction(self) -> f32 {
+        if self.open() != self.members() {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+}
+
+struct NavigationTouch {
+    device: egui::TouchDeviceId,
+    id: egui::TouchId,
+    origin: egui::Pos2,
+    slide: Option<NavigationSlide>,
+    travel: f32,
+    distance: f32,
+    /// Horizontal positions, one per frame: egui gives a frame's touch events
+    /// its single time.
+    samples: Vec<(f64, f32)>,
+}
+
+impl NavigationTouch {
+    fn progress(&self) -> f32 {
+        let fraction = (self.distance / self.travel).clamp(0.0, 1.0);
+        if self.slide.is_some_and(NavigationSlide::open) {
+            fraction
+        } else {
+            1.0 - fraction
+        }
+    }
+}
+
+struct NavigationSettle {
+    slide: NavigationSlide,
+    from: f32,
+    to: f32,
+    started: f64,
+    /// Seconds, and the curve's starting slope, from `release_timing`.
+    duration: f64,
+    slope: f32,
+}
+
+/// As the web's `releaseTiming`: carries on from a finger without accelerating
+/// a held drag or slamming a short remainder into the edge. `speed` is progress
+/// per second toward the target; returns seconds and the curve's starting slope.
+fn release_timing(distance: f32, speed: f32) -> (f64, f32) {
+    let duration = if speed > 0.0 {
+        (3.0 * distance / speed).clamp(0.16, 0.32)
+    } else {
+        0.32
+    };
+    // Match the initial speed to the release, capped at three times the average.
+    // A held or reversing finger starts at rest; every curve lands at rest too.
+    let slope = if distance > 0.0 {
+        (speed * duration / distance).clamp(0.0, 3.0)
+    } else {
+        0.0
+    };
+    (f64::from(duration), slope)
+}
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at time fraction `x`.
+fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let curve = |a: f32, b: f32, t: f32| {
+        3.0 * (1.0 - t) * (1.0 - t) * t * a + 3.0 * (1.0 - t) * t * t * b + t * t * t
+    };
+    // With x1 and x2 in 0..=1, time rises steadily along the curve: bisect for
+    // the point at `x`.
+    let (mut low, mut high) = (0.0_f32, 1.0_f32);
+    for _ in 0..24 {
+        let t = (low + high) / 2.0;
+        if curve(x1, x2, t) < x {
+            low = t;
+        } else {
+            high = t;
+        }
+    }
+    curve(y1, y2, (low + high) / 2.0)
+}
 
 #[derive(Clone, Copy)]
 enum NavIcon {
@@ -94,7 +201,6 @@ enum NavIcon {
     HeadphoneOff,
     AudioLines,
     BellOff,
-    Paperclip,
     FileText,
     Play,
     Pause,
@@ -274,6 +380,12 @@ struct MentionCard {
     focus_on_open: bool,
     /// The `CreateDirect` navigation while **Message** is opening a DM.
     opening: Option<u64>,
+    choosing_space: bool,
+    /// A membership revision and destination, independent of chat navigation.
+    inviting: Option<(u64, String)>,
+    /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
+    invited: BTreeMap<String, &'static str>,
+    status: Option<String>,
     error: Option<String>,
     /// Opened this pass: the click that opened it is not "outside".
     fresh: bool,
@@ -345,6 +457,8 @@ struct DraftUpload {
     channel: String,
     name: String,
     kind: model::AttachmentKind,
+    /// The selected original, available for preview before upload completes.
+    local_path: Option<std::path::PathBuf>,
     /// The picked file's size; 0 until the file was read.
     source_size: u64,
     /// What is stored after compression, once prepared.
@@ -447,6 +561,10 @@ fn projected_reactions(
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
+    /// When files were first dragged over the window, for the drop overlay's animation.
+    file_drop_since: Option<f64>,
+    /// The `parity-file-drop` fixture shows the overlay without a drag.
+    file_drop_fixture: bool,
     worker: Worker,
     voice: Voice,
     effects: Effects,
@@ -480,6 +598,7 @@ struct CaperApp {
     context_window: Option<MessageWindow>,
     has_newer: bool,
     context_loading: bool,
+    forward_focus: Option<(u64, model::ForwardSource)>,
     focused_message: Option<String>,
     scroll_to_target: bool,
     error: Option<String>,
@@ -488,6 +607,9 @@ struct CaperApp {
     account: Option<Account>,
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
+    unread_spaces: Vec<model::UnreadSpace>,
+    unread_revision: u64,
+    channel_reads: BTreeMap<String, String>,
     /// `GET /api/people` for DM `@` suggestions; kept while it refreshes.
     people: Option<Vec<model::Person>>,
     /// Bumps on sign-in and sign-out; fences request, block, privacy and
@@ -516,6 +638,8 @@ struct CaperApp {
     notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
+    /// A burst of live notifications coalesces into one unread refresh.
+    unread_refresh_due: Option<Instant>,
     /// Web's membership reconcile: when it last ran, the request in flight,
     /// and a revision that space and channel changes made here advance.
     membership_refreshed: Instant,
@@ -590,6 +714,12 @@ struct CaperApp {
     member_page: usize,
     members_visible: bool,
     narrow_members_visible: bool,
+    navigation_touch: Option<NavigationTouch>,
+    navigation_settle: Option<NavigationSettle>,
+    /// The top of the composer, measured while laying out the conversation.
+    navigation_swipe_bottom: f32,
+    /// Browse's search editor keeps text selection, just like the composer.
+    navigation_search_rect: egui::Rect,
     /// Height of narrow Browse's account bar, which the conversation's edge stops above.
     browse_bar: f32,
     channels_expanded: bool,
@@ -614,6 +744,9 @@ struct CaperApp {
     /// to the User Settings button, as on web.
     focus_user_settings: bool,
     navigation_open: bool,
+    /// The last frame's window was narrow (760 px or less), where an open
+    /// Browse covers the conversation; wider windows show both.
+    narrow_layout: bool,
     navigation: u64,
     opening: bool,
     /// Launch or sign-in is opening the first space and conversation. The
@@ -647,11 +780,13 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
-    /// Compression settings while uploads are configured; `None` hides Attach.
+    /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
+    /// A usage check is in flight, so a disabled Attach is still checking.
+    uploads_pending: bool,
     draft_files: Vec<DraftUpload>,
     draft_keys: u64,
     media: attachments::Media,
@@ -675,6 +810,8 @@ impl CaperApp {
         let now = Instant::now();
         let mut app = Self {
             daily_icon: None,
+            file_drop_since: None,
+            file_drop_fixture: false,
             worker,
             voice,
             effects: Effects::new(fixture.is_none()),
@@ -701,6 +838,7 @@ impl CaperApp {
             context_window: None,
             has_newer: false,
             context_loading: false,
+            forward_focus: None,
             focused_message: None,
             scroll_to_target: false,
             error: None,
@@ -709,6 +847,9 @@ impl CaperApp {
             account: None,
             spaces: Vec::new(),
             directs: Vec::new(),
+            unread_spaces: Vec::new(),
+            unread_revision: 0,
+            channel_reads: BTreeMap::new(),
             people: None,
             account_epoch: 0,
             blocks: None,
@@ -726,6 +867,7 @@ impl CaperApp {
             notifications: notifications::Notifications::default(),
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
+            unread_refresh_due: None,
             membership_refreshed: now,
             membership_request: 0,
             membership_refreshing: false,
@@ -787,6 +929,10 @@ impl CaperApp {
             member_page: 0,
             members_visible: false,
             narrow_members_visible: false,
+            navigation_touch: None,
+            navigation_settle: None,
+            navigation_swipe_bottom: 0.0,
+            navigation_search_rect: egui::Rect::NOTHING,
             browse_bar: 0.0,
             channels_expanded: true,
             browse_channels: false,
@@ -805,6 +951,7 @@ impl CaperApp {
             settings_menu_dialog: false,
             focus_user_settings: false,
             navigation_open: false,
+            narrow_layout: false,
             navigation: 0,
             opening: false,
             restoring: None,
@@ -833,6 +980,7 @@ impl CaperApp {
             uploads: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
+            uploads_pending: false,
             draft_files: Vec::new(),
             draft_keys: 0,
             media,
@@ -944,6 +1092,10 @@ impl CaperApp {
                         .expect("valid reaction fixture");
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
+                } else if name.starts_with("parity-file-drop") {
+                    // Holds the drop overlay open for rendering checks; no file is dragged.
+                    app.install_attachments_fixture();
+                    app.file_drop_fixture = true;
                 } else if name.starts_with("parity-thread") {
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     let root = messages[0].id.clone();
@@ -1181,7 +1333,7 @@ impl CaperApp {
                         app.selected_direct = None;
                         app.clear_channel_state();
                     }
-                } else if name == "parity-muted" {
+                } else if matches!(name, "parity-muted" | "parity-unread") {
                     // Labelled mutes: a muted space in the rail, a muted
                     // channel, a muted DM with unread messages (no dot) and
                     // a DM with notifications off (still dotted).
@@ -1224,6 +1376,13 @@ impl CaperApp {
                         }))
                         .expect("valid notification fixture"),
                     );
+                    if name == "parity-unread" {
+                        app.unread_spaces = serde_json::from_value(serde_json::json!([
+                            {"id": "space0000001", "channels": [{"id": "chan00000002", "lastSeq": "4"}]},
+                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "6"}]}
+                        ]))
+                        .expect("valid unread fixture");
+                    }
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
                         id: "invite000001".into(),
@@ -1824,6 +1983,7 @@ impl CaperApp {
             channel: channel.clone(),
             name: name.into(),
             kind: model::AttachmentKind::Image,
+            local_path: None,
             source_size: size,
             stored_size: Some(size),
             compressing: None,
@@ -1956,9 +2116,10 @@ impl CaperApp {
                     self.navigation_open = false;
                     if let Some(id) = alert.conversation_id {
                         // A new DM may arrive before the periodic conversation list.
-                        self.remember_conversation();
-                        self.selected_direct = Some(id.clone());
-                        self.reload_selected_channel(id, false);
+                        self.navigate(NavigationTarget {
+                            space: None,
+                            channel: Some(id),
+                        });
                         self.refresh_directs();
                     } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
                     {
@@ -1966,6 +2127,11 @@ impl CaperApp {
                             space: Some(space),
                             channel: Some(channel),
                         });
+                    }
+                }
+                Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
+                    if self.unread_refresh_due.is_none() {
+                        self.unread_refresh_due = Some(Instant::now() + Duration::from_secs(1));
                     }
                 }
                 Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
@@ -1976,6 +2142,41 @@ impl CaperApp {
                     result: Ok(directs),
                 } if generation == self.generation => {
                     self.directs = directs;
+                }
+                Event::UnreadLoaded {
+                    epoch,
+                    revision,
+                    result: Ok(spaces),
+                } if epoch == self.account_epoch && revision == self.unread_revision => {
+                    self.unread_spaces = spaces;
+                    self.mark_selected_channel_read();
+                }
+                Event::ChannelRead {
+                    epoch,
+                    space,
+                    channel,
+                    seq,
+                    result: Ok(()),
+                } if epoch == self.account_epoch => {
+                    self.unread_revision += 1;
+                    let read = self
+                        .channel_reads
+                        .entry(channel.clone())
+                        .or_insert_with(|| "0".into());
+                    if model::sequence(&seq).unwrap_or(0) > model::sequence(read).unwrap_or(0) {
+                        *read = seq.clone();
+                    }
+                    for entry in &mut self.unread_spaces {
+                        if entry.id == space {
+                            entry.channels.retain(|item| {
+                                item.id != channel
+                                    || model::sequence(&item.last_seq).unwrap_or(0)
+                                        > model::sequence(&seq).unwrap_or(0)
+                            });
+                        }
+                    }
+                    self.unread_spaces
+                        .retain(|entry| !entry.channels.is_empty());
                 }
                 // A failed refresh keeps the previous list (or the peer fallback).
                 Event::PeopleLoaded {
@@ -2303,6 +2504,7 @@ impl CaperApp {
                 }
                 Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
                     self.uploads = settings;
+                    self.uploads_pending = false;
                 }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
@@ -2317,6 +2519,24 @@ impl CaperApp {
                     request,
                     result,
                 } if generation == self.generation => {
+                    if self.forwarding.resolving(request) {
+                        match &result {
+                            Ok(forwarding::Response::Conversation(page))
+                                if page.source.is_some() =>
+                            {
+                                let source = page.source.clone().unwrap();
+                                self.forwarding.close();
+                                self.open_forward_source(source);
+                                continue;
+                            }
+                            Err(error) => {
+                                self.error = Some(error.message.clone());
+                                self.forwarding.close();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some(message) = self.forwarding.receive(request, result)
                         && self.selected_channel.as_deref() == Some(&message.channel_id)
                     {
@@ -2500,6 +2720,7 @@ impl CaperApp {
         self.token = Some(token);
         self.uploads = None;
         self.uploads_checked = None;
+        self.uploads_pending = false;
         self.check_uploads();
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -2550,10 +2771,22 @@ impl CaperApp {
     }
 
     fn refresh_directs(&mut self) {
+        self.refresh_unread();
         if let Some(token) = self.token.clone() {
             self.directs_refreshed = Instant::now();
             self.worker.send(Command::LoadDirects {
                 generation: self.generation,
+                token,
+            });
+        }
+    }
+
+    fn refresh_unread(&mut self) {
+        if let Some(token) = self.token.clone() {
+            self.unread_revision += 1;
+            self.worker.send(Command::LoadUnread {
+                epoch: self.account_epoch,
+                revision: self.unread_revision,
                 token,
             });
         }
@@ -2575,6 +2808,9 @@ impl CaperApp {
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
+        self.unread_spaces.clear();
+        self.channel_reads.clear();
+        self.unread_revision += 1;
         self.membership_refreshing = false;
         self.space_notice = None;
         self.blocks = None;
@@ -2693,19 +2929,30 @@ impl CaperApp {
     /// Drops a declined or blocked request. If it was open, show the next
     /// request, else the first space (or nothing).
     fn leave_request(&mut self, id: &str) {
+        self.navigation_cache.forget_channel(id);
+        if self
+            .navigation_target
+            .as_ref()
+            .is_some_and(|target| target.space.is_none() && target.channel.as_deref() == Some(id))
+        {
+            self.navigation += 1;
+            self.opening = false;
+            self.navigation_target = None;
+            self.navigation_prefetch = None;
+        }
         self.directs.retain(|direct| direct.id != id);
         if self.selected_direct.as_deref() != Some(id) {
             return;
         }
+        // Declined data must disappear immediately, even while the next
+        // request prepares its history.
+        self.selected_direct = None;
+        self.clear_channel_state();
         if let Some(next) = self.incoming_requests().into_iter().next() {
             self.requests_open = true;
             self.select_direct(next);
         } else if let Some(space) = self.spaces.first().map(|space| space.id.clone()) {
-            self.selected_direct = None;
             self.select_space(space);
-        } else {
-            self.selected_direct = None;
-            self.clear_channel_state();
         }
     }
 
@@ -2725,6 +2972,13 @@ impl CaperApp {
                 self.block_busy = false;
                 self.request_busy = false;
                 if let Err(error) = result {
+                    if let Some(card) = self
+                        .mention_card
+                        .as_mut()
+                        .filter(|card| card.pill.entry.id.as_deref() == Some(&account.id))
+                    {
+                        card.error = Some(error.clone());
+                    }
                     self.block_error = Some(error);
                     return;
                 }
@@ -2742,6 +2996,15 @@ impl CaperApp {
                 if matches!(self.dialog, Some(Dialog::Block { .. })) {
                     self.dialog = None;
                 }
+                // Web's card stays open after Unblock and says so.
+                if !blocked
+                    && let Some(card) = self
+                        .mention_card
+                        .as_mut()
+                        .filter(|card| card.pill.entry.id.as_deref() == Some(&account.id))
+                {
+                    card.status = Some("Unblocked.".into());
+                }
                 if blocked {
                     self.typers.remove(&account.id);
                     // Blocking also declines their pending request.
@@ -2757,6 +3020,40 @@ impl CaperApp {
                         .collect();
                     for id in requests {
                         self.leave_request(&id);
+                    }
+                }
+            }
+            AccountResult::Invitation {
+                space,
+                user,
+                request,
+                result,
+            } => {
+                self.membership_revision += 1;
+                if let Ok(member) = &result
+                    && self.selected_space.as_deref() == Some(space.id.as_str())
+                    && self.managed_channel.is_none()
+                {
+                    self.managed_invitations.retain(|item| item.id != member.id);
+                    self.managed_invitations.push(member.clone());
+                }
+                if let Some(card) = self.mention_card.as_mut().filter(|card| {
+                    card.pill.entry.id.as_deref() == Some(user.as_str())
+                        && card.inviting.as_ref() == Some(&(request, space.id.clone()))
+                }) {
+                    card.inviting = None;
+                    match result {
+                        Ok(_) => {
+                            card.invited.insert(space.id, "Invited");
+                            card.status = Some(format!("Invitation sent to {}.", space.name));
+                        }
+                        Err(error) => {
+                            // Redundant invitations still mark the row so it isn't retried.
+                            if let Some(already) = redundant_invitation(&error) {
+                                card.invited.insert(space.id, already);
+                            }
+                            card.error = Some(error);
+                        }
                     }
                 }
             }
@@ -2992,16 +3289,10 @@ impl CaperApp {
     fn select_direct(&mut self, direct: model::DirectConversation) {
         self.request_busy = false;
         self.request_error = None;
-        self.remember_conversation();
-        self.selected_direct = Some(direct.id.clone());
-        self.reload_selected_channel(direct.id, false);
-        // After the reload's generation bump, so the answer is not discarded.
-        if let Some(token) = self.token.clone() {
-            self.worker.send(Command::LoadPeople {
-                generation: self.generation,
-                token,
-            });
-        }
+        self.navigate(NavigationTarget {
+            space: None,
+            channel: Some(direct.id),
+        });
     }
 
     fn select_or_create_self_direct(&mut self) {
@@ -3229,8 +3520,19 @@ impl CaperApp {
         }
     }
 
+    /// Narrow Browse slides over the conversation, which is then not being read.
+    fn browse_covers_conversation(&self) -> bool {
+        self.narrow_layout && self.navigation_open
+    }
+
     fn mark_selected_direct_read(&mut self) {
-        if !self.foreground || self.selected_channel != self.selected_direct {
+        self.mark_selected_channel_read();
+        // As for channels: not while Browse covers it or an older window is open.
+        if !self.foreground
+            || self.browse_covers_conversation()
+            || self.has_newer
+            || self.selected_channel != self.selected_direct
+        {
             return;
         }
         // Reading a request must not look like engaging with it.
@@ -3248,6 +3550,40 @@ impl CaperApp {
                 direct.read_seq = seq.clone();
             }
             self.worker.send(Command::ReadDirect { token, id, seq });
+        }
+    }
+
+    fn mark_selected_channel_read(&mut self) {
+        if !self.foreground
+            || self.browse_covers_conversation()
+            || self.loading
+            || self.has_newer
+            || self.selected_direct.is_some()
+        {
+            return;
+        }
+        if let (Some(space), Some(channel), Some(token)) = (
+            self.selected_space.clone(),
+            self.selected_channel.clone(),
+            self.token.clone(),
+        ) {
+            let seq = self.timeline.cursor();
+            if model::sequence(&seq).unwrap_or(0)
+                <= self
+                    .channel_reads
+                    .get(&channel)
+                    .and_then(|value| model::sequence(value).ok())
+                    .unwrap_or(0)
+            {
+                return;
+            }
+            self.worker.send(Command::ReadChannel {
+                epoch: self.account_epoch,
+                token,
+                space,
+                channel,
+                seq,
+            });
         }
     }
 
@@ -3270,7 +3606,7 @@ impl CaperApp {
         })
     }
 
-    /// Web `uploadsAvailable`: any failure hides Attach. Rechecked at most
+    /// Any failure disables Attach without changing composer width. Rechecked at most
     /// once a minute on channel loads while unavailable.
     fn check_uploads(&mut self) {
         let Some(token) = self.token.clone() else {
@@ -3284,6 +3620,7 @@ impl CaperApp {
             return;
         }
         self.uploads_checked = Some(Instant::now());
+        self.uploads_pending = true;
         self.worker.send(Command::AssetUsage { token });
     }
 
@@ -3346,6 +3683,8 @@ impl CaperApp {
     fn navigate(&mut self, target: NavigationTarget) {
         // Another conversation's media never stays open over it.
         self.viewer = None;
+        self.forwarding.cancel_conversation();
+        self.forward_focus = None;
         let mut cache_target = navigation::Target {
             space: target.space.clone(),
             channel: target.channel.clone(),
@@ -3356,7 +3695,9 @@ impl CaperApp {
             channel: cache_target.channel.clone(),
         };
         let selected = self.selected_channel.as_ref().is_some_and(|channel| {
-            target.channel.as_ref() == Some(channel) && target.space == self.selected_space
+            target.channel.as_ref() == Some(channel)
+                && (target.space == self.selected_space
+                    || target.space.is_none() && self.selected_direct.as_ref() == Some(channel))
         });
         // Joining the displayed preview still needs a participating session.
         let joined_preview = self.selected_is_joined()
@@ -3431,7 +3772,14 @@ impl CaperApp {
             channel: target.channel,
         });
         if self.selected_channel.as_ref() == target.channel.as_ref()
-            && self.selected_space == target.space
+            && (self.selected_space == target.space
+                || target.space.is_none() && self.selected_direct == target.channel)
+        {
+            return;
+        }
+        if target.space.is_none()
+            && target.channel.is_some()
+            && self.navigation_cache.history(&target).is_some()
         {
             return;
         }
@@ -3451,28 +3799,54 @@ impl CaperApp {
     }
 
     fn remember_conversation(&mut self) {
-        if self.session.is_none() {
+        if self.session.is_none() || self.context_window.is_some() {
             return;
         }
-        let (Some(channel), Some(detail)) = (&self.selected_channel, &self.detail) else {
+        let Some(channel) = &self.selected_channel else {
             return;
         };
-        let Some(item) = detail.channels.iter().find(|item| item.id == *channel) else {
-            return;
+        let (target, space, place) = if self.selected_direct.as_ref() == Some(channel) {
+            let Some(direct) = self.selected_direct_conversation() else {
+                return;
+            };
+            (
+                navigation::Target {
+                    space: None,
+                    channel: Some(channel.clone()),
+                },
+                model::HistoryPlace {
+                    id: String::new(),
+                    name: "Direct messages".into(),
+                },
+                model::HistoryPlace {
+                    id: channel.clone(),
+                    name: direct.peer.display_name.clone(),
+                },
+            )
+        } else {
+            let Some(detail) = &self.detail else {
+                return;
+            };
+            let Some(item) = detail.channels.iter().find(|item| item.id == *channel) else {
+                return;
+            };
+            (
+                navigation::Target {
+                    space: (!detail.space.demo).then(|| detail.space.id.clone()),
+                    channel: (!detail.space.demo).then(|| channel.clone()),
+                },
+                model::HistoryPlace {
+                    id: detail.space.id.clone(),
+                    name: detail.space.name.clone(),
+                },
+                model::HistoryPlace {
+                    id: item.id.clone(),
+                    name: item.name.clone(),
+                },
+            )
         };
         self.navigation_cache.remember(
-            navigation::Target {
-                space: if detail.space.demo {
-                    None
-                } else {
-                    Some(detail.space.id.clone())
-                },
-                channel: if detail.space.demo {
-                    None
-                } else {
-                    Some(channel.clone())
-                },
-            },
+            target,
             model::History {
                 messages: self
                     .timeline
@@ -3485,14 +3859,8 @@ impl CaperApp {
                 pinned_messages: self.timeline.pinned_messages().cloned().collect(),
                 cursor: self.timeline.cursor(),
                 has_more: self.has_more,
-                space: model::HistoryPlace {
-                    id: detail.space.id.clone(),
-                    name: detail.space.name.clone(),
-                },
-                channel: model::HistoryPlace {
-                    id: item.id.clone(),
-                    name: item.name.clone(),
-                },
+                space,
+                channel: place,
             },
         );
     }
@@ -3522,11 +3890,18 @@ impl CaperApp {
         self.restoring = None;
         match result {
             Ok(prepared) => {
-                let space_changed = self.selected_space.as_deref()
-                    != prepared
-                        .detail
-                        .as_ref()
-                        .map(|detail| detail.space.id.as_str());
+                let forward_focus = self.forward_focus.take();
+                let direct = prepared
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|(history, _)| history.space.id.is_empty());
+                self.remember_conversation();
+                let space_changed = !direct
+                    && self.selected_space.as_deref()
+                        != prepared
+                            .detail
+                            .as_ref()
+                            .map(|detail| detail.space.id.as_str());
                 if space_changed {
                     self.voice_join_request += 1;
                     self.presence.clear();
@@ -3540,16 +3915,33 @@ impl CaperApp {
                 self.navigation_error = None;
                 self.navigation_target = None;
                 self.navigation_open = false;
-                let general = prepared.detail.is_none();
-                self.selected_space = prepared
-                    .detail
-                    .as_ref()
-                    .map(|detail| detail.space.id.clone());
-                self.detail = prepared.detail;
+                let general = !direct && prepared.detail.is_none();
+                if !direct {
+                    self.selected_space = prepared
+                        .detail
+                        .as_ref()
+                        .map(|detail| detail.space.id.clone());
+                    self.detail = prepared.detail;
+                }
                 if let Some((history, session)) = prepared.conversation {
                     let channel = history.channel.id.clone();
+                    if direct {
+                        self.selected_direct = Some(channel.clone());
+                        if let Some(token) = self.token.clone() {
+                            self.worker.send(Command::LoadPeople {
+                                generation: self.generation,
+                                token,
+                            });
+                        }
+                    }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
+                }
+                if let Some((request, source)) = forward_focus
+                    && request == self.navigation
+                    && self.selected_channel.as_deref() == Some(&source.message.channel_id)
+                {
+                    self.load_context(source.message.thread_root_id, source.message.id, false);
                 }
             }
             Err(error) => {
@@ -4266,6 +4658,7 @@ impl CaperApp {
         self.context_window = None;
         self.has_newer = false;
         self.context_loading = false;
+        self.forward_focus = None;
         self.focused_message = None;
         self.scroll_to_target = false;
         self.timeline = Timeline::default();
@@ -4316,6 +4709,7 @@ impl CaperApp {
         self.reset_account_state();
         self.uploads = None;
         self.uploads_checked = None;
+        self.uploads_pending = false;
         self.media.clear();
         self.viewer = None;
         self.attachment_progress.clear();
@@ -4554,6 +4948,22 @@ impl CaperApp {
             && !self.detail.as_ref().is_some_and(|detail| detail.space.demo)
     }
 
+    /// Why Attach is disabled, worded as on every client: checking while upload
+    /// settings or the conversation load, otherwise unavailable.
+    fn attach_unavailable_reason(&self) -> &'static str {
+        let unavailable = self.token.is_none()
+            || !self.selected_is_joined()
+            || self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+            || (self.uploads.is_none() && self.uploads_checked.is_some() && !self.uploads_pending)
+            || self.session_error.is_some()
+            || self.load_error.is_some();
+        if unavailable {
+            "File uploads are unavailable"
+        } else {
+            "Checking file uploads…"
+        }
+    }
+
     fn pick_files(&mut self, context: &egui::Context) {
         if self.file_picker.is_some() {
             return;
@@ -4608,6 +5018,7 @@ impl CaperApp {
                     .file_name()
                     .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
                 kind: model::AttachmentKind::File,
+                local_path: Some(path.clone()),
                 source_size: 0,
                 stored_size: None,
                 compressing: None,
@@ -4642,6 +5053,7 @@ impl CaperApp {
                 channel: channel.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
+                local_path: None,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
                 compressing: None,
@@ -4765,6 +5177,19 @@ impl CaperApp {
             channel,
             before,
         });
+    }
+
+    fn open_forward_source(&mut self, source: model::ForwardSource) {
+        if self.selected_channel.as_deref() == Some(&source.message.channel_id) {
+            self.showing_pins = false;
+            self.load_context(source.message.thread_root_id, source.message.id, false);
+        } else {
+            self.navigate(NavigationTarget {
+                space: source.space_id.clone(),
+                channel: Some(source.message.channel_id.clone()),
+            });
+            self.forward_focus = Some((self.navigation, source));
+        }
     }
 
     fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {
@@ -5325,6 +5750,14 @@ impl CaperApp {
         {
             self.refresh_directs();
         }
+        if let Some(due) = self.unread_refresh_due {
+            if now >= due {
+                self.unread_refresh_due = None;
+                self.refresh_unread();
+            } else {
+                context.request_repaint_after(due - now);
+            }
+        }
         if self.token.is_some() {
             let waited = now.duration_since(self.membership_refreshed);
             if waited >= MEMBERSHIP_REFRESH {
@@ -5414,6 +5847,7 @@ impl eframe::App for CaperApp {
         self.receive();
         if self.foreground && !was_foreground {
             self.mark_selected_direct_read();
+            self.refresh_unread();
             self.refresh_membership();
         }
         self.refresh_media_status();
@@ -5670,6 +6104,36 @@ impl CaperApp {
             avatar_images::BRANDING[index],
         )
         .paint_at(ui, character);
+    }
+
+    /// Covers the conversation while the window has files dragged over it.
+    fn file_drop_overlay(&mut self, context: &egui::Context, conversation: egui::Rect) {
+        let now = context.input(|input| input.time);
+        let hovering =
+            self.file_drop_fixture || context.input(|input| !input.raw.hovered_files.is_empty());
+        if !self.can_attach() || !hovering {
+            self.file_drop_since = None;
+            return;
+        }
+        let since = *self.file_drop_since.get_or_insert(now);
+        let (title, detail) = file_drop::text(
+            self.channel_name(),
+            self.selected_direct.is_some(),
+            self.draft_files.len(),
+        );
+        let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
+        file_drop::paint(
+            context,
+            conversation,
+            (now - since) as f32,
+            (
+                format!("bytes://caper-branding-v1/{index}.svg"),
+                avatar_images::BRANDING[index],
+            ),
+            &title,
+            &detail,
+        );
+        context.request_repaint();
     }
 
     /// Whether the loading page still covers the first navigation.
@@ -6137,8 +6601,240 @@ impl CaperApp {
             });
     }
 
+    /// One-finger navigation starts across the narrow content, never in an
+    /// editor, audio dock or modal. Mouse drags retain text selection.
+    fn navigation_swipe(&mut self, context: &egui::Context) {
+        let screen = context.viewport_rect();
+        let blocked = screen.width() > 760.0
+            || self.dialog.is_some()
+            || self.showing_pins
+            || self.thread_view.is_some()
+            || self.viewer.is_some()
+            || self.message_editor.is_some()
+            || self.edit_history.is_some()
+            || self.forwarding.is_open()
+            || self.mention_card.is_some()
+            || self.reactors_view.is_some()
+            || self.reaction_picker.is_some()
+            || egui::Popup::is_any_open(context)
+            || context.input(|input| !input.focused || input.multi_touch().is_some());
+        let now = context.input(|input| input.time);
+        if blocked {
+            self.finish_navigation_touch(context, now, false, 0.0);
+            return;
+        }
+        let members_available = self.selected_direct.is_none()
+            && self.selected_is_joined()
+            && !self.no_accessible_channels();
+        for event in context.input(|input| input.events.clone()) {
+            let egui::Event::Touch {
+                device_id,
+                id,
+                phase,
+                pos,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if phase == egui::TouchPhase::Start {
+                if self.navigation_touch.is_some() {
+                    self.finish_navigation_touch(context, now, false, 0.0);
+                    return;
+                }
+                let bottom = if self.navigation_open {
+                    screen.bottom() - self.browse_bar
+                } else if self.narrow_members_visible {
+                    screen.bottom()
+                } else {
+                    self.navigation_swipe_bottom
+                };
+                if screen.contains(pos)
+                    && pos.y < bottom
+                    && !self.navigation_search_rect.contains(pos)
+                {
+                    self.navigation_touch = Some(NavigationTouch {
+                        device: device_id,
+                        id,
+                        origin: pos,
+                        slide: None,
+                        travel: 1.0,
+                        distance: 0.0,
+                        samples: vec![(now, pos.x)],
+                    });
+                }
+                continue;
+            }
+            let Some(touch) = self.navigation_touch.as_mut() else {
+                continue;
+            };
+            if touch.device != device_id || touch.id != id {
+                continue;
+            }
+            if phase == egui::TouchPhase::Cancel {
+                self.finish_navigation_touch(context, now, false, 0.0);
+                continue;
+            }
+            if phase == egui::TouchPhase::End && touch.slide.is_none() {
+                self.navigation_touch = None;
+                continue;
+            }
+            // A move and release in one frame share its time, so speed is
+            // measured from an earlier frame: the oldest in the last 0.1s, or
+            // the latest before them, where a pause leaves no fling.
+            match touch.samples.last_mut() {
+                Some(last) if last.0 >= now => last.1 = pos.x,
+                _ => touch.samples.push((now, pos.x)),
+            }
+            let recent = touch
+                .samples
+                .iter()
+                .position(|(time, _)| now - time <= 0.1)
+                .unwrap_or(touch.samples.len());
+            let stale = recent.min(touch.samples.len().saturating_sub(2));
+            touch.samples.drain(..stale);
+            let delta = pos - touch.origin;
+            if touch.slide.is_none() {
+                if delta.y.abs() > delta.x.abs().max(12.0) {
+                    self.navigation_touch = None;
+                    continue;
+                }
+                if delta.x.abs() < 12.0 {
+                    continue;
+                }
+                if delta.x.abs() < delta.y.abs() * 1.5 {
+                    self.navigation_touch = None;
+                    continue;
+                }
+                touch.slide = match (
+                    self.navigation_open,
+                    self.narrow_members_visible,
+                    delta.x > 0.0,
+                ) {
+                    (true, _, false) => Some(NavigationSlide::Browse(false)),
+                    (false, true, true) => Some(NavigationSlide::Members(false)),
+                    (false, false, true) => Some(NavigationSlide::Browse(true)),
+                    (false, false, false) if members_available => {
+                        Some(NavigationSlide::Members(true))
+                    }
+                    _ => None,
+                };
+                let Some(slide) = touch.slide else {
+                    self.navigation_touch = None;
+                    continue;
+                };
+                touch.travel = if slide.members() {
+                    280.0_f32.min(screen.width() - 64.0) + 32.0
+                } else {
+                    screen.width() + 16.0
+                };
+            }
+            let direction = touch.slide.unwrap().direction();
+            touch.distance = delta.x * direction;
+            // Own the horizontal drag before a scrolling list or selectable
+            // message can consume it, including its release click.
+            context.set_dragged_id(egui::Id::new("navigation-swipe"));
+            if phase == egui::TouchPhase::End {
+                let velocity = match touch.samples.first() {
+                    Some(&(time, x)) if now > time => (pos.x - x) * direction / (now - time) as f32,
+                    _ => 0.0,
+                };
+                let commit = velocity > -300.0
+                    && (touch.distance >= touch.travel / 2.0
+                        || (velocity >= 300.0 && touch.distance >= 40.0));
+                self.finish_navigation_touch(context, now, commit, velocity);
+            }
+        }
+    }
+
+    /// `velocity` is the finger's, in points per second toward the slide's end.
+    fn finish_navigation_touch(
+        &mut self,
+        context: &egui::Context,
+        now: f64,
+        commit: bool,
+        velocity: f32,
+    ) {
+        let Some(touch) = self.navigation_touch.take() else {
+            return;
+        };
+        let Some(slide) = touch.slide else { return };
+        let open = if commit { slide.open() } else { !slide.open() };
+        let from = touch.progress();
+        let to: f32 = if open { 1.0 } else { 0.0 };
+        // Progress per second toward where it settles.
+        let toward = if commit { velocity } else { -velocity };
+        let speed = toward / touch.travel;
+        let (duration, slope) = release_timing((to - from).abs(), speed);
+        self.navigation_settle = Some(NavigationSettle {
+            slide,
+            from,
+            to,
+            started: now,
+            duration,
+            slope,
+        });
+        match slide {
+            NavigationSlide::Browse(_) => self.navigation_open = open,
+            NavigationSlide::Members(_) => self.narrow_members_visible = open,
+        }
+        context.stop_dragging();
+        context.request_repaint();
+    }
+
+    /// Finger poses override the existing button animations until settled.
+    fn navigation_pose(&mut self, context: &egui::Context, members: bool, normal: f32) -> f32 {
+        if let Some(touch) = &self.navigation_touch
+            && touch.slide.is_some_and(|slide| slide.members() == members)
+        {
+            return touch.progress();
+        }
+        if let Some(settle) = &self.navigation_settle
+            && settle.slide.members() == members
+        {
+            let open = if members {
+                self.narrow_members_visible
+            } else {
+                self.navigation_open
+            };
+            if open != (settle.to > 0.5) {
+                self.navigation_settle = None;
+                return normal;
+            }
+            // The web's and phones' speed-matched curve.
+            let elapsed =
+                ((context.input(|input| input.time) - settle.started) / settle.duration) as f32;
+            let progress = settle.from
+                + (settle.to - settle.from)
+                    * cubic_bezier(0.2, 0.2 * settle.slope, 0.35, 1.0, elapsed);
+            if elapsed >= 1.0 {
+                // A throttled/paused frame can outlast the slide. Land the
+                // button animation too, rather than revealing an older pose.
+                context.animate_bool_with_time(
+                    egui::Id::new(if members {
+                        "members-slide"
+                    } else {
+                        "browse-slide"
+                    }),
+                    open,
+                    0.0,
+                );
+                self.navigation_settle = None;
+            } else {
+                context.request_repaint();
+            }
+            return progress;
+        }
+        normal
+    }
+
     fn shell(&mut self, context: &egui::Context) {
+        let covered = self.browse_covers_conversation();
+        self.navigation_swipe(context);
+        self.navigation_swipe_bottom = context.viewport_rect().bottom();
+        self.navigation_search_rect = egui::Rect::NOTHING;
         let narrow = context.viewport_rect().width() <= 760.0;
+        self.narrow_layout = narrow;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
@@ -6152,9 +6848,10 @@ impl CaperApp {
                     let uncovered = context.animate_bool_with_time_and_easing(
                         egui::Id::new("browse-slide"),
                         self.navigation_open,
-                        0.3,
+                        0.22,
                         egui::emath::easing::cubic_out,
                     );
+                    let uncovered = self.navigation_pose(context, false, uncovered);
                     if uncovered > 0.0 {
                         // Browse stops above the account bar, which rises over the
                         // conversation below.
@@ -6201,6 +6898,7 @@ impl CaperApp {
                             0.3,
                             egui::emath::easing::cubic_out,
                         );
+                        let shown = self.navigation_pose(context, true, shown);
                         if shown > 0.0 {
                             let body = egui::Rect::from_min_max(
                                 egui::pos2(stage.left(), stage.top() + 54.0),
@@ -6387,6 +7085,10 @@ impl CaperApp {
                     }
                 }
             });
+        // Closing Browse (or widening the window) uncovers the conversation: read it.
+        if covered && !self.browse_covers_conversation() {
+            self.mark_selected_direct_read();
+        }
     }
 
     fn rail(&mut self, ui: &mut egui::Ui) {
@@ -6412,6 +7114,7 @@ impl CaperApp {
                             .collect();
                         for (id, name, demo) in spaces {
                             let active = self.selected_space.as_deref() == Some(&id);
+                            let unread = self.unread_spaces.iter().any(|space| space.id == id);
                             let muted = (!demo && self.account.is_some())
                                 .then(|| self.muted_label(&Scope::Space(id.clone())))
                                 .flatten();
@@ -6449,13 +7152,7 @@ impl CaperApp {
                             let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
                             let response = ui
                                 .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                    toned_rounded(
-                                        ui,
-                                        tone,
-                                        if active { 8 } else { 12 },
-                                        true,
-                                        button,
-                                    )
+                                    toned_rounded(ui, tone, 12, true, button)
                                 })
                                 .inner;
                             // A muted space gets a bell-slash badge and says so on hover.
@@ -6472,10 +7169,29 @@ impl CaperApp {
                                         NavIcon::BellOff,
                                         MUTED,
                                     );
-                                    response.on_hover_text(format!("{name}\n{label}"))
+                                    response.on_hover_text(format!(
+                                        "{name}\n{label}{}",
+                                        if unread { "\nUnread activity" } else { "" }
+                                    ))
                                 }
-                                None => response.on_hover_text(name),
+                                None => response.on_hover_text(if unread {
+                                    format!("{name}\nUnread activity")
+                                } else {
+                                    name.clone()
+                                }),
                             };
+                            if unread {
+                                let center = response.rect.right_top() + egui::vec2(-1.0, 1.0);
+                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
+                                ui.painter().circle_filled(center, 3.0, TEXT);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        format!("{name}, unread activity"),
+                                    )
+                                });
+                            }
                             if active {
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
@@ -6875,18 +7591,20 @@ impl CaperApp {
                                     self.browse_channels = false;
                                     self.channel_search.clear();
                                 }
-                                ui.add_sized(
+                                self.navigation_search_rect = ui.add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::TextEdit::singleline(&mut self.channel_search)
                                         .vertical_align(egui::Align::Center)
                                         .margin(egui::Margin::symmetric(8, 4))
                                         .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
-                                );
+                                ).rect;
                                 let query = self.channel_search.to_lowercase();
                                 let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
                                     .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
                                     .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
                                 for (id, name, private) in previews {
+                                    // A mention in an unjoined channel shows here, not in the sidebar.
+                                    let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
                                     ui.horizontal(|ui| {
                                         let trailing = 50.0 + if self.owner() { 32.0 } else { 0.0 };
                                         let (row, _) = channel_button(
@@ -6895,7 +7613,7 @@ impl CaperApp {
                                             &name,
                                             Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
                                             self.selected_channel.as_deref() == Some(&id),
-                                            RowExtras::default(),
+                                            RowExtras { unread, ..RowExtras::default() },
                                         );
                                         if row.clicked() { self.select_channel(id.clone(), false); }
                                         if toned(ui, SECONDARY_TONE, true, egui::Button::new(bold("Join").size(11.0)).min_size(egui::vec2(46.0, 28.0))).clicked()
@@ -6957,6 +7675,7 @@ impl CaperApp {
                                 });
                                 let muted =
                                     scope.as_ref().and_then(|scope| self.muted_label(scope));
+                                let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
                                 // Demo channels have no options.
                                 let mut menu = None;
                                 if let Some(space) = &space {
@@ -6976,6 +7695,7 @@ impl CaperApp {
                                     active,
                                     RowExtras {
                                         muted,
+                                        unread,
                                         duration: duration.as_deref(),
                                         menu,
                                     },
@@ -7174,6 +7894,13 @@ impl CaperApp {
                 }
                 if response.clicked() {
                     self.select_or_create_self_direct();
+                } else if (response.hovered() || response.has_focus())
+                    && let Some(direct) = &self_direct
+                {
+                    self.prefetch(NavigationTarget {
+                        space: None,
+                        channel: Some(direct.id.clone()),
+                    });
                 }
             });
             ui.add_space(2.0);
@@ -7199,6 +7926,7 @@ impl CaperApp {
                         active,
                         RowExtras {
                             muted,
+                            unread: false,
                             duration: None,
                             menu: Some(RowMenu {
                                 label: format!(
@@ -7228,6 +7956,11 @@ impl CaperApp {
                         self.load_notifications();
                     } else if response.clicked() {
                         self.select_direct(direct.clone());
+                    } else if response.hovered() || response.has_focus() {
+                        self.prefetch(NavigationTarget {
+                            space: None,
+                            channel: Some(direct.id.clone()),
+                        });
                     }
                 });
                 self.notification_error(ui, &scope);
@@ -7549,6 +8282,11 @@ impl CaperApp {
             );
             if response.clicked() {
                 self.select_direct(request);
+            } else if response.hovered() || response.has_focus() {
+                self.prefetch(NavigationTarget {
+                    space: None,
+                    channel: Some(request.id),
+                });
             }
             ui.add_space(2.0);
         }
@@ -8851,7 +9589,8 @@ impl CaperApp {
             });
         }
         for member in members {
-            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let tint = ui.painter().add(egui::Shape::Noop);
+            let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add_space(16.0);
                 let status = self
@@ -8861,6 +9600,15 @@ impl CaperApp {
                 presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
                 ui.label(bold(&member.display_name).size(12.0));
             });
+            let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
+            if response.hovered() || response.has_focus() {
+                ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, RAISED));
+            }
+            if response.clicked() {
+                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false }, &response, true);
+            }
         }
         if page_count > 1 {
             ui.horizontal(|ui| {
@@ -9239,6 +9987,7 @@ impl CaperApp {
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_width(320.0);
             ui.set_height(ui.available_height());
+            let conversation = ui.max_rect();
             ui.spacing_mut().item_spacing.y = 0.0;
             let heading = egui::TopBottomPanel::top("chat-heading")
                 .exact_height(54.0)
@@ -9322,7 +10071,9 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            let attach_width = if attach { 36.0 } else { 0.0 };
+            // Reserve the attach button before upload settings or the session arrive.
+            let attach_width = 40.0;
+            let attach_unavailable = self.attach_unavailable_reason();
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
@@ -9445,40 +10196,49 @@ impl CaperApp {
                                 RichText::new(placeholder)
                                     .color(Color32::from_rgb(142, 149, 152)),
                             )
-                            .background_color(COMPOSER)
+                            .frame(false)
                             .char_limit(4_000).show(ui)
                     );
-                    let editor = if attach {
-                        let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
-                        let mut pick = false;
-                        let editor = ui.horizontal_top(|ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(7.0);
-                                let enabled = !full && self.file_picker.is_none();
-                                let button = ui
-                                    .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
-                                    .inner;
-                                pick = button.clicked();
-                            });
-                            editor_area(ui, &mut self.draft)
-                        }).inner;
-                        if pick {
-                            self.pick_files(ui.ctx());
-                        }
-                        editor
-                    } else {
-                        editor_area(ui, &mut self.draft)
-                    };
-                    let mut output = editor.inner;
+                    let editor = egui::Frame::new()
+                        .fill(COMPOSER)
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin { left: 4, ..Default::default() })
+                        .show(ui, |ui| {
+                            let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
+                            let mut pick = false;
+                            let editor = ui.horizontal_top(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    let enabled = attach && !full && self.file_picker.is_none();
+                                    let button = ui
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
+                                        .inner
+                                        .on_disabled_hover_text(if !attach {
+                                            attach_unavailable.to_owned()
+                                        } else if full {
+                                            format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS)
+                                        } else {
+                                            "Attach files".to_owned()
+                                        });
+                                    pick = button.clicked();
+                                });
+                                editor_area(ui, &mut self.draft)
+                            }).inner;
+                            if pick {
+                                self.pick_files(ui.ctx());
+                            }
+                            editor
+                        });
+                    let mut output = editor.inner.inner;
                     let draft = self.draft.clone();
                     if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
                         self.draft = value;
                     }
                     let response = &output.response;
                     ui.painter().rect_stroke(
-                        editor.inner_rect,
-                        6.0,
-                        Stroke::new(1.0, BORDER),
+                        editor.response.rect,
+                        8.0,
+                        Stroke::new(1.0, if response.has_focus() { TERRACOTTA } else { BORDER }),
                         egui::StrokeKind::Inside,
                     );
                     if self.draft != before {
@@ -9505,6 +10265,7 @@ impl CaperApp {
                         );
                     }
                 });
+            self.navigation_swipe_bottom = composer.response.rect.top();
             ui.painter().hline(
                 composer.response.rect.x_range(),
                 composer.response.rect.top(),
@@ -9667,7 +10428,7 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
+                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -9717,19 +10478,7 @@ impl CaperApp {
                         });
                     }
                 });
-            if self.can_attach() && ui.ctx().input(|input| !input.raw.hovered_files.is_empty()) {
-                let rect = history.inner_rect.shrink(12.0);
-                let painter = ui.painter();
-                painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(12, 13, 15, 225));
-                painter.rect_stroke(rect, 8.0, Stroke::new(1.5, TERRACOTTA), egui::StrokeKind::Inside);
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("Drop files to attach (up to {})", uploads::MAX_ATTACHMENTS),
-                    egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
-                    TEXT,
-                );
-            }
+            self.file_drop_overlay(ui.ctx(), conversation);
             self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -9981,33 +10730,16 @@ impl CaperApp {
                                 && !was_hovered
                                 && !ui.input(|input| input.pointer.any_down()))
                         {
-                            self.mention_card = Some(MentionCard {
-                                pill: PillClick {
-                                    id: response.id,
-                                    rect: response.rect,
-                                    entry: model::Mention {
-                                        kind: "user".into(),
-                                        id: Some(pin.author.id.clone()),
-                                        username: None,
-                                    },
-                                },
-                                author: Some(pin.author.clone()),
-                                focus_on_open: response.clicked() || response.long_touched(),
-                                opening: None,
-                                error: None,
-                                fresh: true,
-                            });
+                            self.open_author_card(
+                                &pin.author,
+                                &response,
+                                response.clicked() || response.long_touched(),
+                            );
                         }
                     });
             }
-            let (timestamp, body) = message_row(
-                ui,
-                &message.author.name,
-                message.author.avatar_id,
-                &time,
-                message.author.is_guest,
-                short.as_deref(),
-                |ui| {
+            let (timestamp, profile, body) =
+                message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
                     // Compact follow-ups have no header line for the hover
                     // actions to sit beside: keep their text clear of them
                     // instead of under them (web floats the first line).
@@ -10037,8 +10769,10 @@ impl CaperApp {
                         },
                         grouped && edited,
                     )
-                },
-            );
+                });
+            if let Some(response) = profile {
+                self.open_author_card(&message.author, &response, true);
+            }
             // The header's time, or a grouped row's inline marker.
             if message.forward.is_none()
                 && edited
@@ -10070,6 +10804,10 @@ impl CaperApp {
                 author: None,
                 focus_on_open: true,
                 opening: None,
+                choosing_space: false,
+                inviting: None,
+                invited: BTreeMap::new(),
+                status: None,
                 error: None,
                 fresh: true,
             });
@@ -10138,7 +10876,7 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(12)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Forwarded · live").size(11.0).color(MUTED));
+                            ui.label(RichText::new("Forwarded").size(11.0).color(MUTED));
                             if let Some(original) = &forward.message {
                                 forwarding::original(ui, original, &mut self.reaction_textures);
                                 // The original's files as of the forward snapshot.
@@ -10151,6 +10889,7 @@ impl CaperApp {
                                 let count = original
                                     .thread
                                     .as_ref()
+                                    .filter(|summary| summary.reply_count > 0)
                                     .map(|summary| {
                                         format!(
                                             "{} {} · ",
@@ -10910,6 +11649,7 @@ impl CaperApp {
     /// File chips above the composer: name, size saving, progress, remove.
     fn draft_chips(&mut self, ui: &mut egui::Ui) {
         let mut remove = None;
+        let mut preview = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             for draft in &mut self.draft_files {
@@ -11020,6 +11760,38 @@ impl CaperApp {
                     egui::pos2(rect.right() - 17.0, rect.center().y),
                     egui::vec2(22.0, 22.0),
                 );
+                let url = draft
+                    .local_path
+                    .as_ref()
+                    .and_then(|path| url::Url::from_file_path(path).ok())
+                    .map(String::from)
+                    .or_else(|| {
+                        draft
+                            .attachment
+                            .as_ref()
+                            .and_then(|attachment| attachment.url.clone())
+                    });
+                if let Some(url) = url {
+                    let response = ui.interact(
+                        egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(close.left() - 4.0, rect.bottom()),
+                        ),
+                        egui::Id::new(("draft-preview", draft.key)),
+                        egui::Sense::click(),
+                    );
+                    let label = format!("Preview {}", draft.name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                    });
+                    if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(label)
+                        .clicked()
+                    {
+                        preview = Some(url);
+                    }
+                }
                 let response = ui.interact(
                     close,
                     egui::Id::new(("draft-remove", draft.key)),
@@ -11045,6 +11817,9 @@ impl CaperApp {
         });
         if let Some(key) = remove {
             self.remove_draft(key);
+        }
+        if let Some(url) = preview {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
 
@@ -11868,6 +12643,35 @@ impl CaperApp {
         )
     }
 
+    /// Authors and member rows use the same card and ID-based resolution as mentions.
+    fn open_author_card(
+        &mut self,
+        author: &model::Author,
+        response: &egui::Response,
+        focus_on_open: bool,
+    ) {
+        self.mention_card = Some(MentionCard {
+            pill: PillClick {
+                id: response.id,
+                rect: response.rect,
+                entry: model::Mention {
+                    kind: "user".into(),
+                    id: Some(author.id.clone()),
+                    username: None,
+                },
+            },
+            author: Some(author.clone()),
+            focus_on_open,
+            opening: None,
+            choosing_space: false,
+            inviting: None,
+            invited: BTreeMap::new(),
+            status: None,
+            error: None,
+            fresh: true,
+        });
+    }
+
     /// The card for a clicked person pill: below the pill, or above it when
     /// there is no room. Escape, a click outside, or opening the DM closes it.
     fn mention_card(&mut self, context: &egui::Context) {
@@ -11914,6 +12718,39 @@ impl CaperApp {
                 )
             };
         let mut message = false;
+        let blocked = card
+            .pill
+            .entry
+            .id
+            .as_deref()
+            .is_some_and(|id| self.is_blocked(id));
+        // Don't offer the open space to someone who is already in it.
+        let member_of_open =
+            self.detail
+                .as_ref()
+                .filter(|detail| {
+                    card.pill.entry.id.as_deref().is_some_and(|person| {
+                        detail.members.iter().any(|member| member.id == person)
+                    })
+                })
+                .map(|detail| detail.space.id.as_str());
+        let owned_spaces: Vec<_> = self
+            .spaces
+            .iter()
+            .filter(|space| {
+                !space.demo
+                    && self
+                        .account
+                        .as_ref()
+                        .is_some_and(|account| account.id == space.owner_id)
+                    && member_of_open != Some(space.id.as_str())
+            })
+            .cloned()
+            .collect();
+        let busy = card.opening.is_some() || card.inviting.is_some() || self.block_busy;
+        let mut block_action = false;
+        let mut toggle_spaces = false;
+        let mut invitation = None;
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .pivot(pivot)
@@ -11928,57 +12765,131 @@ impl CaperApp {
                     .show(ui, |ui| {
                         // 280px including the padding and the border.
                         ui.set_width(246.0);
+                        // Areas reuse their last size. Let newly opened destinations
+                        // and errors grow before the scroll area clips to that size.
+                        ui.set_max_height(context.content_rect().height() - 64.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        let initial = profile
-                            .display_name
-                            .as_deref()
-                            .or(profile.username.as_deref())
-                            .unwrap_or("Profile");
-                        avatar(ui, initial, profile.avatar_id, 48.0, false);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(bold(profile.title()).size(15.0).color(TEXT));
-                            if profile.display_name.is_some()
-                                && let Some(username) = &profile.username
-                            {
-                                ui.label(
-                                    RichText::new(format!("@{username}"))
-                                        .size(12.0)
-                                        .color(MUTED),
-                                );
-                            }
-                        });
-                        if profile.me {
-                            ui.label(RichText::new("You").size(12.0).color(MUTED));
-                            return;
-                        }
-                        if profile.username.is_none() {
-                            return;
-                        }
-                        let opening = card.opening.is_some();
-                        // Full width with a centered label.
-                        let button = ui
-                            .vertical_centered_justified(|ui| {
-                                ui.add_enabled(
-                                    !opening,
-                                    egui::Button::new(
-                                        bold(if opening { "Opening…" } else { "Message" })
-                                            .size(12.0),
-                                    )
-                                    .fill(TERRACOTTA)
-                                    .stroke(Stroke::new(1.0, TERRACOTTA))
-                                    .corner_radius(7)
-                                    .min_size(egui::vec2(0.0, 36.0)),
-                                )
-                            })
-                            .inner;
-                        if card.fresh && card.focus_on_open {
-                            button.request_focus();
-                        }
-                        message = button.clicked();
-                        if let Some(error) = &card.error {
-                            ui.label(RichText::new(error).size(12.0).color(ERROR));
-                        }
+                        egui::ScrollArea::vertical()
+                            .max_height(context.content_rect().height() - 64.0)
+                            .show(ui, |ui| {
+                                let initial = profile
+                                    .display_name
+                                    .as_deref()
+                                    .or(profile.username.as_deref())
+                                    .unwrap_or("Profile");
+                                avatar(ui, initial, profile.avatar_id, 48.0, false);
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.label(bold(profile.title()).size(15.0).color(TEXT));
+                                    if profile.display_name.is_some()
+                                        && let Some(username) = &profile.username
+                                    {
+                                        ui.label(
+                                            RichText::new(format!("@{username}"))
+                                                .size(12.0)
+                                                .color(MUTED),
+                                        );
+                                    }
+                                });
+                                if profile.me {
+                                    ui.label(RichText::new("You").size(12.0).color(MUTED));
+                                    return;
+                                }
+                                if !blocked && profile.username.is_some() {
+                                    // Full width with a centered label.
+                                    let button = ui
+                                        .vertical_centered_justified(|ui| {
+                                            ui.add_enabled(
+                                                !busy,
+                                                egui::Button::new(
+                                                    bold(if card.opening.is_some() {
+                                                        "Opening…"
+                                                    } else {
+                                                        "Message"
+                                                    })
+                                                    .size(12.0),
+                                                )
+                                                .fill(TERRACOTTA)
+                                                .stroke(Stroke::new(1.0, TERRACOTTA))
+                                                .corner_radius(7)
+                                                .min_size(egui::vec2(0.0, 36.0)),
+                                            )
+                                        })
+                                        .inner;
+                                    if card.fresh && card.focus_on_open {
+                                        button.request_focus();
+                                    }
+                                    message = button.clicked();
+                                    if card.pill.entry.id.is_some() && !owned_spaces.is_empty() {
+                                        toggle_spaces = ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new("Invite to space")
+                                                    .min_size(egui::vec2(246.0, 36.0)),
+                                            )
+                                            .clicked();
+                                        if card.choosing_space {
+                                            for space in &owned_spaces {
+                                                let label = if card
+                                                    .inviting
+                                                    .as_ref()
+                                                    .is_some_and(|(_, id)| id == &space.id)
+                                                {
+                                                    "Sending…".to_owned()
+                                                } else if let Some(already) =
+                                                    card.invited.get(&space.id)
+                                                {
+                                                    format!("{} · {already}", space.name)
+                                                } else {
+                                                    space.name.clone()
+                                                };
+                                                if ui
+                                                    .add_enabled(
+                                                        !busy
+                                                            && !card
+                                                                .invited
+                                                                .contains_key(&space.id),
+                                                        egui::Button::new(label)
+                                                            .min_size(egui::vec2(246.0, 36.0)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    invitation = Some(space.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if card.pill.entry.id.is_some() && self.account.is_some() {
+                                    let button = ui.add_enabled(
+                                        !busy,
+                                        egui::Button::new(
+                                            RichText::new(if blocked && self.block_busy {
+                                                "Unblocking…"
+                                            } else if blocked {
+                                                "Unblock"
+                                            } else {
+                                                "Block"
+                                            })
+                                            .color(ERROR),
+                                        )
+                                        .min_size(egui::vec2(246.0, 36.0)),
+                                    );
+                                    if card.fresh
+                                        && card.focus_on_open
+                                        && (blocked || profile.username.is_none())
+                                    {
+                                        button.request_focus();
+                                    }
+                                    block_action = button.clicked();
+                                }
+                                if let Some(status) = &card.status {
+                                    ui.label(RichText::new(status).size(12.0).color(MUTED));
+                                }
+                                if let Some(error) = &card.error {
+                                    ui.label(RichText::new(error).size(12.0).color(ERROR));
+                                }
+                            });
                     });
             });
         let escape =
@@ -11992,6 +12903,44 @@ impl CaperApp {
         }
         if let Some(open) = &mut self.mention_card {
             open.fresh = false;
+            if toggle_spaces {
+                open.choosing_space = !open.choosing_space;
+            }
+        }
+        if block_action && let Some(user) = &card.pill.entry.id {
+            let account = model::BlockedAccount {
+                id: user.clone(),
+                username: profile.username.clone().unwrap_or_default(),
+                display_name: profile.title(),
+                avatar_id: profile.avatar_id,
+            };
+            if blocked {
+                if let Some(open) = &mut self.mention_card {
+                    open.error = None;
+                }
+                self.unblock(account);
+            } else {
+                self.mention_card = None;
+                self.showing_pins = false;
+                self.confirm_block(account, None);
+            }
+        }
+        if let Some(space) = invitation
+            && let (Some(username), Some(user)) = (&profile.username, &card.pill.entry.id)
+        {
+            self.membership_revision += 1;
+            let request = self.membership_revision;
+            if let Some(open) = &mut self.mention_card {
+                open.inviting = Some((request, space.id.clone()));
+                open.error = None;
+                open.status = None;
+            }
+            self.account_op(AccountOperation::InviteToSpace {
+                space,
+                username: username.clone(),
+                user: user.clone(),
+                request,
+            });
         }
         if message && let Some(username) = &profile.username {
             self.message_from_card(&card.pill.entry, username);
@@ -13748,7 +14697,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
         NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
         NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
-        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
     };
@@ -13791,6 +14739,7 @@ struct RowExtras<'a> {
     /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
     /// "Muted until 5:00 PM".
     muted: Option<String>,
+    unread: bool,
     duration: Option<&'a str>,
     menu: Option<RowMenu<'a>>,
 }
@@ -13825,7 +14774,11 @@ fn channel_button(
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             active,
-            name,
+            if extras.unread {
+                format!("{name}, unread activity")
+            } else {
+                name.to_owned()
+            },
         )
     });
     if active || response.hovered() || response.has_focus() {
@@ -13891,6 +14844,7 @@ fn channel_button(
             .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
         width + 9.0
     });
+    // Laid out from the right: name, unread dot, bell, timer, as on web and Android.
     let mut name_right = timer_right - timer_width;
     if let Some(label) = &extras.muted {
         let bell = egui::Rect::from_center_size(
@@ -13899,6 +14853,11 @@ fn channel_button(
         );
         muted_indicator(ui, bell, response.id.with("muted"), label);
         name_right -= 20.0;
+    }
+    if extras.unread {
+        ui.painter()
+            .circle_filled(egui::pos2(name_right - 6.0, rect.center().y), 3.0, TEXT);
+        name_right -= 16.0;
     }
     // Long names end in "…" rather than a letter cut in half.
     let label = truncated_galley(
@@ -14077,17 +15036,39 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 /// empty so the text lines up, showing the short time while hovered. Screen
 /// readers still get the author and `time` there.
 ///
-/// Returns the header timestamp's rect (the edit-history target; `None` for
-/// grouped rows) and the body's result.
+/// Returns the timestamp (edit history), an activated author profile target,
+/// and the body's result. Grouped rows have no header/profile targets.
 fn message_row<R>(
     ui: &mut egui::Ui,
-    author: &str,
-    avatar_id: Option<i32>,
+    author: &model::Author,
     time: &str,
-    guest: bool,
     grouped: Option<&str>,
+    profile: bool,
     body: impl FnOnce(&mut egui::Ui) -> R,
-) -> (Option<egui::Rect>, R) {
+) -> (Option<egui::Rect>, Option<egui::Response>, R) {
+    let profile = profile && !author.is_guest;
+    let mut activated = None;
+    let mut profile_response = |ui: &egui::Ui, response: egui::Response| {
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("Open profile for {}", author.name),
+            )
+        });
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect.expand(2.0),
+                4.0,
+                Stroke::new(2.0, TERRACOTTA),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if response.clicked() {
+            activated = Some(response);
+        }
+    };
     let shown = egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 18,
@@ -14107,18 +15088,49 @@ fn message_row<R>(
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Label,
                             true,
-                            format!("{author} {time}"),
+                            format!("{} {time}", author.name),
                         )
                     });
                     let result = ui.vertical(body).inner;
                     return (Err(column), result);
                 }
-                avatar(ui, author, avatar_id, 34.0, false);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(34.0, 34.0),
+                    if profile {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                paint_avatar(ui, rect, &author.name, author.avatar_id);
+                if profile {
+                    if response.hovered() {
+                        ui.painter()
+                            .circle_stroke(rect.center(), 19.0, Stroke::new(2.0, BORDER));
+                    }
+                    profile_response(ui, response);
+                }
                 ui.vertical(|ui| {
                     let timestamp = ui
                         .horizontal_wrapped(|ui| {
-                            ui.label(bold(author).size(13.0));
-                            if guest {
+                            let name = ui.add(
+                                egui::Label::new(bold(&author.name).size(13.0)).sense(if profile {
+                                    egui::Sense::click()
+                                } else {
+                                    egui::Sense::hover()
+                                }),
+                            );
+                            if profile {
+                                if name.hovered() {
+                                    ui.painter().hline(
+                                        name.rect.x_range(),
+                                        name.rect.bottom(),
+                                        Stroke::new(1.0, TEXT),
+                                    );
+                                }
+                                profile_response(ui, name);
+                            }
+                            if author.is_guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
                             }
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
@@ -14132,7 +15144,7 @@ fn message_row<R>(
         });
     let (head, result) = shown.inner;
     match head {
-        Ok(timestamp) => (Some(timestamp), result),
+        Ok(timestamp) => (Some(timestamp), activated, result),
         Err(column) => {
             if let Some(short) = grouped
                 && ui.rect_contains_pointer(shown.response.rect)
@@ -14145,7 +15157,7 @@ fn message_row<R>(
                     MUTED,
                 );
             }
-            (None, result)
+            (None, None, result)
         }
     }
 }
@@ -14563,6 +15575,16 @@ fn admin_error(error: String) -> String {
         "user already invited" => "This person already has a pending invitation.".into(),
         "invalid username" => "Use 3–32 lowercase letters, numbers, or underscores.".into(),
         _ => error,
+    }
+}
+
+/// The invite-list label for `friendly_error`'s sentences for "user already
+/// in space" and "user already invited", so the row can't be retried.
+fn redundant_invitation(error: &str) -> Option<&'static str> {
+    match error {
+        "This person is already in the space." => Some("Member"),
+        "This person already has a pending invitation." => Some("Invited"),
+        _ => None,
     }
 }
 
@@ -15705,6 +16727,7 @@ fn main() -> eframe::Result {
                 | "parity-invitation-narrow"
                 | "parity-update-narrow"
                 | "parity-update-download"
+                | "parity-file-drop-narrow"
         )
     }) {
         [390.0, 844.0]
@@ -15755,7 +16778,8 @@ mod tests {
         RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
         TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
         normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
-        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
+        redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
+        timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -16234,6 +17258,83 @@ mod tests {
             let settled = text_position(&render(&mut app, &context, vec![]), newest);
             assert_eq!(settled, grown, "the first frame was already settled");
         }
+    }
+
+    #[test]
+    fn last_message_reactions_stay_visible_without_pulling_a_history_reader() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.reactions.clear();
+        }
+        app.timeline.reset(messages, "40").unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let newest = "Scroll fixture message 40";
+        let before = text_position(&render(&mut app, &context, vec![]), newest);
+        let reaction = crate::model::Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["fixture-peer".into()],
+        };
+        let update = |seq, reactions| crate::model::ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: app.selected_channel.clone().unwrap(),
+            seq,
+            message_id: "scroll-40".into(),
+            reactions,
+        };
+        let first = update("41".into(), vec![reaction]);
+        let removed = update("42".into(), vec![]);
+        app.timeline.apply_reactions(first).unwrap();
+        let reacted = render(&mut app, &context, vec![]);
+        assert!(text_position(&reacted, newest).y < before.y);
+        let chip = reacted
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "1" => {
+                    Some((text.pos.y + text.galley.size().y, shape.clip_rect.bottom()))
+                }
+                _ => None,
+            })
+            .expect("the reaction count is painted");
+        assert!(chip.0 <= chip.1, "the chip is not clipped by the timeline");
+        // Wheel input releases egui's bottom stickiness, as a real reader does.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 450.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let reading = render(&mut app, &context, vec![]);
+        let anchor = reading
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a history message is visible");
+        let position = text_position(&reading, &anchor);
+        app.timeline.apply_reactions(removed).unwrap();
+        let changed = render(&mut app, &context, vec![]);
+        assert_eq!(text_position(&changed, &anchor), position);
     }
 
     #[test]
@@ -16924,6 +18025,16 @@ mod tests {
     fn declining_or_blocking_a_request_drops_it_and_moves_on() {
         let (base, seen) = account_server(vec![
             ("POST /api/dms/dm0000000003/decline", 204, ""),
+            (
+                "GET /api/chat/channels/dm0000000005/messages",
+                200,
+                r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000005","name":"TEST FIXTURE Kim","direct":true},"messages":[],"cursor":"1","hasMore":false}"#,
+            ),
+            (
+                "POST /api/chat/session",
+                200,
+                r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+            ),
             ("PUT /api/blocks/stranger0003", 204, ""),
         ]);
         let context = egui::Context::default();
@@ -16951,6 +18062,7 @@ mod tests {
         click(&mut app, &context, text_position(&output, "Decline"));
         receive_until(&mut app, |app| {
             !app.directs.iter().any(|direct| direct.id == "dm0000000003")
+                && app.selected_direct.as_deref() == Some("dm0000000005")
         });
         assert_eq!(
             app.selected_direct.as_deref(),
@@ -17475,16 +18587,20 @@ mod tests {
             app.notifications.level(&space),
             Some(model::NotificationLevel::Nothing)
         );
+        // The refresh sent when the menu opened can still be in flight once
+        // the save is done (seen on the Windows runner).
+        receive_until(&mut app, |_| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line == "GET /api/notifications/settings")
+        });
         let seen = seen.lock().unwrap();
         assert!(
             seen.contains(
                 &r#"PUT /api/spaces/space0000001/notifications {"level":"nothing"}"#.to_owned()
             ),
             "{seen:?}"
-        );
-        assert!(
-            seen.contains(&"GET /api/notifications/settings".to_owned()),
-            "opening the menu refreshes the settings: {seen:?}"
         );
     }
 
@@ -19321,6 +20437,207 @@ mod tests {
             app.members_visible,
             "narrow toggle must preserve wide preference"
         );
+    }
+
+    #[test]
+    fn narrow_center_touch_swipes_navigate_browse_and_members_without_losing_drafts() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        app.draft = "Touch navigation retains this draft".into();
+        let mut time = 0.0;
+        let mut frame =
+            |app: &mut CaperApp, phase: Option<egui::TouchPhase>, pos: egui::Pos2, pause: f64| {
+                time += pause;
+                let mut events = Vec::new();
+                if let Some(phase) = phase {
+                    events.push(egui::Event::Touch {
+                        device_id: egui::TouchDeviceId(0),
+                        id: egui::TouchId(1),
+                        phase,
+                        pos,
+                        force: None,
+                    });
+                    events.push(egui::Event::PointerMoved(pos));
+                    if phase != egui::TouchPhase::Move {
+                        events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == egui::TouchPhase::Start,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(390.0, 844.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.shell(context),
+                )
+            };
+        use egui::TouchPhase::{Cancel, End, Move, Start};
+        let center = egui::pos2(195.0, 422.0);
+        frame(&mut app, None, center, 0.016);
+        let rest = frame(&mut app, None, center, 0.016);
+        let back = node_center(&rest, "Browse");
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(End), center, 0.016);
+        // Vertical and cancelled gestures stay in the conversation.
+        for (destination, ending) in [
+            (egui::pos2(200.0, 300.0), End),
+            (egui::pos2(290.0, 422.0), Cancel),
+        ] {
+            frame(&mut app, Some(Start), center, 0.016);
+            frame(&mut app, Some(Move), destination, 0.016);
+            frame(&mut app, Some(ending), destination, 0.016);
+            let settled = frame(&mut app, None, center, 0.5);
+            assert!(!app.navigation_open);
+            assert_eq!(node_center(&settled, "Browse"), back);
+        }
+        // A pause removes fling velocity; a short drag must snap back.
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(Move), egui::pos2(290.0, 422.0), 0.016);
+        frame(&mut app, Some(End), egui::pos2(290.0, 422.0), 0.2);
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        // The conversation follows a rightward finger from the middle.
+        frame(&mut app, Some(Start), center, 0.016);
+        let moving = frame(&mut app, Some(Move), egui::pos2(290.0, 422.0), 0.016);
+        assert!((node_center(&moving, "Browse").x - back.x - 95.0).abs() < 1.0);
+        frame(&mut app, Some(End), egui::pos2(320.0, 422.0), 0.016);
+        let browse = frame(&mut app, None, center, 0.5);
+        assert!(app.navigation_open);
+        assert!(node_center(&browse, "Close navigation").x < 390.0);
+        // A center-start left flick returns without choosing a channel.
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(Move), egui::pos2(110.0, 422.0), 0.016);
+        frame(&mut app, Some(End), egui::pos2(70.0, 422.0), 0.016);
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        // Left opens Members, and right closes it from the backdrop as well
+        // as the panel. Neither gesture opens Browse.
+        for close_x in [30.0, 195.0] {
+            frame(&mut app, Some(Start), center, 0.016);
+            frame(&mut app, Some(Move), egui::pos2(110.0, 422.0), 0.016);
+            frame(&mut app, Some(End), egui::pos2(70.0, 422.0), 0.016);
+            let shown = frame(&mut app, None, center, 0.5);
+            assert!(app.narrow_members_visible);
+            assert!(!app.navigation_open);
+            assert!(shown.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "Members" && text.pos.x < 390.0
+            )));
+            frame(&mut app, Some(Start), egui::pos2(close_x, 422.0), 0.016);
+            frame(
+                &mut app,
+                Some(Move),
+                egui::pos2(close_x + 80.0, 422.0),
+                0.016,
+            );
+            frame(
+                &mut app,
+                Some(End),
+                egui::pos2(close_x + 120.0, 422.0),
+                0.016,
+            );
+            frame(&mut app, None, center, 0.5);
+            assert!(!app.narrow_members_visible);
+            assert!(!app.navigation_open);
+        }
+        // Editing the composer must never become navigation.
+        let composer = egui::pos2(195.0, 820.0);
+        frame(&mut app, Some(Start), composer, 0.016);
+        frame(
+            &mut app,
+            Some(Move),
+            composer + egui::vec2(90.0, 0.0),
+            0.016,
+        );
+        frame(
+            &mut app,
+            Some(End),
+            composer + egui::vec2(120.0, 0.0),
+            0.016,
+        );
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        assert_eq!(app.draft, "Touch navigation retains this draft");
+    }
+
+    #[test]
+    fn narrow_flick_released_in_its_last_move_frame_keeps_its_speed() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        let frame = |app: &mut CaperApp, time: f64, touches: &[(egui::TouchPhase, f32)]| {
+            let events = touches
+                .iter()
+                .map(|&(phase, x)| egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId(1),
+                    phase,
+                    pos: egui::pos2(x, 422.0),
+                    force: None,
+                })
+                .collect();
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            );
+        };
+        use egui::TouchPhase::{End, Move, Start};
+        frame(&mut app, 0.0, &[]);
+        frame(&mut app, 0.016, &[]);
+        frame(&mut app, 0.032, &[(Start, 195.0)]);
+        // Under half the width, but 100pt in one frame: the speed is measured
+        // from the previous frame, not the release's own.
+        frame(&mut app, 0.048, &[(Move, 255.0), (End, 295.0)]);
+        frame(&mut app, 0.6, &[]);
+        assert!(app.navigation_open);
+    }
+
+    #[test]
+    fn swipe_releases_settle_with_the_webs_speed_matched_curve() {
+        // A held finger gets the full finish from rest; a fling is quicker and
+        // starts at up to three times the average speed.
+        assert_eq!(super::release_timing(0.5, 0.0), (0.32_f32.into(), 0.0));
+        let (duration, slope) = super::release_timing(0.5, 10.0);
+        assert!((duration - 0.16).abs() < 1e-6);
+        assert!((slope - 3.0).abs() < 1e-6);
+        let (duration, slope) = super::release_timing(0.5, 2.0);
+        assert!((duration - 0.32).abs() < 1e-6);
+        assert!((slope - 1.28).abs() < 1e-4);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 0.0), 0.0);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 1.0), 1.0);
+        let mut last = 0.0;
+        for step in 1..20 {
+            let eased = super::cubic_bezier(0.2, 0.6, 0.35, 1.0, step as f32 / 20.0);
+            assert!(eased > last && eased < 1.0);
+            last = eased;
+        }
+        // `linear` is the identity.
+        assert!((super::cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-4);
     }
 
     #[test]
@@ -21629,6 +22946,83 @@ mod tests {
     }
 
     #[test]
+    fn author_avatars_names_and_member_rows_open_profiles() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        for members_visible in [false, true] {
+            app.members_visible = members_visible;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let targets: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Open profile for Maya"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .map(|rect| {
+                    egui::pos2(
+                        (rect.x0 + rect.x1) as f32 / 2.0,
+                        (rect.y0 + rect.y1) as f32 / 2.0,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                targets.len(),
+                if members_visible { 3 } else { 2 },
+                "avatar, name, and optionally member row"
+            );
+            for target in targets {
+                click_at(&mut app, &context, target);
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "profile resolves the author/member by ID"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                let output = render(&mut app, &context, vec![]);
+                assert!(!shows(&output, "Message"));
+                render(&mut app, &context, press(egui::Key::Enter));
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "focus returns and Enter reopens the profile"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                render(&mut app, &context, vec![]);
+            }
+        }
+        app.members_visible = false;
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.author.is_guest = true;
+        }
+        app.timeline.reset(messages, "4").unwrap();
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Open profile for Maya")),
+            "guest authors have no account profile"
+        );
+    }
+
+    #[test]
     fn person_pills_open_profile_cards_that_close_on_escape_or_outside_click() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -21698,6 +23092,7 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
         assert!(!shows(&output, "Message"), "no Message for yourself");
+        assert!(!shows(&output, "Block") && !shows(&output, "Invite to space"));
 
         let outside = text_center(&output, "Beginning of conversation");
         click_at(&mut app, &context, outside);
@@ -21712,6 +23107,218 @@ mod tests {
         assert!(
             app.mention_card.is_none(),
             "@everyone stays non-interactive"
+        );
+    }
+
+    #[test]
+    fn profile_invites_target_an_owned_space_without_changing_conversation_or_membership() {
+        let (base, _) = account_server(vec![(
+            "POST /api/spaces/another-space/members",
+            201,
+            r#"{"id":"fixture-alex","username":"alex","displayName":"Alex","owner":false}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.spaces.extend([
+            model::Space {
+                id: "another-space".into(),
+                name: "Another owned space".into(),
+                owner_id: "fixture-owner".into(),
+                inviter: None,
+                demo: false,
+            },
+            model::Space {
+                id: "someone-elses-space".into(),
+                name: "Not owned".into(),
+                owner_id: "fixture-maya".into(),
+                inviter: None,
+                demo: false,
+            },
+            model::Space {
+                id: "demo-space".into(),
+                name: "Owned demo".into(),
+                owner_id: "fixture-owner".into(),
+                inviter: None,
+                demo: true,
+            },
+        ]);
+        let selected_space = app.selected_space.clone();
+        let selected_channel = app.selected_channel.clone();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Invite to space"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        // The rail also contains space names: constrain this assertion to the card.
+        let card = context
+            .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+            .unwrap();
+        let card_labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if card.contains(text.pos) => {
+                    Some(text.galley.job.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            card_labels.contains(&"Another owned space"),
+            "{card_labels:?}"
+        );
+        assert!(!card_labels.contains(&"Not owned") && !card_labels.contains(&"Owned demo"));
+        assert!(
+            !card_labels.contains(&"Fixture Studio"),
+            "Alex is already in the open space"
+        );
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Another owned space"),
+        );
+        receive_until(&mut app, |app| {
+            app.mention_card
+                .as_ref()
+                .is_some_and(|card| card.status.is_some())
+        });
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Invitation sent to Another owned space."));
+        assert!(shows(&output, "Another owned space · Invited"));
+        assert_eq!(app.selected_space, selected_space);
+        assert_eq!(app.selected_channel, selected_channel);
+        assert!(
+            app.managed_invitations.is_empty(),
+            "off-current invitations never pollute the open space"
+        );
+        assert_eq!(
+            app.detail.as_ref().unwrap().members.len(),
+            3,
+            "an invitation is not membership"
+        );
+    }
+
+    #[test]
+    fn profile_block_requires_confirmation_and_unblock_restores_actions() {
+        let (base, _) = account_server(vec![
+            ("PUT /api/blocks/fixture-alex", 204, ""),
+            ("DELETE /api/blocks/fixture-alex", 204, ""),
+        ]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
+        click_at(&mut app, &context, alex);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, last_text_position(&output, "Block"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Block Alex?"));
+        assert!(!app.is_blocked("fixture-alex"));
+        click_at(&mut app, &context, last_text_position(&output, "Block"));
+        receive_until(&mut app, |app| app.is_blocked("fixture-alex"));
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Unblock"));
+        assert!(!shows(&output, "Message") && !shows(&output, "Invite to space"));
+        click_at(&mut app, &context, last_text_position(&output, "Unblock"));
+        receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            shows(&output, "Message") && shows(&output, "Block") && shows(&output, "Unblocked."),
+            "{:?}",
+            text_shapes(&output)
+        );
+        // Alex is already in the only owned space, which is open.
+        assert!(!shows(&output, "Invite to space"));
+    }
+
+    #[test]
+    fn redundant_profile_invitations_mark_the_space_instead_of_retrying() {
+        let (base, _) = account_server(vec![(
+            "POST /api/spaces/another-space/members",
+            409,
+            r#"{"error":"user already invited"}"#,
+        )]);
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.spaces.push(model::Space {
+            id: "another-space".into(),
+            name: "Another owned space".into(),
+            owner_id: "fixture-owner".into(),
+            inviter: None,
+            demo: false,
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Invite to space"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            last_text_position(&output, "Another owned space"),
+        );
+        receive_until(&mut app, |app| {
+            app.mention_card
+                .as_ref()
+                .is_some_and(|card| card.error.is_some())
+        });
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(
+            &output,
+            "This person already has a pending invitation."
+        ));
+        assert!(shows(&output, "Another owned space · Invited"));
+        assert_eq!(
+            app.mention_card
+                .as_ref()
+                .unwrap()
+                .invited
+                .get("another-space"),
+            Some(&"Invited")
+        );
+        assert_eq!(
+            redundant_invitation("This person is already in the space."),
+            Some("Member")
         );
     }
 
@@ -21779,10 +23386,22 @@ mod tests {
 
     #[test]
     fn mention_card_message_opens_an_existing_dm_or_shows_a_creation_error() {
+        let (base, _) = account_server(vec![
+            (
+                "GET /api/chat/channels/dm0000000009/messages",
+                200,
+                r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000009","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
+            ),
+            (
+                "POST /api/chat/session",
+                200,
+                r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+            ),
+        ]);
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            crate::api::Api::new(&base).unwrap(),
             Some("parity-mentions"),
         );
         app.token = Some("account-token".into());
@@ -21810,6 +23429,13 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Message"));
+        assert!(
+            app.selected_direct.is_none(),
+            "keep the channel until the DM is ready"
+        );
+        receive_until(&mut app, |app| {
+            app.selected_direct.as_deref() == Some("dm0000000009")
+        });
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000009"));
         assert!(app.mention_card.is_none(), "opening the DM closes the card");
 
@@ -21861,6 +23487,7 @@ mod tests {
         let api =
             crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
         let requests = std::thread::spawn(move || {
+            let mut creation = None;
             loop {
                 let (stream, _) = server.accept().unwrap();
                 stream
@@ -21884,16 +23511,32 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
+                let reply = match request.as_str() {
+                    "GET /api/chat/channels/dm0000000002/messages HTTP/1.1\r\n" => Some(
+                        r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000002","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
+                    ),
+                    "POST /api/chat/session HTTP/1.1\r\n" => Some(
+                        r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+                    ),
+                    _ => None,
+                };
+                if let Some(reply) = reply {
+                    write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                    if request.starts_with("POST /api/chat/session ") {
+                        return creation.unwrap();
+                    }
+                    continue;
+                }
                 if request != "POST /api/dms HTTP/1.1\r\n" {
                     write!(reader.get_mut(), "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
                     continue;
                 }
                 let direct = r#"{"id":"dm0000000002","peer":{"id":"fixture-alex","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0"}"#;
                 write!(reader.get_mut(), "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{direct}", direct.len()).unwrap();
-                return (
+                creation = Some((
                     bearer,
                     serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                );
+                ));
             }
         });
         let context = egui::Context::default();
@@ -21909,9 +23552,6 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Message"));
-        let (bearer, body) = requests.join().unwrap();
-        assert!(bearer);
-        assert_eq!(body, serde_json::json!({"username": "alex"}));
         let deadline = Instant::now() + Duration::from_secs(10);
         while app.selected_direct.is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -21920,6 +23560,9 @@ mod tests {
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000002"));
         assert!(app.directs.iter().any(|direct| direct.id == "dm0000000002"));
         assert!(app.mention_card.is_none());
+        let (bearer, body) = requests.join().unwrap();
+        assert!(bearer);
+        assert_eq!(body, serde_json::json!({"username": "alex"}));
     }
 
     #[test]
@@ -23578,6 +25221,21 @@ mod tests {
             Some(SelfDirectTarget::Existing(self_direct.clone()))
         );
         app.select_or_create_self_direct();
+        assert!(
+            app.opening,
+            "the existing chat stays until notes are prepared"
+        );
+        let mut notes = history("self-notes");
+        notes.space.id.clear();
+        notes.space.name = "Direct messages".into();
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((notes, Ok(session()))),
+            }),
+        );
         assert_eq!(app.selected_direct.as_deref(), Some("self-notes"));
         assert_eq!(app.directs, vec![self_direct]);
     }
@@ -23800,6 +25458,67 @@ mod tests {
     }
 
     #[test]
+    fn hovering_files_shows_the_drop_overlay_until_they_leave() {
+        fn hover(
+            app: &mut CaperApp,
+            context: &egui::Context,
+            hovered_files: Vec<egui::HoveredFile>,
+            time: f64,
+        ) -> egui::FullOutput {
+            context.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    hovered_files,
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            )
+        }
+        let has_text = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        assert!(app.can_attach());
+        hover(&mut app, &context, vec![], 0.0);
+        let (title, detail) =
+            crate::file_drop::text(app.channel_name(), false, app.draft_files.len());
+        let file = egui::HoveredFile {
+            path: Some("TEST FIXTURE photo.png".into()),
+            mime: String::new(),
+        };
+        // It fades in from the moment the drag arrives.
+        hover(&mut app, &context, vec![file.clone()], 1.0);
+        assert_eq!(app.file_drop_since, Some(1.0));
+        let output = hover(&mut app, &context, vec![file.clone()], 2.0);
+        assert!(has_text(&output, &title) && has_text(&output, &detail));
+        assert_eq!(app.file_drop_since, Some(1.0));
+        // The animation keeps the frames coming while the drag stays.
+        assert_eq!(
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            std::time::Duration::ZERO
+        );
+        let output = hover(&mut app, &context, vec![], 3.0);
+        assert!(!has_text(&output, &title));
+        assert!(app.file_drop_since.is_none());
+
+        // Nowhere to attach: no overlay.
+        app.uploads = None;
+        let output = hover(&mut app, &context, vec![file], 4.0);
+        assert!(!has_text(&output, &title));
+    }
+
+    #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -23807,6 +25526,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-attachments"),
         );
+        app.draft_files[1].local_path = Some(std::env::temp_dir().join("selected diagram #1.png"));
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -23852,6 +25572,39 @@ mod tests {
         ] {
             let position = text_position(&output, label);
             assert_eq!(click_opening(&mut app, &context, position), None, "{label}");
+        }
+        // An unfinished draft previews its local original without removing it.
+        let draft = text_position(&output, "TEST FIXTURE diagram.png");
+        let url = click_opening(&mut app, &context, draft).expect("draft preview opens");
+        assert!(url.starts_with("file:///"));
+        assert!(url.ends_with("/selected%20diagram%20%231.png"));
+        assert_eq!(app.draft_files.len(), 3);
+
+        // Empty and multiline drafts share one message-box surface with Attach.
+        for draft in ["", "First line\nSecond line\nThird line"] {
+            app.draft = draft.into();
+            context.enable_accesskit();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let attach = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
+            )), "{draft:?}: Attach must be inside the message box");
         }
     }
 
@@ -23908,6 +25661,51 @@ mod tests {
     }
 
     #[test]
+    fn attachment_readiness_never_moves_the_composer() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-account".into());
+        app.session = Some(session());
+        let mut bounds = None;
+        for ready in [false, true, false] {
+            app.uploads = ready.then(crate::compress::Compression::default);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let attach = &nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Attach files"))
+                .expect("the attach button stays present")
+                .1;
+            assert_eq!(attach.is_disabled(), !ready);
+            let editor = &nodes
+                .iter()
+                .find(|(_, node)| node.role() == egui::accesskit::Role::MultilineTextInput)
+                .unwrap()
+                .1;
+            if let Some(previous) = bounds {
+                assert_eq!(
+                    editor.bounds(),
+                    Some(previous),
+                    "upload readiness must not move or resize the editor"
+                );
+            }
+            bounds = editor.bounds();
+            assert!(bounds.is_some());
+        }
+    }
+
+    #[test]
     fn attach_needs_uploads_and_a_writable_channel_and_drafts_gate_sending() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -23917,7 +25715,7 @@ mod tests {
         );
         assert!(app.can_attach());
         app.uploads = None;
-        assert!(!app.can_attach(), "usage failure hides Attach");
+        assert!(!app.can_attach(), "usage failure disables Attach");
         app.uploads = Some(crate::compress::Compression::default());
         let channel = app.selected_channel.clone().unwrap();
         app.detail

@@ -1,11 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
+
+const DEFAULT_WIDTH = 340;
+const MIN_WIDTH = 300;
+const MAX_WIDTH = 600;
+const WIDTH_KEY = "caper:thread-panel-width";
 
 export default function ThreadPanel({
   state,
@@ -44,22 +50,69 @@ export default function ThreadPanel({
   const returnFocus = useRef<HTMLElement>(null);
   const panel = useRef<HTMLElement>(null);
   const [mobile, setMobile] = useState(false);
+  const [preferredWidth, setPreferredWidth] = useState(DEFAULT_WIDTH);
+  const [maximumWidth, setMaximumWidth] = useState(MAX_WIDTH);
+  const minimumWidth = Math.min(MIN_WIDTH, maximumWidth);
+  const width = Math.max(minimumWidth, Math.min(maximumWidth, preferredWidth));
+  const drag = useRef<{ x: number; width: number; scale: number; last?: number } | undefined>(undefined);
   const rootId = state.thread?.rootId;
+  const open = !!rootId;
+  useLayoutEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem(WIDTH_KEY));
+      if (saved >= MIN_WIDTH && saved <= MAX_WIDTH) setPreferredWidth(saved);
+    } catch {
+      /* Optional preference; resizing still works when storage is unavailable. */
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (!open || !panel.current) return;
+    const room = panel.current.parentElement!;
+    const measure = () => {
+      // Reserve 300px for the conversation, or half the room in smaller split layouts.
+      setMaximumWidth(Math.floor(Math.min(MAX_WIDTH, room.clientWidth - Math.min(MIN_WIDTH, room.clientWidth / 2))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(room);
+    return () => observer.disconnect();
+  }, [open]);
+  const saveWidth = (value: number) => {
+    try {
+      localStorage.setItem(WIDTH_KEY, String(Math.max(MIN_WIDTH, value)));
+    } catch {
+      /* Optional preference. */
+    }
+  };
+  const resize = (value: number, persist = true) => {
+    const next = Math.round(Math.max(minimumWidth, Math.min(maximumWidth, value)));
+    setPreferredWidth(Math.max(MIN_WIDTH, next));
+    if (persist) saveWidth(next);
+    return next;
+  };
+  const endDrag = () => {
+    if (drag.current?.last !== undefined) saveWidth(drag.current.last);
+    drag.current = undefined;
+  };
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
   const windowStart = state.thread?.windowStart;
   const windowEnd = state.thread?.windowEnd;
-  const replies = useMemo(
-    () =>
-      rootId
-        ? state.messages.filter(
-            (message) =>
-              message.threadRootId === rootId &&
-              (!windowStart || sequence(message.seq) >= sequence(windowStart)) &&
-              (!windowEnd || sequence(message.seq) <= sequence(windowEnd)),
-          )
-        : [],
-    [state.messages, rootId, windowStart, windowEnd],
-  );
+  const previousReplies = useRef<ChatMessage[]>([]);
+  const replies = useMemo(() => {
+    const next = rootId
+      ? state.messages.filter(
+          (message) =>
+            message.threadRootId === rootId &&
+            (!windowStart || sequence(message.seq) >= sequence(windowStart)) &&
+            (!windowEnd || sequence(message.seq) <= sequence(windowEnd)),
+        )
+      : [];
+    // Timeline rows are immutable, so keep the array when no reply changed: unrelated
+    // channel events then neither re-render the replies nor force a follow layout read.
+    const previous = previousReplies.current;
+    if (next.length === previous.length && next.every((message, index) => message === previous[index])) return previous;
+    return (previousReplies.current = next);
+  }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
@@ -101,7 +154,6 @@ export default function ThreadPanel({
       for (const [element, inert] of backgrounds) element.inert = inert;
     };
   }, [rootId, mobile]);
-  const open = !!rootId;
   useEffect(() => {
     if (!open || !mobile) return;
     const key = crypto.randomUUID();
@@ -120,7 +172,8 @@ export default function ThreadPanel({
     if (!rootId) return;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     olderAnchor.current = undefined;
-    follow.current = true;
+    // A cached "go to message" page keeps the reader at that reply.
+    follow.current = !state.thread?.focusMessageId;
     composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
       // Escape closes the innermost layer first: a menu, popover or dialog
@@ -159,10 +212,12 @@ export default function ThreadPanel({
   useEffect(() => {
     if (!state.thread?.focusMessageId) follow.current = true;
   }, [state.thread?.focusMessageId]);
-  useEffect(() => {
-    if (scroll.current && follow.current) scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [rootId, replies.at(-1)?.id, pending?.clientMessageId, state.thread?.loading]);
-  useEffect(() => {
+  // Reactions grow an existing reply (or the root) without changing its ID.
+  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  // Runs before the follow effect so a focused reply is not first scrolled past.
+  // The focus stays through paging, so scrolling back to the bottom (or
+  // sending) is what resumes following.
+  useLayoutEffect(() => {
     const id = state.thread?.focusMessageId;
     if (!id || state.thread?.loading) return;
     follow.current = false;
@@ -172,11 +227,14 @@ export default function ThreadPanel({
     return () => cancelAnimationFrame(frame);
   }, [state.thread?.focusMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
+    if (scroll.current && follow.current && !state.thread?.hasNewer)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
+  useLayoutEffect(() => {
     if (state.thread?.loadingOlder || !olderAnchor.current || !scroll.current) return;
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
-  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
@@ -202,10 +260,64 @@ export default function ThreadPanel({
     <aside
       ref={panel}
       className="chat-thread-panel"
+      id="chat-thread-panel"
+      style={{ flexBasis: width }}
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
     >
+      <div
+        className="chat-thread-resize"
+        role="separator"
+        aria-label="Thread width"
+        aria-controls="chat-thread-panel"
+        aria-orientation="vertical"
+        aria-valuemin={minimumWidth}
+        aria-valuemax={maximumWidth}
+        aria-valuenow={width}
+        aria-valuetext={`${width} pixels`}
+        tabIndex={mobile ? -1 : 0}
+        title="Drag to resize. Arrow keys to adjust. Double-click to reset."
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          const element = panel.current!;
+          drag.current = {
+            x: event.clientX,
+            width: element.offsetWidth,
+            scale: element.getBoundingClientRect().width / element.offsetWidth,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (drag.current)
+            drag.current.last = resize(
+              drag.current.width + (drag.current.x - event.clientX) / drag.current.scale,
+              false,
+            );
+        }}
+        onPointerUp={(event) => {
+          endDrag();
+          if (event.currentTarget.hasPointerCapture(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
+        onDoubleClick={() => resize(DEFAULT_WIDTH)}
+        onKeyDown={(event) => {
+          const sizes: Record<string, number> = {
+            ArrowLeft: width + 10,
+            ArrowRight: width - 10,
+            Home: minimumWidth,
+            End: maximumWidth,
+          };
+          const next = sizes[event.key];
+          if (next === undefined) return;
+          event.preventDefault();
+          resize(next);
+        }}
+      />
       <header className="chat-thread-heading">
         <button
           type="button"
@@ -241,17 +353,10 @@ export default function ThreadPanel({
           </div>
         )}
         {state.thread.loading && !replies.length && (
-          <div className="chat-thread-skeleton" role="status" aria-label="Loading thread replies">
-            {Array.from({ length: Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2)) }, (_, index) => (
-              <div className="chat-thread-skeleton-row" key={index} aria-hidden="true">
-                <span className="chat-thread-skeleton-avatar" />
-                <div>
-                  <span className="chat-thread-skeleton-name" />
-                  <span className="chat-thread-skeleton-text" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <MessageSkeleton
+            label="Loading thread replies"
+            rows={Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2))}
+          />
         )}
         {state.thread.error && (
           <p className="chat-thread-status chat-inline-error" role="alert">

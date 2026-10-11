@@ -1,5 +1,6 @@
 import { appGateway } from "../gateway/client";
 import { avatarUrl } from "./avatar";
+import { notificationImage } from "./notification-image";
 
 const CHOICE = "caper.browserNotifications";
 
@@ -31,6 +32,9 @@ export interface MessageNotification {
   body: string;
   createdAt: string;
   senderAvatarId?: number | null;
+  attachmentUrl?: string;
+  attachmentContentType?: string;
+  attachmentSize?: number;
   conversationId?: string;
   spaceId?: string;
   channelId?: string;
@@ -44,9 +48,14 @@ export function notificationLocation(event: MessageNotification) {
 }
 
 /** Account-wide, not tied to the current channel's chat subscription. */
-export function watchBrowserNotifications(accountId: string, showing: () => string | undefined) {
+export function watchBrowserNotifications(
+  accountId: string,
+  showing: () => string | undefined,
+  onActivity?: () => void,
+) {
   let active = true;
-  const displayed = new Set<Notification>();
+  const downloads = new AbortController();
+  const displayed = new Map<Notification, string | undefined>();
   const visibleKey = `caper.notificationVisible.${accountId}`;
   const tab = crypto.randomUUID();
   // A background tab must also suppress the conversation visible in another tab.
@@ -66,6 +75,15 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
   window.addEventListener("focus", visibility);
   window.addEventListener("blur", visibility);
   document.addEventListener("visibilitychange", visibility);
+  // A burst of notifications coalesces into one unread refresh about a second later.
+  let activityTimer: ReturnType<typeof setTimeout> | undefined;
+  const activity = () => {
+    if (!onActivity || activityTimer !== undefined) return;
+    activityTimer = setTimeout(() => {
+      activityTimer = undefined;
+      if (active) onActivity();
+    }, 1_000);
+  };
   const receive = async (value: unknown) => {
     const event = value as MessageNotification;
     if (
@@ -76,49 +94,74 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
       typeof event.body !== "string"
     )
       return;
+    activity();
     const location = notificationLocation(event);
-    const age = Date.now() - Date.parse(event.createdAt);
-    if (!location || !Number.isFinite(age) || age < -30_000 || age > 120_000) return;
-    const present = () => {
-      if (!active || browserNotificationPermission() !== "granted" || !browserNotificationsEnabled()) return;
+    const fresh = () => {
+      const age = Date.now() - Date.parse(event.createdAt);
+      return Number.isFinite(age) && age >= -30_000 && age <= 120_000;
+    };
+    if (!location || !fresh()) return;
+    const subject = event.conversationId ?? event.channelId;
+    const allowed = () => active && browserNotificationPermission() === "granted" && browserNotificationsEnabled();
+    const reading = () => {
       visibility();
-      let visible =
-        document.visibilityState === "visible" &&
-        document.hasFocus() &&
-        showing() === (event.conversationId ?? event.channelId);
-      // Persist only bounded opaque IDs, never previews. The lock serializes
-      // competing tabs so only one presents this message.
-      const key = `caper.notificationSeen.${accountId}`;
+      let visible = document.visibilityState === "visible" && document.hasFocus() && showing() === subject;
       try {
         const other = JSON.parse(localStorage.getItem(visibleKey) ?? "null");
-        visible ||= other?.conversation === (event.conversationId ?? event.channelId) && Date.now() - other.at < 3_000;
+        visible ||= other?.conversation === subject && Date.now() - other.at < 3_000;
+      } catch {
+        /* Storage may be unavailable. */
+      }
+      return visible;
+    };
+    // Persist only bounded opaque IDs, never previews. The lock serializes
+    // competing tabs so only one claims this message; the image download and
+    // display happen after release so a slow original never delays later alerts.
+    const claim = () => {
+      if (!allowed()) return false;
+      const visible = reading();
+      const key = `caper.notificationSeen.${accountId}`;
+      try {
         const seen: string[] = JSON.parse(localStorage.getItem(key) ?? "[]");
-        if (Array.isArray(seen) && seen.includes(event.messageId)) return;
+        if (Array.isArray(seen) && seen.includes(event.messageId)) return false;
         localStorage.setItem(key, JSON.stringify([...(Array.isArray(seen) ? seen : []), event.messageId].slice(-128)));
       } catch {
         /* Private browsing may disallow storage; the OS tag still groups duplicates. */
       }
-      if (visible) return;
-      try {
-        const notification = new Notification(event.title, {
-          body: event.body,
-          icon: avatarUrl(event.senderAvatarId),
-          tag: `caper:${accountId}:${event.messageId}`,
-        });
-        displayed.add(notification);
-        notification.onclose = () => displayed.delete(notification);
-        notification.onclick = () => {
-          notification.close();
-          if (!active) return;
-          window.focus();
-          window.location.assign(location);
-        };
-      } catch {
-        /* Some mobile browsers require a service worker; no closed-browser push yet. */
-      }
+      return !visible;
     };
-    if (navigator.locks) await navigator.locks.request(`caper.notifications.${accountId}`, present);
-    else present();
+    const claimed = navigator.locks
+      ? await navigator.locks.request(`caper.notifications.${accountId}`, claim)
+      : claim();
+    if (!claimed) return;
+    const image = event.attachmentUrl ? await notificationImage(event, downloads.signal) : undefined;
+    if (!allowed() || !fresh() || reading()) {
+      if (image) URL.revokeObjectURL(image);
+      return;
+    }
+    try {
+      const options: NotificationOptions & { image?: string } = {
+        body: event.body,
+        icon: avatarUrl(event.senderAvatarId),
+        tag: `caper:${accountId}:${event.messageId}`,
+        ...(image ? { image } : {}),
+      };
+      const notification = new Notification(event.title, options);
+      displayed.set(notification, image);
+      notification.onclose = () => {
+        displayed.delete(notification);
+        if (image) URL.revokeObjectURL(image);
+      };
+      notification.onclick = () => {
+        notification.close();
+        if (!active) return;
+        window.focus();
+        window.location.assign(location);
+      };
+    } catch {
+      if (image) URL.revokeObjectURL(image);
+      /* Some mobile browsers require a service worker; no closed-browser push yet. */
+    }
   };
   const subscription = appGateway().subscribe(
     { kind: "notifications" },
@@ -131,6 +174,8 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
   void subscription.ready.catch(() => undefined);
   return () => {
     active = false;
+    clearTimeout(activityTimer);
+    downloads.abort();
     subscription.unsubscribe();
     clearInterval(visibleTimer);
     window.removeEventListener("focus", visibility);
@@ -141,6 +186,9 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
     } catch {
       /* Storage may be unavailable. */
     }
-    for (const notification of displayed) notification.close();
+    for (const [notification, image] of displayed) {
+      notification.close();
+      if (image) URL.revokeObjectURL(image);
+    }
   };
 }

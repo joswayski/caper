@@ -1,9 +1,22 @@
 import SwiftUI
 #if os(iOS)
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 #elseif os(macOS)
 import AppKit
 #endif
+
+private struct ComposerCoveredKey: EnvironmentKey {
+    static var defaultValue: Bool { false }
+}
+
+extension EnvironmentValues {
+    /// True while Browse covers the phone conversation and its composers.
+    var composerCovered: Bool {
+        get { self[ComposerCoveredKey.self] }
+        set { self[ComposerCoveredKey.self] = newValue }
+    }
+}
 
 struct EmojiAutocompleteMatch: Equatable {
     let replacementRange: NSRange
@@ -219,6 +232,25 @@ private struct SuggestionRow: ViewModifier {
 final class ComposerTextView: UITextView {
     var autocompleteActive: (() -> Bool)?
     var handleKey: ((String) -> Void)?
+    /// Once Browse has covered the conversation, UIKit gave the composer its
+    /// earlier focus back as the conversation returned, reopening the keyboard
+    /// over it. Focus waits for a touch (or VoiceOver) until a moment after.
+    private var focusHeld = false
+    private var covered = false
+    private var focusRelease: Task<Void, Never>?
+    override var canBecomeFirstResponder: Bool { !focusHeld && super.canBecomeFirstResponder }
+    func setCovered(_ covered: Bool) {
+        guard covered != self.covered else { return }
+        self.covered = covered
+        focusRelease?.cancel(); focusRelease = nil
+        if covered { focusHeld = true; return }
+        focusRelease = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            self?.focusHeld = false
+        }
+    }
+    func touched() { if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
+    override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
     override var keyCommands: [UIKeyCommand]? {
         guard markedTextRange == nil, autocompleteActive?() == true else { return super.keyCommands }
         return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
@@ -230,6 +262,12 @@ final class ComposerTextView: UITextView {
     @objc private func autocompleteKey(_ command: UIKeyCommand) { if let input = command.input { handleKey?(input) } }
 }
 
+/// Sees a finger land on the composer, then steps aside for its own gestures.
+private final class TouchDownObserver: UIGestureRecognizer {
+    var touched: (() -> Void)?
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { touched?(); state = .failed }
+}
+
 struct NativeMessageComposer: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
@@ -237,9 +275,14 @@ struct NativeMessageComposer: UIViewRepresentable {
     /// Who `@` may suggest in this conversation.
     let mentions: MentionSource
     let submit: () -> Void
+    @Environment(\.composerCovered) private var covered
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
         let view = ComposerTextView(); view.delegate = context.coordinator
+        let touchDown = TouchDownObserver(target: nil, action: nil)
+        touchDown.cancelsTouchesInView = false; touchDown.delaysTouchesEnded = false
+        touchDown.touched = { [weak view] in view?.touched() }
+        view.addGestureRecognizer(touchDown)
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) }
         view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Satoshi-Regular", size: 14)
@@ -249,6 +292,7 @@ struct NativeMessageComposer: UIViewRepresentable {
         context.coordinator.view = view; context.coordinator.refresh(view); return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
+        (view as? ComposerTextView)?.setCovered(covered)
         let mentionsChanged = context.coordinator.parent.mentions != mentions
         context.coordinator.parent = self
         if view.text != text { view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
@@ -292,6 +336,18 @@ struct NativeMessageComposer: UIViewRepresentable {
 final class ComposerTextView: NSTextView {
     var handleKey: ((NSEvent) -> Bool)?
     var focusChanged: ((Bool) -> Void)?
+    /// Only text drags edit the draft. File drags fall through to the
+    /// conversation's drop target, which attaches them, instead of typing
+    /// their paths (NSTextView's default for file URLs).
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
+    /// A drag carrying text and files together still reaches the text view;
+    /// refuse it rather than insert a path.
+    private func carriesFiles(_ drag: NSDraggingInfo) -> Bool {
+        drag.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
     override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
     override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
     override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
@@ -317,6 +373,7 @@ struct NativeMessageComposer: NSViewRepresentable {
         view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = true
         view.isRichText = false
+        view.updateDragTypeRegistration()
         view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder)
         view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); context.coordinator.view = view
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) == true }
