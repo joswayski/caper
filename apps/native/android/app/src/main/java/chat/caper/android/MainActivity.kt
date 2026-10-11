@@ -280,8 +280,10 @@ internal data class VoiceJoinIntent(
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify, viewModel::resendCode)
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces ->
+                    // Launch stays on the brand screen until the first conversation is ready.
+                    if (state.restoring) BrandLoading()
                     // Web's first-space page: an account with no spaces names one.
-                    if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
+                    else if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
                         state.spaces.none { !it.demo } && state.selectedDirectId == null && !navigationOpen)
                         FirstSpaceScreen(state, viewModel) { navigationOpen = true }
                     else HomeScreen(

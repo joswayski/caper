@@ -267,6 +267,12 @@ fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
 
 data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
+    /**
+     * Home is open but its first space and conversation are still loading. The brand loading
+     * screen stays up meanwhile, so launch lands on the restored conversation instead of
+     * flashing Browse and an empty stage. Capped by `RESTORE_LIMIT_MS`.
+     */
+    val restoring: Boolean = false,
     val account: Account? = null,
     val spaces: List<Space> = emptyList(),
     val invitations: List<Space> = emptyList(),

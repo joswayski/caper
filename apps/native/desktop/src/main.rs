@@ -45,6 +45,8 @@ use worker::{
     AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
 };
 
+/// Longest the loading page waits for the first conversation at launch.
+const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
 const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
@@ -571,6 +573,11 @@ struct CaperApp {
     navigation_open: bool,
     navigation: u64,
     opening: bool,
+    /// Launch or sign-in is opening the first space and conversation. The
+    /// loading page stays up meanwhile, so the app lands on the restored
+    /// conversation instead of flashing Browse and an empty stage. Capped by
+    /// `RESTORE_LIMIT`.
+    restoring: Option<Instant>,
     navigation_target: Option<NavigationTarget>,
     navigation_prefetch: Option<navigation::Target>,
     navigation_error: Option<String>,
@@ -739,6 +746,7 @@ impl CaperApp {
             navigation_open: false,
             navigation: 0,
             opening: false,
+            restoring: None,
             navigation_target: None,
             navigation_prefetch: None,
             navigation_error: None,
@@ -1420,9 +1428,12 @@ impl CaperApp {
                 }
             }
             Some(_) => {}
-            None => app.worker.send(Command::Restore {
-                generation: app.generation,
-            }),
+            None => {
+                app.restoring = Some(Instant::now());
+                app.worker.send(Command::Restore {
+                    generation: app.generation,
+                });
+            }
         }
         app
     }
@@ -1756,8 +1767,9 @@ impl CaperApp {
                         Ok(Some((token, account, spaces))) => {
                             self.establish(token, account, spaces)
                         }
-                        Ok(None) => {}
+                        Ok(None) => self.restoring = None,
                         Err(error) => {
+                            self.restoring = None;
                             self.warning = Some(error);
                         }
                     }
@@ -1789,6 +1801,7 @@ impl CaperApp {
                     self.attempts_remaining = attempts_remaining;
                     match result {
                         Ok((token, account, spaces)) => {
+                            self.restoring = Some(Instant::now());
                             self.establish(token.clone(), account, spaces);
                             self.worker.send(Command::PersistCredential {
                                 generation: self.generation,
@@ -2234,10 +2247,12 @@ impl CaperApp {
         self.error = None;
         self.dialog = None;
         if needs_profile {
+            self.restoring = None;
             self.dialog = Some(Dialog::Profile);
         } else if let Some(space) = self.spaces.first() {
             self.select_space(space.id.clone());
         } else {
+            self.restoring = None;
             self.detail = None;
             self.selected_space = None;
             self.clear_channel_state();
@@ -3215,6 +3230,7 @@ impl CaperApp {
             return;
         }
         self.opening = false;
+        self.restoring = None;
         match result {
             Ok(prepared) => {
                 let space_changed = self.selected_space.as_deref()
@@ -3959,6 +3975,7 @@ impl CaperApp {
             });
         }
         self.account = None;
+        self.restoring = None;
         self.reset_account_state();
         self.invalidate_navigation_cache();
         self.spaces.clear();
@@ -4897,7 +4914,9 @@ impl CaperApp {
             // The next sign-in page focuses its field again.
             self.login_focus = None;
         }
-        if login {
+        if self.restoring(context) {
+            self.restoring_page(context);
+        } else if login {
             self.login_page(context);
         } else if self.onboarding() {
             self.onboarding_page(context);
@@ -5081,6 +5100,39 @@ impl CaperApp {
             avatar_images::BRANDING[index],
         )
         .paint_at(ui, character);
+    }
+
+    /// Whether the loading page still covers the first navigation.
+    fn restoring(&mut self, context: &egui::Context) -> bool {
+        let Some(started) = self.restoring else {
+            return false;
+        };
+        let elapsed = started.elapsed();
+        if elapsed >= RESTORE_LIMIT {
+            self.restoring = None;
+            return false;
+        }
+        context.request_repaint_after(RESTORE_LIMIT - elapsed);
+        true
+    }
+
+    fn restoring_page(&self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                let height = 35.0 + 14.0 + 16.0 + 14.0 + 16.0;
+                ui.add_space(((ui.available_height() - height) / 2.0).max(0.0));
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 14.0;
+                    self.wordmark(ui);
+                    ui.add(egui::Spinner::new().size(16.0).color(MUTED));
+                    ui.label(
+                        RichText::new("Loading your spaces…")
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                });
+            });
     }
 
     fn first_space_page(&mut self, context: &egui::Context) {
@@ -14514,10 +14566,10 @@ mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent,
         MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend, Phase,
-        RESEND_COOLDOWN, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT,
-        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, resend_countdown, resend_wait,
-        short_time, take_date_divider, timestamp_parts, voice,
+        RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
+        TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
+        normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
+        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -23129,6 +23181,74 @@ mod tests {
             Some(&first.id)
         );
         assert!(app.selected_channel.is_none());
+    }
+
+    #[test]
+    fn launch_stays_on_loading_until_the_first_conversation_opens() {
+        let shows = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        let context = eframe::egui::Context::default();
+        let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
+        let mut app = CaperApp::new(&context, api, Some("signed-out"));
+        app.restoring = Some(Instant::now());
+        app.establish(
+            "account-token".into(),
+            account(true),
+            Spaces {
+                spaces: vec![Space {
+                    id: "first-account-space".into(),
+                    name: "First".into(),
+                    owner_id: "account".into(),
+                    inviter: None,
+                    demo: false,
+                }],
+                invitations: Vec::new(),
+                limits: None,
+            },
+        );
+        assert!(app.opening);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        text_position(&output, "Loading your spaces…");
+        for hidden in [
+            "Welcome to Caper",
+            "No joined channels",
+            "Browse spaces",
+            "Channels",
+        ] {
+            assert!(!shows(&output, hidden), "{hidden} flashed during launch");
+        }
+
+        // The first navigation, whatever its outcome, ends the loading page.
+        let (generation, navigation) = (app.generation, app.navigation);
+        app.accept_navigation(
+            generation,
+            navigation,
+            Err(LoadError {
+                message: "Offline".into(),
+                access_denied: false,
+                space_access_denied: false,
+            }),
+        );
+        assert!(app.restoring.is_none());
+        render(&mut app, &context, vec![]);
+        assert!(!shows(
+            &render(&mut app, &context, vec![]),
+            "Loading your spaces…"
+        ));
+
+        // A navigation that never answers cannot hold the loading page past its cap.
+        app.restoring = Some(Instant::now() - RESTORE_LIMIT);
+        render(&mut app, &context, vec![]);
+        assert!(app.restoring.is_none());
+
+        // An account without spaces goes straight to its first-space page.
+        app.restoring = Some(Instant::now());
+        app.establish("account-token".into(), account(true), spaces());
+        assert!(app.restoring.is_none());
     }
 
     #[test]

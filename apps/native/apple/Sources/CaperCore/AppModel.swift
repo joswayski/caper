@@ -89,6 +89,13 @@ public final class AppModel {
     /// The account's space list has loaded at least once. With no spaces,
     /// the workspace shows web's "Name your space" first-space form.
     public var spacesLoaded = false
+    /// True from launch or sign-in until the first space and its conversation
+    /// are ready (or fail). The loading screen stays up meanwhile, so launch
+    /// goes straight to the restored conversation instead of flashing Browse
+    /// and an empty stage. Capped by `restoreLimit` so a slow network never
+    /// hides the workspace.
+    public private(set) var restoringWorkspace = false
+    static let restoreLimit: Duration = .seconds(5)
     public var spacesError: String?
     public var navigationOpen = false
     public var openingSpaceID: String?
@@ -174,10 +181,12 @@ public final class AppModel {
             let account = try await api.account()
             guard generation == attempt else { return }
             self.account = account
-            phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
+            let next: Phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
+            if next == .ready { restoringWorkspace = true }
+            phase = next
             // A push tapped while signed out never opens for whoever signs in next.
             if account == nil { pendingNotificationRoute = nil }
-            if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
+            if phase == .ready { await openWorkspace(generation: attempt) }
         } catch {
             guard generation == attempt else { return }
             self.error = FriendlyError.message(for: error); phase = .signedOut
@@ -218,8 +227,10 @@ public final class AppModel {
             }
             guard self.generation == attempt else { return }
             self.account = account
-            self.phase = self.needsProfile ? .onboarding : .ready
-            if self.phase == .ready { await self.loadSpaces(); self.startDirectMessageRefresh() }
+            let next: Phase = self.needsProfile ? .onboarding : .ready
+            if next == .ready { self.restoringWorkspace = true }
+            self.phase = next
+            if self.phase == .ready { await self.openWorkspace(generation: attempt) }
         }
     }
 
@@ -274,13 +285,26 @@ public final class AppModel {
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
-        limits = nil; navigationOpen = false
+        limits = nil; navigationOpen = false; restoringWorkspace = false
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
         await chat.stop(discardingDrafts: true)
         await presence.stop()
         await voicePresence.stop()
         do { try await revoke } catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    /// The first space list and its landing conversation, behind the loading screen.
+    private func openWorkspace(generation attempt: Int) async {
+        let limit = Task { [weak self] in
+            try? await Task.sleep(for: Self.restoreLimit)
+            guard !Task.isCancelled, let self, self.generation == attempt else { return }
+            self.restoringWorkspace = false
+        }
+        await loadSpaces()
+        limit.cancel()
+        if generation == attempt { restoringWorkspace = false }
+        startDirectMessageRefresh()
     }
 
     public func loadSpaces() async {
