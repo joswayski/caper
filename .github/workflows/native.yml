@@ -251,9 +251,10 @@ jobs:
     # the UI VM after the ARM job and runs its tests under Rosetta. Without the
     # Mac, Intel runs on GitHub-hosted macos-15-intel as before.
     runs-on: ${{ needs.route.outputs.mac == 'true' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
-    # A cold Intel build plus UI tests can exceed 30 minutes while still
-    # progressing normally. Keep the existing budget for ARM and iOS.
-    timeout-minutes: ${{ matrix.target == 'macos-x64' && 45 || 30 }}
+    # A cold iOS build/package plus parity build can consume 27 minutes before
+    # the UI suite starts. Give it room to finish; each XCTest keeps its own
+    # execution timeout. Preserve the existing macOS ARM/Intel budgets.
+    timeout-minutes: ${{ matrix.platform == 'ios' && 60 || matrix.target == 'macos-x64' && 45 || 30 }}
     env:
       # build.sh and parity-screenshots.sh target the runner's own architecture otherwise.
       CAPER_MACOS_ARCH: ${{ matrix.target == 'macos-x64' && 'x86_64' || '' }}
