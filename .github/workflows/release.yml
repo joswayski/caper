@@ -395,11 +395,15 @@ jobs:
         if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
         with:
           working-directory: ${{ runner.temp }}/python-tooling
-      - name: Roll out to Google Play internal testers
+      # Internal testing reaches the owner within minutes; closed testing
+      # ("alpha") is the public beta behind the homepage's Android button, and
+      # Google reviews each of its releases first.
+      - name: Roll out to Google Play internal and closed testers
         if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          PLAY_TRACK: internal,alpha
         run: |
           set -euo pipefail
           export PLAY_RELEASE_NAME="0.1.${CAPER_BUILD_NUMBER}"
@@ -532,13 +536,11 @@ jobs:
 
           **Mac:** open the [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.dmg) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.dmg) disk image, drag Caper onto Applications, then eject the image and open Caper from Applications. The app and disk image are signed and notarized by Apple. If you cannot write to /Applications, drag Caper to ~/Applications instead. Running a release directly from the download or image shows installation instructions and quits. ZIPs are retained for existing self-updaters.
 
-          **Android:** open [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) on the phone and allow installing from your browser when asked. Later versions install over it.
+          **iPhone and Android:** open [caper.chat](https://caper.chat) on the phone and tap **Get the iOS beta** (TestFlight) or **Get the Android beta** (Google Play). Both update automatically. [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) is only for phones without Google Play: it never updates itself, and it must be uninstalled before installing from Google Play.
 
           **Windows:** run [Caper-Windows-x64-Setup.exe](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Windows-x64-Setup.exe), then open Caper from Start or the desktop shortcut. No extraction or administrator access needed. Close any old Caper copy before installing. It is not code-signed yet, so Windows may warn first: choose **More info → Run anyway**. The ZIP is retained for self-updates and optional portable use.
 
           **Linux:** on Ubuntu 24.04 or a compatible Debian-based system, open [Caper-Linux-x64.deb](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.deb) in the software installer, then launch Caper from the application menu (no extraction or terminal window). The tarball is for self-updates and advanced portable use, not a universal Linux installer.
-
-          **iPhone:** join through the TestFlight link.
           EOF
           echo "RELEASE_ASSETS=${assets[*]} SHA256SUMS" >>"$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@v6.2.3

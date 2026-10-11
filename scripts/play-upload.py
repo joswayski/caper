@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Upload a signed Android App Bundle to a Google Play track and roll it out.
+"""Upload a signed Android App Bundle to Google Play tracks and roll it out.
 
 Uses the Google Play Developer API with a service account that has release
-permissions for the app in Play Console. The track defaults to "internal",
-whose testers get the update through the Play Store within minutes.
+permissions for the app in Play Console. PLAY_TRACK is a comma-separated list
+of tracks that all receive the same bundle in one edit. It defaults to
+"internal", whose testers get the update through the Play Store within minutes;
+"alpha" is the closed testing track, whose releases Google reviews first.
 
 Environment: GOOGLE_PLAY_SERVICE_ACCOUNT (path to the JSON key),
 PLAY_PACKAGE (default chat.caper.android), PLAY_TRACK (default internal),
@@ -85,7 +87,9 @@ def main() -> None:
     with open(os.environ["GOOGLE_PLAY_SERVICE_ACCOUNT"], encoding="utf-8") as key:
         account = json.load(key)
     package = os.environ.get("PLAY_PACKAGE", "chat.caper.android")
-    track = os.environ.get("PLAY_TRACK", "internal")
+    tracks = [track.strip() for track in os.environ.get("PLAY_TRACK", "internal").split(",") if track.strip()]
+    if not tracks:
+        sys.exit("PLAY_TRACK names no track")
     name = os.environ.get("PLAY_RELEASE_NAME", "")
     notes = os.environ.get("PLAY_RELEASE_NOTES", "").strip()[:500]
 
@@ -105,7 +109,7 @@ def main() -> None:
     version_code = str(uploaded["versionCode"])
     print(f"Uploaded {bundle} as version code {version_code}")
 
-    def release(status: str) -> dict:
+    def release(track: str, status: str) -> dict:
         entry: dict = {"versionCodes": [version_code], "status": status}
         if name:
             entry["name"] = name
@@ -113,19 +117,23 @@ def main() -> None:
             entry["releaseNotes"] = [{"language": "en-US", "text": notes}]
         return {"track": track, "releases": [entry]}
 
-    rollout = "completed"
-    status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(rollout))
-    if status >= 300 and "draft" in json.dumps(body).lower():
-        rollout = "draft"
-        # Play only accepts draft releases until the app has been published once.
-        print("::warning::Play accepted this only as a draft release; roll it out in Play Console.")
-        status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(rollout))
-    must((status, body), f"Assigning the {track} track")
+    rollouts = {}
+    for track in tracks:
+        rollout = "completed"
+        status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(track, rollout))
+        if status >= 300 and "draft" in json.dumps(body).lower():
+            rollout = "draft"
+            # Play only accepts draft releases until the app has been published once.
+            print(f"::warning::Play accepted the {track} release only as a draft; roll it out in Play Console.")
+            status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(track, rollout))
+        must((status, body), f"Assigning the {track} track")
+        rollouts[track] = rollout
     must(call(token, "POST", f"{API}/{package}/edits/{edit}:commit", {}), "Committing the Play edit")
-    if rollout == "completed":
-        print(f"Version code {version_code} is rolling out to {track} testers")
-    else:
-        print(f"Version code {version_code} is saved as a draft on the {track} track")
+    for track, rollout in rollouts.items():
+        if rollout == "completed":
+            print(f"Version code {version_code} is rolling out to {track} testers")
+        else:
+            print(f"Version code {version_code} is saved as a draft on the {track} track")
 
 
 if __name__ == "__main__":
