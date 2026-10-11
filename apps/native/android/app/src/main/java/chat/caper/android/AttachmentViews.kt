@@ -316,7 +316,7 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** Composer chips: thumbnail, name, size or upload progress, and remove (web `DraftAttachments`). */
-@Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit) {
+@Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: (String) -> Unit) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
     val open: (String) -> Unit = { url ->
@@ -359,6 +359,9 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 color = Terracotta, trackColor = Border,
                             )
                         }
+                    }
+                    if (draft.error != null) TextButton({ retry(draft.key) }, Modifier.semantics { contentDescription = "Retry uploading ${draft.name}" }) {
+                        Text("Retry", fontSize = 11.sp)
                     }
                     IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }) {
                         Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted)

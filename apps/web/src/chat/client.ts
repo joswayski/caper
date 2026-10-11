@@ -1,5 +1,6 @@
 import { CHAT_SESSION_KEY } from "../account/client.ts";
 import { ChatConnection } from "./connection.ts";
+import { cancelUpload, type AttachmentUpload } from "./uploads.ts";
 import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
@@ -71,6 +72,7 @@ export interface ChatViewState {
   sessionError?: string;
   sendError?: string;
   sendRejected?: boolean;
+  sendUploadFailed?: boolean;
   pendingSend?: PendingChatMessage;
   /** Latest `attachment.progress` percent per still-processing attachment id. */
   attachmentProgress: Record<string, number>;
@@ -326,6 +328,8 @@ export class ChatClient {
   private accountId?: string;
   private session?: ChatSession;
   private sending = false;
+  private pendingUploads: AttachmentUpload[] = [];
+  private uploadsNeedRefresh = false;
   private confirmSend?: (message: ChatMessage) => void;
   private typingActive = false;
   private typingSent = false;
@@ -414,6 +418,7 @@ export class ChatClient {
   stop() {
     this.generation++;
     this.controller.abort();
+    this.releaseUploads();
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
     this.connection?.stop();
@@ -671,12 +676,22 @@ export class ChatClient {
   discardRejected(): string | undefined {
     if (this.sending || !this.state.sendRejected) return;
     const text = this.state.pendingSend?.text;
+    // Only a definitive rejection permits abandoning the send's files.
+    for (const attachment of this.state.pendingSend?.attachments ?? []) void cancelUpload(attachment.id);
+    this.releaseUploads(true);
     this.update({
       pendingSend: undefined,
       sendError: undefined,
       sendRejected: undefined,
+      sendUploadFailed: undefined,
     });
     return text;
+  }
+
+  private releaseUploads(cancel = false) {
+    for (const upload of this.pendingUploads) upload.release(cancel);
+    this.pendingUploads = [];
+    this.uploadsNeedRefresh = false;
   }
 
   async loadOlder() {
@@ -832,14 +847,16 @@ export class ChatClient {
       threadRootId?: string;
       broadcast?: boolean;
       attachments?: ChatAttachment[];
+      uploads?: AttachmentUpload[];
     } = {},
   ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
-    const { attachments = [], ...thread } = options;
+    const { attachments = [], uploads = [], ...thread } = options;
+    if (!this.state.pendingSend) this.pendingUploads = uploads;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
-    const pending = {
+    let pending = {
       ...(this.state.pendingSend ?? {
         clientMessageId: crypto.randomUUID(),
         text,
@@ -850,8 +867,7 @@ export class ChatClient {
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
-    const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
-    if ((!pending.text.trim() && !attachmentIds.length) || count > 4_000)
+    if ((!pending.text.trim() && !pending.attachments?.length) || count > 4_000)
       throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
     // oxlint-disable-next-line no-control-regex -- Validate message text while allowing tabs and newlines.
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text))
@@ -879,71 +895,99 @@ export class ChatClient {
       pendingSend: pending,
       sendError: undefined,
       sendRejected: undefined,
+      sendUploadFailed: undefined,
     });
     let rejected = false;
     try {
       // Either transport can prove acceptance. A late HTTP failure must not
       // undo an ordered WebSocket/history confirmation or block the next send.
       const request = (async () => {
-        const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-caper-chat-token": session.token,
-          },
-          body: JSON.stringify({
-            clientMessageId: pending.clientMessageId,
-            text: pending.text,
-            ...(attachmentIds.length ? { attachmentIds } : {}),
-            ...(pending.threadRootId
-              ? {
-                  threadRootId: pending.threadRootId,
-                  broadcast: pending.broadcast ?? false,
-                }
-              : {}),
-          }),
-          signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
-        });
-        if (!response.ok) {
-          const error = await apiError(response, "Message could not be sent.");
-          // A block or DM privacy refusal is final, as on the native clients.
-          rejected =
-            [400, 404, 409, 413, 422].includes(response.status) ||
-            (response.status === 403 && !!error.code && error.code in directMessageErrors);
-          if (
-            current() &&
-            response.status === 401 &&
-            this.state.pendingSend?.clientMessageId === pending.clientMessageId
-          ) {
-            try {
-              localStorage.removeItem(SESSION_KEY);
-            } catch {
-              /* Storage is optional. */
-            }
-            this.replaceSession(session);
+        for (let recovery = 0; ; recovery++) {
+          if (this.uploadsNeedRefresh) {
+            if (!this.pendingUploads.length) throw new Error("Failed to upload.");
+            const attachments = await Promise.all(this.pendingUploads.map((upload) => upload.ensure()));
+            if (!current() || controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
+            pending = { ...pending, clientMessageId: crypto.randomUUID(), attachments };
+            this.uploadsNeedRefresh = false;
+            this.update({ pendingSend: pending });
           }
-          throw error;
+          const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
+          const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-caper-chat-token": session.token,
+            },
+            body: JSON.stringify({
+              clientMessageId: pending.clientMessageId,
+              text: pending.text,
+              ...(attachmentIds.length ? { attachmentIds } : {}),
+              ...(pending.threadRootId
+                ? {
+                    threadRootId: pending.threadRootId,
+                    broadcast: pending.broadcast ?? false,
+                  }
+                : {}),
+            }),
+            signal: AbortSignal.any([this.controller.signal, controller.signal, AbortSignal.timeout(10_000)]),
+          });
+          if (!response.ok) {
+            const error = await apiError(response, "Message could not be sent.");
+            if (response.status === 409 && error.code === "attachment_unavailable") {
+              if (
+                !current() ||
+                controller.signal.aborted ||
+                this.state.pendingSend?.clientMessageId !== pending.clientMessageId
+              )
+                throw new DOMException("Cancelled", "AbortError");
+              // Definitive refusal: the old command cannot have committed. Only
+              // now may we replace its files and idempotency key, never on timeout.
+              this.uploadsNeedRefresh = true;
+              for (const upload of this.pendingUploads) upload.invalidate();
+              if (recovery === 0) continue;
+              throw new Error("Failed to upload.");
+            }
+            // A block or DM privacy refusal is final, as on the native clients.
+            rejected =
+              [400, 404, 409, 413, 422].includes(response.status) ||
+              (response.status === 403 && !!error.code && error.code in directMessageErrors);
+            if (
+              current() &&
+              response.status === 401 &&
+              this.state.pendingSend?.clientMessageId === pending.clientMessageId
+            ) {
+              try {
+                localStorage.removeItem(SESSION_KEY);
+              } catch {
+                /* Storage is optional. */
+              }
+              this.replaceSession(session);
+            }
+            throw error;
+          }
+          const message: unknown = await response.json();
+          if (
+            !isChatMessage(message) ||
+            message.channelId !== channelId ||
+            message.threadRootId !== pending.threadRootId ||
+            (message.broadcast ?? false) !== (pending.broadcast ?? false) ||
+            message.clientMessageId !== pending.clientMessageId ||
+            message.author.id !== session.author.id
+          )
+            throw new Error("The chat service returned an invalid message.");
+          return message;
         }
-        const message: unknown = await response.json();
-        if (
-          !isChatMessage(message) ||
-          message.channelId !== channelId ||
-          message.threadRootId !== pending.threadRootId ||
-          (message.broadcast ?? false) !== (pending.broadcast ?? false) ||
-          message.clientMessageId !== pending.clientMessageId ||
-          message.author.id !== session.author.id
-        )
-          throw new Error("The chat service returned an invalid message.");
-        return message;
       })();
       const message = await Promise.race([request, confirmation]);
       if (!current()) return false;
+      this.releaseUploads();
       this.timeline.mergeSent(message);
       this.update({
         messages: this.timeline.messages,
         pendingSend: undefined,
         sendError: undefined,
         sendRejected: undefined,
+        sendUploadFailed: undefined,
       });
       if (message.threadRootId && this.state.thread?.rootId === message.threadRootId && this.state.thread.hasNewer)
         void this.retryThread();
@@ -958,7 +1002,12 @@ export class ChatClient {
         this.update({
           pendingSend: pending,
           sendRejected: rejected,
-          sendError: error instanceof Error ? error.message : "Message could not be sent.",
+          sendUploadFailed: this.uploadsNeedRefresh,
+          sendError: this.uploadsNeedRefresh
+            ? "Failed to upload."
+            : error instanceof Error
+              ? error.message
+              : "Message could not be sent.",
         });
       return false;
     } finally {
@@ -1477,11 +1526,13 @@ export class ChatClient {
       );
       if (accepted) {
         this.confirmSend?.(accepted);
+        this.releaseUploads();
         this.state = {
           ...this.state,
           pendingSend: undefined,
           sendError: undefined,
           sendRejected: undefined,
+          sendUploadFailed: undefined,
         };
       }
     }

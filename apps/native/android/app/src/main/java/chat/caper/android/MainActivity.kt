@@ -1595,14 +1595,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 channelPending?.error?.let { pending ->
                     val editable = canEditRejectedMessage(draft.text, channelPending.text)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                        Text(if (channelPending.uploadFailed) pending else if (channelPending.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                         TextButton({
                             if (channelPending.rejected) {
                                 if (editable) viewModel.discardPending(restoreFiles = true)?.let { updateDraft(TextFieldValue(it, TextRange(it.length))) }
                             } else viewModel.send(channelPending.text)
                         }, Modifier.semantics { if (channelPending.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                             enabled = !channelPending.rejected || editable, shape = MaterialTheme.shapes.small) {
-                            Text(if (channelPending.rejected) "Edit" else "Retry send")
+                            Text(if (channelPending.uploadFailed) "Retry" else if (channelPending.rejected) "Edit" else "Retry send")
                         }
                         if (channelPending.rejected) TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
                     }
@@ -1633,7 +1633,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
+                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
                     if (hasContent && state.pendingMessage == null) {
