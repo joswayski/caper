@@ -852,6 +852,15 @@ public struct ChatDeliveryState: Sendable {
         return command
     }
 
+    /// Only before HTTP, or after a definitive attachment refusal; never on timeout.
+    public mutating func replaceAttachments(id: String, attachments: [ChatAttachment]) -> PendingMessage? {
+        guard let old = pending, old.id == id else { return nil }
+        let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
+                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo)
+        pending = command
+        return command
+    }
+
     public mutating func confirmHTTP(id: String) {
         if pending?.id == id { pending = nil; rejected = false }
     }

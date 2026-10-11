@@ -256,14 +256,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
-    func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() {
+    func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() throws {
         var delivery = ChatDeliveryState(cursor: "41")
         let source = MessageReply(message: ChatMessage(id: "quoted", channelId: "channel", seq: "1",
             author: ChatAuthor(id: "source-author", name: "Source", isGuest: false),
             content: ChatContent(version: 1, type: "text", text: "earlier"),
             createdAt: "2026-10-06T00:00:00Z", clientMessageId: "old"))
-        let command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, replyTo: source, makeID: { "stable" })
+        var command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, replyTo: source, makeID: { "stable" })
         XCTAssertEqual(delivery.begin(text: "edited", threadRootId: "other", broadcast: false), command)
+        command = try XCTUnwrap(delivery.replaceAttachments(id: command.id, attachments: []))
+        XCTAssertNotEqual(command.id, "stable")
+        XCTAssertEqual(command.text, "original")
+        XCTAssertEqual(command.threadRootId, "root")
+        XCTAssertTrue(command.broadcast)
+        XCTAssertEqual(command.replyTo, source, "upload recovery retains the original quote")
         var reply = ChatMessage(id: "reply", channelId: "channel", seq: "42",
             author: ChatAuthor(id: "author", name: "Author", isGuest: false),
             content: ChatContent(version: 1, type: "text", text: "original"),

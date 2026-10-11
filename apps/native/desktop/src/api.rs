@@ -752,6 +752,24 @@ impl Api {
             .map_err(|_| UploadError::new("The upload service returned an invalid response."))
     }
 
+    /// Best-effort cancellation; server expiry remains the offline fallback.
+    pub fn cancel_asset(&self, token: &str, id: &str) {
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return;
+        }
+        let _ = self.raw(
+            Method::POST,
+            &format!("api/assets/{id}/cancel"),
+            Some(token),
+            None,
+            None,
+        );
+    }
+
     /// PUT exact bytes to a presigned storage URL with exactly the returned
     /// headers. The body sets Content-Length, which the URL signs. No account
     /// credentials are sent.

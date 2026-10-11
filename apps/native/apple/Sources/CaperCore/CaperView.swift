@@ -143,8 +143,6 @@ private struct FirstSpaceView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
                     .accessibilityIdentifier("first-space-create")
-                Button("Direct messages") { model.navigationOpen = true }
-                    .accessibilityIdentifier("first-space-direct-messages")
                 if !model.canCreateSpace, model.limits != nil {
                     Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
@@ -2398,7 +2396,7 @@ private struct ChatView: View {
                                     ChatDateDivider(createdAt: pending.createdAt)
                                 }
                                 PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, chat: chat, grouped: grouping.pendingGrouped,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, chat: chat, uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
@@ -2861,7 +2859,7 @@ private struct NativeThreadView: View {
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = threadPending {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty, chat: chat,
-                                grouped: grouping.pendingGrouped,
+                                uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
                                 edit: { _ = chat.discardRejected(edit: true) }, dismiss: { _ = chat.discardRejected() })
                         }
@@ -4497,6 +4495,7 @@ private struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
     let rejected: Bool; let canEdit: Bool
     var chat: ChatModel? = nil
+    var uploadFailed = false
     /// Under the author's own previous row: no avatar or name, as `MessageRow`.
     var grouped = false
     let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
@@ -4523,13 +4522,13 @@ private struct PendingMessageRow: View {
                 }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
+                        Text(uploadFailed ? error : "\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
                         HStack(spacing: 12) {
                             if rejected {
                                 Button("Edit", action: edit).disabled(!canEdit)
                                     .help(canEdit ? "" : "Clear your current draft to edit this message.")
                                 Button("Dismiss", action: dismiss)
-                            } else { Button("Retry send", action: retry) }
+                            } else { Button(uploadFailed ? "Retry" : "Retry send", action: retry) }
                         }
                     }
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)

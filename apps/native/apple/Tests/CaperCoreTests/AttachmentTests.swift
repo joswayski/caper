@@ -1500,6 +1500,67 @@ final class AttachmentTests: XCTestCase {
         await chat.stop()
     }
 
+    @MainActor
+    func testReadyDraftRemovalCancelsAndUnavailableSendReuploadsWithoutLosingText() async throws {
+        try await checkUnavailableRecovery(failRenewal: false)
+        try await checkUnavailableRecovery(failRenewal: true)
+    }
+
+    @MainActor
+    private func checkUnavailableRecovery(failRenewal: Bool) async throws {
+        AttachmentURLProtocol.reset()
+        let base = composerHandler()
+        AttachmentURLProtocol.handler = { request, body in
+            if request.url?.path.hasSuffix("/cancel") == true { return (204, Data()) }
+            let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }.count
+            if request.httpMethod == "POST", request.url?.path.hasSuffix("/messages") == true, sends == 1 {
+                return (409, Data(#"{"code":"attachment_unavailable","error":"must remain invisible"}"#.utf8))
+            }
+            if failRenewal, request.httpMethod == "PUT", AttachmentURLProtocol.requests.filter({ $0.method == "PUT" }).count == 3 {
+                return (503, Data())
+            }
+            var original = request
+            if let url = request.url { original.url = URL(string: url.absoluteString.replacingOccurrences(of: "Asset0000010", with: "Asset0000009")) }
+            let (status, data) = try base(original, body)
+            return (status, sends > 0 ? Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: "Asset0000009", with: "Asset0000010").utf8) : data)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let file = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
+        chat.addAttachments([file])
+        await waitUntil("ready") { chat.attachmentDrafts.first?.attachment != nil }
+        chat.removeAttachmentDraft(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
+        await waitUntil("cancel") { AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/cancel") } }
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+
+        let next = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
+        chat.addAttachments([next])
+        await waitUntil("ready again") { chat.attachmentDrafts.first?.attachment != nil }
+        chat.draft = "keep this message"
+        await chat.send()
+        if failRenewal {
+            XCTAssertFalse(chat.sendRejected)
+            XCTAssertTrue(chat.sendUploadFailed)
+            XCTAssertEqual(chat.error, "Failed to upload.")
+            XCTAssertEqual(chat.pendingMessage?.text, "keep this message")
+            chat.draft = "keep this message" // Same text, but a new draft.
+            await chat.send()
+            XCTAssertEqual(chat.draft, "keep this message")
+        }
+        XCTAssertNil(chat.error)
+        XCTAssertFalse(chat.sendUploadFailed)
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.messages.first?.content.text, "keep this message")
+        let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }.compactMap { json($0.body) }
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertNotEqual(sends[0]["clientMessageId"] as? String, sends[1]["clientMessageId"] as? String)
+        XCTAssertEqual(sends[1]["attachmentIds"] as? [String], ["Asset0000010"])
+        XCTAssertTrue(AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.allSatisfy { $0.body == Data("hello".utf8) })
+        await chat.stop()
+    }
+
     func testTextOnlySendOmitsAttachmentIDs() async throws {
         AttachmentURLProtocol.handler = { _, body in
             let input = json(body) ?? [:]

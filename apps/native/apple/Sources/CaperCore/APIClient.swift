@@ -435,6 +435,15 @@ public actor APIClient {
         return try await request("api/assets/\(id)/complete", method: "POST")
     }
 
+    /// Best effort in an independent task, even when the uploading task was cancelled.
+    /// Abandonment cleanup is the fallback if offline or signed out.
+    public func cancelAsset(id: String) async {
+        guard Self.validAssetID(id) else { return }
+        await Task {
+            let _: Empty? = try? await request("api/assets/\(id)/cancel", method: "POST")
+        }.value
+    }
+
     /// Fresh signed URLs for up to 100 attachments; ids the account can no
     /// longer see are omitted. `url` is present only for ready files, so a
     /// processing file may return just `previewUrl`.

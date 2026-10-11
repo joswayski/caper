@@ -1178,22 +1178,6 @@
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
-/* The first-run page shows the DM list outside the sidebar's list resets.
-   :where() keeps these below the message-request group's own rules. */
-.spaces-empty :where(.direct-section ul) {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-  margin: 2px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.spaces-empty :where(.direct-section li) {
-  position: relative;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
 .spaces-empty > section > p:not(.eyebrow) {
   color: var(--text-muted);
   line-height: 1.65;
@@ -1219,13 +1203,6 @@
   display: block;
   margin-top: 10px;
   color: var(--text-muted);
-}
-/* Direct messages sit below the form as a secondary option, not as a sidebar.
-   The rows' padding and centered icon column hang outside the form's edge, so
-   the icons line up with the heading and field above. */
-.spaces-empty .direct-section {
-  margin-top: 40px;
-  margin-left: -16px;
 }
 .empty-channel {
   flex: 1;

@@ -220,6 +220,7 @@ struct PendingSend {
     attachments: Vec<model::Attachment>,
     created_at: String,
     sending: bool,
+    upload_failed: bool,
     rejection: Option<String>,
     thread_root_id: Option<String>,
     broadcast: bool,
@@ -235,6 +236,7 @@ impl PendingSend {
                 attachments,
                 created_at: Local::now().to_rfc3339(),
                 sending: true,
+                upload_failed: false,
                 rejection: None,
                 thread_root_id: None,
                 broadcast: false,
@@ -246,6 +248,7 @@ impl PendingSend {
                 attachments: pending.attachments.clone(),
                 created_at: pending.created_at.clone(),
                 sending: true,
+                upload_failed: false,
                 rejection: None,
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
@@ -474,10 +477,22 @@ struct DraftUpload {
     progress: f32,
     error: Option<String>,
     attachment: Option<model::Attachment>,
+    uploaded_at: Option<Instant>,
+    uploading: bool,
+    prepared: Option<std::sync::Arc<uploads::Prepared>>,
     /// Local decode for the chip and for the sent message before its URL loads.
     thumbnail_image: Option<egui::ColorImage>,
     thumbnail: Option<egui::TextureHandle>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DraftUpload {
+    fn needs_upload(&self) -> bool {
+        self.attachment.is_none()
+            || self
+                .uploaded_at
+                .is_some_and(|at| at.elapsed() >= Duration::from_secs(23 * 60 * 60))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -795,6 +810,9 @@ struct CaperApp {
     /// A usage check is in flight, so a disabled Attach is still checking.
     uploads_pending: bool,
     draft_files: Vec<DraftUpload>,
+    pending_files: Vec<DraftUpload>,
+    pending_needs_upload: bool,
+    pending_recovered: bool,
     draft_keys: u64,
     media: attachments::Media,
     /// The full-screen image and video viewer, while open.
@@ -990,6 +1008,9 @@ impl CaperApp {
             uploads_checked: None,
             uploads_pending: false,
             draft_files: Vec::new(),
+            pending_files: Vec::new(),
+            pending_needs_upload: false,
+            pending_recovered: false,
             draft_keys: 0,
             media,
             viewer: None,
@@ -2019,6 +2040,9 @@ impl CaperApp {
             progress,
             error: error.map(str::to_owned),
             attachment: None,
+            uploaded_at: None,
+            uploading: error.is_none() && progress < 1.0,
+            prepared: None,
             thumbnail_image: Some(image.clone()),
             thumbnail: None,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2037,7 +2061,7 @@ impl CaperApp {
             "TEST FIXTURE large.mov",
             900_000_000,
             0.0,
-            Some("You’ve used all of your file storage."),
+            Some("Failed to upload."),
         );
         failed.kind = model::AttachmentKind::Video;
         failed.thumbnail_image = None;
@@ -2542,7 +2566,21 @@ impl CaperApp {
                         self.open_after_refresh = Some(url);
                     }
                 }
-                Event::Upload { key, update } => self.upload_update(key, update),
+                Event::Upload { key, token, update } => {
+                    if !self
+                        .draft_files
+                        .iter()
+                        .chain(&self.pending_files)
+                        .any(|draft| draft.key == key)
+                        && let worker::UploadUpdate::Finished(Ok(attachment)) = &update
+                    {
+                        self.worker.send(Command::CancelAssets {
+                            token,
+                            ids: vec![attachment.id.clone()],
+                        });
+                    }
+                    self.upload_update(key, update);
+                }
                 Event::Forward {
                     generation,
                     request,
@@ -4294,6 +4332,7 @@ impl CaperApp {
                 });
                 if confirmed {
                     self.pending = None;
+                    self.release_pending_files();
                     self.error = None;
                 }
                 // Requests and blocked authors never play message sounds.
@@ -4530,6 +4569,7 @@ impl CaperApp {
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
+                    self.release_pending_files();
                     self.focused_message = None;
                     if root.is_none() && self.has_newer {
                         self.reload_channel();
@@ -4559,6 +4599,21 @@ impl CaperApp {
             }
             Err(error) if matches!(error.status, Some(401 | 403)) => self
                 .clear_channel("Your messaging session expired. Select the channel to reconnect."),
+            Err(error)
+                if error.status == Some(409)
+                    && error.code.as_deref() == Some("attachment_unavailable") =>
+            {
+                self.pending_needs_upload = true;
+                for file in &mut self.pending_files {
+                    file.uploaded_at = Some(Instant::now() - Duration::from_secs(24 * 60 * 60));
+                }
+                if self.pending_recovered || self.pending_files.is_empty() {
+                    self.upload_send_failed();
+                } else {
+                    self.pending_recovered = true;
+                    self.refresh_pending_uploads();
+                }
+            }
             Err(error) if permanent_send_rejection(error.status) => {
                 if let Some(pending) = &mut self.pending {
                     pending.sending = false;
@@ -4584,6 +4639,9 @@ impl CaperApp {
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
             let drafts = std::mem::take(&mut self.draft_files);
+            let pending_files = std::mem::take(&mut self.pending_files);
+            let pending_needs_upload = self.pending_needs_upload;
+            let pending_recovered = self.pending_recovered;
             let timeline = std::mem::take(&mut self.timeline);
             let thread = self.thread_view.take();
             let thread_drafts = std::mem::take(&mut self.thread_drafts);
@@ -4599,6 +4657,9 @@ impl CaperApp {
             self.pending = pending;
             self.draft = draft;
             self.draft_files = drafts;
+            self.pending_files = pending_files;
+            self.pending_needs_upload = pending_needs_upload;
+            self.pending_recovered = pending_recovered;
             self.timeline = timeline;
             self.thread_view = thread;
             self.thread_drafts = thread_drafts;
@@ -4611,7 +4672,16 @@ impl CaperApp {
     }
 
     fn discard_rejected(&mut self) -> Option<String> {
-        self.take_rejected().map(|pending| pending.text)
+        let pending = self.take_rejected()?;
+        self.release_pending_files();
+        self.cancel_assets(
+            pending
+                .attachments
+                .into_iter()
+                .map(|file| file.id)
+                .collect(),
+        );
+        Some(pending.text)
     }
 
     fn take_rejected(&mut self) -> Option<PendingSend> {
@@ -4892,14 +4962,15 @@ impl CaperApp {
                 .filter(|draft| draft.channel == channel)
                 .collect();
             if drafts.iter().any(|draft| draft.attachment.is_none()) {
-                self.error = Some(
-                    if drafts.iter().any(|draft| draft.error.is_some()) {
-                        "Remove files that failed to upload first."
-                    } else {
-                        "Wait for files to finish uploading."
-                    }
-                    .into(),
-                );
+                let retry: Vec<_> = drafts
+                    .iter()
+                    .filter(|file| file.error.is_some())
+                    .map(|file| file.key)
+                    .collect();
+                for key in retry {
+                    self.retry_upload(key);
+                }
+                self.error = None;
                 return;
             }
             drafts
@@ -4951,19 +5022,27 @@ impl CaperApp {
                 self.draft.clear();
             }
             // The pending row now owns the sent files.
-            self.draft_files.retain(|draft| {
+            let (sent, kept) = self.draft_files.drain(..).partition(|draft| {
                 draft
                     .attachment
                     .as_ref()
-                    .is_none_or(|attachment| !attachment_ids.contains(&attachment.id))
+                    .is_some_and(|file| attachment_ids.contains(&file.id))
             });
+            self.pending_files = sent;
+            self.draft_files = kept;
+            self.pending_needs_upload = self.pending_files.iter().any(DraftUpload::needs_upload);
         }
         let thread_root_id = pending.thread_root_id.clone();
         let broadcast = pending.broadcast;
         let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
         self.pending = Some(pending);
+        self.pending_recovered = false;
         self.error = None;
         self.set_typing(false);
+        if self.pending_needs_upload {
+            self.refresh_pending_uploads();
+            return;
+        }
         self.worker.send(Command::Send {
             generation: self.generation,
             token: self.token.clone(),
@@ -5063,6 +5142,9 @@ impl CaperApp {
                 progress: 0.0,
                 error: None,
                 attachment: None,
+                uploaded_at: None,
+                uploading: true,
+                prepared: None,
                 thumbnail_image: None,
                 thumbnail: None,
                 cancel: cancel.clone(),
@@ -5072,6 +5154,7 @@ impl CaperApp {
                 token: token.clone(),
                 channel: channel.clone(),
                 path,
+                prepared: None,
                 settings: settings.clone(),
                 cancel,
             });
@@ -5084,7 +5167,22 @@ impl CaperApp {
             return;
         };
         let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
+        self.cancel_assets(
+            attachments
+                .iter()
+                .skip(room)
+                .map(|file| file.id.clone())
+                .collect(),
+        );
         for attachment in attachments.into_iter().take(room) {
+            if let Some(index) = self.pending_files.iter().position(|file| {
+                file.attachment
+                    .as_ref()
+                    .is_some_and(|file| file.id == attachment.id)
+            }) {
+                self.draft_files.push(self.pending_files.remove(index));
+                continue;
+            }
             self.draft_keys += 1;
             self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
@@ -5098,36 +5196,68 @@ impl CaperApp {
                 progress: 1.0,
                 error: None,
                 attachment: Some(attachment),
+                uploaded_at: None,
+                uploading: false,
+                prepared: None,
                 thumbnail_image: None,
                 thumbnail: None,
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
         }
+        self.release_pending_files();
     }
 
     fn remove_draft(&mut self, key: u64) {
         if let Some(index) = self.draft_files.iter().position(|draft| draft.key == key) {
-            self.draft_files[index]
+            let draft = self.draft_files.remove(index);
+            draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.draft_files.remove(index);
+            if let Some(file) = draft.attachment {
+                self.cancel_assets(vec![file.id]);
+            }
+        }
+    }
+
+    fn cancel_assets(&self, ids: Vec<String>) {
+        if !ids.is_empty()
+            && let Some(token) = &self.token
+        {
+            self.worker.send(Command::CancelAssets {
+                token: token.clone(),
+                ids,
+            });
         }
     }
 
     /// Uploads belong to one channel; abandon them when it changes.
     fn drop_drafts(&mut self) {
+        self.release_pending_files();
+        let mut ids = Vec::new();
         for draft in self.draft_files.drain(..) {
             draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(file) = draft.attachment {
+                ids.push(file.id);
+            }
         }
+        self.cancel_assets(ids);
     }
 
     fn upload_update(&mut self, key: u64, update: worker::UploadUpdate) {
-        let Some(draft) = self.draft_files.iter_mut().find(|draft| draft.key == key) else {
+        let Some(draft) = self
+            .draft_files
+            .iter_mut()
+            .chain(&mut self.pending_files)
+            .find(|draft| draft.key == key)
+        else {
             return;
         };
         match update {
+            worker::UploadUpdate::Retained(prepared) => {
+                draft.prepared = Some(prepared);
+            }
             worker::UploadUpdate::Prepared {
                 name,
                 kind,
@@ -5156,16 +5286,133 @@ impl CaperApp {
             }
             worker::UploadUpdate::Finished(Ok(attachment)) => {
                 draft.progress = 1.0;
+                draft.uploaded_at = Some(Instant::now());
+                draft.uploading = false;
+                draft.error = None;
                 // The sender sees its own copy without a download.
                 if let Some(image) = draft.thumbnail_image.clone() {
                     self.local_media.push((attachment.id.clone(), image));
                 }
                 draft.attachment = Some(attachment);
             }
-            worker::UploadUpdate::Finished(Err(error)) => {
-                draft.error = Some(error.message);
+            worker::UploadUpdate::Finished(Err(_)) => {
+                draft.uploading = false;
+                draft.error = Some("Failed to upload.".into());
             }
         }
+        self.finish_pending_uploads();
+    }
+
+    fn retry_upload(&mut self, key: u64) {
+        let (Some(token), Some(settings)) = (self.token.clone(), self.uploads.clone()) else {
+            return;
+        };
+        let Some(file) = self
+            .draft_files
+            .iter_mut()
+            .chain(&mut self.pending_files)
+            .find(|file| file.key == key)
+        else {
+            return;
+        };
+        if file.uploading || !file.needs_upload() {
+            return;
+        }
+        let old = file.attachment.take();
+        file.error = None;
+        file.progress = 0.0;
+        file.uploading = true;
+        self.worker.send(Command::Upload {
+            key,
+            token,
+            channel: file.channel.clone(),
+            path: file.local_path.clone().unwrap_or_default(),
+            prepared: file.prepared.clone(),
+            settings,
+            cancel: file.cancel.clone(),
+        });
+        if let Some(old) = old {
+            self.cancel_assets(vec![old.id]);
+        }
+    }
+
+    fn refresh_pending_uploads(&mut self) {
+        if self.token.is_none() || self.uploads.is_none() {
+            self.upload_send_failed();
+            return;
+        }
+        let keys: Vec<_> = self.pending_files.iter().map(|file| file.key).collect();
+        for key in keys {
+            self.retry_upload(key);
+        }
+        self.finish_pending_uploads();
+    }
+
+    fn finish_pending_uploads(&mut self) {
+        if !self.pending_needs_upload
+            || !self.pending.as_ref().is_some_and(|pending| pending.sending)
+        {
+            return;
+        }
+        if self.pending_files.is_empty()
+            || self.pending_files.iter().any(|file| file.error.is_some())
+        {
+            self.upload_send_failed();
+            return;
+        }
+        if self
+            .pending_files
+            .iter()
+            .any(|file| file.uploading || file.needs_upload())
+        {
+            return;
+        }
+        let (Some(pending), Some(session), Some(channel)) =
+            (&mut self.pending, &self.session, &self.selected_channel)
+        else {
+            return;
+        };
+        // Only a preflight or definitive refusal reaches here, never a timeout.
+        pending.id = uuid::Uuid::new_v4().to_string();
+        pending.attachments = self
+            .pending_files
+            .iter()
+            .filter_map(|file| file.attachment.clone())
+            .collect();
+        self.pending_needs_upload = false;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: session.token.clone(),
+            channel: channel.clone(),
+            client_id: pending.id.clone(),
+            text: pending.text.clone(),
+            attachment_ids: pending
+                .attachments
+                .iter()
+                .map(|file| file.id.clone())
+                .collect(),
+            thread_root_id: pending.thread_root_id.clone(),
+            broadcast: pending.broadcast,
+            reply_to_id: pending.reply_to.as_ref().map(|reply| reply.id.clone()),
+        });
+    }
+
+    fn upload_send_failed(&mut self) {
+        if let Some(pending) = &mut self.pending {
+            pending.sending = false;
+            pending.upload_failed = true;
+        }
+        self.error = None;
+    }
+
+    fn release_pending_files(&mut self) {
+        for file in self.pending_files.drain(..) {
+            file.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.pending_needs_upload = false;
+        self.pending_recovered = false;
     }
 
     fn set_typing(&mut self, typing: bool) {
@@ -5884,6 +6131,18 @@ impl eframe::App for CaperApp {
         self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
         if self.foreground && !was_foreground {
+            let stale: Vec<_> = self
+                .draft_files
+                .iter()
+                .filter(|file| file.needs_upload())
+                .map(|file| file.key)
+                .collect();
+            for key in stale {
+                self.retry_upload(key);
+            }
+            if let Some(pending) = self.pending.clone().filter(|pending| pending.upload_failed) {
+                self.send_message_to(pending.thread_root_id, pending.broadcast);
+            }
             self.mark_selected_direct_read();
             self.refresh_unread();
             self.refresh_membership();
@@ -6287,9 +6546,6 @@ impl CaperApp {
                                     .clicked()
                                 {
                                     self.logout();
-                                }
-                                if secondary_button(ui, "Direct messages", true).clicked() {
-                                    self.navigation_open = true;
                                 }
                             });
                         });
@@ -10501,8 +10757,8 @@ impl CaperApp {
                             });
                         } else if !pending.sending {
                             ui.horizontal(|ui| {
-                                ui.colored_label(ERROR, "Not confirmed yet.");
-                                if ui.button("Retry send").clicked() {
+                                ui.colored_label(ERROR, if pending.upload_failed { "Failed to upload." } else { "Not confirmed yet." });
+                                if ui.button(if pending.upload_failed { "Retry" } else { "Retry send" }).clicked() {
                                     self.send_message();
                                 }
                             });
@@ -11866,6 +12122,7 @@ impl CaperApp {
     fn draft_chips(&mut self, ui: &mut egui::Ui) {
         let mut remove = None;
         let mut preview = None;
+        let mut retry = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             for draft in &mut self.draft_files {
@@ -12029,10 +12286,21 @@ impl CaperApp {
                 if response.on_hover_text(label).clicked() {
                     remove = Some(draft.key);
                 }
+                if draft.error.is_some()
+                    && ui
+                        .button("Retry")
+                        .on_hover_text(format!("Retry uploading {}", draft.name))
+                        .clicked()
+                {
+                    retry = Some(draft.key);
+                }
             }
         });
         if let Some(key) = remove {
             self.remove_draft(key);
+        }
+        if let Some(key) = retry {
+            self.retry_upload(key);
         }
         if let Some(url) = preview {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -20450,7 +20718,7 @@ mod tests {
     }
 
     #[test]
-    fn first_space_page_can_open_global_direct_navigation() {
+    fn first_space_page_omits_direct_navigation() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -20459,6 +20727,20 @@ mod tests {
         );
         assert!(app.needs_first_space());
         assert_eq!(app.directs.len(), 1);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Name your space"));
+        assert!(texts.contains(&"Create space"));
+        assert!(!texts.contains(&"Direct messages"));
+        // Global DM navigation still belongs to the workspace, not setup.
         app.navigation_open = true;
         assert!(!app.needs_first_space());
         render(&mut app, &context, vec![]);
@@ -25759,7 +26041,8 @@ mod tests {
             "TEST FIXTURE photo.jpg",
             "1.6 MB → 143 KB",
             "Uploading… 45%",
-            "You’ve used all of your file storage.",
+            "Failed to upload.",
+            "Retry",
         ] {
             text_position(&output, label);
         }
@@ -25955,17 +26238,11 @@ mod tests {
 
         // Unfinished or failed files block sending; nothing is sent.
         app.send_message();
-        assert_eq!(
-            app.error.as_deref(),
-            Some("Remove files that failed to upload first.")
-        );
+        assert!(app.error.is_none(), "the file chip owns progress and Retry");
         assert!(app.pending.is_none());
         app.remove_draft(3);
         app.send_message();
-        assert_eq!(
-            app.error.as_deref(),
-            Some("Wait for files to finish uploading.")
-        );
+        assert!(app.error.is_none());
         app.remove_draft(2);
         assert!(app.draft.is_empty());
         // A file-only message sends with empty text and its attachment ids.
@@ -26127,6 +26404,68 @@ mod tests {
         assert!(context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
         app.send_message();
         assert_ne!(app.pending.as_ref().unwrap().id, second_id);
+    }
+
+    #[test]
+    fn unavailable_send_renews_silently_and_failed_upload_retries_without_losing_drafts() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        app.session = Some(session());
+        app.draft_files.retain(|draft| draft.attachment.is_some());
+        app.draft = "keep this text".into();
+        app.send_message();
+        let first = app.pending.clone().unwrap();
+        app.pending_files[0].uploaded_at = Some(Instant::now() - Duration::from_secs(24 * 60 * 60));
+        app.sent(Err(crate::worker::SendFailure {
+            status: None,
+            message: "offline".into(),
+            code: None,
+        }));
+        app.draft = "keep this text".into(); // A new draft with the same text.
+        app.send_message();
+        assert_eq!(
+            app.pending.as_ref().unwrap().id,
+            first.id,
+            "unknown outcomes never replace the command"
+        );
+        assert_eq!(app.pending.as_ref().unwrap().attachments, first.attachments);
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(409),
+            message: "must stay invisible".into(),
+            code: Some("attachment_unavailable".into()),
+        }));
+        assert!(app.pending.as_ref().unwrap().sending);
+        assert!(app.pending.as_ref().unwrap().rejection.is_none());
+        assert!(app.error.is_none());
+        let key = app.pending_files[0].key;
+        app.upload_update(
+            key,
+            crate::worker::UploadUpdate::Finished(Err(crate::uploads::UploadError::new(
+                "storage offline",
+            ))),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        text_position(&output, "Failed to upload.");
+        click(&mut app, &context, text_position(&output, "Retry"));
+        let mut renewed = first.attachments[0].clone();
+        renewed.id = "fresh-upload".into();
+        app.upload_update(
+            key,
+            crate::worker::UploadUpdate::Finished(Ok(renewed.clone())),
+        );
+        let pending = app.pending.as_ref().unwrap();
+        assert_ne!(pending.id, first.id);
+        assert_eq!(pending.attachments, vec![renewed]);
+        assert_eq!(pending.text, "keep this text");
+        assert!(pending.sending);
+        assert!(!pending.upload_failed);
+        assert_eq!(app.draft, "keep this text");
+        assert!(app.draft_files.is_empty());
     }
 
     #[test]

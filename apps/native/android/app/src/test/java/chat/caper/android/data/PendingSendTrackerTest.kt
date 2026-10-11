@@ -24,6 +24,23 @@ class PendingSendTrackerTest {
         assertNotEquals(first.id, tracker.begin("channel", author(), "text") {}.id)
     }
 
+    @Test fun `replacing refused attachments preserves the command and fences old confirmations`() {
+        val tracker = PendingSendTracker()
+        var confirmations = 0
+        val first = tracker.begin("channel", author(), "original", listOf("old"), "root", true) { confirmations++ }
+        val renewed = tracker.replaceAttachments(first.id, listOf("fresh"))!!
+        assertNotEquals(first.id, renewed.id)
+        assertEquals(listOf("fresh"), renewed.attachmentIds)
+        assertEquals("original", renewed.text)
+        assertEquals("root", renewed.threadRootId)
+        assertTrue(renewed.broadcast)
+        assertNull(tracker.confirm(message(first.id.toString()).copy(threadRootId = "root", broadcast = true)))
+        assertNull(tracker.replaceAttachments(first.id, listOf("late")))
+        tracker.confirm(message(renewed.id.toString()).copy(threadRootId = "root", broadcast = true))!!.confirmed()
+        assertEquals(1, confirmations)
+        assertNull(tracker.replaceAttachments(renewed.id, listOf("after-confirmation")))
+    }
+
     @Test fun `only matching own gateway event confirms pending send exactly once`() {
         val tracker = PendingSendTracker()
         var confirmations = 0

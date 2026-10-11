@@ -82,32 +82,38 @@ public enum AttachmentUploader {
             preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) }
         )
         let reservation = try await api.createAsset(input)
-        try Task.checkCancellation()
-        let previewSize = Double(file.preview?.data.count ?? 0)
-        let originalSize = Double(file.byteSize)
-        let total = max(1, previewSize + originalSize)
-        if let preview = file.preview {
-            // A declared preview must be stored too, or `complete` reports 409.
-            guard let previewUpload = reservation.previewUpload else {
-                throw APIError(status: 502, message: "The upload service returned an invalid response.")
-            }
-            try await api.putToStorage(previewUpload, body: .data(preview.data))
+        do {
             try Task.checkCancellation()
-        }
-        try await api.putToStorage(reservation.upload, body: .file(file.fileURL)) { fraction in
-            progress((previewSize + fraction * originalSize) / total)
-        }
-        try Task.checkCancellation()
-        var delays = completeRetryDelays[...]
-        while true {
-            do {
-                let attachment = try await api.completeAsset(id: reservation.id)
-                progress(1)
-                return attachment
-            } catch let error as APIError where error.status == 409 {
-                guard let delay = delays.popFirst() else { throw error }
-                try await Task.sleep(for: delay)
+            let previewSize = Double(file.preview?.data.count ?? 0)
+            let originalSize = Double(file.byteSize)
+            let total = max(1, previewSize + originalSize)
+            if let preview = file.preview {
+                // A declared preview must be stored too, or `complete` reports 409.
+                guard let previewUpload = reservation.previewUpload else {
+                    throw APIError(status: 502, message: "The upload service returned an invalid response.")
+                }
+                try await api.putToStorage(previewUpload, body: .data(preview.data))
+                try Task.checkCancellation()
             }
+            try await api.putToStorage(reservation.upload, body: .file(file.fileURL)) { fraction in
+                progress((previewSize + fraction * originalSize) / total)
+            }
+            try Task.checkCancellation()
+            var delays = completeRetryDelays[...]
+            while true {
+                do {
+                    let attachment = try await api.completeAsset(id: reservation.id)
+                    try Task.checkCancellation()
+                    progress(1)
+                    return attachment
+                } catch let error as APIError where error.status == 409 {
+                    guard let delay = delays.popFirst() else { throw error }
+                    try await Task.sleep(for: delay)
+                }
+            }
+        } catch {
+            await api.cancelAsset(id: reservation.id)
+            throw error
         }
     }
 }
