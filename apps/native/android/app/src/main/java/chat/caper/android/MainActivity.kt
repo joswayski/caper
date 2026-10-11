@@ -359,6 +359,8 @@ internal data class VoiceJoinIntent(
 @Composable private fun BrandLoading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Wordmark(); CircularProgressIndicator(color = Terracotta)
+        Text("Loading your spaces…", color = TextMuted, fontSize = 12.sp,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 
@@ -1574,13 +1576,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
-                        // Share the field's outline; read-only previews have no composer.
-                        leadingIcon = if (state.uploadsEnabled) ({
+                        // Reserve the icon inside the field while uploads/session become ready.
+                        // Read-only previews and locked DMs have no composer.
+                        leadingIcon = {
                             AttachButton(
-                                state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
+                                state.uploadsEnabled && state.chatAuthorId != null && state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
                                 viewModel::addAttachments,
                             )
-                        }) else null,
+                        },
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
                         colors = composerFieldColors(),
@@ -1795,7 +1798,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
         SideEffect { follow.settled = false }
-        return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Loading messages…", color = TextMuted, fontSize = 13.sp) }
+        return MessageSkeleton(modifier.clipToBounds())
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1867,17 +1870,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         if (skeleton) item("thread-loading") {
-            Column(Modifier.fillMaxWidth().semantics { contentDescription = "Loading thread replies" }) {
-                repeat(2) { index ->
-                    Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Box(Modifier.size(34.dp).background(Border, CircleShape))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
-                            Box(Modifier.fillMaxWidth(if (index == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
-                        }
-                    }
-                }
-            }
+            MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
         listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -2453,13 +2446,34 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
 }
 
+/** Static, noninteractive placeholders shared by channel and thread loading. */
+@Composable private fun MessageSkeleton(modifier: Modifier = Modifier, rows: Int = 5, label: String = "Loading messages") {
+    Column(modifier.fillMaxWidth().clearAndSetSemantics {
+        contentDescription = label
+        progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate
+    }) {
+        repeat(rows) { index ->
+            Row(Modifier.fillMaxWidth().height(70.dp).padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(34.dp).background(Border, CircleShape))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width(96.dp).height(12.dp).background(Border, RoundedCornerShape(4.dp)))
+                    Box(Modifier.fillMaxWidth(if (index % 2 == 0) 0.76f else 0.54f).height(10.dp).background(Border, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
 @Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
     Box {
-        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
+        IconButton({ open = true }, Modifier.size(48.dp).semantics {
+            contentDescription = "Attach files"
+            if (!enabled) stateDescription = "File uploads are not ready or the attachment limit has been reached"
+        }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
