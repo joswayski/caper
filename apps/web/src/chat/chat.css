@@ -1618,6 +1618,14 @@ a.chat-draft-preview:focus-visible strong {
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
 }
+.chat-drafts .chat-draft-source-size {
+  display: inline;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-drafts .chat-draft-source-size {
+    display: none;
+  }
+}
 .chat-drafts li[data-error] small {
   color: #ff9b82;
 }

@@ -680,9 +680,11 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
         guard attachment != nil else {
             return preparing ? "Compressing…" : "Uploading… \(Int((progress * 100).rounded()))%"
         }
+        #if !os(iOS)
         if let storedSize, storedSize < sourceSize {
             return "\(AttachmentPolicy.formatBytes(sourceSize)) → \(AttachmentPolicy.formatBytes(storedSize))"
         }
+        #endif
         return AttachmentPolicy.formatBytes(storedSize ?? sourceSize)
     }
 }
