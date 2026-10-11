@@ -1493,7 +1493,12 @@ private struct MembersOverlay: View {
                 .transaction(settle) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
-            MemberPresenceView(model: model, close: close)
+            Group {
+                // Only rendered while some of it is in view: hidden or transparent,
+                // the closed list's "Members" header stayed in the iOS accessibility
+                // tree for VoiceOver and the UI tests. Closing slides the empty panel away.
+                if shown > 0 { MemberPresenceView(model: model, close: close) } else { Color.clear }
+            }
                 .frame(width: width)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Outlined on every side, and lifted by the same shadow the conversation casts over Browse.
@@ -1503,9 +1508,6 @@ private struct MembersOverlay: View {
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                // Fully closed, it is also transparent (as BrowseLayer does), which
-                // drops it from the accessibility tree; accessibilityHidden alone
-                // left its "Members" header visible to VoiceOver and UI tests.
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
