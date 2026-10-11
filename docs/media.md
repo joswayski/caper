@@ -128,21 +128,28 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Web channel names and `⋯` actions have a separate row above voice
-activity. Join, Joining and Switch here use one fixed-width action slot;
-web uses quiet text-only actions and replaces Join with Leave in the active
-channel. Its roster opens automatically on connection. Mic, deafen and device
-settings stay in the account footer, including before joining. When navigation
-hides the active channel, its roster, channel/space status and single Leave
-action pin above that footer; participant audio menus open upward. Browsing
+Voice joins from the conversation header (October 11, 2026, on web, Android,
+iOS/macOS and Rust desktop). Beside Pins, the open channel shows up to three
+faces of who is in its voice with a count, then Join voice, Switch here
+(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there.
+Channel rows no longer carry a Join action: empty channels are a single line,
+and only occupied channels add the `N in voice` line with its collapsible
+roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
+headphones shortcut on each channel row, revealed on hover or keyboard focus in
+space reserved beside the `⋯` menu and absent for the connected channel; touch
+joins from the header. Phones pin the viewed channel's line above the
+conversation only while someone is in its voice. The roster opens automatically
+on connection. Mic, deafen and device settings stay in the account footer,
+including before joining. The channel/space status and Leave stay in a dock
+above that footer whenever you are in voice; when navigation hides the active
+channel, its roster pins there too; participant audio menus open upward. Browsing
 other chats, spaces or DMs does not leave voice. That includes a space with no
 joined channel, whose empty state replaces only the conversation, and a pending
 invitation opened from the rail, which opens over the room. Voice still ends
 when its own channel is left, deleted or revoked.
-Voice actions are neutral until hover/focus, and empty channels have no voice
+The row shortcut is neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection
-updates do not shift the active channel's action target; expanding its roster
-moves later channels down. The Channels count stays beside its label
+updates do not shift channel rows; expanding a roster moves later channels down. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Other participant lists start collapsed and
 expand from the voice count. Joined-channel menus offer Leave channel to members;
@@ -150,7 +157,8 @@ owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
 At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets.
+layouts retain 44px action targets, and phones at 420px or less show one header
+face without the count.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
@@ -4504,6 +4512,24 @@ WebSocket, not a native-only backend. Keep the website available while native
 feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
+
+**Header voice, October 11, 2026:** the October 3 voice rows below are
+superseded. Join, Switch here and Leave for the open channel live in the
+conversation header on every client; channel rows show voice only while
+occupied, plus a hover/focus join shortcut on fine-pointer clients (desktop web,
+macOS, Rust desktop). The voice dock with Leave stays visible whenever in voice.
+Validation: web build/typecheck/lint and 565 Vitest tests pass;
+`VOICE_TEST_REDESIGN=1` passes at 1280px/390px in stock and fine-pointer
+Chromium (mocked API/WebRTC). `VOICE_TEST_CHANNEL_ROWS=1` passes the new row,
+shortcut, header Join/Switch/Leave, pending and failed-join checks, then stops at
+an existing "Disabled controls must not advertise a click" assertion that also
+fails on the previous `main`; other modes of that script and
+`test-home-demo.mjs` likewise fail on `main` before reaching voice changes. Rust
+desktop: fmt, clippy and 408 unit tests pass (headless egui renders). Android and
+Apple changes were not compiled or run here (no Android SDK or Xcode); run
+`./gradlew :app:testDebugUnitTest :app:connectedDebugAndroidTest`, `smoke.py`
+and the Apple parity UI tests before release. No live SFU, physical-device or
+touch-hardware validation.
 
 **Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
 SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and

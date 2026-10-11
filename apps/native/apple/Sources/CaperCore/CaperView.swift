@@ -1138,6 +1138,7 @@ private struct ChannelSidebarItem: View {
     #if os(macOS)
     @State private var hovered = false
     @FocusState private var optionsFocused: Bool
+    @FocusState private var joinFocused: Bool
     #endif
 
     private var sessionStartedAt: Double? {
@@ -1210,6 +1211,9 @@ private struct ChannelSidebarItem: View {
                     })
                     .accessibilityIdentifier("channel-\(channel.id)")
                     .accessibilityValue(rowState)
+                #if os(macOS)
+                quickJoin
+                #endif
                 if model.detail?.space.demo != true {
                     Menu {
                         optionsMenuItems
@@ -1235,10 +1239,38 @@ private struct ChannelSidebarItem: View {
         #if os(macOS)
         .onHover { hovered = $0 }
         #endif
+        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
         .sheet(isPresented: $confirmLeave) {
             ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
         }
     }
+
+    #if os(macOS)
+    /// Web's channel-quick-join: a pointer shortcut revealed by hover or keyboard
+    /// focus like the row menu. Its slot is always kept, so nothing shifts; your
+    /// own call's channel has none. Touch joins from the conversation header.
+    @ViewBuilder private var quickJoin: some View {
+        let action = ChannelVoiceAction(model: model, channel: channel)
+        if action.here {
+            Color.clear.frame(width: 28, height: 28).accessibilityHidden(true)
+        } else {
+            Button { Task { await model.joinVoice(channel: channel) } } label: {
+                CaperIcon(name: "headphones", size: 16).frame(width: 28, height: 28).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .foregroundStyle(CaperTheme.muted)
+                .disabled(!action.enabled)
+                .focused($joinFocused)
+                .opacity((hovered || joinFocused) ? (action.enabled ? 1 : 0.45) : 0)
+                .allowsHitTesting(hovered || joinFocused)
+                .modifier(ControlHover(isFocused: joinFocused))
+                .help(action.help)
+                .accessibilityLabel(action.description(header: false))
+                .accessibilityIdentifier("join-voice-\(channel.id)")
+                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
+                .onChange(of: joinFocused) { _, focused in if focused { model.prepareVoiceJoin(channel: channel) } }
+        }
+    }
+    #endif
 }
 
 enum VoiceSessionDuration {
@@ -1284,52 +1316,64 @@ private struct SidebarIconButton: ButtonStyle {
     }
 }
 
+/// Who is in voice in a channel: your own call's participants while you are in
+/// it, else the read-only presence roster.
+@MainActor private func voiceOccupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] {
+    guard model.voice.isActive(channelID: channelID) else { return model.voicePresence.roster(for: channelID) }
+    return model.voice.participants.map {
+        VoiceSpectator(id: $0.id, avatarId: $0.avatarId, name: $0.name, muted: $0.muted, deafened: $0.deafened)
+    }
+}
+
+/// Web's voiceAction: join, switch or leave voice for one channel. The
+/// conversation header labels it on every device; macOS rows add a shortcut.
+@MainActor private struct ChannelVoiceAction {
+    let model: AppModel
+    let channel: Channel
+
+    /// Your call is in this channel, from joining until it has left.
+    var active: Bool { model.voice.isActive(channelID: channel.id) }
+    /// Your call is here or on its way: rows offer no shortcut.
+    var here: Bool { active || model.pendingVoiceChannelID == channel.id }
+    /// Connected here: the header offers Leave instead of Join.
+    var connected: Bool { active && model.voice.phase == .connected }
+    private var pending: Bool {
+        model.pendingVoiceChannelID != nil || model.voice.phase == .joining || model.voice.phase == .reconnecting || model.voice.phase == .leaving
+    }
+    var enabled: Bool { !pending && model.voiceAvailable(in: channel) == true }
+    var title: String {
+        if model.pendingVoiceChannelID == channel.id { return "Joining…" }
+        if active { return model.voice.phase == .leaving ? "Leaving…" : "Joining…" }
+        return model.voice.phase == .idle || model.voice.phase == .failed ? "Join voice" : "Switch here"
+    }
+    /// The header's Join is already beside the channel's name; a row's names its channel.
+    func description(header: Bool) -> String {
+        switch title {
+        case "Joining…": return "Joining voice in #\(channel.name)"
+        case "Leaving…": return "Leaving voice in #\(channel.name)"
+        case "Switch here": return "Switch voice to #\(channel.name)"
+        default: return header ? "Join voice" : "Join voice in #\(channel.name)"
+        }
+    }
+    var help: String {
+        let named = description(header: false)
+        return active ? named : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? named
+    }
+}
+
+/// An occupied channel's voice line: faces and "N in voice", expanding to who is
+/// there. Empty channels add nothing beneath their name.
 private struct ChannelVoiceSlot: View {
     @Bindable var model: AppModel
     let channel: Channel
     @State private var collapsed = true
 
-    private var active: Bool {
-        model.voice.context?.channelID == channel.id && model.voice.phase != .idle && model.voice.phase != .failed
-    }
-    private var people: [VoiceSpectator] {
-        if active {
-            return model.voice.participants.map {
-                VoiceSpectator(id: $0.id, avatarId: $0.avatarId, name: $0.name, muted: $0.muted,
-                               deafened: $0.deafened)
-            }
-        }
-        return model.voicePresence.roster(for: channel.id)
-    }
-
-    private var pending: Bool {
-        model.pendingVoiceChannelID != nil || model.voice.phase == .joining || model.voice.phase == .reconnecting || model.voice.phase == .leaving
-    }
-    private var actionTitle: String {
-        if model.pendingVoiceChannelID == channel.id { return "Joining…" }
-        if active {
-            if model.voice.phase == .leaving { return "Leaving…" }
-            return "Joining…"
-        }
-        return model.voice.phase == .idle || model.voice.phase == .failed ? "Join voice" : "Switch here"
-    }
-    private var actionDescription: String {
-        switch actionTitle {
-        case "Joining…": return "Joining voice in #\(channel.name)"
-        case "Leaving…": return "Leaving voice in #\(channel.name)"
-        case "Switch here": return "Switch voice to #\(channel.name)"
-        default: return "\(actionTitle) in #\(channel.name)"
-        }
-    }
-    private var actionEnabled: Bool {
-        return !pending && model.voiceAvailable(in: channel) == true
-    }
-
     var body: some View {
-        let occupants = people
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                if !occupants.isEmpty {
+        let occupants = voiceOccupants(model, channelID: channel.id)
+        let active = model.voice.isActive(channelID: channel.id)
+        if !occupants.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
                     Button { collapsed.toggle() } label: {
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 6) {
@@ -1358,65 +1402,130 @@ private struct ChannelVoiceSlot: View {
                         .accessibilityLabel("\(occupants.count) in voice in \(channel.name). \(collapsed ? "Show" : "Hide") who is in voice")
                         .accessibilityIdentifier("voice-stack-\(channel.id)")
                         .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
-                if active && model.voice.phase == .connected {
-                    Color.clear.frame(width: 108)
-                        #if os(iOS)
-                        .frame(height: 44)
-                        #else
-                        .frame(height: 28)
-                        #endif
-                        .accessibilityHidden(true)
-                } else {
-                    Button {
-                        Task { await model.joinVoice(channel: channel) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            CaperIcon(name: "speech", size: 14)
-                            Text(actionTitle).lineLimit(1)
+                .padding(.trailing, 4)
+                if !collapsed {
+                    if active {
+                        VoiceRoster(model: model)
+                    } else {
+                        ForEach(occupants) { person in
+                            HStack(spacing: 7) {
+                                Avatar(name: person.name, size: 23, avatarID: person.avatarId)
+                                Text(person.name).lineLimit(1)
+                                if person.muted { CaperIcon(name: "mic-off", size: 13) }
+                                if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
+                            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                                .accessibilityElement(children: .combine)
                         }
                     }
-                    .buttonStyle(QuietVoiceActionButton()).disabled(!actionEnabled)
-                    .help(active ? actionDescription : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? actionDescription)
-                    .accessibilityLabel(actionDescription)
-                    .accessibilityIdentifier("join-voice-\(channel.id)")
-                    .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
                 }
-            }
-            .padding(.trailing, 4)
-            if !collapsed {
-                if active {
-                    VoiceRoster(model: model)
-                } else {
-                    ForEach(occupants) { person in
-                        HStack(spacing: 7) {
-                            Avatar(name: person.name, size: 23, avatarID: person.avatarId)
-                            Text(person.name).lineLimit(1)
-                            if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                            if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
-                        }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                            .accessibilityElement(children: .combine)
-                    }
-                }
-            }
-        }.padding(.bottom, 2)
-            .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+            }.padding(.bottom, 2)
+        }
     }
 }
 
-private struct QuietVoiceActionButton: ButtonStyle {
+/// Web's headerVoice: who is in voice in the open channel, then Join voice,
+/// Switch here or Leave. Phones keep one face and no count, as web's narrowest
+/// layout does; wider headers drop them only when the title needs the room.
+private struct HeaderVoice: View {
+    @Bindable var model: AppModel
+    let channel: Channel
+    let narrow: Bool
+
+    /// "Maya is in voice", "Maya and Alex are in voice", "A, B, C and 2 more are in voice".
+    static func summary(_ names: [String]) -> String {
+        if names.count > 3 { return "\(names.prefix(3).joined(separator: ", ")) and \(names.count - 3) more are in voice" }
+        if names.count > 1 { return "\(names.dropLast().joined(separator: ", ")) and \(names[names.count - 1]) are in voice" }
+        return "\(names.first ?? "") is in voice"
+    }
+
+    var body: some View {
+        let people = voiceOccupants(model, channelID: channel.id)
+        let action = ChannelVoiceAction(model: model, channel: channel)
+        HStack(spacing: narrow ? 6 : 10) {
+            if !people.isEmpty {
+                let summary = Self.summary(people.map(\.name))
+                Group {
+                    if narrow {
+                        faces(people, limit: 1, count: false, speaking: action.active)
+                    } else {
+                        ViewThatFits(in: .horizontal) {
+                            faces(people, limit: 3, count: true, speaking: action.active)
+                            faces(people, limit: 1, count: false, speaking: action.active)
+                        }
+                    }
+                }
+                .help(summary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isImage)
+                .accessibilityLabel(summary)
+                .accessibilityIdentifier("header-voice-people")
+            }
+            if action.connected {
+                Button {
+                    CaperEffects.shared.play(.disconnect)
+                    model.leaveVoice()
+                } label: {
+                    HStack(spacing: 6) {
+                        CaperIcon(name: "phone-off", size: 14)
+                        Text("Leave").lineLimit(1)
+                    }
+                }
+                .buttonStyle(HeaderVoiceButton(primary: false)).fixedSize()
+                .help("Disconnect")
+                .accessibilityLabel("Leave voice")
+                .accessibilityIdentifier("header-leave-voice")
+            } else {
+                Button { Task { await model.joinVoice(channel: channel) } } label: {
+                    HStack(spacing: 6) {
+                        CaperIcon(name: "headphones", size: 14)
+                        Text(action.title).lineLimit(1)
+                    }
+                }
+                .buttonStyle(HeaderVoiceButton(primary: true)).fixedSize()
+                .disabled(!action.enabled)
+                .help(action.help)
+                .accessibilityLabel(action.description(header: true))
+                .accessibilityIdentifier("join-voice-button")
+                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
+            }
+        }
+        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+    }
+
+    private func faces(_ people: [VoiceSpectator], limit: Int, count: Bool, speaking active: Bool) -> some View {
+        HStack(spacing: 6) {
+            HStack(spacing: -6) {
+                ForEach(people.prefix(limit)) { person in
+                    Avatar(name: person.name, size: 24, avatarID: person.avatarId,
+                           speaking: active && model.voice.speakingParticipants.contains(person.id))
+                }
+            }
+            if count {
+                Text("\(people.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
+                    .foregroundStyle(CaperTheme.muted)
+            }
+        }.fixedSize()
+    }
+}
+
+/// The header's voice action: terracotta-tinted Join or Switch here, neutral Leave.
+private struct HeaderVoiceButton: ButtonStyle {
+    let primary: Bool
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
-            .frame(width: 108)
+        configuration.label.font(CaperTheme.font(12, weight: .bold))
+            .foregroundStyle(primary ? CaperTheme.terracottaBright : CaperTheme.muted)
+            .padding(.horizontal, 10)
             #if os(iOS)
-            .frame(height: 44)
+            .frame(minHeight: 44)
             #else
-            .frame(height: 28)
+            .frame(minHeight: 30)
             #endif
-            .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
+            .background(primary ? CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14)
+                        : configuration.isPressed ? CaperTheme.composer : CaperTheme.raised)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? CaperTheme.terracotta.opacity(0.7) : CaperTheme.border))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
@@ -2095,6 +2204,11 @@ private struct ChatView: View {
     private var membersAvailable: Bool {
         model.selectedDirectMessageID == nil && !(narrow && model.previewingChannel)
     }
+    /// The open channel once joined: its header carries voice. Previews and DMs have none.
+    private var headerVoiceChannel: Channel? {
+        guard model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined else { return nil }
+        return channel
+    }
     /// The open 1:1 DM, not personal notes.
     private var peerConversation: DirectMessageConversation? {
         model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
@@ -2273,6 +2387,8 @@ private struct ChatView: View {
                         .accessibilityIdentifier("selected-channel-name")
                 } else {
                     Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                        // A long name truncates only once the voice faces have compacted.
+                        .layoutPriority(1)
                         .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                         .accessibilityIdentifier("selected-channel-name")
                 }
@@ -2286,6 +2402,8 @@ private struct ChatView: View {
                 Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                     .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
                     .accessibilityIdentifier("channel-pins")
+                // Web joins voice from here on every device; touch has no row shortcut.
+                if let channel = headerVoiceChannel { HeaderVoice(model: model, channel: channel, narrow: narrow) }
                 // Right of Pins on every width, as on web.
                 if membersAvailable {
                     Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }

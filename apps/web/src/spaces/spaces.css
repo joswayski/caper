@@ -620,7 +620,7 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
-/* Collapsing navigation must not hide the active call's only Leave action. */
+/* Collapsing navigation keeps the active call's channel and roster in view. */
 .spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
   display: grid;
 }
@@ -2294,10 +2294,10 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     max-height: none;
     overflow: visible;
   }
-  /* As in the homepage room on phones, the viewed channel's line (who is in
-     its voice, and Join) and the voice panel sit above the conversation, so
-     joining, muting and leaving never depend on Browse. Browse still opens
-     every space and channel. */
+  /* As in the homepage room on phones, the voice panel sits above the
+     conversation, so muting and leaving never depend on Browse; the header
+     joins. While people are in the viewed channel's voice, its line (who is
+     there) joins the panel. Browse still opens every space and channel. */
   .call-room.spaces-room:has(.voice-panel):not(.navigation-open) {
     grid-template: auto minmax(0, 1fr) / 1fr;
   }
@@ -2336,7 +2336,10 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     display: none;
   }
   .spaces-room:not(.navigation-open) .channel-navigation > :is(header, .channel-section-heading),
-  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])) {
+  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])),
+  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not([data-occupied]),
+  .spaces-room:not(.navigation-open)
+    .sidebar-channels:not(:has(li[data-occupied] > .channel-line > .channel-select[aria-current="page"])) {
     display: none;
   }
   .spaces-room:not(.navigation-open) .channel-navigation > ul {
@@ -2355,7 +2358,7 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   }
   .spaces-room:not(.navigation-open)
     #space-channel-list[data-collapsed]
-    > li:has(.channel-select[aria-current="page"]) {
+    > li[data-occupied]:has(.channel-select[aria-current="page"]) {
     display: flex;
   }
   .navigation-toggle {

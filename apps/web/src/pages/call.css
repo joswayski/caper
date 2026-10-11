@@ -1494,14 +1494,14 @@
   overflow-wrap: anywhere;
 }
 
-/* Chat navigation and voice are distinct targets. Quiet voice actions sit
-   beneath the name; the active roster is grouped with its channel. */
+/* Chat navigation and voice are distinct targets. Occupied channels show who
+   is in voice beneath the name; the active roster is grouped with its channel. */
 .channel-row,
 .channel-line {
   position: relative;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   border-radius: 8px;
   transition: background-color 140ms ease;
@@ -1608,7 +1608,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.channel-join.voice-button,
 .voice-leave {
   width: 84px;
   min-height: 28px;
@@ -1627,25 +1626,94 @@
   font-size: 0.72rem;
   font-weight: 500;
 }
-.channel-join.voice-button:focus-visible {
-  border-color: var(--border);
-  color: var(--text);
-  background: var(--surface-raised);
-}
-@media (hover: hover) {
-  .channel-join.voice-button:hover:not([aria-disabled="true"]) {
-    border-color: var(--border);
-    color: var(--text);
-    background: var(--surface-raised);
-  }
-}
 .voice-leave > svg {
   width: 14px;
   height: 14px;
   flex: none;
 }
-.channel-join.voice-button[aria-busy="true"] {
+.channel-join[aria-busy="true"] {
   cursor: progress;
+}
+/* A one-click join on channel rows for fine pointers, revealed on hover or
+   keyboard focus like the row menu. Touch has no hover: it joins from the header. */
+.channel-quick-join {
+  display: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .channel-quick-join {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    color: var(--text-muted);
+    background: transparent;
+    cursor: pointer;
+  }
+  .channel-quick-join svg {
+    width: 16px;
+    height: 16px;
+  }
+  .channel-quick-join:hover:not([aria-disabled="true"]),
+  .channel-quick-join:focus-visible {
+    color: var(--text);
+    background: var(--border);
+  }
+  .channel-quick-join[data-placeholder] {
+    visibility: hidden;
+  }
+  .channel-quick-join[aria-disabled="true"]:not([aria-busy="true"]) {
+    cursor: default;
+  }
+  :is(.channel-line, .channel-row):not(:hover, :has(:focus-visible)) .channel-quick-join:not([aria-busy="true"]) {
+    opacity: 0;
+  }
+}
+/* The open channel's voice: who is there, then Join, Switch here or Leave. */
+.header-voice {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.header-voice-people {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.header-voice-people .voice-stack-avatar {
+  width: 24px;
+  height: 24px;
+}
+.header-voice-join {
+  min-height: 34px;
+  padding: 0 12px;
+}
+.header-voice .voice-leave {
+  width: auto;
+  min-height: 34px;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+@media (max-width: 420px) {
+  .header-voice-count,
+  .header-voice-people .voice-stack-avatar + .voice-stack-avatar {
+    display: none;
+  }
+  .header-voice-join,
+  .header-voice .voice-leave {
+    padding: 0 10px;
+  }
 }
 @media (hover: hover) {
   .voice-stack:hover {
@@ -1716,7 +1784,7 @@
     min-height: 44px;
     padding-block: 12px;
   }
-  .channel-join.voice-button,
+  .header-voice-join,
   .voice-leave,
   .voice-stack {
     min-height: 44px;

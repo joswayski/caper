@@ -445,6 +445,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }.toTypedArray())
         }
     }
+    // The conversation header's Leave ends the call the same way as the dock's.
+    val leaveVoice: () -> Unit = {
+        if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
+        VoiceCallService.stop(context)
+    }
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
@@ -482,7 +487,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
-                                        channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
+                                        channelsExpanded, { channelsExpanded = it }, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
                             }
@@ -490,7 +495,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 .browseDrag(members, direction = -1f, travel = { membersTravel }) { membersVisible = it }
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: "empty") {
-                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
+                                    Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
+                                        joinVoice, pendingVoiceJoin, leaveVoice) { setNavigationOpen(true) }
                                 }
                                 // Composed while shown or sliding; it moves with the conversation over Browse.
                                 if (membersShown || membersInView) {
@@ -520,12 +526,14 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
+                            joinVoice, pendingVoiceJoin, leaveVoice, Modifier.fillMaxSize()) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
                     } else {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
+                            joinVoice, pendingVoiceJoin, leaveVoice, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
@@ -737,7 +745,6 @@ private fun Modifier.browseDrag(
     modifier: Modifier,
     channelsExpanded: Boolean,
     setChannelsExpanded: (Boolean) -> Unit,
-    joinVoice: (Channel) -> Unit,
     pendingVoiceJoin: VoiceJoinIntent?,
     voicePermissionError: String?,
     dismissVoicePermissionError: () -> Unit,
@@ -869,16 +876,7 @@ private fun Modifier.browseDrag(
                 LaunchedEffect(channel.id, channel.joined, detail.space.demo, state.account?.id, available) {
                     if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
                 }
-                val activeHere = activeChannel == channel.id
-                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceJoin?.channelId == channel.id
-                val switching = activeChannel != null && !activeHere
-                val denied = channel.id in state.deniedVoiceChannels
-                val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
-                    !denied && available == true
-                val actionLabel = if (joiningHere) "Joining…" else if (switching) "Switch here" else "Join voice"
-                val actionDescription = if (joiningHere) {
-                    "Joining voice in #${channel.name}"
-                } else if (switching) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
+                val connectedHere = activeChannel == channel.id && voice.phase == VoiceState.Phase.CONNECTED
                 Column(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
@@ -913,32 +911,19 @@ private fun Modifier.browseDrag(
                         }
                     }
                     NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
-                    if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 35.dp), verticalAlignment = Alignment.CenterVertically) {
-                        // The count stays whole; the Join button beside it yields first (web).
-                        if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 6.dp),
+                    // Joining is the conversation header's job (web), so an empty channel stays one line:
+                    // the voice row appears only while someone, perhaps you, is in voice here.
+                    if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && people.isNotEmpty()) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 35.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton({ rosterOpen = !rosterOpen }, shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 6.dp),
                             modifier = Modifier.heightIn(min = 48.dp)
                                 .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
+                            // Web: your own connected call shows AudioLines in place of the faces.
+                            if (connectedHere) Icon(painterResource(R.drawable.lucide_audio_lines), null, Modifier.size(16.dp), tint = VoiceConnectedGreen)
+                            else VoiceFaces(people, 2, 20.dp, SurfaceSidebar)
+                            Spacer(Modifier.width(6.dp))
                             Text("${people.size} in voice", maxLines = 1, softWrap = false, fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
                             Spacer(Modifier.width(4.dp))
                             DisclosureChevron(rosterOpen, Modifier.size(15.dp))
-                        }
-                        Spacer(Modifier.weight(1f))
-                        if (activeHere && voice.phase == VoiceState.Phase.CONNECTED) {
-                            Spacer(Modifier.width(112.dp).height(48.dp))
-                        } else TextButton({ joinVoice(channel) },
-                            enabled = actionEnabled, shape = MaterialTheme.shapes.small,
-                            colors = ButtonDefaults.textButtonColors(contentColor = TextMuted, disabledContentColor = TextMuted.copy(alpha = 0.45f)),
-                            contentPadding = PaddingValues(horizontal = 6.dp), modifier = Modifier.width(112.dp).heightIn(min = 48.dp)
-                            // Web prepares the join on touch-down, before the tap completes.
-                            .pointerInput(channel.id, actionEnabled, activeHere) { awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                                if (actionEnabled && !activeHere) viewModel.prepareVoiceJoin(channel)
-                            } }
-                            .semantics {
-                                contentDescription = if (!activeHere && !denied) voiceJoinUnavailableLabel(available) ?: actionDescription else actionDescription
-                            }) {
-                            Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp)); Text(actionLabel, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (people.isNotEmpty() && rosterOpen) {
@@ -1185,7 +1170,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
         Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             // Web: AudioLines and the status are green when connected, amber while connecting or reconnecting.
-            val tone = if (voice.phase == VoiceState.Phase.CONNECTED) Color(0xFF8CB262) else Color(0xFFD9AB5C)
+            val tone = if (voice.phase == VoiceState.Phase.CONNECTED) VoiceConnectedGreen else Color(0xFFD9AB5C)
             Row(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
                 .semantics { contentDescription = "Open voice channel" }, verticalAlignment = Alignment.CenterVertically) {
                 Icon(painterResource(R.drawable.lucide_audio_lines), null, Modifier.size(18.dp), tint = tone)
@@ -1198,6 +1183,103 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             }
             IconButton(leave, Modifier.size(40.dp)) {
                 Icon(painterResource(R.drawable.lucide_phone_off), if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
+            }
+        }
+    }
+}
+
+/** Web's connected tone for AudioLines in the dock and on your call's channel row. */
+private val VoiceConnectedGreen = Color(0xFF8CB262)
+
+/** Web's header summary of who is in voice: up to three names, then how many more. */
+internal fun voicePeopleSummary(names: List<String>): String = when {
+    names.size > 3 -> "${names.take(3).joinToString(", ")} and ${names.size - 3} more are in voice"
+    names.size > 1 -> "${names.dropLast(1).joinToString(", ")} and ${names.last()} are in voice"
+    names.size == 1 -> "${names[0]} is in voice"
+    else -> "No one is in voice"
+}
+
+/** Web's voice-stack faces: up to [limit] small avatars, each overlapping the one before. */
+@Composable internal fun VoiceFaces(people: List<Participant>, limit: Int, size: Dp, ring: Color, speaking: Set<String> = emptySet()) {
+    val shown = people.take(limit)
+    if (shown.isEmpty()) return
+    val step = size - 6.dp
+    Box(Modifier.size(width = step * (shown.size - 1) + size, height = size).clearAndSetSemantics {}) {
+        shown.forEachIndexed { index, participant ->
+            key(participant.id) {
+                // The ring in the surrounding surface colour separates overlapping faces.
+                Avatar(participant.name, size, Modifier.offset(x = step * index).border(1.5.dp, ring, CircleShape),
+                    avatarId = participant.avatarId, speaking = participant.id in speaking)
+            }
+        }
+    }
+}
+
+/** What the conversation header's single voice action does for the open channel. */
+internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
+
+/**
+ * Web's header voice: who is in voice in the open channel, then one Join, Switch here,
+ * Joining… or Leave action. Channel rows carry no join, so empty channels stay a single line.
+ * [compact] (phones) keeps one face and drops the count so the channel name keeps room.
+ */
+@Composable internal fun HeaderVoice(
+    people: List<Participant>,
+    action: HeaderVoiceAction,
+    channelName: String,
+    enabled: Boolean,
+    unavailableLabel: String?,
+    compact: Boolean,
+    onJoin: () -> Unit,
+    onPrepare: () -> Unit,
+    onLeave: () -> Unit,
+    speaking: Set<String> = emptySet(),
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (people.isNotEmpty()) {
+            val summary = voicePeopleSummary(people.map { it.name })
+            Row(Modifier.clearAndSetSemantics { contentDescription = summary }, verticalAlignment = Alignment.CenterVertically) {
+                VoiceFaces(people, if (compact) 1 else 3, 24.dp, SurfaceConversation, speaking)
+                if (!compact) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("${people.size}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, style = TabularNumbers)
+                }
+            }
+        }
+        val padding = PaddingValues(horizontal = if (compact) 10.dp else 12.dp)
+        if (action == HeaderVoiceAction.Leave) TextButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
+            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = padding) {
+            Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+        } else {
+            val label = when (action) { HeaderVoiceAction.Joining -> "Joining…"; HeaderVoiceAction.Switch -> "Switch here"; else -> "Join voice" }
+            val description = when (action) {
+                HeaderVoiceAction.Joining -> "Joining voice in #$channelName"
+                HeaderVoiceAction.Switch -> "Switch voice to #$channelName"
+                else -> "Join voice"
+            }
+            val active = enabled && action != HeaderVoiceAction.Joining
+            val prepare by rememberUpdatedState(onPrepare)
+            // Web's terracotta-tinted voice button; disabled or joining, it dims rather than turning grey.
+            OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp)
+                // Web prepares the join on touch-down, before the tap completes.
+                .pointerInput(active) { awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    if (active) prepare()
+                } }
+                .semantics {
+                    contentDescription = if (action == HeaderVoiceAction.Joining) description else unavailableLabel ?: description
+                    if (action == HeaderVoiceAction.Joining) stateDescription = "Busy"
+                },
+                enabled = active, shape = MaterialTheme.shapes.small,
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = TerracottaWash, contentColor = TerracottaLight,
+                    disabledContainerColor = TerracottaWash, disabledContentColor = TerracottaLight.copy(alpha = 0.6f)),
+                border = BorderStroke(1.dp, if (active) TerracottaBorder else TerracottaBorder.copy(alpha = 0.6f)),
+                contentPadding = padding) {
+                Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
             }
         }
     }
@@ -1320,6 +1402,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     membersVisible: Boolean,
     toggleMembers: () -> Unit,
     voicePermissionError: String?,
+    joinVoice: (Channel) -> Unit,
+    pendingVoiceJoin: VoiceJoinIntent?,
+    leaveVoice: () -> Unit,
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
@@ -1337,7 +1422,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         fun saveWidth() { preferences.edit().putFloat("threadWidth", preferredWidth.coerceIn(300f, 600f)).apply() }
         fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
         Row(Modifier.fillMaxSize()) {
-            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
+            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError,
+                joinVoice, pendingVoiceJoin, leaveVoice, Modifier.weight(1f), openNavigation)
             if (!narrow && state.thread != null) Box(Modifier.width(width.dp).fillMaxHeight()) {
                 threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
                     ThreadConversation(state, viewModel, Modifier.fillMaxSize())
@@ -1444,6 +1530,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun ChannelConversation(
     state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit,
     narrow: Boolean, membersVisible: Boolean, toggleMembers: () -> Unit, voicePermissionError: String?,
+    joinVoice: (Channel) -> Unit, pendingVoiceJoin: VoiceJoinIntent?, leaveVoice: () -> Unit,
     modifier: Modifier = Modifier, openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
@@ -1492,6 +1579,36 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
+            }
+            // Web: voice joins from the open channel's header, between Pins and Members.
+            if (!channel.direct && joined && BuildConfig.ENABLE_NATIVE_VOICE) {
+                val demo = state.selectedSpace?.space?.demo == true
+                val available = state.voiceAvailable(channel)
+                // Phones compose Browse only while it shows, so the header asks for availability too.
+                LaunchedEffect(channel.id, demo, state.account?.id, available) {
+                    if (available == null) viewModel.checkVoiceAvailability(channel)
+                }
+                val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
+                val activeHere = activeChannel == channel.id
+                val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) ||
+                    pendingVoiceJoin?.channelId == channel.id
+                val denied = channel.id in state.deniedVoiceChannels
+                val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+                    !denied && available == true
+                val action = when {
+                    activeHere && voice.phase == VoiceState.Phase.CONNECTED -> HeaderVoiceAction.Leave
+                    joiningHere -> HeaderVoiceAction.Joining
+                    activeChannel != null && !activeHere -> HeaderVoiceAction.Switch
+                    else -> HeaderVoiceAction.Join
+                }
+                HeaderVoice(
+                    people = if (activeHere) voice.participants else state.voiceRosters[voiceRootKey(demo, channel.id)].orEmpty(),
+                    action = action, channelName = channel.name, enabled = actionEnabled,
+                    unavailableLabel = if (denied) null else voiceJoinUnavailableLabel(available),
+                    compact = narrow,
+                    onJoin = { joinVoice(channel) }, onPrepare = { viewModel.prepareVoiceJoin(channel) }, onLeave = leaveVoice,
+                    speaking = if (activeHere) voice.speakingParticipants else emptySet(),
+                )
             }
             // Right of Pins on every width, and the same size, as on web.
             if (!channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {

@@ -402,10 +402,14 @@ function AudioOutput({
   );
 }
 
-/** Voice occupants for one channel: a summary for its line and a list beneath it. */
+/**
+ * Voice for one channel row: a summary and list beneath it only while people are
+ * in voice, and a join shortcut that fine pointers reveal on hover or focus.
+ */
 export interface VoiceSlot {
   timer: ReactNode;
   summary: ReactNode;
+  join: ReactNode;
   list: ReactNode;
 }
 
@@ -597,7 +601,10 @@ export default function Call({
       !focusedJoin.current.isConnected &&
       document.activeElement === document.body
     ) {
-      document.querySelector<HTMLButtonElement>(".voice-hangup")?.focus();
+      (
+        document.querySelector<HTMLButtonElement>(".header-voice .voice-hangup") ??
+        document.querySelector<HTMLButtonElement>(".voice-hangup")
+      )?.focus();
     }
   }, [connected, voiceChannel?.id]);
   // The client reports an error only on the update where it happens, so keep
@@ -1206,8 +1213,8 @@ export default function Call({
     channelId === channel?.id || !channelId
       ? (channel?.name ?? "general")
       : (voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice");
-  // Keep the active call with its channel. If navigation hides that channel,
-  // render the same roster and leave action above the persistent audio controls.
+  // Keep the active call's roster with its channel. If navigation hides that
+  // channel, render the same roster above the persistent audio controls.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     if ((voiceless && (!channelId || channelId === channel?.id)) || (channelId === channel?.id && !channelJoined))
@@ -1221,19 +1228,6 @@ export default function Call({
     const listId = `voice-occupants-${key.replace(/[^\w-]/g, "")}`;
     const activeHere = !idle && voiceChannel?.id === channelId;
     const joiningHere = activeHere && state.phase === "joining";
-    const leavingHere = state.phase === "leaving" && voiceChannel?.id === channelId;
-    const switching = !idle && !activeHere;
-    const blocked = joiningHere || leavingHere || actionPending || (!activeHere && joinBlocked);
-    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch here" : "Join voice";
-    const actionName = leavingHere
-      ? `Leaving voice in #${label}`
-      : joiningHere
-        ? `Joining voice in #${label}`
-        : switching
-          ? `Switch voice to #${label}`
-          : channelId === channel?.id
-            ? "Join voice"
-            : `Join voice in #${label}`;
     const stack = people.length > 0 && (
       <button
         className="voice-stack"
@@ -1265,61 +1259,20 @@ export default function Call({
         <ChevronDown aria-hidden="true" />
       </button>
     );
-    const viewed = channelId === channel?.id;
-    const join =
-      activeHere && connected ? (
-        ownVisible ? (
-          leaveControl
-        ) : null
-      ) : (
-        <Tooltip
-          content={
-            joiningHere
-              ? `Connecting to #${label}…`
-              : joinUnavailable
-                ? available === false
-                  ? "Joining is not available at this time."
-                  : "Checking voice availability…"
-                : switching
-                  ? `Leave your current voice channel and join #${label}`
-                  : `Join voice in #${label}`
-          }
-        >
-          <button
-            ref={viewed && !activeHere ? viewedJoin : undefined}
-            className="voice-button channel-join"
-            type="button"
-            data-channel={channelId ?? ""}
-            data-connected={activeHere ? "" : undefined}
-            aria-label={actionName}
-            aria-disabled={blocked}
-            aria-busy={joiningHere || leavingHere}
-            onPointerEnter={() => {
-              if (!activeHere) prepareChannel(channelId);
-            }}
-            onPointerDown={() => {
-              if (!activeHere) prepareChannel(channelId);
-            }}
-            onFocus={(event) => {
-              focusedJoin.current = event.currentTarget;
-              if (!activeHere) prepareChannel(channelId);
-            }}
-            onClick={() => {
-              if (!blocked) joinChannel(channelId);
-            }}
-          >
-            <span className="channel-join-label">{actionLabel}</span>
-          </button>
-        </Tooltip>
-      );
     return {
       timer:
         startedAt != null && (people.length > 0 || joiningHere) ? <VoiceSessionTimer startedAt={startedAt} /> : null,
-      summary: (
+      // Empty channels add nothing beneath their name; only occupied ones show who is there.
+      summary: stack ? (
         <span className="channel-voice" data-active={activeHere && connected ? "" : undefined}>
           {stack}
-          {join}
         </span>
+      ) : null,
+      // Your call's channel keeps the shortcut's slot, so connecting never shifts its row.
+      join: activeHere ? (
+        <span className="channel-quick-join" data-placeholder="" aria-hidden="true" />
+      ) : (
+        voiceAction(channelId, "row")
       ),
       list:
         people.length > 0 && (!own || ownVisible) ? (
@@ -1336,6 +1289,108 @@ export default function Call({
         ) : null,
     };
   };
+  /**
+   * Join, switch or leave voice for a channel. The conversation header carries the
+   * labelled action on every device; channel rows add a hover-revealed shortcut
+   * for fine pointers, so empty channels stay a single quiet line.
+   */
+  const voiceAction = (channelId: string | undefined, placement: "row" | "header") => {
+    const label = channelLabel(channelId);
+    const activeHere = !idle && voiceChannel?.id === channelId;
+    const joiningHere = activeHere && state.phase === "joining";
+    const leavingHere = state.phase === "leaving" && voiceChannel?.id === channelId;
+    const switching = !idle && !activeHere;
+    if (activeHere && connected) return placement === "header" ? leaveControl : null;
+    const blocked = joiningHere || leavingHere || actionPending || (!activeHere && joinBlocked);
+    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch here" : "Join voice";
+    const actionName = leavingHere
+      ? `Leaving voice in #${label}`
+      : joiningHere
+        ? `Joining voice in #${label}`
+        : switching
+          ? `Switch voice to #${label}`
+          : placement === "header"
+            ? "Join voice"
+            : `Join voice in #${label}`;
+    const header = placement === "header";
+    return (
+      <Tooltip
+        content={
+          joiningHere
+            ? `Connecting to #${label}…`
+            : joinUnavailable
+              ? available === false
+                ? "Joining is not available at this time."
+                : "Checking voice availability…"
+              : switching
+                ? `Leave your current voice channel and join #${label}`
+                : `Join voice in #${label}`
+        }
+        placement={header ? "bottom" : "top"}
+      >
+        <button
+          ref={header && !activeHere ? viewedJoin : undefined}
+          className={`channel-join ${header ? "voice-button header-voice-join" : "channel-quick-join"}`}
+          type="button"
+          data-channel={channelId ?? ""}
+          data-connected={activeHere ? "" : undefined}
+          aria-label={actionName}
+          aria-disabled={blocked}
+          aria-busy={joiningHere || leavingHere}
+          onPointerEnter={() => {
+            if (!activeHere) prepareChannel(channelId);
+          }}
+          onPointerDown={() => {
+            if (!activeHere) prepareChannel(channelId);
+          }}
+          onFocus={(event) => {
+            focusedJoin.current = event.currentTarget;
+            if (!activeHere) prepareChannel(channelId);
+          }}
+          onClick={() => {
+            if (!blocked) joinChannel(channelId);
+          }}
+        >
+          <Headphones aria-hidden="true" />
+          {header && <span className="channel-join-label">{actionLabel}</span>}
+        </button>
+      </Tooltip>
+    );
+  };
+  /** Who is in voice in the open channel, with its join or leave action, for the conversation header. */
+  const headerVoice = (() => {
+    if (voiceless || !channelJoined) return null;
+    const channelId = channel?.id;
+    const { people } = rosterFor(channelId);
+    const names = people.map((person) => person.name);
+    const summary =
+      names.length > 3
+        ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more are in voice`
+        : names.length > 1
+          ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are in voice`
+          : `${names[0]} is in voice`;
+    return (
+      <div className="header-voice">
+        {people.length > 0 && (
+          <Tooltip content={summary} placement="bottom">
+            <span className="header-voice-people" role="img" aria-label={summary}>
+              <span className="voice-stack-faces" aria-hidden="true">
+                {people.slice(0, 3).map((participant) => (
+                  <span key={participant.id} className="voice-stack-avatar">
+                    <Avatar avatarId={participant.avatarId} name={participant.name} />
+                  </span>
+                ))}
+              </span>
+              <span className="header-voice-count" aria-hidden="true">
+                {people.length}
+              </span>
+            </span>
+          </Tooltip>
+        )}
+        {voiceAction(channelId, "header")}
+      </div>
+    );
+  })();
   let navigation: ReactNode;
   if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor);
   else if (channelNavigation) navigation = channelNavigation;
@@ -1349,6 +1404,7 @@ export default function Call({
             <span>general</span>
             {voice?.timer}
           </a>
+          {voice?.join}
           {voice?.summary}
         </div>
         {voice?.list}
@@ -1381,9 +1437,10 @@ export default function Call({
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">
-            {((!idle && !pendingJoin && (!connected || !rosterPlaced)) || (voiceError && !audioPanel)) && (
+            {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && (
               <div className="voice-dock">
-                {!idle && !pendingJoin && (!connected || !rosterPlaced) && (
+                {/* Wherever you browse, the call stays one Leave away. */}
+                {!idle && !pendingJoin && (
                   <div className="connected-channel" data-phase={state.phase} role="status">
                     <div className="voice-dock-channel">
                       <AudioLines aria-hidden="true" />
@@ -1677,6 +1734,7 @@ export default function Call({
                     </div>
                   )}
                   {channelJoined && channelActions}
+                  {headerVoice}
                   {membersPanel && (
                     <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
                       <button

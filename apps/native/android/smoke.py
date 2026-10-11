@@ -387,14 +387,19 @@ def main() -> None:
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")
-    join = find(desktop, description="Join voice in #general")
-    assert general is not None and menu is not None and join is not None, (
-        "General must expose its channel menu and Join voice action"
-    )
+    assert general is not None and menu is not None, "General must expose its channel menu"
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
-    general_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
+    # Web: voice joins from the open channel's header, so empty channels stay a single line.
+    assert find(desktop, contains="Join voice in #") is None, "Channel rows must not repeat a Join voice action"
+    assert find(desktop, contains="in voice in") is None, "Empty channels must not show a voice row"
+    header = wait_for(description="Join voice")
+    join = find(header, description="Join voice")
+    pins = find(header, description="Pins")
+    show_members = find(header, description="Show member list")
+    assert pins is not None and show_members is not None, "The chat header must keep Pins and Members"
+    assert center(pins)[0] < center(join)[0] < center(show_members)[0], "Join voice sits between Pins and Members"
+    assert abs(center(join)[1] - center(pins)[1]) <= 4, "Join voice belongs to the chat header row"
     left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
-    assert top >= general_bottom, "Join voice must be on a separate row below the channel name"
     # viewport() sets density 320: 48dp is 96 physical pixels.
     assert right - left >= 96 and bottom - top >= 96, "Join voice must have a 48dp touch target"
 
@@ -641,7 +646,9 @@ def main() -> None:
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
     initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
     assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
-    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join voice"
+    assert find(initial_roster, text="4 in voice") is not None, "Occupied channels show their occupancy"
+    assert find(initial_roster, contains="in voice in general") is None, "Empty channels must not show a voice row"
+    assert find(initial_roster, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
     tap(description="4 in voice in design. Show who is in voice")
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
@@ -657,6 +664,18 @@ def main() -> None:
     tap(description="4 in voice in design. Hide who is in voice")
     collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")
     assert find(collapsed, text="Fixture Voice 1") is None, "Collapsed roster still exposed occupants"
+    # The open channel's header names who is in voice beside its Join action.
+    tap(text="design")
+    occupied = capture(
+        "caper-android-voice-header-occupied",
+        "Fixture Voice 1, Fixture Voice 2, Fixture Voice 3 and 1 more are in voice",
+    )
+    assert find(occupied, contains="Message #design") is not None
+    wait_for(description="Join voice")
+    tap(description="Back to Browse")
+    tap(text="general")
+    wait_for(contains="Message #general")
+    tap(description="Back to Browse")
     tap(description="4 in voice in design. Show who is in voice")
     wait_for(text="Fixture Voice 1")
     fixture({"mediaAccessDenied": {"channelId": "chan00000002"}})
@@ -718,18 +737,21 @@ def main() -> None:
     # Exercise the actual default voice entry and Android permission controller.
     # Only notifications are pre-granted; microphone denial and approval happen
     # through the system UI. The loopback fixture rejects join, never fakes audio.
-    # Web joins voice from the channel list only; the chat header has no Join voice.
-    assert find(delivered, contains="Join voice") is None, "Chat header must not duplicate the channel-list Join voice"
+    # Web joins voice from the open channel's header; channel rows carry no Join.
+    join = "Join voice"
+    voice_ready = wait_for(description=join)
+    capture("caper-android-voice-ready", "Message #general")
+    action = find(voice_ready, description=join)
+    left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
+    # viewport() sets density 320: 48dp is 96 physical pixels.
+    assert right - left >= 96 and bottom - top >= 96, "The header voice action must have a 48dp touch target"
+    pins = find(voice_ready, description="Pins")
+    show_members = find(voice_ready, description="Show member list")
+    assert pins is not None and show_members is not None
+    assert center(pins)[0] < center(action)[0] < center(show_members)[0], "Join voice sits between Pins and Members"
     tap(description="Back to Browse")
-    join = "Join voice in #general"
-    voice_ready = capture("caper-android-voice-ready", join)
-    assert find(voice_ready, description=join) is not None
-    for channel in ("general", "design", "planning"):
-        action = find(voice_ready, description=f"Join voice in #{channel}")
-        assert action is not None, f"Accessible #{channel} must expose a stable Join voice action"
-        left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
-        # viewport() sets density 320: 48dp is 96 physical pixels.
-        assert right - left >= 96 and bottom - top >= 96, f"#{channel} voice action must have a 48dp touch target"
+    browse_voice = wait_for(description="Mute microphone")
+    assert find(browse_voice, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
@@ -741,6 +763,8 @@ def main() -> None:
     assert find(restored, description="Unmute microphone") is not None, "Undeafen keeps an explicit mute"
     tap(description="Unmute microphone")
     wait_for(description="Mute microphone")
+    tap(description="Close navigation")
+    wait_for(description=join)
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"
@@ -754,17 +778,21 @@ def main() -> None:
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    assert find(failed, description="Dismiss voice error") is not None, "Web shows voice errors in the dock"
+    # Phones keep the voice error visible outside Browse; the dock in Browse dismisses it.
+    assert find(failed, contains="Message #general") is not None, "The voice error must not leave the conversation"
+    tap(description="Back to Browse")
+    dock = wait_for(description="Dismiss voice error")
+    assert find(dock, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
+        "Web shows voice errors in the dock"
+    )
     tap(description="Dismiss voice error")
     assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    tap(description="Close navigation")
+    wait_for(description=join)
     tap(description=join)
     retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
-    tap(description="Close navigation")
-    chat = wait_for(contains="Message #general")
-    assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
-        "Phones keep the voice error visible outside Browse"
-    )
+    assert find(retried, contains="Message #general") is not None, "Phones keep the voice error visible outside Browse"
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

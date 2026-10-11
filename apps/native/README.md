@@ -278,9 +278,12 @@ Check these states on every native release, not only a wide populated screenshot
 - A fresh install, expired session, or logout shows email sign-in with no Guest
   account, conversation composer, or retired public General fallback. A valid
   saved account still opens its spaces.
-- Join shares the channel row when space permits. Crowded voice groups may wrap,
-  as in the browser; neither Join nor channel settings may clip. Check the minimum
-  desktop sidebar width, long names, and populated voice rosters.
+- Join voice, Switch here and Leave sit in the conversation header beside Pins,
+  after the faces of who is in voice; the count and extra faces yield before the
+  action clips. Empty channel rows are one line; occupied rows add `N in voice`.
+  On Mac and Rust desktop, hovering a row reveals its join shortcut without
+  shifting the name or `⋯`. Check the minimum desktop sidebar width, long names,
+  narrow phone headers, and populated voice rosters.
 - Members stay on the right: a column when chat has enough room, an overlay below
   the chat header otherwise. The toggle must stay accessible. Never stack members
   underneath the composer. Check 840px desktop windows as well as 1440px and mobile.
