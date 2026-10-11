@@ -9901,9 +9901,9 @@ impl CaperApp {
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
-            let attach_unavailable = self.attach_unavailable_reason();
             // Reserve the paperclip before upload settings or the session arrive.
             let attach_width = 40.0;
+            let attach_unavailable = self.attach_unavailable_reason();
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
