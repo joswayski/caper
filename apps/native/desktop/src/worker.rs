@@ -465,6 +465,10 @@ pub enum Event {
         epoch: u64,
         alert: crate::os_notifications::Alert,
     },
+    /// A live notification arrived, shown or not: unread state changed.
+    NotificationActivity {
+        epoch: u64,
+    },
     NotificationError {
         epoch: u64,
         error: String,
@@ -975,6 +979,7 @@ fn manage(
                 notifications = Some((
                     epoch,
                     crate::os_notifications::watch(api.base(), token, move |alert, stopped| {
+                        send(&events, &context, Event::NotificationActivity { epoch });
                         // A focused UI publishes a short lease. If minimized
                         // windows stop repainting, stale focus cannot suppress alerts.
                         if !alert.fresh()

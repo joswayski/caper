@@ -1369,11 +1369,14 @@ function InvitationDialog({
 
 function BrowseChannelsDialog({
   detail,
+  unread,
   onClose,
   onPreview,
   onManage,
 }: {
   detail: SpaceDetail;
+  /** Includes channels you haven't joined, such as one where you were mentioned. */
+  unread: (channelId: string) => boolean;
   onClose: () => void;
   onPreview: (channel: Channel) => void;
   onManage?: (channel: Channel) => void;
@@ -1403,12 +1406,17 @@ function BrowseChannelsDialog({
         <ul>
           {channels.map((item) => (
             <li key={item.id}>
-              <button type="button" aria-label={`Preview #${item.name}`} onClick={() => onPreview(item)}>
+              <button
+                type="button"
+                aria-label={`Preview #${item.name}${unread(item.id) ? ", unread activity" : ""}`}
+                onClick={() => onPreview(item)}
+              >
                 {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
                 <span>
                   {item.name}
                   <small>{item.joined !== false ? "Joined" : "Read-only preview"}</small>
                 </span>
+                {unread(item.id) && <i className="channel-unread" aria-hidden="true" />}
               </button>
               {onManage && (
                 <button
@@ -2580,6 +2588,7 @@ export default function Spaces({
       {browseOpen && (
         <BrowseChannelsDialog
           detail={detail}
+          unread={(channelId) => unreadSpaces.some((space) => space.channels.some((entry) => entry.id === channelId))}
           onClose={() => setBrowseOpen(false)}
           onPreview={(item) => choose(detail.space.id, item.id)}
           onManage={

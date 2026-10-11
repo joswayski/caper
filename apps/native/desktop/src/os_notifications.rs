@@ -211,7 +211,9 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
             .with_guessed_format()
             .ok()?;
         let mut limits = image::Limits::default();
-        limits.max_alloc = Some(64 * 1024 * 1024);
+        // The inline thumbnail decoder's budget: a 24 MP photo needs ~96 MB
+        // decoded. The preview is downscaled to 1024 px below.
+        limits.max_alloc = Some(512 * 1024 * 1024);
         limits.max_image_width = Some(16_384);
         limits.max_image_height = Some(16_384);
         reader.limits(limits);

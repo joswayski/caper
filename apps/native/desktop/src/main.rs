@@ -581,6 +581,8 @@ struct CaperApp {
     notifications: notifications::Notifications,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
+    /// A burst of live notifications coalesces into one unread refresh.
+    unread_refresh_due: Option<Instant>,
     /// Web's membership reconcile: when it last ran, the request in flight,
     /// and a revision that space and channel changes made here advance.
     membership_refreshed: Instant,
@@ -685,6 +687,9 @@ struct CaperApp {
     /// to the User Settings button, as on web.
     focus_user_settings: bool,
     navigation_open: bool,
+    /// The last frame's window was narrow (760 px or less), where an open
+    /// Browse covers the conversation; wider windows show both.
+    narrow_layout: bool,
     navigation: u64,
     opening: bool,
     /// Launch or sign-in is opening the first space and conversation. The
@@ -801,6 +806,7 @@ impl CaperApp {
             notifications: notifications::Notifications::default(),
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
+            unread_refresh_due: None,
             membership_refreshed: now,
             membership_request: 0,
             membership_refreshing: false,
@@ -884,6 +890,7 @@ impl CaperApp {
             settings_menu_dialog: false,
             focus_user_settings: false,
             navigation_open: false,
+            narrow_layout: false,
             navigation: 0,
             opening: false,
             restoring: None,
@@ -2054,6 +2061,11 @@ impl CaperApp {
                             space: Some(space),
                             channel: Some(channel),
                         });
+                    }
+                }
+                Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
+                    if self.unread_refresh_due.is_none() {
+                        self.unread_refresh_due = Some(Instant::now() + Duration::from_secs(1));
                     }
                 }
                 Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
@@ -3425,9 +3437,19 @@ impl CaperApp {
         }
     }
 
+    /// Narrow Browse slides over the conversation, which is then not being read.
+    fn browse_covers_conversation(&self) -> bool {
+        self.narrow_layout && self.navigation_open
+    }
+
     fn mark_selected_direct_read(&mut self) {
         self.mark_selected_channel_read();
-        if !self.foreground || self.selected_channel != self.selected_direct {
+        // As for channels: not while Browse covers it or an older window is open.
+        if !self.foreground
+            || self.browse_covers_conversation()
+            || self.has_newer
+            || self.selected_channel != self.selected_direct
+        {
             return;
         }
         // Reading a request must not look like engaging with it.
@@ -3450,7 +3472,7 @@ impl CaperApp {
 
     fn mark_selected_channel_read(&mut self) {
         if !self.foreground
-            || self.navigation_open
+            || self.browse_covers_conversation()
             || self.loading
             || self.has_newer
             || self.selected_direct.is_some()
@@ -5627,6 +5649,14 @@ impl CaperApp {
         {
             self.refresh_directs();
         }
+        if let Some(due) = self.unread_refresh_due {
+            if now >= due {
+                self.unread_refresh_due = None;
+                self.refresh_unread();
+            } else {
+                context.request_repaint_after(due - now);
+            }
+        }
         if self.token.is_some() {
             let waited = now.duration_since(self.membership_refreshed);
             if waited >= MEMBERSHIP_REFRESH {
@@ -6642,10 +6672,12 @@ impl CaperApp {
     }
 
     fn shell(&mut self, context: &egui::Context) {
+        let covered = self.browse_covers_conversation();
         self.navigation_swipe(context);
         self.navigation_swipe_bottom = context.viewport_rect().bottom();
         self.navigation_search_rect = egui::Rect::NOTHING;
         let narrow = context.viewport_rect().width() <= 760.0;
+        self.narrow_layout = narrow;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
@@ -6896,6 +6928,10 @@ impl CaperApp {
                     }
                 }
             });
+        // Closing Browse (or widening the window) uncovers the conversation: read it.
+        if covered && !self.browse_covers_conversation() {
+            self.mark_selected_direct_read();
+        }
     }
 
     fn rail(&mut self, ui: &mut egui::Ui) {
@@ -7410,6 +7446,8 @@ impl CaperApp {
                                     .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
                                     .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
                                 for (id, name, private) in previews {
+                                    // A mention in an unjoined channel shows here, not in the sidebar.
+                                    let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
                                     ui.horizontal(|ui| {
                                         let trailing = 50.0 + if self.owner() { 32.0 } else { 0.0 };
                                         let (row, _) = channel_button(
@@ -7418,7 +7456,7 @@ impl CaperApp {
                                             &name,
                                             Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
                                             self.selected_channel.as_deref() == Some(&id),
-                                            RowExtras::default(),
+                                            RowExtras { unread, ..RowExtras::default() },
                                         );
                                         if row.clicked() { self.select_channel(id.clone(), false); }
                                         if toned(ui, SECONDARY_TONE, true, egui::Button::new(bold("Join").size(11.0)).min_size(egui::vec2(46.0, 28.0))).clicked()
@@ -14635,12 +14673,8 @@ fn channel_button(
             .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
         width + 9.0
     });
+    // Laid out from the right: name, unread dot, bell, timer, as on web and Android.
     let mut name_right = timer_right - timer_width;
-    if extras.unread {
-        ui.painter()
-            .circle_filled(egui::pos2(name_right - 6.0, rect.center().y), 3.0, TEXT);
-        name_right -= 16.0;
-    }
     if let Some(label) = &extras.muted {
         let bell = egui::Rect::from_center_size(
             egui::pos2(name_right - 9.0, rect.center().y),
@@ -14648,6 +14682,11 @@ fn channel_button(
         );
         muted_indicator(ui, bell, response.id.with("muted"), label);
         name_right -= 20.0;
+    }
+    if extras.unread {
+        ui.painter()
+            .circle_filled(egui::pos2(name_right - 6.0, rect.center().y), 3.0, TEXT);
+        name_right -= 16.0;
     }
     // Long names end in "…" rather than a letter cut in half.
     let label = truncated_galley(

@@ -12,6 +12,7 @@ import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.push.CaperNotifications
 import chat.caper.android.push.ForegroundConversation
+import chat.caper.android.push.PushActivity
 import chat.caper.android.push.PushOffer
 import chat.caper.android.push.PushRegistration
 import chat.caper.android.push.pushOffer
@@ -102,6 +103,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var membershipRevision = 0L
     private var membershipRefresh: Job? = null
     private var unreadRevision = 0L
+    private var unreadRefreshScheduled: Job? = null
     private val channelReads = mutableMapOf<String, String>()
     private var conversationVisible = true
 
@@ -112,6 +114,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
         viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
         viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation() } }
+        viewModelScope.launch { PushActivity.received.collect { scheduleUnreadRefresh() } }
     }
 
     private fun loadHome() {
@@ -716,6 +719,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
     }
 
+    /** Pushes refresh unread state between polls; a burst coalesces into one request about a second after the first. */
+    private fun scheduleUnreadRefresh() {
+        if (accountToken == null || unreadRefreshScheduled?.isActive == true) return
+        unreadRefreshScheduled = viewModelScope.launch { delay(1_000); refreshUnreadSpaces() }
+    }
+
     private fun refreshUnreadSpaces() {
         val token = accountToken ?: return
         val account = accountGeneration; val revision = ++unreadRevision
@@ -738,8 +747,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (seq == null) return
         val current = mutable.value
         if (!foreground || !conversationVisible || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
-        if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
+        // An older window (jumped to a reply or search result) is not the latest, for channels and DMs alike.
         if (current.hasNewerMessages) return
+        if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
         val space = current.selectedSpace?.space?.id?.takeIf { it.isNotEmpty() } ?: return
         val token = accountToken ?: return
         if ((channelReads[id] ?: "0").toBigInteger() >= seq.toBigInteger()) return

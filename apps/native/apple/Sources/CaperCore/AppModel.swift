@@ -100,8 +100,16 @@ public final class AppModel {
     public var navigationOpen = false {
         didSet { if !navigationOpen { markSelectedDirectRead() } }
     }
+    /// Phone-width windows slide Browse over the conversation; wider ones show
+    /// both, so an open Browse only hides the conversation on narrow layouts.
+    public var narrowLayout = false {
+        didSet { if narrowLayout != oldValue { markSelectedDirectRead() } }
+    }
+    private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
     public private(set) var unreadSpaces: [UnreadSpace] = []
+    public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
     @ObservationIgnored private var unreadRevision = 0
+    @ObservationIgnored private var unreadRefreshScheduled = false
     @ObservationIgnored private var channelReads: [String: String] = [:]
     public var openingSpaceID: String?
     public var openingChannelID: String?
@@ -697,8 +705,9 @@ public final class AppModel {
 
     private func markSelectedDirectRead() {
         markSelectedChannelRead()
-        guard foreground, account != nil, let id = selectedDirectMessageID, selectedDirectMessage?.status != .incoming,
-              let history = chat.currentSnapshot(), history.channel?.id == id,
+        guard foreground, !browseCoversConversation, account != nil, let id = selectedDirectMessageID,
+              selectedDirectMessage?.status != .incoming,
+              let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               let index = directMessages.firstIndex(where: { $0.id == id }),
               (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
         let attempt = generation
@@ -713,6 +722,20 @@ public final class AppModel {
         }
     }
 
+    /// Live notifications refresh unread state between polls; a burst of them
+    /// coalesces into one request about a second after the first.
+    public func scheduleUnreadRefresh() {
+        guard account != nil, !unreadRefreshScheduled else { return }
+        unreadRefreshScheduled = true
+        let attempt = generation
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.unreadRefreshScheduled = false
+            guard self?.generation == attempt else { return }
+            await self?.refreshUnreadSpaces()
+        }
+    }
+
     public func refreshUnreadSpaces() async {
         guard account != nil else { return }
         unreadRevision += 1
@@ -723,7 +746,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard foreground, !navigationOpen, account != nil, selectedDirectMessageID == nil,
+        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
