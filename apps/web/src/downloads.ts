@@ -24,7 +24,7 @@ export const intelMacDownload = `${release}/Caper-macOS-Intel.dmg`;
 // public link once a build passes Beta App Review, and the Google Group once the
 // Play closed test has an approved release. Android needs two steps because a
 // closed test only admits group members, who then opt in on Google Play.
-export const testFlightUrl: string | null = null;
+export const testFlightUrl: string | null = "https://testflight.apple.com/join/khGQMuYP";
 export const androidTestersGroupUrl: string | null = null;
 export const playTestingUrl = "https://play.google.com/apps/testing/chat.caper.android";
 
