@@ -1201,6 +1201,13 @@ final class CaperParityUITests: XCTestCase {
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
         let panel = app.descendants(matching: .any)["message-thread"]
+        // The widest the thread may be: 600, or less when the window leaves the
+        // timeline too little room (CI windows are narrower than a desktop's).
+        handle.click()
+        handle.typeKey(.end, modifierFlags: [])
+        let maximum = try XCTUnwrap(sidebarWidth(of: handle))
+        XCTAssertLessThanOrEqual(maximum, 600)
+        XCTAssertGreaterThanOrEqual(maximum, 350, "The window leaves room to widen the thread")
         handle.doubleClick()
         XCTAssertEqual(sidebarWidth(of: handle), 340)
         let initialEdge = panel.frame.minX
@@ -1210,7 +1217,7 @@ final class CaperParityUITests: XCTestCase {
         ))
         start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -63, dy: 0)))
         let dragged = try XCTUnwrap(sidebarWidth(of: handle))
-        XCTAssertEqual(Double(dragged), 403, accuracy: 2, "Dragging left widens the thread")
+        XCTAssertEqual(Double(dragged), Double(min(403, maximum)), accuracy: 2, "Dragging left widens the thread")
         XCTAssertEqual(initialEdge - panel.frame.minX, CGFloat(dragged - 340), accuracy: 2)
         handle.doubleClick(); handle.click()
         handle.typeKey(.leftArrow, modifierFlags: [])
@@ -1220,7 +1227,7 @@ final class CaperParityUITests: XCTestCase {
         handle.typeKey(.home, modifierFlags: [])
         XCTAssertEqual(sidebarWidth(of: handle), 300)
         handle.typeKey(.end, modifierFlags: [])
-        XCTAssertEqual(sidebarWidth(of: handle), 600)
+        XCTAssertEqual(sidebarWidth(of: handle), maximum)
         handle.doubleClick()
         handle.typeKey(.leftArrow, modifierFlags: [])
         app.buttons["Back to channel"].click()
