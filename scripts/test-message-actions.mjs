@@ -2,8 +2,9 @@
 // Start native-parity-fixture.mjs and Vite before running this script.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { emojiAsset } from "../apps/web/src/chat/emoji.ts";
 
 const web = process.env.MESSAGE_TEST_WEB_URL ?? "http://127.0.0.1:5174";
@@ -11,9 +12,14 @@ const api = process.env.MESSAGE_TEST_API_URL ?? "http://127.0.0.1:3001";
 for (const url of [web, api]) assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname));
 const artifacts = process.env.MESSAGE_TEST_ARTIFACTS && resolve(process.env.MESSAGE_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
+// Vite module requests can fill Chromium's default 250-entry timing buffer
+// before chat mounts. Preserve startup requests, not just later picker intent.
+const directory = mkdtempSync(join(tmpdir(), "caper-message-actions-"));
+const init = join(directory, "timing.js");
+writeFileSync(init, "performance.setResourceTimingBufferSize(2000)");
 const browser = (...command) => {
   const result = JSON.parse(
-    execFileSync("agent-browser", ["--session", "message-actions", ...command, "--json"], {
+    execFileSync("agent-browser", ["--session", "message-actions", "--init-script", init, ...command, "--json"], {
       encoding: "utf8",
       timeout: 60_000,
     }),
@@ -29,6 +35,17 @@ const screenshot = (name) => {
   evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   browser("screenshot", `${artifacts}/${name}.png`);
 };
+function watchPickerLoading() {
+  evaluate(`(() => {
+    window.pickerLoadingFlashes = [];
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node instanceof Element && node.textContent.includes('Loading emoji…'))
+          window.pickerLoadingFlashes.push(node.textContent);
+      }
+    }).observe(document.body, {childList: true, subtree: true});
+  })()`);
+}
 const visibleEmojiImages = `(() => {
   const body = document.querySelector('.epr-body').getBoundingClientRect();
   return [...document.querySelectorAll('.epr-body img')].filter(image => {
@@ -155,29 +172,34 @@ try {
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   wait('performance.getEntriesByType("resource").some(resource => resource.name.includes("ReactionPicker"))');
   assert.equal(evaluate('!!document.querySelector(".chat-reaction-picker")'), false);
-  assert.equal(
-    evaluate(
-      'performance.getEntriesByType("resource").filter(resource => resource.name.includes("/emoji/twemoji-15/")).length',
-    ),
-    0,
-    "Warming picker code must not fetch the image catalog",
-  );
   const preloadedImages = `performance.getEntriesByType('resource').filter(resource => resource.name.includes('/emoji/twemoji-15/') && resource.name.endsWith('.svg'))`;
+  const openingGridReady = `${preloadedImages}.length === 128 && ${preloadedImages}.every(resource => resource.responseEnd > 0 && resource.responseStatus === 200)`;
+  wait(openingGridReady);
+  assert.equal(evaluate(`${preloadedImages}.some(resource => resource.name.endsWith('/1f600.svg'))`), true);
+  assert.equal(
+    evaluate('!!document.querySelector(".chat-reaction-picker")'),
+    false,
+    "Startup must not open the picker",
+  );
+  watchPickerLoading();
+  // Open without hover/focus first: startup must prepare the picker itself.
+  browser("find", "first", ".chat-add-reaction:not(:disabled)", "click");
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  assert.deepEqual(evaluate("window.pickerLoadingFlashes"), [], "A warmed picker must not insert a loading panel");
+  browser("press", "Escape");
   for (const intent of ["hover", "focus"]) {
     if (intent === "focus") {
       browser("reload");
       wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
+      wait(openingGridReady);
+      watchPickerLoading();
     }
-    assert.equal(evaluate(`${preloadedImages}.length`), 0);
-    // Vite module requests can fill Chromium's default 250-entry timing buffer.
-    evaluate("(() => { performance.setResourceTimingBufferSize(2000); performance.clearResourceTimings(); })()");
+    evaluate("performance.clearResourceTimings()");
     const messageKey = evaluate('document.querySelector(".chat-message").dataset.messageKey');
     const trigger = `[data-message-key="${messageKey}"] .chat-add-reaction`;
     browser(intent, trigger);
-    wait(
-      `${preloadedImages}.length === 128 && ${preloadedImages}.every(resource => resource.responseEnd > 0 && resource.responseStatus === 200)`,
-    );
-    assert.equal(evaluate(`${preloadedImages}.some(resource => resource.name.endsWith('/1f600.svg'))`), true);
+    await delay(100);
+    assert.equal(evaluate(`${preloadedImages}.length`), 0, "Trigger intent must reuse startup image preloads");
     assert.equal(
       evaluate('!!document.querySelector(".chat-reaction-picker")'),
       false,
@@ -187,17 +209,20 @@ try {
     browser("focus", ".chat-composer textarea");
     browser(intent, trigger);
     await delay(100);
-    assert.equal(evaluate(`${preloadedImages}.length`), 128, "Repeated intent must not issue duplicate image requests");
+    assert.equal(evaluate(`${preloadedImages}.length`), 0, "Repeated intent must not issue duplicate image requests");
   }
 
   browser("find", "first", ".chat-add-reaction:not(:disabled)", "click");
   wait('!!document.querySelector(".chat-reaction-picker input")');
+  assert.deepEqual(evaluate("window.pickerLoadingFlashes"), [], "Reopening must reuse the ready picker");
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
   // The library itself warms some off-screen assets. Chromium can reuse them
   // without a new Resource Timing entry, so count only genuinely cold assets.
   const loadedAssets = new Set(evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`));
+  const openingCodes = await (await fetch(`${web}/emoji/twemoji-15/preload.json`)).json();
+  openingCodes.map(emojiAsset).forEach((asset) => loadedAssets.add(asset));
   for (const [category, firstEmoji, count, intent] of [
     ["travel_places", "1f30d", 128, "hover"],
     ["flags", "1f3c1", 128, "focus"],
@@ -291,6 +316,8 @@ try {
   // into its mobile overlay while checking unrelated touch gestures.
   browser("reload");
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
+  wait(openingGridReady);
+  watchPickerLoading();
 
   // agent-browser has no touch command. Use its launched Chromium's CDP input
   // rather than synthesizing DOM events or installing another browser package.
@@ -459,6 +486,7 @@ try {
   await openTarget();
   action("Add reaction");
   wait('!!document.querySelector(".chat-reaction-picker input")');
+  assert.deepEqual(evaluate("window.pickerLoadingFlashes"), [], "The touch action drawer must reuse the ready picker");
   checkEmojiCategories("mobile");
   checkEmojiNames("mobile");
   screenshot("message-actions-mobile-picker");
@@ -524,6 +552,8 @@ try {
   browser("reload");
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   browser("click", ".navigation-toggle");
+  // Browse swallows clicks during its phone slide; wait before opening its menu.
+  wait("!document.documentElement.dataset.browseTransition");
   browser("click", ".space-menu summary");
   action("Browse channels");
   wait('!!document.querySelector(".channel-directory")');
@@ -555,7 +585,13 @@ try {
   );
   browser("find", "first", ".chat-add-reaction:not(:disabled)", "click");
   wait('!!document.querySelector(".chat-reaction-picker input")');
-  wait('document.querySelector(".chat-reaction-picker").getBoundingClientRect().right > innerWidth - 80');
+  // The members pane can sit to the right of chat. Align with the trigger,
+  // not the window's edge, and keep the panel inside the viewport.
+  wait(`(() => {
+    const panel = document.querySelector('.chat-reaction-picker').getBoundingClientRect();
+    const anchor = document.querySelector('.chat-add-reaction[aria-expanded="true"]').getBoundingClientRect();
+    return panel.left >= 12 && panel.right <= innerWidth - 12 && Math.abs(panel.right - anchor.right) < 1;
+  })()`);
   assert.equal(evaluate('!!document.querySelector(".chat-actions-overlay")'), false);
   checkEmojiCategories("desktop");
   browser("fill", ".chat-reaction-picker input", "");
@@ -624,7 +660,7 @@ try {
     "PASS: dash-separated labels/image alt text, dash/underscore/space search on desktop and narrow web, and Unicode reaction persistence after dash-name selection.",
   );
   console.log(
-    "PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, picker code warmup without artwork fetches, trigger and all seven category hover/focus preloads without duplicate requests or selection, category cache across reopen, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.",
+    "PASS: Chromium touch gestures (tap/scroll/cancel/hold), hidden inline emoji controls, modal focus/dismissal, exact clipboard text/ID, quick toggles, startup picker code/opening-grid preloads without opening, no warmed loading-panel flash, trigger and all seven category hover/focus preloads without duplicate requests or selection, category cache across reopen, eager virtualized category jumps/reopen, underline/no click ring, keyboard tabs, search/live-target retention, clipboard failure, read-only copying, desktop picker.",
   );
   console.log(
     "PASS: optimistic mobile/desktop reactions before request delivery, enabled chips, no saving status, rapid add/remove without stale-ack flicker, error rollback and immediate retry.",
@@ -642,4 +678,5 @@ try {
 } finally {
   socket?.close();
   browser("close");
+  rmSync(directory, { recursive: true, force: true });
 }

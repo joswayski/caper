@@ -1394,11 +1394,13 @@ native phone, macOS, multi-client production or physical-device acceptance.
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
-emoji-CDN requests. Writable web chat warms the code/data chunk after one second;
-it does not mount the picker or fetch the artwork catalog. Hovering or focusing
-**Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
-smileys/people images, generated from the picker catalog at build time. This
-covers the opening grid, not the full catalog, and does not open the picker.
+emoji-CDN requests. Signed-in writable web chat immediately warms the code/data
+chunk and preloads/decodes the first 128 Emoji 15.0 smileys/people images when
+chat mounts, without waiting for a sending session. This covers the opening grid,
+not the full catalog, and does not mount or open the picker. Hovering or focusing
+**Add reaction** reuses that preload, or retries failed image preparation.
+The evaluated picker component is retained across messages and action menus;
+warm openings render it directly, without an intermediate loading panel.
 Hovering or keyboard-focusing a category tab preloads/decodes its first 128
 Emoji 15.0 images (or the full category when smaller), without selecting it or
 scrolling the grid. Category manifests are also generated at build time.
@@ -1412,8 +1414,9 @@ category jumps. Versioned
 changed artwork must use a new path. Web category tabs sit above search, brighten
 on hover/selection, and underline the selected category in terracotta. Pointer
 clicks have no circular ring; keyboard focus retains a separate outline.
-`node scripts/test-message-actions.mjs` checks warmup without artwork requests,
-hover/focus preloading without opening or duplicate image requests,
+`node scripts/test-message-actions.mjs` checks startup code/opening-grid preparation
+without opening, warm openings/reopenings without loading-panel flashes,
+hover/focus reuse without opening or duplicate image requests,
 all seven non-opening category preloads without selection/scrolling, cache reuse
 across reopening, populated category jumps, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
