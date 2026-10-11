@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
@@ -78,12 +79,12 @@ import java.util.UUID
     val forward = message.forward ?: return
     Surface(Modifier.padding(start = 62.dp, end = 18.dp, bottom = 8.dp).fillMaxWidth(), shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Forwarded · live", color = TextMuted, fontSize = 11.sp)
+            Text("Forwarded", color = TextMuted, fontSize = 11.sp)
             val original = forward.message
             if (original == null) Text("Original conversation unavailable.", color = TextMuted)
             else {
                 SharedOriginal(original, state, onAttachmentFailed)
-                TextButton(open, shape = MaterialTheme.shapes.small) { Text("${original.thread?.replyCount?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
+                TextButton(open, shape = MaterialTheme.shapes.small) { Text("${original.thread?.replyCount?.takeIf { it > 0 }?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
             }
         }
     }
@@ -109,7 +110,7 @@ import java.util.UUID
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Forward message", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Text("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.", color = TextMuted, fontSize = 12.sp)
+            Text("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.", color = TextMuted, fontSize = 12.sp)
             SharedOriginal(message.forward?.message ?: message)
             OutlinedTextField(search, { search = it }, label = { Text("Find a space, channel or DM") }, singleLine = true, enabled = pending == null, modifier = Modifier.fillMaxWidth())
             val terms = search.trim().split(Regex("\\s+")).map { it.removePrefix("#") }
@@ -188,13 +189,15 @@ import java.util.UUID
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Text("Live · Read-only original. Replies to the forward stay in the destination.", color = TextMuted, fontSize = 12.sp)
-            conversation?.root?.let { SharedOriginal(it) }
+            Surface(color = Color(0xFFE8BD71).copy(alpha = 0.07f), shape = MaterialTheme.shapes.small) {
+                Text("Heads up! New reactions and replies appear here automatically.", Modifier.padding(horizontal = 10.dp, vertical = 8.dp), color = Color(0xFFE8BD71), fontSize = 12.sp)
+            }
+            val root = if (conversation != null) conversation?.root else if (error == null) message.forward?.message else null
+            root?.let { SharedOriginal(it) }
             if (conversation?.hasMore == true) TextButton({ pages++ }, enabled = !loading, shape = MaterialTheme.shapes.small) { Text("Load older replies") }
             conversation?.messages?.forEach { reply -> key(reply.id) { SharedOriginal(reply) } }
-            if (conversation?.root == null && !loading && error == null) Text("Original conversation unavailable.", color = TextMuted)
+            if (root == null && !loading && error == null) Text("Original conversation unavailable.", color = TextMuted)
             if (conversation?.messages?.isEmpty() == true && conversation?.root != null) Text("No replies yet.", color = TextMuted)
-            if (loading) Text("Updating conversation…", color = TextMuted)
             error?.let { Text(it, color = ErrorText); TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
         }
     }

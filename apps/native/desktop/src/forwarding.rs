@@ -352,7 +352,7 @@ impl Forwarding {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match view {
                     View::Picker { source, destinations, selected, search, text, pending, session, .. } => {
-                        ui.label(RichText::new("Shares this conversation live, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
+                        ui.label(RichText::new("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
                         original(ui, source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(source), textures);
                         ui.add_enabled(pending.is_none(), egui::TextEdit::singleline(search).hint_text("Find a space, channel or DM"));
                         let query = search.to_lowercase();
@@ -386,18 +386,22 @@ impl Forwarding {
                         if self.error.is_some() && destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
-                        ui.label(RichText::new("Live · Read-only original. Replies to the forward stay in the destination.").size(12.0).color(crate::MUTED));
+                        egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(232, 189, 113, 18)).corner_radius(8).inner_margin(8).show(ui, |ui| {
+                            ui.label(RichText::new("Heads up! New reactions and replies appear here automatically.").size(12.0).color(egui::Color32::from_rgb(232, 189, 113)));
+                        });
                         if let Some(page) = page {
                             if let Some(root) = &page.root { original(ui, root, textures); }
                             if page.has_more && ui.add_enabled(!self.busy, egui::Button::new("Load older replies")).clicked() { *pages += 1; operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
                             for message in &page.messages { original(ui, message, textures); }
                             if page.root.is_none() { ui.label("Original conversation unavailable."); }
                             else if page.messages.is_empty() { ui.label("No replies yet."); }
+                        } else if self.error.is_none() && let Some(root) = wrapper.forward.as_ref().and_then(|forward| forward.message.as_ref()) {
+                            original(ui, root, textures);
                         }
                         if self.error.is_some() && ui.add_enabled(!self.busy, egui::Button::new("Retry")).clicked() { operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
                     }
                 }
-                if self.busy { ui.spinner(); }
+                if self.busy && matches!(view, View::Picker { .. }) { ui.spinner(); }
                 if let Some(error) = &self.error { ui.colored_label(crate::ERROR, error); }
             });
         });
