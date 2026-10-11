@@ -336,6 +336,13 @@
     text-decoration: underline;
   }
 }
+/* The Android beta's second step must read as a link, not as muted copy. */
+.app-downloads .download-step {
+  color: var(--text);
+}
+.app-downloads .download-step a {
+  text-decoration: underline;
+}
 .hero-copy > .made-by {
   margin: 20px 0 0;
   color: var(--text-muted);

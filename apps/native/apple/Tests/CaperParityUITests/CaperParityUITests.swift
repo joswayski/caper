@@ -314,6 +314,65 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["emoji-suggestion-1f345"].exists)
     }
 
+    #if os(macOS)
+    func testComposerSuggestionsDoNotResizeOrMoveChannelAndThreadHistory() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        try await Self.fixtureControl(["incomingReply": ["rootId": "chan00000001m01", "text": "Stationary thread reply"]])
+        let app = launch()
+        let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                               "Missing fixture thread root")
+        for inThread in [false, true] {
+            if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
+            let timeline = try require(app.scrollViews[inThread ? "thread-timeline" : "chat-timeline"], timeout: 5,
+                                       "Missing conversation viewport")
+            let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", inThread ? "Reply to thread" : "Message #")).firstMatch,
+                                       timeout: 5, "Missing composer")
+            XCTAssertTrue(focus(composer))
+            composer.typeText("Before ")
+            let viewport = timeline.frame
+            let editor = composer.frame
+            let lastText = inThread ? "TEST FIXTURE — Stationary thread reply"
+                : "Agreed, @fixture_owner. Let’s check the narrow layout and the management dialogs too."
+            let lastMessage = try require(staticTexts(lastText, in: timeline).firstMatch, timeout: 5, "Missing latest message")
+            let messageY = lastMessage.frame.minY
+            let scope = inThread ? "thread" : "channel"
+            func assertStationary() {
+                XCTAssertEqual(timeline.frame.minY, viewport.minY, accuracy: 1)
+                XCTAssertEqual(timeline.frame.height, viewport.height, accuracy: 1, "Suggestions must overlay, not shrink, history")
+                XCTAssertEqual(lastMessage.frame.minY, messageY, accuracy: 1, "Suggestions must not scroll messages")
+                XCTAssertEqual(composer.frame.minY, editor.minY, accuracy: 1)
+                XCTAssertEqual(composer.frame.height, editor.height, accuracy: 1)
+            }
+            capture("\(scope)-autocomplete-closed", app: app)
+            composer.typeText(":")
+            let thumbsUp = try require(app.buttons["emoji-suggestion-1f44d"], timeout: 5, "Missing default emoji choices")
+            // The popup is placed from the composer's bounds, which arrive a layout pass after it appears.
+            let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: thumbsUp)
+            XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed, "The overlaid popup must accept clicks")
+            XCTAssertLessThan(thumbsUp.frame.maxY, composer.frame.minY, "Suggestions belong above the composer")
+            assertStationary()
+            capture("\(scope)-autocomplete-defaults", app: app)
+            composer.typeText("tomato")
+            let tomato = try require(app.buttons["emoji-suggestion-1f345"], timeout: 5, "Missing narrowed emoji choice")
+            assertStationary()
+            capture("\(scope)-autocomplete-narrowed", app: app)
+            tomato.click()
+            XCTAssertEqual(composer.value as? String, "Before 🍅")
+            XCTAssertTrue(hasKeyboardFocus(composer))
+            assertStationary()
+            composer.typeText(" @")
+            _ = try require(app.buttons["mention-suggestion-everyone"], timeout: 5, "Missing mention choices")
+            assertStationary()
+            capture("\(scope)-autocomplete-mentions", app: app)
+            composer.typeKey(.escape, modifierFlags: [])
+            XCTAssertFalse(app.buttons["mention-suggestion-everyone"].exists)
+            XCTAssertEqual(composer.value as? String, "Before 🍅 @", "Dismissing suggestions must retain the draft")
+            assertStationary()
+        }
+    }
+    #endif
+
     func testAtMentionSuggestionsInsertUsernameWithoutSending() throws {
         let app = launch()
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,

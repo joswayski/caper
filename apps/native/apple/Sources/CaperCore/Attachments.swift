@@ -284,6 +284,17 @@ public enum AttachmentURLPolicy {
 public enum AttachmentPolicy {
     public static let maxAttachments = 10
 
+    /// The file drop overlay's title and detail line. Every client produces
+    /// the strings in shared/messages/drop-cases.json. Change them together.
+    public static func dropText(channel: String, direct: Bool, attached: Int) -> (title: String, detail: String) {
+        let room = max(0, maxAttachments - attached)
+        let detail: String
+        if room == 0 { detail = "\(maxAttachments) files attached. Remove one to add another." }
+        else if room == maxAttachments { detail = "Up to \(maxAttachments) files. Add a message before sending." }
+        else { detail = "\(room) more file\(room == 1 ? "" : "s"). Add a message before sending." }
+        return ("Attach to \(direct ? "" : "#")\(channel)", detail)
+    }
+
     /// Message display frame that reserves layout space before loading.
     public static func displaySize(width: Int?, height: Int?, maxWidth: Double = 360, maxHeight: Double = 300) -> (width: Double, height: Double)? {
         guard let width, let height, width > 0, height > 0 else { return nil }
@@ -477,10 +488,10 @@ public enum AttachmentPolicy {
         case keep
         /// Copy the H.264 samples into MP4 unchanged (only the container is unplayable).
         case remux
-        /// Re-encode to H.264/AAC MP4 with this export preset. `required`
-        /// transcodes (codec, HDR, container) are kept at any size; size-only
-        /// ones only when at least 10% smaller.
-        case transcode(preset: String, required: Bool)
+        /// Re-encode to H.264/AAC MP4 at this display size and video bitrate.
+        /// `required` transcodes (codec, HDR, container) are kept at any size;
+        /// size-only ones only when at least 10% smaller.
+        case transcode(width: Int, height: Int, bitrateKbps: Int, required: Bool)
     }
 
     /// `videoBitrateKbps` is the 1080p target; smaller frames scale it by
@@ -498,8 +509,28 @@ public enum AttachmentPolicy {
         let heavy = facts.bitrateKbps.map { $0 > 1.25 * videoTargetKbps(width: facts.width, height: facts.height, settings: settings) } ?? false
         let required = !facts.isH264 || facts.isHDR || !facts.playableContainer
         guard oversized || heavy || !facts.isH264 || facts.isHDR else { return facts.playableContainer ? .keep : .remux }
-        guard let preset = videoPreset(width: facts.width, height: facts.height, maxHeight: settings.videoMaxHeight) else { return .keep }
-        return .transcode(preset: preset, required: required)
+        let size = videoOutputSize(width: facts.width, height: facts.height, maxHeight: settings.videoMaxHeight)
+        let target = videoTargetKbps(width: size.width, height: size.height, settings: settings)
+        return .transcode(width: size.width, height: size.height,
+                          bitrateKbps: outputKbps(targetKbps: target, sourceKbps: facts.bitrateKbps), required: required)
+    }
+
+    /// The target, but never above the source's own bitrate (web's
+    /// `outputKbps`): a compatibility transcode of a lean HEVC clip must not
+    /// grow it. The floor still applies.
+    public static func outputKbps(targetKbps: Double, sourceKbps: Double?) -> Int {
+        guard let source = sourceKbps, source > 0 else { return Int(targetKbps.rounded()) }
+        return Int(max(videoBitrateFloorKbps, min(targetKbps, source)).rounded())
+    }
+
+    /// Even output dimensions with the short edge bounded by `maxHeight`
+    /// ("1080p"), so portrait phone video keeps full detail. Never enlarged.
+    public static func videoOutputSize(width: Int, height: Int, maxHeight: Int) -> (width: Int, height: Int) {
+        let short = min(width, height)
+        guard maxHeight > 0, short > maxHeight else { return (max(2, width / 2 * 2), max(2, height / 2 * 2)) }
+        let edge = max(2, maxHeight / 2 * 2)
+        let other = { (size: Int) in max(2, Int((Double(size) * Double(edge) / Double(short) / 2).rounded()) * 2) }
+        return width < height ? (edge, other(height)) : (other(width), edge)
     }
 
     /// Whether an export may replace the original: it must be H.264 (for a
@@ -508,28 +539,6 @@ public enum AttachmentPolicy {
                                       sourceHasAudio: Bool, outputHasAudio: Bool) -> Bool {
         guard outputSize > 0, outputIsH264, !outputIsHDR, !sourceHasAudio || outputHasAudio else { return false }
         return required || Double(outputSize) <= Double(originalSize) * (1 - minimumSaving)
-    }
-
-    /// AVAssetExportSession H.264/AAC size presets as (long edge, short edge).
-    public static let videoPresets: [(name: String, long: Int, short: Int)] = [
-        ("AVAssetExportPreset640x480", 640, 480),
-        ("AVAssetExportPreset960x540", 960, 540),
-        ("AVAssetExportPreset1280x720", 1280, 720),
-        ("AVAssetExportPreset1920x1080", 1920, 1080),
-        ("AVAssetExportPreset3840x2160", 3840, 2160),
-    ]
-
-    /// The largest size preset whose output short edge stays within
-    /// `maxHeight`. Presets fit the video inside long×short without
-    /// enlarging it. Nil disables transcoding.
-    public static func videoPreset(width: Int, height: Int, maxHeight: Int) -> String? {
-        guard maxHeight > 0, width > 0, height > 0 else { return nil }
-        let candidates = videoPresets.filter { preset in
-            let scale = min(1, Double(preset.long) / Double(max(width, height)), Double(preset.short) / Double(min(width, height)))
-            // "1080p" bounds the short edge, so portrait phone video keeps full detail.
-            return Int((Double(min(width, height)) * scale).rounded()) <= maxHeight
-        }
-        return candidates.last?.name
     }
 
     public static func formatBytes(_ bytes: Int) -> String {
@@ -591,6 +600,11 @@ public enum MediaViewerPolicy {
     /// "2 / 5" over a set of more than one file.
     public static func counter(position: Int, count: Int) -> String? {
         count > 1 ? "\(position + 1) / \(count)" : nil
+    }
+
+    /// The stored size, which is what saving or opening downloads.
+    public static func size(_ attachment: ChatAttachment) -> String? {
+        attachment.size > 0 ? AttachmentPolicy.formatBytes(attachment.size) : nil
     }
 
     /// Where Previous (-1) or Next (+1) moves, stopping at either end.

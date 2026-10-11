@@ -892,10 +892,19 @@ private struct MediaViewer: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .lineLimit(1).truncationMode(.middle)
-                    if let counter = MediaViewerPolicy.counter(position: position, count: count) {
-                        Text(counter).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).monospacedDigit()
-                            .accessibilityLabel("\(position + 1) of \(count)")
-                            .accessibilityIdentifier("media-viewer-counter")
+                    let counter = MediaViewerPolicy.counter(position: position, count: count)
+                    let size = MediaViewerPolicy.size(item)
+                    if counter != nil || size != nil {
+                        HStack(spacing: 0) {
+                            if let counter {
+                                Text(counter).monospacedDigit()
+                                    .accessibilityLabel("\(position + 1) of \(count)")
+                                    .accessibilityIdentifier("media-viewer-counter")
+                            }
+                            if counter != nil, size != nil { Text(" · ").accessibilityHidden(true) }
+                            if let size { Text(size).accessibilityIdentifier("media-viewer-size") }
+                        }
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)
@@ -1523,6 +1532,169 @@ struct PickedAttachmentMedia: Transferable, Sendable {
         FileRepresentation(importedContentType: .image) { received in
             PickedAttachmentMedia(file: try AttachmentStaging.stage(copying: received.file))
         }
+    }
+}
+
+/// A file dropped on the conversation. Photos and videos (from Photos, Files
+/// or Finder) arrive as their media; other files from Finder or Files as
+/// file URLs. Web links are not files and are refused.
+struct DroppedAttachment: Transferable, Sendable {
+    let file: LocalAttachmentFile
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            DroppedAttachment(file: try AttachmentStaging.stage(copying: received.file))
+        }
+        FileRepresentation(importedContentType: .image) { received in
+            DroppedAttachment(file: try AttachmentStaging.stage(copying: received.file))
+        }
+        FileRepresentation(importedContentType: .audio) { received in
+            DroppedAttachment(file: try AttachmentStaging.stage(copying: received.file))
+        }
+        FileRepresentation(importedContentType: .pdf) { received in
+            DroppedAttachment(file: try AttachmentStaging.stage(copying: received.file))
+        }
+        ProxyRepresentation(importing: { (url: URL) in
+            guard url.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
+            return DroppedAttachment(file: try AttachmentStaging.stage(copying: url))
+        })
+    }
+}
+
+/// The drop overlay's motion, as on web (chat.css `.chat-drop*`), Android
+/// and Rust desktop (`file_drop.rs`): times in seconds since the drag arrived.
+enum FileDropMotion {
+    /// Resting pose per card, left to right: offset and turn in degrees.
+    static let poses: [(x: Double, y: Double, turn: Double)] = [(-46, 10, -16), (0, -26, 0), (46, 10, 16)]
+
+    /// Overshoots and settles, like CSS `cubic-bezier(0.34, 1.56, 0.64, 1)`.
+    static func backOut(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1) - 1
+        return 1 + 2.70158 * t * t * t + 1.70158 * t * t
+    }
+
+    static func easeInOut(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    static func progress(_ elapsed: Double, delay: Double, duration: Double) -> Double {
+        min(max((elapsed - delay) / duration, 0), 1)
+    }
+
+    /// 0 to 1 and back over 2.4 s each way, after the cards have fanned out.
+    static func sway(_ elapsed: Double, delay: Double) -> Double {
+        guard elapsed >= delay else { return 0 }
+        let phase = ((elapsed - delay) / 2.4).truncatingRemainder(dividingBy: 2)
+        return easeInOut(phase < 1 ? phase : 2 - phase)
+    }
+
+    /// The character's hop over 1.6 s: lift, and horizontal/vertical squash.
+    static func hop(_ elapsed: Double) -> (lift: Double, x: Double, y: Double) {
+        guard elapsed >= 0.5 else { return (0, 1, 1) }
+        let t = ((elapsed - 0.5) / 1.6).truncatingRemainder(dividingBy: 1)
+        let frames: [(at: Double, lift: Double, x: Double, y: Double)] =
+            [(0, 0, 1, 1), (0.25, -9, 0.97, 1.03), (0.52, 0, 1.05, 0.95), (0.6, 0, 1, 1), (1, 0, 1, 1)]
+        let next = frames.firstIndex { $0.at > t } ?? frames.count - 1
+        let from = frames[next - 1], to = frames[next]
+        let k = easeInOut((t - from.at) / (to.at - from.at))
+        return (from.lift + (to.lift - from.lift) * k, from.x + (to.x - from.x) * k, from.y + (to.y - from.y) * k)
+    }
+}
+
+/// Covers the conversation while files are dragged over it: today's Caper
+/// character hops in front of three file cards that fan out behind it.
+struct FileDropOverlay: View {
+    let title: String
+    let detail: String
+    @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var start = Date()
+    private let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
+
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion)) { timeline in
+            // Reduced motion shows the resting pose, without the hop or sway.
+            let elapsed: Double = reduceMotion ? 0.5 : timeline.date.timeIntervalSince(start)
+            let rest = reduceMotion
+            let pop: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0, duration: 0.26)
+            let scrim: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0, duration: 0.14)
+            let shown: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0, duration: 0.12)
+            ZStack {
+                CaperTheme.blackout.opacity(0.82 * scrim)
+                VStack(spacing: 6) {
+                    art(elapsed, rest: rest).padding(.bottom, 8)
+                    Text(title).font(CaperTheme.font(18, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    Text(detail).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                }
+                .multilineTextAlignment(.center)
+                .padding(.top, 20).padding(.bottom, 26).padding(.horizontal, 24)
+                .frame(maxWidth: 360)
+                .background(RoundedRectangle(cornerRadius: 8).fill(CaperTheme.surface))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border))
+                .overlay(Rectangle().stroke(CaperTheme.terracotta, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])).padding(9.75))
+                .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
+                .opacity(shown)
+                .offset(y: 10 * (1 - FileDropMotion.backOut(pop)))
+                .padding(16)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func art(_ elapsed: Double, rest: Bool) -> some View {
+        let fan: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.06, duration: 0.42)
+        let spread = FileDropMotion.backOut(fan)
+        let rise: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.12, duration: 0.38)
+        let lifted = FileDropMotion.backOut(rise)
+        let hop = rest ? (lift: 0.0, x: 1.0, y: 1.0) : FileDropMotion.hop(elapsed)
+        let grow: Double = 0.6 + 0.4 * lifted
+        let characterBottom: Double = 128 + 4 + 28 * (1 - lifted) + hop.lift
+        return ZStack {
+            // The middle card first, behind the other two.
+            ForEach([1, 0, 2], id: \.self) { index in
+                let pose = FileDropMotion.poses[index]
+                let swayed: Double = rest ? 0 : sway(card: index, elapsed)
+                let scale: Double = 0.7 + 0.3 * spread
+                let turn: Double = pose.turn * spread + 4 * swayed
+                let x: Double = 88 + pose.x * spread
+                // The card's bottom edge, less half its 66-point height.
+                let bottom: Double = 98 + 24 + (pose.y - 24) * spread - 3 * swayed
+                DropFileCard(symbol: ["photo", "doc.text", "film"][index])
+                    .scaleEffect(scale, anchor: .bottom)
+                    .rotationEffect(.degrees(turn), anchor: .bottom)
+                    .opacity(fan)
+                    .position(x: x, y: bottom - 33)
+            }
+            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
+                .renderingMode(.original).resizable().scaledToFit()
+                .frame(width: 76, height: 76)
+                .scaleEffect(x: hop.x * grow, y: hop.y * grow, anchor: .bottom)
+                .opacity(rise)
+                .position(x: 88, y: characterBottom - 38)
+        }
+        .frame(width: 176, height: 128)
+        .accessibilityHidden(true)
+    }
+
+    /// The left and middle cards sway out of step; the right card mirrors the left.
+    private func sway(card index: Int, _ elapsed: Double) -> Double {
+        switch index {
+        case 0: return FileDropMotion.sway(elapsed, delay: 0.48)
+        case 1: return FileDropMotion.sway(elapsed, delay: 0.78)
+        default: return 1 - FileDropMotion.sway(elapsed, delay: 0.48)
+        }
+    }
+}
+
+private struct DropFileCard: View {
+    let symbol: String
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8).fill(CaperTheme.raised)
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border))
+            .overlay(Image(systemName: symbol).font(.system(size: 18, weight: .medium)).foregroundStyle(CaperTheme.muted))
+            .frame(width: 54, height: 66)
     }
 }
 

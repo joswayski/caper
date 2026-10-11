@@ -175,11 +175,15 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
-        || !["/original/", "/preview/"].iter().any(|prefix| {
-            url.path().strip_prefix(prefix).is_some_and(|id| {
-                !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        || !["/assets/", "/original/", "/preview/"]
+            .iter()
+            .any(|prefix| {
+                url.path().strip_prefix(prefix).is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 64
+                        && id.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
             })
-        })
         || !(1..=50_000_000).contains(&size)
         || !matches!(
             content_type,

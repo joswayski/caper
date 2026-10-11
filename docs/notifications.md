@@ -136,9 +136,11 @@ can have a small notification preview. Multiple files remain supported; each
 message contributes at most one preview. Captions remain the body. Deleted
 files are not signed.
 
-The URL grants 15-minute access to **the existing image original** (`/original`)
+The URL grants 15-minute access to **the existing image original** (`/assets`)
 or **the existing video poster** (`/preview`), never a new notification-specific
-rendition. API and gateway read current poster type/size from the asset row, so
+rendition. `/assets` maps to the unchanged `original/` storage prefix; the CDN
+and updated clients also accept legacy `/original` links. API and gateway read
+current poster type/size from the asset row, so
 older messages with only `preview:{}` still work. No video bytes are downloaded
 for notifications: a video without a usable poster gets text only, not an
 original-video download. API and gateway reuse `ASSET_CDN_ORIGIN` and

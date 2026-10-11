@@ -206,7 +206,7 @@ fn file_notifications_use_one_original_and_keep_text_without_media() {
         assert_eq!(fcm["body"], expected);
         if media {
             let url = apns["attachmentUrl"].as_str().unwrap();
-            assert!(url.starts_with("https://cdn.test/original/photo1?exp="));
+            assert!(url.starts_with("https://cdn.test/assets/photo1?exp="));
             let expires: i64 = url
                 .split("exp=")
                 .nth(1)
@@ -236,7 +236,7 @@ fn file_notifications_use_one_original_and_keep_text_without_media() {
         alert["attachmentUrl"]
             .as_str()
             .unwrap()
-            .contains("/original/photo1?")
+            .contains("/assets/photo1?")
     );
     let video = json!({"id":"video1","kind":"video","contentType":"video/mp4","size":120_000_000,
         "preview":{"contentType":"image/jpeg","size":321}});

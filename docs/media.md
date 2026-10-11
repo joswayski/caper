@@ -1056,7 +1056,15 @@ for tabs open longer than a URL's lifetime.
 Every response or socket frame that carries a message signs URLs as it leaves:
 history, the send response, and both gateway paths (live and replay, including
 the legacy socket). URLs look like
-`https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+`https://cdn.caper.chat/assets/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+The public `/assets/{id}` path maps to the existing `original/{id}` R2 key;
+the HMAC still signs that storage key. Previews stay at `/preview/{id}`.
+The Worker also accepts already-issued `/original/{id}` links with their
+existing signatures, and both main-file paths share the same edge cache entry.
+No stored objects, upload URLs or database records move. Roll out the updated
+web/native notification downloaders and the CDN Worker before the API and
+gateway begin issuing `/assets` URLs. Older clients can still open files, but
+their notification downloaders reject the new path and show text only.
 Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
 cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
@@ -1114,8 +1122,11 @@ Rules shared by every client:
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
-  never re-compressed. A size-only transcode is kept only when at least 10%
-  smaller; the audio track is never dropped.
+  never re-compressed. The output bitrate is the target at the output size,
+  but never above the source's own bitrate (floor still applies), so a lean
+  HEVC clip converted only for compatibility does not grow. A size-only
+  transcode is kept only when at least 10% smaller; the audio track is never
+  dropped.
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
@@ -1149,7 +1160,7 @@ open-source Chromium builds without H.264 keep the original file.
 | --- | --- | --- | --- | --- |
 | Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
-| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetWriter H.264 at the shared size and bitrate; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
 | Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
 
 ### Server-side processing (parked)
@@ -1202,8 +1213,14 @@ the original loads, zoom with double-click/double-tap, pinch or Ctrl+scroll,
 and pan while zoomed; animated GIF/WebP play. Videos autoplay with sound and
 pause when you move away or close; GIF-style videos (`animated`) loop muted.
 Each viewer has Save/Download, Open in browser and Close (Esc, the dark area,
-or a swipe down on phones). URLs come from each client's existing fresh-URL
-cache, and a refused load asks for one refresh. Audio and other files keep
+or a swipe down on phones). The header shows the current file's stored size
+(`size`, what Save/Download fetches): after the author and time on web and
+Android, after the counter on Apple, and after the name on Rust desktop. Web and
+Android keep the size whole on narrow screens and truncate the author and time
+first; web drafts opened in the viewer show their final upload size once
+prepared. The client-reported pre-compression size (`assets.source_byte_size`)
+stays internal. URLs come from each client's existing fresh-URL cache, and a
+refused load asks for one refresh. Audio and other files keep
 their inline behaviour; pending rows never open the viewer.
 
 The iPhone/iPad swipe-dismiss implementation retains the file's release offset
@@ -1312,8 +1329,8 @@ the owner's assets when that flow lands.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres attachment test passes with fake S3: owner-only/idempotent cancellation, sent-file protection, Send/removal races, expiry before purge, accepted-send retries after 24 hours, quota held across delete failures, late PUT reconciliation and multi-batch sweep progress. Not live R2 acceptance. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (572 tests). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, silent focus/Send renewal after 24 hours, failed renewal and chip Retry, preserved same-text newer drafts, identical uploaded bytes and no cancellation of sent files. Ready, pending failure/Retry and chip failure/Retry states inspected; not live R2, Safari or a physical phone. |
-| Rust desktop | 411 tests pass, 12 device/audio tests ignored; formatting, Clippy and Linux build pass. Includes silent replacement/Retry, preserved newer drafts and a loopback upload test that changes the picked file between uploads to verify retained bytes. Inspected the labelled Linux `parity-attachments` fixture with ready/uploading/failed chips and Retry. Not Windows or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (576 tests after merging current main). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, synthetic file drop and overlay dismissal, silent focus/Send renewal after 24 hours, failed renewal and chip Retry, preserved same-text newer drafts, identical uploaded bytes and no cancellation of sent files. Ready, pending failure/Retry and chip failure/Retry states inspected; not live R2, Safari or a physical phone. |
+| Rust desktop | 416 tests pass, 12 device/audio tests ignored after merging current main; formatting, Clippy and Linux build pass. Includes silent replacement/Retry, preserved newer drafts and a loopback upload test that changes the picked file between uploads to verify retained bytes. Inspected the labelled Linux `parity-attachments` fixture with ready/uploading/failed chips and Retry. Not Windows or physical-device acceptance. |
 | Android | Implementation and tests updated. Gradle stops at configuration because Android SDK location is missing; no Kotlin compilation, tests, native render or device acceptance. |
 | iOS/macOS | Implementation and XCTest updated; no Swift compiler or Xcode in this orb, so no typecheck, tests, native render or device acceptance. |
 | Containers/services | Docker daemon unavailable; web production build and Rust compilation validated directly. No deployment, shared SQL, live R2 or SFU changes. Initial overlapping builds exhausted orb memory; bounded reruns passed. |
@@ -1391,10 +1408,55 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Web (desktop and mobile layouts) | Yes: picker and drag and drop with an overlay (no paste) | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop with an overlay on macOS and iPad/iPhone (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop with an overlay, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### File drop overlay
+
+Dragging files over a channel or DM conversation that accepts uploads covers it
+with a drop overlay on every client: today's Caper character (the wordmark's
+daily branding art) hops in front of three neutral file cards (image, document,
+video Lucide glyphs) that fan out behind it, on a surface card with a dashed
+terracotta outline. Its title is `Attach to #channel` (`Attach to Name` in a DM)
+and its detail counts the remaining slots (`Up to 10 files…`, `7 more files…`,
+`10 files attached. Remove one to add another.`). Every client's tests run
+`shared/messages/drop-cases.json`. Dropping adds the files as drafts, exactly
+like the attach button; nothing uploads until the person sends. Only drags
+carrying files open it; text and link drags are ignored. The overlay never takes
+input. Motion is shared: a 140 ms fade, the card rising 10 px, the cards fanning
+from the middle with a 420 ms overshoot, the character rising, then a 1.6 s hop
+and a 2.4 s card sway. Reduced motion (web `prefers-reduced-motion`, Apple
+Reduce Motion, Android "Remove animations") shows the resting pose.
+
+- Web: `DropOverlay.tsx` over `.chat-panel`. A file dropped elsewhere in the app
+  is refused instead of the browser navigating to it. Thread panels do not
+  accept drops (they have no attachments).
+- Rust desktop: `file_drop.rs`, painted from egui's hovered files over the
+  conversation. `--fixture parity-file-drop` (and `-narrow`) hold it open for
+  rendering checks.
+- Apple: `FileDropOverlay` on the conversation's `dropDestination`, now on iOS
+  as well as macOS, taking photos/videos/audio/PDFs as media and other files as
+  file URLs. The macOS composer (`NSTextView`) accepts only text drags, so files
+  dropped on it attach instead of typing their paths.
+- Android: Compose `dragAndDropTarget` on the conversation for drags from other
+  apps (split screen, freeform/desktop windows, ChromeOS), with
+  `requestDragAndDropPermissions` before copying. Android names a drag only by
+  MIME type until the drop, so plain-text files are attached with the attach
+  button rather than by dragging.
+
+Validation: web unit tests plus Chromium with synthetic `DragEvent`s and a
+mocked `/api/assets/usage` at 1280px and 390px (overlay, counts, child
+enter/leave, text drags ignored, drop adds a draft, outside drops refused); not
+a real OS drag. Rust desktop unit tests (shared text, timing, overlay shown
+only while files hover a writable conversation) and the fixture rendered under
+Xvfb at 1440×900 and 390×844; no real Windows/X11 drag. Android compiles with
+the pinned toolchain and its JVM tests cover the shared text, MIME filter and
+timing; the overlay was not rendered on a device or emulator. Swift was written
+without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
+text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
+Windows/X11 drags and physical devices remain to be checked.
 
 Composer thumbnails and filenames are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the
@@ -1427,11 +1489,12 @@ are cached by attachment id. Stills follow the shared rules and encoder table
 above (exact indexed PNG via a Swift encoder over the Compression framework's
 DEFLATE, libwebp lossless, AVIF through the bundled libavif, else WebP/JPEG at
 `imageQuality`), scaled to `imageMaxEdge`; HEIC is never uploaded when
-conversion succeeds. Videos use the largest
-`AVAssetExportSession` size preset whose output short edge stays within
-`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
-Presets choose their own bitrates, so `videoBitrateKbps` and
-`audioBitrateKbps` are not applied. Previews and poster frames use
+conversion succeeds. Videos are re-encoded with `AVAssetReader` and
+`AVAssetWriter` (H.264/AAC MP4) at the shared output size and bitrate, with
+`audioBitrateKbps` for AAC; the original uploads on failure. Export presets
+were dropped because they cannot take a bitrate and the HDR video composition
+overrode their size: an iPhone 1440×1920 HEVC clip was stored unscaled at
+about twice the original's bitrate. Previews and poster frames use
 `previewEdge`. Taps open images and videos in the in-app viewer (below) and
 files at their signed URL in the system browser. Audio plays through `AVPlayer` with the app's existing audio
 session. Unit tests cover decoding, URL refresh decisions, compression
@@ -2952,6 +3015,7 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
 | `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API after changes; open tabs pick it up when refocused or when User Settings opens. |
 | `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be newly assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `administrator`, `administrators`, `mod`, `mods`, `moderator`, `moderators`, `support`, `feedback`, `security`, `staff`, `official`, `system`, `team`, `trust`, `safety`, `caper_support`, `caper_feedback`, `jose`, `caperchat`, `aaron`, `joswayski`, `everyone`, and `here` are always reserved. Existing owners may keep their current reserved username while updating their profile; changing to another reserved username is still blocked. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
+| `AUTH_REVIEW_EMAIL`, `AUTH_REVIEW_CODE` | Optional API-only pair for App Store and Google Play reviewers, who cannot read emailed codes. Set both or neither; startup fails otherwise. Requesting a code for that one address emails nothing, and the fixed 6-character code (letters/digits from the sign-in alphabet, no `0`, `O`, `1`, `I`, `L`, `U` or `V`) completes the normal single-use challenge with the usual attempt and rate limits. Anyone given the pair can use that account, so keep it to demo content and rotate the code after reviews if it leaks. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
 | `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |

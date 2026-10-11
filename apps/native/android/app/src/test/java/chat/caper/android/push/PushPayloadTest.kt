@@ -103,9 +103,11 @@ class PushPayloadTest {
     }
 
     @Test fun `one bounded image or poster is optional and invalid media preserves the message`() {
-        val media = mapOf("attachmentUrl" to "https://cdn.caper.chat/original/photo1?exp=123&sig=test",
+        val media = mapOf("attachmentUrl" to "https://cdn.caper.chat/assets/photo1?exp=123&sig=test",
             "attachmentContentType" to "image/webp", "attachmentSize" to "50000000")
         assertEquals(50_000_000L, PushPayload.parse(direct + media)?.attachment?.size)
+        assertEquals(50_000_000L, PushPayload.parse(direct + media +
+            ("attachmentUrl" to "https://cdn.caper.chat/original/photo1?exp=123&sig=test"))?.attachment?.size)
         val poster = requireNotNull(PushPayload.parse(direct + media + mapOf(
             "attachmentUrl" to "https://cdn.caper.chat/preview/video1?exp=123&sig=test",
             "attachmentContentType" to "image/jpeg", "attachmentSize" to "321"))?.attachment)
@@ -114,9 +116,9 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(direct)?.attachment)
         for (bad in listOf(
             media + ("attachmentSize" to "50000001"), media + ("attachmentSize" to "0"),
-            media + ("attachmentUrl" to "http://cdn.caper.chat/original/photo1"),
+            media + ("attachmentUrl" to "http://cdn.caper.chat/assets/photo1"),
             media + ("attachmentUrl" to "https://cdn.caper.chat/other/photo1"),
-            media + ("attachmentUrl" to "https://user:password@cdn.caper.chat/original/photo1"),
+            media + ("attachmentUrl" to "https://user:password@cdn.caper.chat/assets/photo1"),
             media + ("attachmentContentType" to "video/mp4"),
             media + ("attachmentContentType" to "application/pdf"), media - "attachmentSize",
         )) {

@@ -2101,6 +2101,8 @@ private struct ChatView: View {
     /// sheet on iPhone. Opening another pill replaces it.
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
+    /// Files are being dragged over the conversation.
+    @State private var fileDropTargeted = false
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -2544,7 +2546,9 @@ private struct ChatView: View {
                             Button("Review reply") { Task { await chat.openThread(root) } }
                         }.font(CaperTheme.font(11))
                     }
+                    #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
+                    #endif
                     HStack(alignment: .bottom, spacing: 0) {
                         AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
@@ -2566,6 +2570,10 @@ private struct ChatView: View {
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    #if os(macOS)
+                    // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
+                    .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
+                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
@@ -2596,16 +2604,25 @@ private struct ChatView: View {
         }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
-            #if os(macOS)
-            .dropDestination(for: URL.self) { urls, _ in
-                guard chat.canAttach else { return false }
-                let files = urls.filter(\.isFileURL).prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
-                guard !files.isEmpty else { return false }
-                chat.addAttachments(files)
+            // Finder, Files, Photos and other apps (iPad split view and Slide Over).
+            // addAttachments keeps the first files that fit and removes the rest.
+            .dropDestination(for: DroppedAttachment.self) { items, _ in
+                guard chat.canAttach, !items.isEmpty else {
+                    items.forEach { AttachmentStaging.remove($0.file.url) }
+                    return false
+                }
+                chat.addAttachments(items.map(\.file))
                 return true
+            } isTargeted: { fileDropTargeted = $0 }
+            .overlay {
+                if fileDropTargeted && chat.canAttach {
+                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil,
+                                                         attached: chat.attachmentDrafts.count)
+                    FileDropOverlay(title: text.title, detail: text.detail)
+                }
             }
-            #endif
             #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ChatComposerAnchorKey>(controller: composerAutocomplete))
             // Drawn above the whole conversation so the timeline's clipping
             // and later rows never cover a hovered chip's tooltip.
             .overlayPreferenceValue(ReactionTooltipKey.self) { tooltip in
@@ -2853,6 +2870,9 @@ private struct NativeThreadView: View {
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
+                #if os(macOS)
+                .accessibilityIdentifier("thread-timeline")
+                #endif
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id) { _, id in if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) } }
@@ -2883,7 +2903,9 @@ private struct NativeThreadView: View {
                             .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
                     }
                 }
+                #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
+                #endif
                 NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
                                       mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
@@ -2893,6 +2915,9 @@ private struct NativeThreadView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     #if os(iOS)
                     .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
+                    #if os(macOS)
+                    .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
@@ -2908,6 +2933,9 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ThreadComposerAnchorKey>(controller: composerAutocomplete))
+            #endif
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
@@ -3768,6 +3796,41 @@ private struct ReactionTooltip {
     let text: String
     let anchor: Anchor<CGRect>
 }
+
+#if os(macOS)
+/// A composer box whose suggestions the surrounding conversation draws.
+private protocol ComposerAnchorKey: PreferenceKey where Value == Anchor<CGRect>? {}
+extension ComposerAnchorKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
+}
+private enum ChatComposerAnchorKey: ComposerAnchorKey {}
+private enum ThreadComposerAnchorKey: ComposerAnchorKey {}
+
+/// Mac suggestions cover history above the composer without resizing it or
+/// triggering bottom-follow. They are drawn by the whole conversation, not as
+/// an overflowing overlay on the composer: clicks and accessibility hit-testing
+/// only reach views inside their parent's frame.
+private struct ComposerSuggestionsOverlay<Key: ComposerAnchorKey>: ViewModifier {
+    @ObservedObject var controller: ComposerAutocompleteController
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(Key.self) { anchor in
+            // Only while suggestions show, so no layer covers the conversation otherwise.
+            if let anchor, controller.match != nil {
+                GeometryReader { proxy in
+                    let box = proxy[anchor]
+                    ComposerSuggestionsView(controller: controller)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: box.width)
+                        .alignmentGuide(.leading) { _ in -box.minX }
+                        .alignmentGuide(.top) { size in -(box.minY - 6 - size.height) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+}
+#endif
 
 private struct ReactionTooltipKey: PreferenceKey {
     static var defaultValue: ReactionTooltip? { nil }

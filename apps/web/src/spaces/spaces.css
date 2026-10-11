@@ -738,7 +738,8 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .channel-section-toggle,
+  /* Outranks the compact `.channel-section-heading button` size. */
+  .channel-section-heading .channel-section-toggle,
   .pending-channel-invite {
     min-height: 44px;
   }

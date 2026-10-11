@@ -274,6 +274,16 @@ pub fn target_kbps(width: u32, height: u32, settings: &Compression) -> u32 {
     (scaled.round() as u32).max(MIN_VIDEO_KBPS)
 }
 
+/// The target, but never above the source's own bitrate (web's
+/// `outputKbps`): a compatibility transcode of a lean HEVC clip must not grow
+/// it. The floor still applies.
+pub fn output_kbps(target: u32, source: Option<u32>) -> u32 {
+    match source {
+        Some(source) if source > 0 => target.min(source).max(MIN_VIDEO_KBPS),
+        _ => target,
+    }
+}
+
 /// Transcode only when needed (web's `videoPlan`); `None` uploads the
 /// original. The short edge is bounded, so portrait video keeps its detail.
 pub fn video_plan(
@@ -322,7 +332,7 @@ pub fn video_plan(
         reasons.push(Reason::Bitrate);
     }
     (!reasons.is_empty()).then(|| VideoPlan {
-        kbps: target_kbps(width, height, settings),
+        kbps: output_kbps(target_kbps(width, height, settings), kbps),
         reasons,
         width,
         height,
@@ -663,6 +673,14 @@ mod tests {
         );
         let video = parse_probe(&ffmpeg9).video.unwrap();
         assert_eq!((video.width, video.height), (2160, 3840));
+    }
+
+    #[test]
+    fn output_bitrate_never_exceeds_the_source() {
+        assert_eq!(output_kbps(6000, None), 6000);
+        assert_eq!(output_kbps(6000, Some(10_683)), 6000);
+        assert_eq!(output_kbps(6000, Some(2500)), 2500);
+        assert_eq!(output_kbps(6000, Some(800)), MIN_VIDEO_KBPS);
     }
 
     #[test]

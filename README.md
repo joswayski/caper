@@ -64,7 +64,8 @@ earlier builds, excluding test-only, CI, infrastructure, tooling, documentation,
 and dependency-maintenance changes; the prompt says when older notes were never
 recorded or are no longer retained.
 Existing apps keep their previous update UI and schedule until updated once.
-Android APK updates remain manual; iPhone builds use TestFlight.
+Phones install public betas from the homepage: iPhone through a TestFlight public
+link and Android through a Google Play closed test. Both update automatically.
 
 ## Development
 

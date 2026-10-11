@@ -58,7 +58,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Sending up to 10 files per message from the + attachment picker (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window. Files are compressed on the device, off the UI thread, with the
+  window, which shows the drop overlay while they hover. Files are compressed on the device, off the UI thread, with the
   server's `GET /api/assets/usage` `compression` settings: lossless stills
   (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
   smaller of an exact-palette indexed PNG (when the colours fit

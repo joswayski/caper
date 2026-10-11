@@ -334,7 +334,8 @@ export function DraftAttachments({
         name: draft.name,
         kind,
         contentType: draft.attachment?.contentType ?? `${kind}/*`,
-        size: draft.sourceSize,
+        // The size that will be sent, once known; the viewer omits a zero.
+        size: draft.storedSize ?? draft.attachment?.size ?? 0,
         url,
         status: draft.localUrl ? "ready" : draft.attachment?.status,
       },

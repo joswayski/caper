@@ -376,7 +376,12 @@ impl CdnSigner {
     fn signed_url(&self, key: &str, expires: i64) -> String {
         let signature =
             URL_SAFE_NO_PAD.encode(hmac(&self.secret, format!("{key}\n{expires}").as_bytes()));
-        format!("{}/{key}?exp={expires}&sig={signature}", self.origin)
+        // Public URLs need not expose the R2 prefix; signatures still bind the
+        // stored object, so the Worker can also honor already-issued URLs.
+        let path = key
+            .strip_prefix("original/")
+            .map_or_else(|| key.to_owned(), |id| format!("assets/{id}"));
+        format!("{}/{path}?exp={expires}&sig={signature}", self.origin)
     }
 }
 

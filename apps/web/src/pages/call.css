@@ -226,6 +226,10 @@
   background: transparent;
   cursor: pointer;
 }
+/* The layered base disabled cursor (index.css) cannot outrank this unlayered pointer. */
+.call-settings-trigger:is(:disabled, [aria-disabled="true"]) {
+  cursor: default;
+}
 .call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
   background: var(--surface-composer);
   color: #fff;

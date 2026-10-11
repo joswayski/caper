@@ -88,7 +88,7 @@ fn delivery_urls_are_stable_for_a_day_and_expire_within_two() {
     );
     assert_eq!(
         fixed.url("original/abc", 0),
-        "https://cdn.test/original/abc?exp=172800&sig=2GDNk1-0tzBzLEfmuQIvaGGFQ3ItbeJMj8gWdbnL8Ck"
+        "https://cdn.test/assets/abc?exp=172800&sig=2GDNk1-0tzBzLEfmuQIvaGGFQ3ItbeJMj8gWdbnL8Ck"
     );
 }
 
@@ -107,7 +107,7 @@ fn messages_gain_urls_only_when_signed_and_available() {
         attachments[0]["url"]
             .as_str()
             .unwrap()
-            .starts_with("https://cdn.test/original/one?exp=")
+            .starts_with("https://cdn.test/assets/one?exp=")
     );
     assert!(
         attachments[0]["previewUrl"]
@@ -126,7 +126,7 @@ fn messages_gain_urls_only_when_signed_and_available() {
         forwarded["message"]["forward"]["message"]["content"]["attachments"][0]["url"]
             .as_str()
             .unwrap()
-            .contains("/original/src?")
+            .contains("/assets/src?")
     );
     let event = sign_attachments(
         json!({"type":"message.created","message":{"content":{"attachments":[{"id":"x","kind":"file"}]}}}),
@@ -636,7 +636,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         listed[1]["url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/original/{doc_id}?exp="))
+            .contains(&format!("/assets/{doc_id}?exp="))
     );
 
     let refreshed = urls(
@@ -650,6 +650,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .unwrap()
     .0;
     assert!(refreshed["urls"][&shot_id]["previewUrl"].is_string());
+    assert!(
+        refreshed["urls"][&shot_id]["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/assets/{shot_id}?exp="))
+    );
     assert!(refreshed["urls"].get(&fake_id).is_none());
     let hidden = urls(
         State(state.clone()),
