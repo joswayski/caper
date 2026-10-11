@@ -50,6 +50,11 @@
 }
 
 @layer base {
+  html {
+    /* Keep centered headers still when moving between scrollable home and fitted Spaces. */
+    scrollbar-gutter: stable;
+  }
+
   body {
     color: var(--text);
     background: var(--blackout);
