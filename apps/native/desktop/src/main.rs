@@ -17638,16 +17638,20 @@ mod tests {
             app.notifications.level(&space),
             Some(model::NotificationLevel::Nothing)
         );
+        // The refresh sent when the menu opened can still be in flight once
+        // the save is done (seen on the Windows runner).
+        receive_until(&mut app, |_| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line == "GET /api/notifications/settings")
+        });
         let seen = seen.lock().unwrap();
         assert!(
             seen.contains(
                 &r#"PUT /api/spaces/space0000001/notifications {"level":"nothing"}"#.to_owned()
             ),
             "{seen:?}"
-        );
-        assert!(
-            seen.contains(&"GET /api/notifications/settings".to_owned()),
-            "opening the menu refreshes the settings: {seen:?}"
         );
     }
 
