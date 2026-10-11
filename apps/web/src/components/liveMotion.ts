@@ -70,7 +70,7 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
   }
   // The window intentionally turns toward the hero copy; compensate for the
   // resulting projected bounds below so the visible card remains centered.
-  const rest = mode === "expand" ? { x: 11, y: 28, z: -1.6 } : { x: 8, y: 28, z: -0.8 };
+  const rest = mode === "expand" ? { x: 11, y: 28, z: -1.6 } : { x: 4, y: 14, z: -0.4 };
   scene.dataset.mode = mode;
   scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
   scene.style.setProperty("--scene-width", `${geometry.width}px`);
@@ -157,10 +157,14 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     const closed = 1 - open;
     const elapsed = reduced ? 0 : time - start;
     const idle = reduced ? 0 : closed;
-    const x = (rest.x + tilt.x + hover.x) * closed + Math.sin(elapsed * 0.00027) * IDLE.x * idle;
-    const y = (rest.y + tilt.y + hover.y) * closed + Math.sin(elapsed * 0.00035) * IDLE.y * idle;
-    const z = rest.z * closed + Math.sin(elapsed * 0.00022) * IDLE.z * idle;
-    const lift = Math.sin(elapsed * 0.0007) * IDLE.lift * idle;
+    // Keep drag, hover and idle motion as restrained as the smaller-screen pose.
+    const motionScale = mode === "sheet" ? 0.5 : 1;
+    const x =
+      (rest.x + (tilt.x + hover.x) * motionScale) * closed + Math.sin(elapsed * 0.00027) * IDLE.x * idle * motionScale;
+    const y =
+      (rest.y + (tilt.y + hover.y) * motionScale) * closed + Math.sin(elapsed * 0.00035) * IDLE.y * idle * motionScale;
+    const z = rest.z * closed + Math.sin(elapsed * 0.00022) * IDLE.z * idle * motionScale;
+    const lift = Math.sin(elapsed * 0.0007) * IDLE.lift * idle * motionScale;
     const scale = geometry.scale + (1 - geometry.scale) * open;
     scene.style.setProperty("--depth", closed.toFixed(4));
     if (open === 1 || (active && mode === "sheet")) {
