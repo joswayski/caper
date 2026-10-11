@@ -472,13 +472,15 @@
   color: var(--text);
   border-color: var(--terracotta);
 }
-.chat-reactions {
+.chat-reactions,
+.chat-forward-reactions {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 7px;
 }
-.chat-reaction {
+.chat-reaction,
+.chat-forward-reactions > span {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -492,6 +494,8 @@
   font-size: 0.75rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+.chat-reaction {
   cursor: pointer;
   transition:
     border-color 120ms ease,
@@ -511,7 +515,8 @@
     border-color: var(--terracotta-bright);
   }
 }
-.chat-reaction img {
+.chat-reaction img,
+.chat-forward-reactions img {
   flex-shrink: 0;
   object-fit: contain;
 }
@@ -805,7 +810,8 @@
   color: var(--text-muted);
 }
 @media (max-width: 600px) {
-  .chat-reaction {
+  .chat-reaction,
+  .chat-forward-reactions > span {
     min-height: 36px;
     padding-inline: 10px;
   }
@@ -2481,20 +2487,6 @@ a.chat-file:hover {
   overflow-wrap: anywhere;
   font-size: 0.85rem;
   line-height: 1.5;
-}
-.chat-forward-reactions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.chat-forward-reactions > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.75rem;
 }
 .chat-forward-card > button,
 .chat-forward-body button {
