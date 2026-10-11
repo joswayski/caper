@@ -397,7 +397,9 @@ def main() -> None:
     pins = find(header, description="Pins")
     show_members = find(header, description="Show member list")
     assert pins is not None and show_members is not None, "The chat header must keep Pins and Members"
-    assert center(pins)[0] < center(join)[0] < center(show_members)[0], "Join voice sits between Pins and Members"
+    # Web: voice follows the channel name, then a thin rule, then Pins and Members.
+    assert center(join)[0] < center(pins)[0] < center(show_members)[0], "Join voice sits before Pins and Members"
+    assert find(header, description="More channel options") is None, "Wide layouts keep Pins and Members as buttons"
     assert abs(center(join)[1] - center(pins)[1]) <= 4, "Join voice belongs to the chat header row"
     left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
     # viewport() sets density 320: 48dp is 96 physical pixels.
@@ -564,11 +566,23 @@ def main() -> None:
     assert find(narrow, description="# general channel menu") is None, "A phone channel title has no dropdown"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    # Phones show Pins and Members as header buttons, Members right of Pins.
-    pins = find(narrow, description="Pins")
-    members_button = find(narrow, description="Show member list")
-    assert pins is not None and members_button is not None, "Phone header shows Pins and Members"
-    assert center(pins)[0] < center(members_button)[0], "Members sits right of Pins"
+    # Phones fold Pins and Members into one More menu at the header's end, leaving room for voice.
+    assert find(narrow, description="Pins") is None, "Phone header has no separate Pins button"
+    assert find(narrow, description="Show member list") is None, "Phone header has no separate Members button"
+    more = find(narrow, description="More channel options")
+    assert more is not None and center(channel)[0] < center(more)[0], "More follows the channel name"
+    left, top, right, bottom = map(int, re.findall(r"\d+", more.attrib["bounds"]))
+    assert right - left >= 96 and bottom - top >= 96, "More must have a 48dp touch target"
+    # Below the header, phones show only the conversation; the account bar stays in Browse.
+    for browse_only in ("User Settings", "Mute microphone", "Deafen audio"):
+        assert find(narrow, description=browse_only) is None, f"{browse_only!r} belongs in Browse on phones"
+    tap(description="More channel options")
+    menu = wait_for(text="Members")
+    assert find(menu, text="Pins") is not None, "The More menu opens Pins"
+    tap(text="Pins")
+    wait_for(text="Close")
+    tap(text="Close")
+    wait_for(description="More channel options")
     # Navigation starts at the middle of the content, not at a screen edge.
     width, middle = 780, "844"
     adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
@@ -577,12 +591,14 @@ def main() -> None:
     wait_for(description="Close navigation")
     adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
     wait_for(description="Back to Browse")
-    tap(description="Show member list")
+    tap(description="More channel options")
+    tap(text="Members")
+    wait_for(description="Close member list")
     members_open = capture("caper-android-narrow-members", "Members")
-    members_title = find(members_open, text="Members")
-    hide = find(members_open, description="Hide member list")
-    assert hide is not None and members_title is not None
-    assert center(hide)[1] < center(members_title)[1], "Member overlay must leave the header exposed"
+    more = find(members_open, description="More channel options")
+    close_members = find(members_open, description="Close member list")
+    assert more is not None and close_members is not None
+    assert center(more)[1] < center(close_members)[1], "Member overlay must leave the header exposed"
 
     def members_closed(message: str) -> None:
         deadline = time.monotonic() + 10
@@ -590,8 +606,9 @@ def main() -> None:
             assert time.monotonic() < deadline, message
             time.sleep(0.5)
 
-    tap(description="Hide member list")
-    members_closed("Hide member list must close the member overlay")
+    tap(description="More channel options")
+    tap(text="Hide members")
+    members_closed("Hide members must close the member overlay")
     # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
     # The 390x844 viewport at DPR 2; mid-height is in the timeline and on the panel.
     adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
@@ -745,10 +762,10 @@ def main() -> None:
     left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
     # viewport() sets density 320: 48dp is 96 physical pixels.
     assert right - left >= 96 and bottom - top >= 96, "The header voice action must have a 48dp touch target"
-    pins = find(voice_ready, description="Pins")
-    show_members = find(voice_ready, description="Show member list")
-    assert pins is not None and show_members is not None
-    assert center(pins)[0] < center(action)[0] < center(show_members)[0], "Join voice sits between Pins and Members"
+    more = find(voice_ready, description="More channel options")
+    assert more is not None and center(action)[0] < center(more)[0], "Join voice sits before the More menu"
+    assert find(voice_ready, description="Pins") is None and find(voice_ready, description="Show member list") is None
+    assert find(voice_ready, description="Mute microphone") is None, "Phones show header mute only during a call"
     tap(description="Back to Browse")
     browse_voice = wait_for(description="Mute microphone")
     assert find(browse_voice, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
@@ -778,8 +795,21 @@ def main() -> None:
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    # Phones keep the voice error visible outside Browse; the dock in Browse dismisses it.
+    # Phones show the dock's voice error in the conversation, above the composer, with its own dismiss.
     assert find(failed, contains="Message #general") is not None, "The voice error must not leave the conversation"
+    inline_error = find(failed, contains="TEST FIXTURE: no real media engine or SFU is connected.")
+    composer = next((node for node in nodes(failed) if node.get("class") == "android.widget.EditText"), None)
+    assert inline_error is not None and composer is not None
+    assert center(inline_error)[1] < center(composer)[1], "The voice error sits above the composer"
+    assert find(failed, description="Dismiss voice error") is not None, "Phones can dismiss the voice error in place"
+    tap(description="Dismiss voice error")
+    assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    wait_for(description=join)
+    tap(description=join)
+    retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
+    assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
+    assert find(retried, contains="Message #general") is not None, "Phones keep the voice error visible outside Browse"
+    # Browse still carries it in the dock.
     tap(description="Back to Browse")
     dock = wait_for(description="Dismiss voice error")
     assert find(dock, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
@@ -789,10 +819,6 @@ def main() -> None:
     assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
     tap(description="Close navigation")
     wait_for(description=join)
-    tap(description=join)
-    retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
-    assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
-    assert find(retried, contains="Message #general") is not None, "Phones keep the voice error visible outside Browse"
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

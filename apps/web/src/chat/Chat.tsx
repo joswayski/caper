@@ -169,7 +169,9 @@ export default function Chat({
   initialHistoryError,
   showTitle = false,
   headerLeading,
+  headerVoice,
   headerActions,
+  headerMenu,
   readOnly = false,
   composerNotice,
   composerBanner,
@@ -201,7 +203,11 @@ export default function Chat({
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
+  /** The open channel's voice, right after its name. */
+  headerVoice?: ReactNode;
   headerActions?: ReactNode;
+  /** Phones fold Pins and these items into one header menu, leaving room for voice. */
+  headerMenu?: ReactNode;
   readOnly?: boolean;
   composerNotice?: ReactNode;
   /** Shown above an active composer. */ composerBanner?: ReactNode;
@@ -1427,8 +1433,39 @@ export default function Chat({
             {direct ? "" : "# "}
             {channelName}
           </h2>
+          {headerVoice}
           {pinsToggle}
           {headerActions}
+          {state.phase === "ready" && (
+            <details
+              className="chat-header-more"
+              onClick={(event) => {
+                // Choosing an item closes the menu.
+                if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && event.currentTarget.open) {
+                  event.preventDefault();
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+              }}
+            >
+              <summary aria-label="More channel options" title="More">
+                <MoreHorizontal size={20} aria-hidden="true" />
+              </summary>
+              <div className="chat-header-menu">
+                <button type="button" aria-haspopup="dialog" onClick={() => setShowPins(true)}>
+                  <Pin size={16} aria-hidden="true" />
+                  Pins
+                </button>
+                {headerMenu}
+              </div>
+            </details>
+          )}
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
               {state.phase === "error" ? "Offline" : "Connecting…"}

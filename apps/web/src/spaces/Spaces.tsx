@@ -2870,12 +2870,7 @@ export default function Spaces({
           const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
           const itemMuted = isMuted(itemNotifications?.mutedUntil);
           return (
-            <li
-              key={item.id}
-              data-voice={voice ? "" : undefined}
-              data-occupied={voice?.summary ? "" : undefined}
-              data-muted={itemMuted || spaceMuted ? "" : undefined}
-            >
+            <li key={item.id} data-voice={voice ? "" : undefined} data-muted={itemMuted || spaceMuted ? "" : undefined}>
               <div className="channel-line">
                 <button
                   className="channel-select"

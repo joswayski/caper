@@ -658,10 +658,12 @@ try {
     browser("set", "viewport", "390", "844", "2");
     wait(`document.querySelector('.empty-channel')?.getBoundingClientRect().width < 390`);
     assert.equal(evaluate(`return document.documentElement.scrollWidth > innerWidth;`), false);
+    // Phones show the empty space alone; Browse keeps the call's dock and Leave.
+    openBrowse();
     assert.ok(
-      evaluate(`const r = document.querySelector('[aria-label="Leave voice"]').getBoundingClientRect();
+      evaluate(`const r = document.querySelector('.voice-dock [aria-label="Leave voice"]').getBoundingClientRect();
         return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight;`),
-      "Phones keep the call's Leave control in view",
+      "Phones reach the call's Leave from Browse",
     );
     screenshot("empty-space-in-call-390");
     browser("set", "viewport", "1280", "900", "2");
@@ -732,10 +734,11 @@ try {
       ]);`);
       wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
       footerControls();
-      assert.ok(
+      assert.equal(
         evaluate(
-          `return [...document.querySelectorAll('.channel-line')].every(line => !line.querySelector('.channel-voice') === !line.closest('li[data-occupied]'));`,
+          `return [...document.querySelectorAll('.channel-line')].filter(line => line.querySelector('.channel-voice')).map(line => line.querySelector('.channel-select > span').textContent).join();`,
         ),
+        "alpha",
         "Only occupied channels show a voice line",
       );
       assert.equal(
@@ -848,7 +851,15 @@ try {
       if (width === 390) openBrowse();
       click("Other test space");
       wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'lobby'`);
-      if (width === 390) click("Back to Browse");
+      if (width === 390) {
+        // Phones show the lobby conversation with the call's mute; its roster and dock wait in Browse.
+        assert.ok(
+          evaluate(
+            `return !!document.querySelector('.header-voice .header-voice-mute') && document.querySelector('.header-voice-join')?.textContent === 'Switch here';`,
+          ),
+        );
+        openBrowse();
+      }
       wait(`document.querySelector('.voice-pinned .participant')`);
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
@@ -906,7 +917,7 @@ try {
         evaluate(`return voiceFixture.commands.filter(command => command.method === 'media.join').at(-1).channelId;`),
         "beta00000000",
       );
-      click("Leave voice");
+      browser("click", ".header-voice .voice-leave");
       wait(`voiceFixture.client.phase === 'idle'`);
       if (width === 390 && !evaluate(`return !!document.querySelector('.navigation-open');`)) click("Back to Browse");
     }

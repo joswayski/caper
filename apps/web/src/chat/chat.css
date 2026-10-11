@@ -3071,3 +3071,71 @@ a.chat-file:hover {
     height: 44px;
   }
 }
+/* Phones fold Pins and Members into one menu so the header's voice action has
+   room; wider layouts keep them as separate buttons. */
+.chat-header-more {
+  position: relative;
+  display: none;
+}
+.chat-header-more > summary {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--text-muted);
+  list-style: none;
+  cursor: pointer;
+}
+.chat-header-more > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-header-more[open] > summary {
+  color: var(--text);
+  background: var(--surface);
+}
+.chat-header-more > summary:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-header-menu {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+.chat-header-menu button {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-header-menu button svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+@media (max-width: 760px) {
+  .chat-header-more {
+    display: block;
+  }
+  .chat-heading :is(.chat-pins-toggle, .member-list-toggle) {
+    display: none;
+  }
+}

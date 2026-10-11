@@ -533,6 +533,8 @@ export default function Call({
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
+  // Phones show the conversation without the sidebar, so voice errors move into it.
+  const inlineVoiceError = narrow && !navigationOpen && !!onNavigationToggle;
   const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
@@ -942,6 +944,15 @@ export default function Call({
       </button>
     </Tooltip>
   );
+  const toggleMute = () => {
+    if (state.monitoring) return;
+    const muted = !state.muted;
+    playSound(muted ? "toggle-off" : "toggle-on");
+    setActionError(undefined);
+    void clientRef
+      .current!.setMuted(muted)
+      .catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared."));
+  };
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
       ++actionGeneration.current;
@@ -1300,7 +1311,8 @@ export default function Call({
     const joiningHere = activeHere && state.phase === "joining";
     const leavingHere = state.phase === "leaving" && voiceChannel?.id === channelId;
     const switching = !idle && !activeHere;
-    if (activeHere && connected) return placement === "header" ? leaveControl : null;
+    if (activeHere && (connected || state.phase === "reconnecting"))
+      return placement === "header" ? leaveControl : null;
     const blocked = joiningHere || leavingHere || actionPending || (!activeHere && joinBlocked);
     const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch here" : "Join voice";
     const actionName = leavingHere
@@ -1358,8 +1370,28 @@ export default function Call({
     );
   };
   /** Who is in voice in the open channel, with its join or leave action, for the conversation header. */
+  const muteControl = !idle && (
+    // Phones keep the call's mute in the header, since Browse holds the account bar.
+    <button
+      type="button"
+      className={`voice-icon-button header-voice-mute${state.muted ? " active" : ""}`}
+      aria-disabled={state.monitoring}
+      aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
+      aria-pressed={state.muted}
+      onClick={toggleMute}
+    >
+      {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
+    </button>
+  );
   const headerVoice = (() => {
-    if (voiceless || !channelJoined) return null;
+    // A DM or preview has no voice of its own; on phones it still offers the call's mute and Leave.
+    if (voiceless || !channelJoined)
+      return idle ? null : (
+        <div className="header-voice header-voice-elsewhere">
+          {muteControl}
+          {leaveControl}
+        </div>
+      );
     const channelId = channel?.id;
     const { people } = rosterFor(channelId);
     const names = people.map((person) => person.name);
@@ -1387,6 +1419,7 @@ export default function Call({
             </span>
           </Tooltip>
         )}
+        {muteControl}
         {voiceAction(channelId, "header")}
       </div>
     );
@@ -1437,7 +1470,7 @@ export default function Call({
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">
-            {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && (
+            {((!idle && !pendingJoin) || (voiceError && !audioPanel && !inlineVoiceError)) && (
               <div className="voice-dock">
                 {/* Wherever you browse, the call stays one Leave away. */}
                 {!idle && !pendingJoin && (
@@ -1464,7 +1497,7 @@ export default function Call({
                     </div>
                   </div>
                 )}
-                {voiceError && !audioPanel && (
+                {voiceError && !audioPanel && !inlineVoiceError && (
                   <p className="voice-error" role="alert">
                     <span>{voiceError}</span>
                     <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}>
@@ -1504,17 +1537,7 @@ export default function Call({
                     aria-disabled={state.monitoring}
                     aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
                     aria-pressed={state.muted}
-                    onClick={() => {
-                      if (state.monitoring) return;
-                      const muted = !state.muted;
-                      playSound(muted ? "toggle-off" : "toggle-on");
-                      setActionError(undefined);
-                      void clientRef
-                        .current!.setMuted(muted)
-                        .catch((error) =>
-                          setActionError(error instanceof Error ? error.message : "Mute state could not be shared."),
-                        );
-                    }}
+                    onClick={toggleMute}
                   >
                     {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
                   </button>
@@ -1696,7 +1719,22 @@ export default function Call({
               readActive={engaged && !browsing}
               readOnly={!channelJoined}
               composerNotice={channelActions}
-              composerBanner={composerBanner}
+              composerBanner={
+                // Phones show the conversation alone, so voice errors come with it.
+                inlineVoiceError && voiceError && !audioPanel ? (
+                  <>
+                    {composerBanner}
+                    <p className="voice-error voice-error-inline" role="alert">
+                      <span>{voiceError}</span>
+                      <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}>
+                        <X aria-hidden="true" />
+                      </button>
+                    </p>
+                  </>
+                ) : (
+                  composerBanner
+                )
+              }
               onBlockAuthor={onBlockAuthor}
               messageSounds={engaged && channelJoined}
               onOnlineChange={onChatOnlineChange}
@@ -1726,6 +1764,20 @@ export default function Call({
                   </button>
                 )
               }
+              headerVoice={headerVoice}
+              headerMenu={
+                membersPanel && (
+                  <button
+                    type="button"
+                    aria-expanded={membersVisible}
+                    aria-controls={membersVisible ? "space-member-list" : undefined}
+                    onClick={() => members.change(!membersVisible)}
+                  >
+                    <Users aria-hidden="true" />
+                    {membersVisible ? "Hide members" : "Members"}
+                  </button>
+                )
+              }
               headerActions={
                 <div className="voice-actions">
                   {!audioPanel && actionError && (
@@ -1734,7 +1786,6 @@ export default function Call({
                     </div>
                   )}
                   {channelJoined && channelActions}
-                  {headerVoice}
                   {membersPanel && (
                     <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
                       <button

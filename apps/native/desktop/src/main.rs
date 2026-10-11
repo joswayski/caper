@@ -8315,40 +8315,62 @@ impl CaperApp {
         });
     }
 
+    /// Whether a call is under way anywhere, so phones offer its mute.
+    fn in_voice(&self) -> bool {
+        !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_))
+    }
+
+    /// The header's Leave, as the dock's hang-up.
+    fn header_leave(&mut self, ui: &mut egui::Ui) {
+        let button = header_voice_button(ui, NavIcon::PhoneOff, "Leave", HANGUP_TONE);
+        button.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Leave voice")
+        });
+        if button.on_hover_text("Leave this voice channel").clicked() {
+            self.effects.play(Effect::Disconnect);
+            self.voice.leave();
+        }
+    }
+
+    /// Phones keep the call's mute in the header, since Browse holds the
+    /// account bar.
+    fn header_mute(&mut self, ui: &mut egui::Ui) {
+        let muted = self.voice.state.audio.muted;
+        if audio_icon_button(
+            ui,
+            if muted { NavIcon::MicOff } else { NavIcon::Mic },
+            34.0,
+            if muted {
+                "Unmute microphone"
+            } else {
+                "Mute microphone"
+            },
+            muted,
+        )
+        .on_hover_text(if muted { "Unmute" } else { "Mute" })
+        .clicked()
+        {
+            self.voice.command(VoiceOperation::Mute(!muted));
+            self.effects.toggle(muted);
+        }
+    }
+
     /// Web's `headerVoice`, laid out right to left: Join voice, Switch
-    /// here, Joining… or Leave, then who is in voice. A narrow header drops
-    /// the count and extra faces before the button.
-    fn header_voice(&mut self, ui: &mut egui::Ui, id: &str, name: &str) {
-        let action = self.voice_action(id);
-        let (icon, text, tone, enabled) = match action {
-            VoiceAction::Leave => (NavIcon::PhoneOff, "Leave", HANGUP_TONE, true),
-            VoiceAction::Joining => (NavIcon::Headphones, "Joining…", VOICE_TONE, false),
-            VoiceAction::Join { switching, enabled } => (
-                NavIcon::Headphones,
-                if switching {
-                    "Switch here"
-                } else {
-                    "Join voice"
-                },
-                VOICE_TONE,
-                enabled,
-            ),
-        };
-        let button = ui
-            .add_enabled_ui(enabled, |ui| header_voice_button(ui, icon, text, tone))
-            .inner;
-        match action {
-            VoiceAction::Leave => {
-                button.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Leave voice")
-                });
-                if button.on_hover_text("Leave this voice channel").clicked() {
-                    // As the dock's hang-up.
-                    self.effects.play(Effect::Disconnect);
-                    self.voice.leave();
-                }
-            }
+    /// here, Joining… or Leave (on phones, after the call's mute), then who
+    /// is in voice. A narrow header drops the count and extra faces before
+    /// the button.
+    fn header_voice(&mut self, ui: &mut egui::Ui, id: &str, name: &str, narrow: bool) {
+        if narrow {
+            ui.spacing_mut().item_spacing.x = 6.0;
+        }
+        match self.voice_action(id) {
+            VoiceAction::Leave => self.header_leave(ui),
             VoiceAction::Joining => {
+                let button = ui
+                    .add_enabled_ui(false, |ui| {
+                        header_voice_button(ui, NavIcon::Headphones, "Joining…", VOICE_TONE)
+                    })
+                    .inner;
                 button.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
@@ -8358,7 +8380,21 @@ impl CaperApp {
                 });
                 button.on_disabled_hover_text(format!("Connecting to #{name}…"));
             }
-            VoiceAction::Join { switching, .. } => {
+            VoiceAction::Join { switching, enabled } => {
+                let button = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        header_voice_button(
+                            ui,
+                            NavIcon::Headphones,
+                            if switching {
+                                "Switch here"
+                            } else {
+                                "Join voice"
+                            },
+                            VOICE_TONE,
+                        )
+                    })
+                    .inner;
                 let tooltip = if switching {
                     format!("Switch voice to #{name}")
                 } else {
@@ -8371,6 +8407,9 @@ impl CaperApp {
                 };
                 self.voice_join_response(ui, button, id, label, &tooltip);
             }
+        }
+        if narrow && self.in_voice() {
+            self.header_mute(ui);
         }
         let (people, _) = self.voice_people(id);
         let Some(last) = people.last() else {
@@ -8401,11 +8440,11 @@ impl CaperApp {
         let count = ui
             .painter()
             .layout_no_wrap(people.len().to_string(), font, MUTED);
-        // 24px faces overlapping by 6px, then the count; Pins and the gaps
-        // beside it keep their room.
+        // 24px faces overlapping by 6px, then the count, in whatever the
+        // name and the controls placed after it leave.
         let faces = people.len().min(3);
         let full = 24.0 + (faces - 1) as f32 * 18.0 + 6.0 + count.size().x;
-        let room = ui.available_width() - 2.0 * ui.spacing().item_spacing.x - 28.0;
+        let room = ui.available_width();
         let (faces, width, count) = if room >= full {
             (faces, full, Some(count))
         } else if room >= 24.0 {
@@ -8637,6 +8676,61 @@ impl CaperApp {
         }
     }
 
+    /// Whether the narrow conversation, rather than the dock in Browse,
+    /// shows the voice error, as web, Android and Apple do on phones.
+    fn inline_voice_error(&self, context: &egui::Context) -> bool {
+        context.viewport_rect().width() <= 760.0
+            && !self.navigation_open
+            && self.thread_view.is_none()
+            && !self.no_accessible_channels()
+    }
+
+    /// A voice error that wraps beside its dismiss button.
+    fn voice_error_row(&mut self, ui: &mut egui::Ui, error: String) {
+        // The text wraps beside its dismiss button instead of pushing the
+        // button and the account bar below past the column. Its first line
+        // centers on the button, so a one-line error sits level with it.
+        let width = ui.available_width();
+        let galley = egui::WidgetText::from(RichText::new(error).size(11.0).color(ERROR))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Wrap),
+                (width - 34.0).max(1.0),
+                egui::TextStyle::Body,
+            );
+        let first_line = galley
+            .rows
+            .first()
+            .map_or(galley.size().y, |row| row.height());
+        let inset = ((28.0 - first_line) / 2.0).max(0.0);
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(width, (inset + galley.size().y).max(28.0)),
+            egui::Sense::hover(),
+        );
+        let text = egui::Rect::from_min_size(
+            row.min + egui::vec2(0.0, inset),
+            egui::vec2((width - 34.0).max(1.0), galley.size().y),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(text)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| ui.add(egui::Label::new(galley).selectable(false)),
+        );
+        let dismiss = ui
+            .scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::pos2(row.right() - 28.0, row.top()),
+                    egui::vec2(28.0, 28.0),
+                )),
+                |ui| drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error"),
+            )
+            .inner;
+        if dismiss.clicked() {
+            self.voice.error = None;
+        }
+    }
+
     fn account_bar(&mut self, ui: &mut egui::Ui) {
         if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
             &self.voice.state.phase
@@ -8729,50 +8823,12 @@ impl CaperApp {
             );
             ui.add_space(8.0);
         }
-        if let Some(error) = self.voice.error.clone() {
+        // Phones show the conversation alone, so its voice error moves there.
+        if !self.inline_voice_error(ui.ctx())
+            && let Some(error) = self.voice.error.clone()
+        {
             ui.add_space(8.0);
-            // The text wraps beside its dismiss button instead of pushing the
-            // button and the account bar below past the column. Its first line
-            // centers on the button, so a one-line error sits level with it.
-            let width = ui.available_width();
-            let galley = egui::WidgetText::from(RichText::new(error).size(11.0).color(ERROR))
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Wrap),
-                    (width - 34.0).max(1.0),
-                    egui::TextStyle::Body,
-                );
-            let first_line = galley
-                .rows
-                .first()
-                .map_or(galley.size().y, |row| row.height());
-            let inset = ((28.0 - first_line) / 2.0).max(0.0);
-            let (row, _) = ui.allocate_exact_size(
-                egui::vec2(width, (inset + galley.size().y).max(28.0)),
-                egui::Sense::hover(),
-            );
-            let text = egui::Rect::from_min_size(
-                row.min + egui::vec2(0.0, inset),
-                egui::vec2((width - 34.0).max(1.0), galley.size().y),
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(text)
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| ui.add(egui::Label::new(galley).selectable(false)),
-            );
-            let dismiss = ui
-                .scope_builder(
-                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                        egui::pos2(row.right() - 28.0, row.top()),
-                        egui::vec2(28.0, 28.0),
-                    )),
-                    |ui| drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error"),
-                )
-                .inner;
-            if dismiss.clicked() {
-                self.voice.error = None;
-            }
+            self.voice_error_row(ui, error);
             ui.add_space(8.0);
         }
         let (rect, _) =
@@ -9984,27 +10040,58 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    // Right to left: Members sits right of Pins, as on web.
-                                    if self.selected_direct.is_none()
+                                    // Right to left: Members sits right of Pins, as on web,
+                                    // and the open channel's voice sits apart from both, past
+                                    // a divider.
+                                    let members = self.selected_direct.is_none()
                                         && self
                                             .detail
                                             .as_ref()
-                                            .is_some_and(|detail| !detail.members.is_empty())
-                                        && users_button(ui, if narrow { self.narrow_members_visible } else { self.members_visible }).clicked()
-                                    {
-                                        if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
-                                        else { self.members_visible = !self.members_visible; }
-                                    }
-                                    // Web's header voice sits between Pins and Members.
-                                    if self.selected_direct.is_none()
-                                        && let Some(channel) = self.selected_channel.clone()
-                                        && self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel && item.joined))
-                                    {
-                                        let name = self.channel_name().to_owned();
-                                        self.header_voice(ui, &channel, &name);
-                                    }
-                                    if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
-                                        self.showing_pins = true;
+                                            .is_some_and(|detail| !detail.members.is_empty());
+                                    let voice_channel = self
+                                        .selected_channel
+                                        .clone()
+                                        .filter(|channel| {
+                                            self.selected_direct.is_none()
+                                                && self.detail.as_ref().is_some_and(|detail| {
+                                                    detail.channels.iter().any(|item| &item.id == channel && item.joined)
+                                                })
+                                        });
+                                    if narrow {
+                                        // As on phones, Pins and Members fold into one menu,
+                                        // leaving the header's room to voice.
+                                        let more = drawn_icon_button_with_tooltip(ui, NavIcon::More, "More channel options", "More");
+                                        egui::Popup::menu(&more)
+                                            .align(egui::RectAlign::BOTTOM_END)
+                                            .show(|ui| {
+                                                if header_menu_item(ui, NavIcon::Pin, "Pins").clicked() {
+                                                    self.showing_pins = true;
+                                                    ui.close();
+                                                }
+                                                if members
+                                                    && header_menu_item(
+                                                        ui,
+                                                        NavIcon::Users,
+                                                        if self.narrow_members_visible { "Hide members" } else { "Members" },
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.narrow_members_visible = !self.narrow_members_visible;
+                                                    ui.close();
+                                                }
+                                            });
+                                    } else {
+                                        if members && users_button(ui, self.members_visible).clicked() {
+                                            self.members_visible = !self.members_visible;
+                                        }
+                                        if voice_channel.is_some() {
+                                            // Web's 6px between the voice divider and Pins.
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                        }
+                                        if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
+                                            self.showing_pins = true;
+                                        }
+                                        ui.spacing_mut().item_spacing.x = 12.0;
                                     }
                                     if self.selected_direct.is_none() {
                                         if let (Some(space), Some(channel)) = (self.selected_space.clone(), self.selected_channel.clone())
@@ -10028,6 +10115,23 @@ impl CaperApp {
                                                 self.confirm_block(account, request);
                                             }
                                         }
+                                    }
+                                    if let Some(channel) = voice_channel {
+                                        if !narrow {
+                                            // Web's 1px border, 14px past the voice action.
+                                            ui.spacing_mut().item_spacing.x = 14.0;
+                                            let (divider, _) = ui.allocate_exact_size(egui::vec2(1.0, 34.0), egui::Sense::hover());
+                                            ui.painter().vline(divider.center().x, divider.y_range(), Stroke::new(1.0, BORDER));
+                                            ui.spacing_mut().item_spacing.x = 12.0;
+                                        }
+                                        let name = self.channel_name().to_owned();
+                                        self.header_voice(ui, &channel, &name, narrow);
+                                    } else if narrow && self.in_voice() {
+                                        // A DM or preview has no voice of its own; phones still
+                                        // keep the call's mute and Leave in reach.
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        self.header_leave(ui);
+                                        self.header_mute(ui);
                                     }
                                 },
                             );
@@ -10058,8 +10162,20 @@ impl CaperApp {
             let editor_height = (draft_height + 20.0).clamp(42.0, max_editor_height);
             let session_row = if self.session_error.is_some() { 24.0 } else { 0.0 };
             let joined = self.selected_is_joined();
+            // Phones show the conversation alone, so voice errors come with it.
+            let voice_error = self.voice.error.clone().filter(|_| self.inline_voice_error(ui.ctx()));
+            let voice_error_row = voice_error.as_ref().map_or(0.0, |error| {
+                let galley = egui::WidgetText::from(RichText::new(error.clone()).size(11.0)).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Wrap),
+                    (ui.available_width() - 36.0 - 34.0).max(1.0),
+                    egui::TextStyle::Body,
+                );
+                let first_line = galley.rows.first().map_or(galley.size().y, |row| row.height());
+                (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
+            });
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(if joined { editor_height + 24.0 + session_row + chip_rows * 56.0 } else { 44.0 })
+                .min_height(voice_error_row + if joined { editor_height + 24.0 + session_row + chip_rows * 56.0 } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -10076,6 +10192,10 @@ impl CaperApp {
                     if let Some(error) = &self.error
                         && self.pending.as_ref().is_none_or(|pending| pending.thread_root_id.is_none()) {
                         ui.colored_label(ERROR, error);
+                    }
+                    if let Some(error) = voice_error {
+                        self.voice_error_row(ui, error);
+                        ui.add_space(6.0);
                     }
                     let me = self.account.as_ref().map(|account| account.id.clone());
                     if let Some(direct) = self.selected_direct_conversation().cloned()
@@ -14650,6 +14770,33 @@ fn header_voice_button(ui: &mut egui::Ui, icon: NavIcon, text: &str, tone: Tone)
         galley,
         color,
     );
+    response
+}
+
+/// Web's `.chat-header-menu button`: an icon and a label across the menu.
+fn header_menu_item(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(180.0, 40.0), egui::Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 18.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        ),
+        icon,
+        MUTED,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 36.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::FontId::proportional(13.0),
+        TEXT,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
     response
 }
 
@@ -20591,7 +20738,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_members_button_follows_pins_and_the_list_slides_in_and_out() {
+    fn narrow_header_folds_pins_and_members_into_a_menu_and_keeps_the_calls_controls() {
         let context = egui::Context::default();
         context.enable_accesskit();
         let mut app = CaperApp::new(
@@ -20599,7 +20746,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-voice-connected"),
         );
-        let narrow = |app: &mut CaperApp, time: f64| {
+        let narrow = |app: &mut CaperApp, time: f64, events: Vec<egui::Event>| {
             context.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -20607,10 +20754,28 @@ mod tests {
                         egui::vec2(390.0, 844.0),
                     )),
                     time: Some(time),
+                    events,
                     ..Default::default()
                 },
                 |context| app.shell(context),
             )
+        };
+        let tap = |app: &mut CaperApp, time: f64, pos: egui::Pos2| {
+            for (offset, pressed) in [(0.0, true), (0.01, false)] {
+                narrow(
+                    app,
+                    time + offset,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
         };
         let heading = |output: &egui::FullOutput| {
             output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -20618,16 +20783,40 @@ mod tests {
                 _ => None,
             })
         };
-        narrow(&mut app, 0.0);
-        let closed = narrow(&mut app, 0.1);
+        narrow(&mut app, 0.0, vec![]);
+        let closed = narrow(&mut app, 0.05, vec![]);
         assert!(heading(&closed).is_none());
+        for label in ["Pins", "Show member list"] {
+            assert!(
+                node_bounds(&closed, label).is_none(),
+                "phones fold {label} into the menu"
+            );
+        }
+        // Who is there, then the call's mute and Leave, then the menu.
+        let more = node_bounds(&closed, "More channel options").expect("the header menu");
+        let header = |label: &str| {
+            let bounds = node_bounds(&closed, label).unwrap_or_else(|| panic!("missing {label}"));
+            assert!(bounds.bottom() <= 54.0, "{label} sits in the header");
+            bounds
+        };
+        let mute = header("Mute microphone");
+        let leave = header("Leave voice");
+        assert!(mute.right() < leave.left() && leave.right() < more.left());
+        assert!(more.right() <= 390.0);
         assert!(
-            node_center(&closed, "Show member list").x > node_center(&closed, "Pins").x,
-            "Members sits right of Pins"
+            !closed.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::LineSegment { points, .. }
+                    if points[0].x == points[1].x && points[0].y < 54.0 && points[1].y < 54.0)),
+            "phones have no voice divider"
         );
-        app.narrow_members_visible = true;
-        let sliding = heading(&narrow(&mut app, 0.2)).expect("the list starts sliding in");
-        let resting = heading(&narrow(&mut app, 1.0)).expect("the list rests in view");
+        tap(&mut app, 0.06, more.center());
+        let open = narrow(&mut app, 0.08, vec![]);
+        let members = node_center(&open, "Members");
+        assert!(node_bounds(&open, "Pins").is_some());
+        tap(&mut app, 0.1, members);
+        assert!(app.narrow_members_visible);
+        let sliding = heading(&narrow(&mut app, 0.2, vec![])).expect("the list starts sliding in");
+        let resting = heading(&narrow(&mut app, 1.0, vec![])).expect("the list rests in view");
         assert!(
             sliding > resting + 20.0,
             "the list slides in from the trailing edge"
@@ -20635,9 +20824,62 @@ mod tests {
         assert!(resting < 390.0 - 8.0 - 200.0, "the resting list is in view");
         app.narrow_members_visible = false;
         let leaving =
-            heading(&narrow(&mut app, 1.1)).expect("the list slides out before it is gone");
+            heading(&narrow(&mut app, 1.1, vec![])).expect("the list slides out before it is gone");
         assert!(leaving > resting);
-        assert!(heading(&narrow(&mut app, 2.0)).is_none());
+        assert!(heading(&narrow(&mut app, 2.0, vec![])).is_none());
+
+        // Pins opens from the menu too.
+        let output = narrow(&mut app, 2.1, vec![]);
+        tap(&mut app, 2.2, node_center(&output, "More channel options"));
+        let open = narrow(&mut app, 2.3, vec![]);
+        tap(&mut app, 2.4, node_center(&open, "Pins"));
+        assert!(app.showing_pins);
+        app.showing_pins = false;
+
+        // Muting from the header.
+        let output = narrow(&mut app, 2.5, vec![]);
+        tap(&mut app, 2.6, node_center(&output, "Mute microphone"));
+        let output = narrow(&mut app, 2.7, vec![]);
+        assert!(node_bounds(&output, "Unmute microphone").is_some_and(|mic| mic.bottom() <= 54.0));
+
+        // A DM has no voice of its own, but keeps the call's mute and Leave.
+        let id = "dm0000000001".to_owned();
+        app.directs = vec![crate::model::DirectConversation {
+            id: id.clone(),
+            peer: crate::model::DirectPeer {
+                id: "fixture-maya".into(),
+                username: "maya".into(),
+                display_name: "TEST FIXTURE Maya".into(),
+                avatar_id: None,
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+            status: crate::model::DirectStatus::Accepted,
+            blocked: false,
+        }];
+        app.selected_channel = Some(id.clone());
+        app.selected_direct = Some(id);
+        narrow(&mut app, 3.0, vec![]);
+        let output = narrow(&mut app, 3.1, vec![]);
+        let header = |label: &str| {
+            node_bounds(&output, label)
+                .filter(|bounds| bounds.bottom() <= 54.0)
+                .unwrap_or_else(|| panic!("the DM header offers {label}"))
+        };
+        let (mic, leave, more) = (
+            header("Unmute microphone"),
+            header("Leave voice"),
+            header("More channel options"),
+        );
+        assert!(mic.right() < leave.left() && leave.right() < more.left());
+        assert!(!texts(&output).contains(&"Join voice"));
+        tap(&mut app, 3.2, leave.center());
+        assert!(matches!(app.voice.state.phase, Phase::Idle));
+        let output = narrow(&mut app, 3.3, vec![]);
+        assert!(
+            node_bounds(&output, "Leave voice").is_none_or(|bounds| bounds.bottom() > 54.0),
+            "out of a call, the DM header has no voice"
+        );
     }
 
     #[test]
@@ -20681,6 +20923,117 @@ mod tests {
                 assert!(bounds.right() <= 59.0 + app.sidebar_width);
             }
         }
+    }
+
+    #[test]
+    fn narrow_conversation_shows_voice_errors_above_the_composer_instead_of_the_dock() {
+        let error = crate::media::mic_test::CAPTURE_START_ERROR;
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-error"),
+        );
+        let frame = |app: &mut CaperApp, width: f32, time: f64, events: Vec<egui::Event>| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 844.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            )
+        };
+        let shown = |output: &egui::FullOutput| -> Vec<egui::Rect> {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == error => {
+                        let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        assert!(
+                            shape.clip_rect.contains_rect(bounds),
+                            "the error is clipped"
+                        );
+                        Some(bounds)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let placeholder = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Message #general" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+        };
+        let mut time = 0.0;
+        let mut settle = |app: &mut CaperApp, width: f32| {
+            for _ in 0..3 {
+                time += 1.0;
+                frame(app, width, time, vec![]);
+            }
+            time += 1.0;
+            (frame(app, width, time, vec![]), time)
+        };
+
+        // The conversation alone: the error sits just above the composer, once.
+        let (output, now) = settle(&mut app, 390.0);
+        let errors = shown(&output);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let composer = placeholder(&output).expect("the composer");
+        let dismiss = node_bounds(&output, "Dismiss voice error").expect("dismiss");
+        assert!(errors[0].top() > 54.0 && errors[0].bottom() <= composer.top());
+        assert!(
+            composer.top() - errors[0].bottom() < 40.0,
+            "the error is beside the composer"
+        );
+        assert!(dismiss.right() <= 390.0 && dismiss.bottom() <= composer.top());
+        for (offset, pressed) in [(0.0, true), (0.01, false)] {
+            frame(
+                &mut app,
+                390.0,
+                now + 0.1 + offset,
+                vec![
+                    egui::Event::PointerMoved(dismiss.center()),
+                    egui::Event::PointerButton {
+                        pos: dismiss.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.voice.error.is_none(), "the inline error dismisses");
+
+        // Browse keeps the dock's error, without a second copy.
+        app.voice.error = Some(error.into());
+        app.navigation_open = true;
+        let (output, _) = settle(&mut app, 390.0);
+        let errors = shown(&output);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            placeholder(&output).is_none_or(|composer| composer.left() >= 390.0),
+            "the conversation has slid away"
+        );
+
+        // So do wide layouts.
+        app.navigation_open = false;
+        let (output, _) = settle(&mut app, 1200.0);
+        let errors = shown(&output);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].right() <= 59.0 + app.sidebar_width,
+            "the error is in the dock"
+        );
     }
 
     #[test]
@@ -21053,9 +21406,16 @@ mod tests {
                         }
                     }
                 }
-                let action = find(header);
+                // The dock has the other Leave voice.
+                let action = nodes
+                    .iter()
+                    .map(|(_, node)| node)
+                    .filter(|node| node.label() == Some(header))
+                    .find(|node| node.bounds().is_some_and(|bounds| bounds.y1 <= 54.0))
+                    .unwrap_or_else(|| panic!("{state}: the header offers {header}"))
+                    .clone();
                 let bounds = action.bounds().unwrap();
-                assert!(bounds.x0 > 60.0 + f64::from(sidebar) && bounds.y1 <= 54.0);
+                assert!(bounds.x0 > 60.0 + f64::from(sidebar));
                 assert_eq!(bounds.y1 - bounds.y0, 34.0);
                 assert_eq!(
                     action.is_disabled(),
@@ -21114,7 +21474,7 @@ mod tests {
             person("ana", "Ana"),
             person("lee", "Lee"),
         ];
-        let header = |count: usize, width: f32| {
+        let header = |count: usize, width: f32, name: &str| {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,
@@ -21122,6 +21482,7 @@ mod tests {
                 Some("parity-desktop"),
             );
             app.token = Some("fixture-only".into());
+            app.detail.as_mut().unwrap().channels[0].name = name.into();
             app.channel_rosters
                 .insert("chan00000001".into(), everyone[..count].to_vec());
             let mut frame = || {
@@ -21158,19 +21519,59 @@ mod tests {
             (3, "Maya, Alex and Sam are in voice"),
             (5, "Maya, Alex, Sam and 2 more are in voice"),
         ] {
-            let (output, join, count_shown) = header(count, 1440.0);
+            let (output, join, count_shown) = header(count, 1440.0, "general");
             let people =
                 node_bounds(&output, summary).unwrap_or_else(|| panic!("missing {summary}"));
             assert!(people.right() < join.left() && people.bottom() <= 54.0);
             assert_eq!(people.height(), 24.0);
             assert!(count_shown, "count for {count}");
+            // Voice, a divider, then Pins and Members.
+            let pins = node_bounds(&output, "Pins").unwrap();
+            let members = node_bounds(&output, "Hide member list")
+                .or_else(|| node_bounds(&output, "Show member list"))
+                .unwrap();
+            assert!(join.right() < pins.left() && pins.right() < members.left());
+            let dividers: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::LineSegment { points, stroke }
+                        if points[0].x == points[1].x
+                            && points[1].y <= 54.0
+                            && stroke.color == super::BORDER =>
+                    {
+                        Some((points[0].x, stroke.width))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(dividers.len(), 1, "{dividers:?}");
+            let (x, stroke) = dividers[0];
+            assert_eq!(stroke, 1.0);
+            assert!((x - join.right() - 14.5).abs() <= 1.0, "{x} after {join:?}");
+            assert!((pins.left() - x - 6.5).abs() <= 1.0, "{x} before {pins:?}");
+            assert!(node_bounds(&output, "More channel options").is_none());
+            assert!(node_bounds(&output, "Mute microphone").is_none_or(|mic| mic.top() > 54.0));
         }
         // Narrowing drops the count and extra faces, then the faces, never
-        // the button.
+        // the button. Phones fold Pins and Members away, so a longer name
+        // takes the room.
         let summary = "Maya, Alex, Sam and 2 more are in voice";
         let mut modes = std::collections::BTreeSet::new();
         for width in (380..=760).step_by(10) {
-            let (output, join, count_shown) = header(5, width as f32);
+            let (output, join, count_shown) = header(5, width as f32, "planning-notes");
+            assert!(node_bounds(&output, "More channel options").is_some());
+            let title = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "# planning-notes" => {
+                        Some(text.pos.x + text.galley.size().x)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(title < join.left(), "{width}: Join overlaps the name");
             let mode = match node_bounds(&output, summary) {
                 None => "button",
                 Some(people) if people.width() == 24.0 => "one face",
@@ -21794,6 +22195,24 @@ mod tests {
         assert!(
             join.pos.x + join.galley.size().x < text("Members").pos.x,
             "voice sits left of Members"
+        );
+        let divider = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if points[0].x == points[1].x
+                        && points[1].y <= 54.0
+                        && *stroke == egui::Stroke::new(1.0, super::BORDER) =>
+                {
+                    Some(points[0].x)
+                }
+                _ => None,
+            })
+            .expect("a divider sets voice apart from Pins and Members");
+        assert!(
+            divider > join.pos.x + join.galley.size().x + 24.0,
+            "the divider follows the voice action"
         );
         assert!(
             !texts.iter().any(|text| text.galley.job.text == "Leave"),

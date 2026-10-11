@@ -129,18 +129,22 @@ iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
 Voice joins from the conversation header (October 11, 2026, on web, Android,
-iOS/macOS and Rust desktop). Beside Pins, the open channel shows up to three
-faces of who is in its voice with a count, then Join voice, Switch here
-(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there.
+iOS/macOS and Rust desktop). After the channel name, the open channel shows up
+to three faces of who is in its voice with a count, then Join voice, Switch here
+(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
+a thin divider separates it from Pins and Members. Phones show only the
+conversation below that header: Pins and Members fold into a `⋯` menu, the
+header adds the call's mute while in voice (and mute plus Leave in a DM), voice
+errors appear above the composer, and channels, rosters, the account bar and
+the voice dock stay in Browse.
 Channel rows no longer carry a Join action: empty channels are a single line,
 and only occupied channels add the `N in voice` line with its collapsible
 roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
 headphones shortcut on each channel row, revealed on hover or keyboard focus in
 space reserved beside the `⋯` menu and absent for the connected channel; touch
-joins from the header. Phones pin the viewed channel's line above the
-conversation only while someone is in its voice. The roster opens automatically
-on connection. Mic, deafen and device settings stay in the account footer,
-including before joining. The channel/space status and Leave stay in a dock
+joins from the header. The roster opens automatically on connection. Mic,
+deafen and device settings stay in the account footer, including before
+joining. The channel/space status and Leave stay in a dock
 above that footer whenever you are in voice; when navigation hides the active
 channel, its roster pins there too; participant audio menus open upward. Browsing
 other chats, spaces or DMs does not leave voice. That includes a space with no
@@ -157,8 +161,8 @@ owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
 At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets, and phones at 420px or less show one header
-face without the count.
+layouts retain 44px action targets, and phones show one header face without
+the count.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
@@ -4525,7 +4529,7 @@ shortcut, header Join/Switch/Leave, pending and failed-join checks, then stops a
 an existing "Disabled controls must not advertise a click" assertion that also
 fails on the previous `main`; other modes of that script and
 `test-home-demo.mjs` likewise fail on `main` before reaching voice changes. Rust
-desktop: fmt, clippy and 408 unit tests pass (headless egui renders). Android and
+desktop: fmt, clippy and 409 unit tests pass (headless egui renders). Android and
 Apple changes were not compiled or run here (no Android SDK or Xcode); run
 `./gradlew :app:testDebugUnitTest :app:connectedDebugAndroidTest`, `smoke.py`
 and the Apple parity UI tests before release. No live SFU, physical-device or

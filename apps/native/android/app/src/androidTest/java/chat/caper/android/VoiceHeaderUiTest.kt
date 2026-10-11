@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
@@ -11,6 +12,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import chat.caper.android.model.Participant
 import chat.caper.android.ui.CaperTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -60,6 +62,52 @@ class VoiceHeaderUiTest {
         compose.onNodeWithContentDescription("Join voice").assertDoesNotExist()
         compose.onNodeWithContentDescription("Leave voice").performClick()
         compose.runOnIdle { assertEquals(2, joined); assertEquals(1, left) }
+    }
+
+    @Test fun phoneHeaderMutesBeforeTheActionDuringACall() {
+        val muted = mutableStateOf(false)
+        val monitoring = mutableStateOf(false)
+        var toggled = 0
+        var left = 0
+        compose.setContent {
+            CaperTheme {
+                Row {
+                    HeaderVoice(listOf(person("a", "Maya")), HeaderVoiceAction.Leave, "design", enabled = true, unavailableLabel = null, compact = true,
+                        onJoin = {}, onPrepare = {}, onLeave = { left++ },
+                        mute = { HeaderMuteButton(muted.value, monitoring.value) { toggled++; muted.value = !muted.value } })
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription("Mute microphone").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, toggled); assertEquals(0, left) }
+        compose.onNodeWithContentDescription("Unmute microphone").assertIsEnabled()
+        // The mic sits before the action, as on web.
+        val mic = compose.onNodeWithContentDescription("Unmute microphone").getUnclippedBoundsInRoot()
+        val leave = compose.onNodeWithContentDescription("Leave voice").getUnclippedBoundsInRoot()
+        assertTrue(mic.right <= leave.left)
+
+        // Like the account bar's, mute waits while the Audio test holds the microphone.
+        compose.runOnIdle { monitoring.value = true }
+        compose.onNodeWithContentDescription("Unmute microphone").assertIsNotEnabled()
+
+        compose.onNodeWithContentDescription("Leave voice").performClick()
+        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, left) }
+    }
+
+    @Test fun conversationWithoutVoiceOffersTheCallsMuteAndLeave() {
+        var toggled = 0
+        var left = 0
+        compose.setContent {
+            CaperTheme {
+                HeaderVoiceElsewhere({ HeaderMuteButton(muted = false, monitoring = false) { toggled++ } }) { left++ }
+            }
+        }
+
+        compose.onNodeWithContentDescription("Join voice").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Mute microphone").performClick()
+        compose.onNodeWithContentDescription("Leave voice").performClick()
+        compose.runOnIdle { assertEquals(1, toggled); assertEquals(1, left) }
     }
 
     @Test fun unavailableVoiceNamesWhyJoinIsDisabled() {

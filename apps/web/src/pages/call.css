@@ -1671,12 +1671,22 @@
     opacity: 0;
   }
 }
-/* The open channel's voice: who is there, then Join, Switch here or Leave. */
+/* The open channel's voice: who is there, then Join, Switch here or Leave. It
+   follows the channel name, apart from the Pins and Members icons. */
 .header-voice {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-right: 6px;
+  padding-right: 14px;
+  border-right: 1px solid var(--border);
+}
+/* Mute, and Leave from a DM, live in the account bar and dock beside the
+   conversation on wider layouts. */
+.header-voice-mute,
+.header-voice-elsewhere {
+  display: none;
 }
 .header-voice-people {
   flex: none;
@@ -1705,7 +1715,22 @@
   font-size: 0.78rem;
   font-weight: 700;
 }
-@media (max-width: 420px) {
+@media (max-width: 760px) {
+  .header-voice {
+    gap: 6px;
+    margin-right: 0;
+    padding-right: 0;
+    border-right: 0;
+  }
+  .header-voice-mute {
+    width: 44px;
+    height: 44px;
+    display: grid;
+  }
+  .header-voice-elsewhere {
+    display: flex;
+  }
+  /* One face is enough beside the action; Browse lists everyone. */
   .header-voice-count,
   .header-voice-people .voice-stack-avatar + .voice-stack-avatar {
     display: none;
