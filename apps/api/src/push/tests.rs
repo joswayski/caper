@@ -1687,6 +1687,28 @@ async fn feedback_notifies_the_team_and_the_person_with_a_feedback_title(pool: P
         "an empty forward note previews the reported message"
     );
     assert_eq!(requests[0].body["conversationId"], conversation.as_str());
+    // Caper's acknowledgement reaches only the person.
+    let acknowledgement: String = sqlx::query_scalar(
+        "SELECT m.external_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id
+         JOIN public.users u ON u.id=cs.user_id WHERE u.team_account",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        notified(&pool, &acknowledgement).await,
+        pairs(&[("alice", "direct.message")])
+    );
+    let requests = h.fcm.take();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body["message"]["data"]["title"],
+        "Caper · Feedback"
+    );
+    assert_eq!(
+        requests[0].body["message"]["data"]["body"],
+        crate::chat::FEEDBACK_ACKNOWLEDGEMENT
+    );
 
     // A team member's reply reaches the person and the rest of the team.
     let reply = send(&h, &bob, &conversation, "Thanks, on it", None).await;
@@ -1703,14 +1725,19 @@ async fn feedback_notifies_the_team_and_the_person_with_a_feedback_title(pool: P
         "Bob · Feedback"
     );
     assert_eq!(requests[0].body["message"]["data"]["body"], "Thanks, on it");
-    let (live, _) = live::read(&pool, alice.id, 0, i64::MAX)
+    let live: Vec<Value> = live::read(&pool, alice.id, 0, i64::MAX)
         .await
         .unwrap()
         .into_iter()
-        .find_map(|(_, event)| event.map(|event| (event, ())))
-        .unwrap();
-    assert_eq!(live["title"], "Bob · Feedback");
-    assert_eq!(live["conversationId"], conversation.as_str());
+        .filter_map(|(_, event)| event)
+        .collect();
+    let titles: Vec<&str> = live
+        .iter()
+        .filter_map(|event| event["title"].as_str())
+        .collect();
+    assert_eq!(titles, ["Caper · Feedback", "Bob · Feedback"]);
+    assert_eq!(live[1]["messageId"], reply.as_str());
+    assert_eq!(live[1]["conversationId"], conversation.as_str());
 
     // Removed team members stop hearing about it, even if already queued.
     let late = send(&h, &alice, &conversation, "One more detail", None).await;

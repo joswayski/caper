@@ -3,6 +3,8 @@ export interface ChatAuthor {
   avatarId?: number | null;
   name: string;
   isGuest: boolean;
+  /** Sent by a Caper admin (a feedback team member or the Caper account), stamped by the server. */
+  admin?: boolean;
 }
 
 export type ChatAttachmentKind = "image" | "video" | "audio" | "file";

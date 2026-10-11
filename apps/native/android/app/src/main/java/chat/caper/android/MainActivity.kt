@@ -2381,6 +2381,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
+/** Marks a Caper admin's message, in the pin gold with a soft glow. The server stamps it, so a look-alike name can't. */
+@Composable internal fun AdminBadge() {
+    Surface(color = PinGold.copy(alpha = 0.10f), border = BorderStroke(1.dp, PinGold.copy(alpha = 0.55f)), shape = MaterialTheme.shapes.extraSmall) {
+        Text("ADMIN", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = PinGold, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+            style = androidx.compose.ui.text.TextStyle(shadow = androidx.compose.ui.graphics.Shadow(PinGold.copy(alpha = 0.6f), blurRadius = 8f)))
+    }
+}
+
 /** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
@@ -2392,7 +2400,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     state.attachmentProgress, state.localAttachmentPreviews,
     edited = message.forward == null && message.revision > 1, openHistory = openHistory,
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
-    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
+    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped, admin = message.author.admin,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2402,6 +2410,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
     grouped: Boolean = false,
+    admin: Boolean = false,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -2409,7 +2418,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
             Modifier.width(34.dp).clearAndSetSemantics {
-                contentDescription = listOfNotNull(author, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
+                contentDescription = listOfNotNull(author, "Admin".takeIf { admin }, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
             },
             contentAlignment = Alignment.TopCenter,
         ) {
@@ -2420,6 +2429,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
                 // A long name gives way first, so the time and tags stay whole.
                 Text(author, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (admin) { Spacer(Modifier.width(7.dp)); AdminBadge() }
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }

@@ -89,7 +89,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val members: List<Member>,
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
-@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
+/** [admin]: sent by a Caper admin (a feedback team member or the Caper account), stamped by the server. */
+@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null, val admin: Boolean = false)
 /**
  * One `content.mentions` entry: `user` (with `id` and `username`), `everyone` or `here`.
  * Other types decode too and are ignored where mentions are used.

@@ -270,6 +270,10 @@ pub struct Author {
     pub avatar_id: Option<i32>,
     pub name: String,
     pub is_guest: bool,
+    /// Sent by a Caper admin (a feedback team member or the Caper account),
+    /// stamped by the server. Old servers omit it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub admin: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1819,6 +1823,7 @@ mod tests {
                 avatar_id: None,
                 name: "A".into(),
                 is_guest: false,
+                admin: false,
             },
             content: Content {
                 version: 1,
@@ -3012,6 +3017,20 @@ mod tests {
         assert!(!direct.blocked, "old servers omit blocked");
         assert!(!direct.feedback, "old servers omit feedback");
         assert_eq!(direct.peer.avatar_id, None);
+    }
+
+    #[test]
+    fn admin_authors_are_marked_only_when_the_server_says_so() {
+        let author = |json| serde_json::from_value::<Author>(json).unwrap();
+        assert!(
+            author(
+                serde_json::json!({"id": "jose", "name": "Jose", "isGuest": false, "admin": true})
+            )
+            .admin
+        );
+        assert!(!author(serde_json::json!({"id": "fake", "name": "Jose", "isGuest": false})).admin);
+        let plain = author(serde_json::json!({"id": "fake", "name": "Jose", "isGuest": false}));
+        assert!(serde_json::to_value(&plain).unwrap().get("admin").is_none());
     }
 
     #[test]

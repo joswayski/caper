@@ -15,6 +15,13 @@ SELECT substr(md5(random()::text || clock_timestamp()::text), 1, 12),
             ORDER BY v.rank LIMIT 1),
            'caper_' || substr(md5(random()::text), 1, 8)),
        'Caper', 1, 'nobody', true;
+-- Its acknowledgements are messages, which need a chat session. Its token is
+-- random and never issued, and without an account session it can never send.
+INSERT INTO chat_sessions (external_id, token_hash, user_id, name, expires_at)
+SELECT substr(md5(random()::text || clock_timestamp()::text), 1, 12),
+       sha256(convert_to(random()::text || clock_timestamp()::text || id::text, 'UTF8')),
+       id, 'Caper', 'infinity'
+FROM users WHERE team_account;
 
 -- Accounts that read and answer every feedback conversation. Removing someone
 -- sets deleted_at; adding them again adds a row.

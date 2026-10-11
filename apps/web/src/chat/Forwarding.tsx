@@ -16,6 +16,7 @@ import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
 import { MessageAttachments } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import AdminBadge from "./AdminBadge.tsx";
 
 export interface ForwardTarget {
   messageId: string;
@@ -129,6 +130,7 @@ function OriginalMessage({
           <Avatar avatarId={message.author.avatarId} name={message.author.name} />
         </span>
         <strong>{message.author.name}</strong>
+        {message.author.admin && <AdminBadge />}
         {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
       {message.content.text && (

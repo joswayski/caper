@@ -41,8 +41,9 @@ by merging alone.
 Mentioning `@feedback` (or `@caper`, `@admins`, `@mods`, `@support` and other
 reserved team names) in any channel, thread or DM forwards that message live,
 or its whole thread, to the Caper team. Each person has one **Caper**
-conversation where feedback team members read, get notified and reply. Team
-members are added by an operator; see [Feedback](docs/media.md#feedback-feedback).
+conversation, where Caper confirms it arrived and feedback team members read,
+get notified and reply. Team members' messages carry a gold **ADMIN** badge
+everywhere. Team members are added by an operator; see [Feedback](docs/media.md#feedback-feedback).
 
 Authors can edit messages on web, Android, Apple and Rust desktop, including
 thread roots/replies and DMs. The edited indicator opens retained history with

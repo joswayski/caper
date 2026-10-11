@@ -13,6 +13,14 @@ class ProtocolTest {
         assertEquals("9007199254740993", message.seq)
     }
 
+    @Test fun `admin authors are marked only when the server says so`() {
+        val decode = { author: String -> Json.decodeFromString<ChatMessage>(
+            """{"id":"message00001","channelId":"channel00001","seq":"1","author":$author,"content":{"version":1,"type":"text","text":"hi"},"createdAt":"2026-10-11T00:00:00Z","clientMessageId":"id"}""",
+        ).author.admin }
+        assertTrue(decode("""{"id":"account00001","name":"Jose","isGuest":false,"admin":true}"""))
+        assertFalse(decode("""{"id":"account00002","name":"Jose","isGuest":false}"""))
+    }
+
     @Test fun `path ids reject traversal and wrong lengths`() {
         assertEquals("AbCd1234EfGh", "AbCd1234EfGh".pathId())
         assertThrows(IllegalArgumentException::class.java) { "../messages".pathId() }

@@ -6,7 +6,8 @@
 //! Sending only records a `feedback_reports` row in its own transaction. The
 //! chat publisher creates the forward afterwards, so reporting can never fail
 //! or slow down the message itself. A thread reply reports its whole thread; a
-//! message that is nothing but `@feedback` reports the message before it.
+//! message that is nothing but `@feedback` reports the message before it. The
+//! team account then acknowledges it, at most hourly per person.
 use super::forwarding::{MAX_FORWARDS, lock_spaces, source_snapshot};
 use super::*;
 use sqlx::{Postgres, Transaction};
@@ -19,6 +20,9 @@ mod tests;
 const HOURLY_FORWARDS: i64 = 30;
 /// A report that keeps failing is recorded as `failed` after this many tries.
 const MAX_ATTEMPTS: i16 = 5;
+/// The team account's reply when feedback arrives, at most hourly per person.
+pub(crate) const ACKNOWLEDGEMENT: &str =
+    "Thanks! The Caper team got this and is looking into it. We'll reply here.";
 
 /// Records a report for an account-authored message that mentions the team.
 /// Messages already in a feedback conversation are never reported again.
@@ -46,7 +50,7 @@ pub(super) async fn enqueue(
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     Forwarded(i64),
-    /// The conversation's latest message is a recent forward of the same original.
+    /// The same original was forwarded into the conversation in the last 10 minutes.
     Duplicate,
     /// The message, its conversation, the reporter or the team account is gone.
     Unavailable,
@@ -195,15 +199,16 @@ async fn forward(
     }
     // Repeating `@feedback` in a thread the team was just sent adds nothing:
     // the forward is live. Later on, the team hears about it again.
-    let latest: Option<(Option<i64>, bool)> = sqlx::query_as(
-        "SELECT forward_source_id,created_at>now()-interval '10 minutes' FROM public.messages
-         WHERE channel_id=$1 ORDER BY channel_seq DESC LIMIT 1",
+    let recent: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM public.messages WHERE channel_id=$1 AND forward_source_id=$2
+             AND created_at>now()-interval '10 minutes')",
     )
     .bind(destination)
-    .fetch_optional(&mut **tx)
+    .bind(original)
+    .fetch_one(&mut **tx)
     .await
     .map_err(database_error)?;
-    if latest == Some((Some(original), true)) {
+    if recent {
         return Ok(Outcome::Duplicate);
     }
     let (forwards, recent): (i64, i64) = sqlx::query_as(
@@ -258,7 +263,10 @@ async fn forward(
             .map_err(|_| unavailable())?,
     )
     .to_vec();
-    let payload = json!({"id":random_id(15),"channelId":destination_external,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id,"forward":snapshot,"forwardSeq":seq.to_string()});
+    let mut payload = json!({"id":random_id(15),"channelId":destination_external,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id,"forward":snapshot,"forwardSeq":seq.to_string()});
+    if admin(tx, Some(reporter)).await? {
+        payload["author"]["admin"] = json!(true);
+    }
     let forward: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
         .bind(payload["id"].as_str()).bind(destination).bind(session).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(original)
         .fetch_one(&mut **tx).await.map_err(database_error)?;
@@ -277,7 +285,54 @@ async fn forward(
         .map_err(database_error)?;
     sqlx::query("INSERT INTO public.direct_reads(channel_id,user_id,seq) VALUES($1,$2,$3) ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
         .bind(destination).bind(reporter).bind(seq).execute(&mut **tx).await.map_err(database_error)?;
+    acknowledge(tx, destination, &destination_external, seq).await?;
     Ok(Outcome::Forwarded(forward))
+}
+
+/// Tells the person their feedback arrived, as the team account, unless the
+/// team account already did within the hour. It notifies only them.
+async fn acknowledge(
+    tx: &mut Transaction<'_, Postgres>,
+    channel: i64,
+    external: &str,
+    head: i64,
+) -> Result<(), ApiError> {
+    let team: Option<(i64, String, String, i16)> = sqlx::query_as(
+        "SELECT cs.id,u.external_id,u.display_name,u.avatar_id FROM public.users u
+         JOIN public.chat_sessions cs ON cs.user_id=u.id
+         WHERE u.team_account AND u.deleted_at IS NULL
+           AND NOT EXISTS(SELECT 1 FROM public.messages m JOIN public.chat_sessions ms ON ms.id=m.session_id
+               WHERE m.channel_id=$1 AND ms.user_id=u.id AND m.created_at>now()-interval '1 hour')
+         ORDER BY cs.id LIMIT 1",
+    )
+    .bind(channel)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    let Some((session, author_id, name, avatar_id)) = team else {
+        return Ok(());
+    };
+    let seq = head + 1;
+    let client_id = Uuid::new_v4();
+    let content = json!({"version":1,"type":"text","text":ACKNOWLEDGEMENT});
+    let payload = json!({"id":random_id(15),"channelId":external,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id,"admin":true},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    let hash = Sha256::digest(ACKNOWLEDGEMENT.as_bytes()).to_vec();
+    let message: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(payload["id"].as_str()).bind(channel).bind(session).bind(client_id).bind(hash).bind(seq).bind(&payload)
+        .fetch_one(&mut **tx).await.map_err(database_error)?;
+    crate::push::enqueue(tx, message)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
+        .bind(channel).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":external,"seq":seq.to_string(),"message":payload}))
+        .execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("UPDATE public.channels SET last_seq=$2 WHERE id=$1")
+        .bind(channel)
+        .bind(seq)
+        .execute(&mut **tx)
+        .await
+        .map_err(database_error)?;
+    Ok(())
 }
 
 async fn readable(

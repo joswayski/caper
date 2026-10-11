@@ -109,6 +109,32 @@ test("reaction ownership is correct in the first markup, before a chat session e
   }
 });
 
+test("messages from Caper admins carry the ADMIN badge, and nobody else's do", () => {
+  const message = (id: string, admin?: boolean) => ({
+    id,
+    channelId: "channel",
+    seq: id === "admin" ? "1" : "2",
+    clientMessageId: `client-${id}`,
+    author: { id, name: "Jose", isGuest: false, ...(admin === undefined ? {} : { admin }) },
+    content: { version: 1 as const, type: "text" as const, text: `From ${id}` },
+    createdAt: "2026-10-11T00:00:00Z",
+  });
+  const markup = renderToStaticMarkup(
+    <Call
+      initialHistory={{
+        space: { id: "space", name: "Space" },
+        channel: { id: "channel", name: "general" },
+        cursor: "2",
+        hasMore: false,
+        messages: [message("admin", true), message("lookalike")],
+      }}
+    />,
+  );
+  const badges = [...markup.matchAll(/<span class="chat-admin-badge"[^>]*>Admin<\/span>/g)];
+  expect(badges).toHaveLength(1);
+  expect(markup.indexOf("chat-admin-badge")).toBeLessThan(markup.indexOf("From admin"));
+});
+
 test.each([
   ["the person who sent feedback", "team"],
   ["a team member reading someone's feedback", "other"],

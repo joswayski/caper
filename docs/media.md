@@ -2272,16 +2272,26 @@ minutes (for example several `@feedback` replies in one thread) are recorded as
 reports per person per hour, or an original already forwarded 100 times, are
 recorded as `limited` and not forwarded.
 
+When a report is forwarded, the **Caper** account replies in that conversation
+"Thanks! The Caper team got this and is looking into it. We'll reply here.",
+at most once an hour per person. It notifies only the person (`Caper · Feedback`),
+so they know it arrived. Team replies show the team member's own name and avatar
+with a gold **ADMIN** badge. Every message a feedback team member sends anywhere,
+and the Caper account's messages, carry the badge: the server stamps
+`author.admin: true` when the message is sent, so a look-alike display name can't
+claim it. Messages keep the badge they were sent with.
+
 This is not a support desk: there are no assignments, statuses, canned replies,
-team roles or in-app team management, and the person isn't sent an automatic
-acknowledgement (the conversation appears in their DM list within the 15-second
-list refresh). Team replies show the team member's own name and avatar.
+team roles or in-app team management. Reports don't record the sender's app
+platform, version or commit.
 
 ### Feedback data model and API
 
 - Migration `202610110001_feedback.sql` adds `users.team_account` (one row, inserted
   by the migration with no email so nobody can sign in as it; username `caper`,
-  falling back to `caper_feedback`/`caper_team` if an existing account holds it),
+  falling back to `caper_feedback`/`caper_team` if an existing account holds it,
+  plus a chat session with no account session that only authors its
+  acknowledgements),
   `feedback_team` (members; removal sets `deleted_at`), nullable
   `direct_conversations.feedback_user_id` (one feedback conversation per person,
   always accepted, never a request) and retained `feedback_reports` (one per
@@ -2309,6 +2319,9 @@ list refresh). Team replies show the team member's own name and avatar.
   subscriptions) also admits active `feedback_team` members for feedback
   conversations. Removing a member revokes access immediately, including queued
   pushes. Push and local notification titles read `Sender · Feedback`.
+- Message authors may carry `admin: true` (absent otherwise; older clients ignore
+  it). Clients show the gold **ADMIN** badge after the name in messages, threads
+  and forwarded originals.
 - Clients show a neutral **Feedback** tag on the conversation, hide Block there,
   explain who can read it when it is empty, and suggest `@feedback` (**Send to
   the Caper team**) in channels, threads and DMs, but not inside a feedback
@@ -2354,11 +2367,11 @@ psql "$MIGRATION_DATABASE_URL" -X -c \
 
 | Platform | Evidence and remaining gap |
 | --- | --- |
-| API | Workspace tests and Clippy, plus disposable local Postgres 15/Valkey: aliases in channels, thread replies, bare `@admins` context, DMs and edits; team list/history/reply/forwarded-thread access; outsiders denied; duplicate, hourly and unreadable-source outcomes; reports inside feedback conversations ignored; `@feedback`/`@caper`/`@admins` opening the conversation; team account block refused; removal revoking access; push recipients, `Sender · Feedback` APNs/FCM/live titles and queued-push revocation. Migration fallback when `caper` is taken and the operator `psql` commands checked on scratch databases |
-| Web | `npm run check` and `npm test` pass (572 web/shared tests), including the DM tag/controls, empty-state copy and `@feedback` suggestion rules. Real local API, gateway and Vite with seeded accounts: a team member's DM list (two tagged feedback conversations), forwarded thread card with note, team reply, no Block; the reporter's channel with highlighted aliases, **Caper** row and conversation without the `@feedback` suggestion; the channel `@feedback` suggestion; and the empty feedback conversation at 390px were inspected at 2x in headless Chromium (coarse-pointer layout). Not Safari or a physical phone |
-| Android | All 305 JVM unit tests pass with a temporary Android SDK 36 (decoding, row tag, Block visibility, empty note, suggestions). Not emulator- or device-rendered |
-| Apple | Every changed Swift file parses with Swift 6.1 on Linux; the model, request and mention logic type-check and the 28 changed `MentionAutocompleteTests`/`MessageRequestsTests` pass under Linux XCTest with local framework stubs. SwiftUI views are not compiled; Xcode builds, iOS/macOS rendering and device checks remain required |
-| Rust desktop | `build.sh` checks with clang-21 and the pinned libwebrtc: fmt, 402 tests (12 existing opt-in ignored) including suggestion, decoding, tag and block-gating tests, and application Clippy `--no-deps`. The bundled FFmpeg smoke check needs glibc 2.38 and was skipped on this Debian 12 orb. Not rendered natively or on Windows |
+| API | Workspace tests and Clippy, plus disposable local Postgres 15/Valkey: ADMIN stamps only on team members' and Caper's messages, one hourly Caper acknowledgement per person notifying only them; aliases in channels, thread replies, bare `@admins` context, DMs and edits; team list/history/reply/forwarded-thread access; outsiders denied; duplicate, hourly and unreadable-source outcomes; reports inside feedback conversations ignored; `@feedback`/`@caper`/`@admins` opening the conversation; team account block refused; removal revoking access; push recipients, `Sender · Feedback` APNs/FCM/live titles and queued-push revocation. Migration fallback when `caper` is taken and the operator `psql` commands checked on scratch databases |
+| Web | `npm run check` and `npm test` pass (573 web/shared tests), including the DM tag/controls, empty-state copy, `@feedback` suggestion rules and the ADMIN badge. Real local API, gateway and Vite with seeded accounts: a team member's DM list (two tagged feedback conversations), forwarded thread card with note, team reply, no Block; the reporter's channel with highlighted aliases, **Caper** row and conversation without the `@feedback` suggestion; the channel `@feedback` suggestion; the empty feedback conversation at 390px, and the gold ADMIN badge on a team member beside a same-named look-alike and on Caper's acknowledgement were inspected at 2x in headless Chromium (coarse-pointer layout). Not Safari or a physical phone |
+| Android | All 306 JVM unit tests pass with a temporary Android SDK 36 (decoding, row tag, Block visibility, empty note, suggestions, `author.admin`). Not emulator- or device-rendered |
+| Apple | Every changed Swift file parses with Swift 6.1 on Linux; the model, request and mention logic type-check and the 29 changed `MentionAutocompleteTests`/`MessageRequestsTests` pass under Linux XCTest with local framework stubs. SwiftUI views are not compiled; Xcode builds, iOS/macOS rendering and device checks remain required |
+| Rust desktop | `build.sh` checks with clang-21 and the pinned libwebrtc: fmt, 403 tests (12 existing opt-in ignored) including suggestion, decoding, tag, block-gating and `author.admin` tests, and application Clippy `--no-deps`. The bundled FFmpeg smoke check needs glibc 2.38 and was skipped on this Debian 12 orb. Not rendered natively or on Windows |
 | Live | No deployed multi-account, real-push or physical-device acceptance is claimed |
 
 ### Deployment order for feedback
@@ -2401,8 +2414,9 @@ Merging does not deploy. Set `MERGED_SHA` to the merged commit.
 6. **Verification:** from a non-team account, send `@feedback` in a space
    channel, reply `@mods` in a thread, and send a bare `@admins` after
    someone else's message. Confirm each appears in that account's **Caper**
-   conversation and that a team member gets a `Name · Feedback` push, can open
-   the forwarded thread and replies visibly to the person. Check recent
+   conversation with one Caper acknowledgement, and that a team member gets a
+   `Name · Feedback` push, can open the forwarded thread and replies visibly to
+   the person with the gold ADMIN badge. Check recent
    outcomes with the `feedback_reports` query above.
 7. **Rollback:** redeploy the previous API, gateway and web images. Keep the
    migration and all retained rows. Older images ignore the new columns and

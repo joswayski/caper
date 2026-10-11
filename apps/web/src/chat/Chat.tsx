@@ -44,6 +44,7 @@ import {
   type MentionCandidate,
 } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
+import AdminBadge from "./AdminBadge.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import "./chat.css";
@@ -1149,6 +1150,7 @@ export default function Chat({
             <div>
               <header className={grouped ? "sr-only" : undefined}>
                 <strong>{author?.name ?? name}</strong>
+                {author?.admin && <AdminBadge />}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}

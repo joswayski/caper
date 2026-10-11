@@ -38,7 +38,8 @@ Per committed message (edits never notify; demo spaces and guests never do):
    blocked the other notify nobody. **Feedback conversations** (see
    [`@feedback`](media.md#feedback-feedback)) notify the person and every active
    feedback team member except the author, minus anyone with a block either way
-   between them and the author; the team account itself has no devices.
+   between them and the author; the team account itself has no devices, and
+   its acknowledgements notify only the person.
 3. **Space channels**: everyone who can read the channel (active members; for a
    private channel, the owner and people with a grant), minus anyone who blocked
    the author. Joining a channel is consent to hear from it, so readers who

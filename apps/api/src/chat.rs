@@ -976,6 +976,9 @@ pub(crate) async fn send_message(
     let seq = head + 1;
     let id = random_id(15);
     let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    if admin(&mut tx, user_id).await? {
+        payload["author"]["admin"] = json!(true);
+    }
     if let Some((root_id, original)) = &thread_root {
         let mut participants = original["thread"]["participants"]
             .as_array()
@@ -1034,6 +1037,26 @@ pub(crate) async fn send_message(
     tx.commit().await.map_err(database_error)?;
     tracing::info!(event_name = "chat_committed", "message committed");
     Ok(payload)
+}
+
+/// Whether `user` is a feedback team member (or the team account). Clients
+/// badge their messages ADMIN; `author.admin` is stamped when a message is
+/// sent, so a look-alike display name can never claim it.
+pub(super) async fn admin(
+    connection: &mut sqlx::PgConnection,
+    user: Option<i64>,
+) -> Result<bool, ApiError> {
+    let Some(user) = user else {
+        return Ok(false);
+    };
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM public.feedback_team WHERE user_id=$1 AND deleted_at IS NULL)
+             OR EXISTS(SELECT 1 FROM public.users WHERE id=$1 AND team_account)",
+    )
+    .bind(user)
+    .fetch_one(connection)
+    .await
+    .map_err(database_error)
 }
 
 /// Adds `content.mentions` for `@everyone`/`@here` and for any existing
@@ -1355,6 +1378,9 @@ async fn persist_pin(
     tx.commit().await.map_err(database_error)?;
     Ok(event)
 }
+
+#[cfg(test)]
+pub(crate) use feedback::ACKNOWLEDGEMENT as FEEDBACK_ACKNOWLEDGEMENT;
 
 /// Runs the feedback step of the publisher once, for tests in other modules.
 #[cfg(test)]

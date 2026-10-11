@@ -705,6 +705,7 @@ mod tests {
             name: "Same Name".into(),
             avatar_id: Some(7),
             is_guest: false,
+            admin: false,
         };
         let members = [
             Member {

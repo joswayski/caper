@@ -924,6 +924,7 @@ impl CaperApp {
                             id: "fixture-owner".into(),
                             name: "Fixture Owner".into(),
                             is_guest: false,
+                            admin: false,
                             avatar_id: Some(0),
                         },
                     });
@@ -1129,6 +1130,7 @@ impl CaperApp {
                             avatar_id: Some(avatar),
                             name: author_name.into(),
                             is_guest: false,
+                            admin: false,
                         };
                         message.content.text = text.into();
                         message.seq = "1".into();
@@ -1353,6 +1355,7 @@ impl CaperApp {
                                 avatar_id: Some(15),
                                 name: "Maya".into(),
                                 is_guest: false,
+                                admin: false,
                             },
                             typing: true,
                             revision: 1,
@@ -1647,6 +1650,7 @@ impl CaperApp {
                     avatar_id: Some(index as i32),
                     name: name.into(),
                     is_guest: false,
+                    admin: false,
                 },
                 content: Content {
                     version: 1,
@@ -1699,6 +1703,7 @@ impl CaperApp {
                 id: "fixture-owner".into(),
                 name: "Fixture Owner".into(),
                 is_guest: false,
+                admin: false,
                 avatar_id: Some(0),
             },
         });
@@ -9808,7 +9813,7 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
+                        message_row(ui, &author, avatar_id, "Now", AuthorTags::default(), grouped.then_some("Now"), |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -10146,7 +10151,7 @@ impl CaperApp {
                 &message.author.name,
                 message.author.avatar_id,
                 &time,
-                message.author.is_guest,
+                AuthorTags::of(&message.author),
                 short.as_deref(),
                 |ui| {
                     // Compact follow-ups have no header line for the hover
@@ -14292,12 +14297,51 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 ///
 /// Returns the header timestamp's rect (the edit-history target; `None` for
 /// grouped rows) and the body's result.
+/// The tags after an author's name: GUEST, or a Caper admin's gold ADMIN.
+#[derive(Clone, Copy, Default)]
+struct AuthorTags {
+    guest: bool,
+    admin: bool,
+}
+
+impl AuthorTags {
+    fn of(author: &model::Author) -> Self {
+        Self {
+            guest: author.is_guest,
+            admin: author.admin,
+        }
+    }
+}
+
+/// Marks a Caper admin's message, in the pin gold with a soft glow. The
+/// server stamps it, so a look-alike display name can't claim it.
+fn admin_badge(ui: &mut egui::Ui) {
+    let gold = Color32::from_rgb(0xe4, 0xc7, 0x6a);
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(228, 199, 106, 26))
+        .stroke(egui::Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(228, 199, 106, 140),
+        ))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(4, 1))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: 8,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(228, 199, 106, 60),
+        })
+        .show(ui, |ui| {
+            ui.label(RichText::new("ADMIN").size(9.0).strong().color(gold))
+        });
+}
+
 fn message_row<R>(
     ui: &mut egui::Ui,
     author: &str,
     avatar_id: Option<i32>,
     time: &str,
-    guest: bool,
+    tags: AuthorTags,
     grouped: Option<&str>,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (Option<egui::Rect>, R) {
@@ -14331,7 +14375,10 @@ fn message_row<R>(
                     let timestamp = ui
                         .horizontal_wrapped(|ui| {
                             ui.label(bold(author).size(13.0));
-                            if guest {
+                            if tags.admin {
+                                admin_badge(ui);
+                            }
+                            if tags.guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
                             }
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
@@ -17248,6 +17295,7 @@ mod tests {
                 avatar_id: None,
                 name: "Maya".into(),
                 is_guest: false,
+                admin: false,
             },
             typing: true,
             revision: "1".into(),
@@ -23535,6 +23583,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
         }
     }
@@ -25238,6 +25287,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
             content: Content {
                 version: 1,
@@ -25282,6 +25332,7 @@ mod tests {
                 avatar_id: None,
                 name: "Self".into(),
                 is_guest: false,
+                admin: false,
             },
         });
         let author = Author {
@@ -25289,6 +25340,7 @@ mod tests {
             avatar_id: None,
             name: "Other".into(),
             is_guest: false,
+            admin: false,
         };
         let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
             generation: 1,

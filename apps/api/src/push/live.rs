@@ -132,7 +132,7 @@ pub(crate) async fn read(
                            AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
                        OR (d.feedback_user_id IS NOT NULL
                            AND (n.user_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.user_id AND ft.deleted_at IS NULL))
-                           AND (n.actor_id=d.feedback_user_id OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.actor_id AND ft.deleted_at IS NULL)))))
+                           AND (n.actor_id IN(d.low_user_id,d.high_user_id) OR EXISTS(SELECT 1 FROM public.feedback_team ft WHERE ft.user_id=n.actor_id AND ft.deleted_at IS NULL)))))
                    AND COALESCE(r.seq,0)<m.channel_seq
                  ELSE NOT s.demo
                    AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)

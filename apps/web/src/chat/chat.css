@@ -915,6 +915,21 @@
   font-weight: 700;
   text-transform: uppercase;
 }
+/* Caper admins, in the pin gold with a soft glow; outranks the generic header tag. */
+.chat-admin-badge,
+.chat-message header .chat-admin-badge {
+  padding: 2px 5px;
+  border: 1px solid rgb(228 199 106 / 55%);
+  border-radius: 5px;
+  background: rgb(228 199 106 / 10%);
+  box-shadow: 0 0 8px rgb(228 199 106 / 30%);
+  color: var(--pin-gold);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgb(228 199 106 / 55%);
+  text-transform: uppercase;
+}
 .chat-message time {
   color: var(--text-muted);
   font-size: 0.65rem;

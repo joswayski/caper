@@ -252,6 +252,11 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     public let name: String
     public let isGuest: Bool
     public var avatarId: Int? = nil
+    /// Sent by a Caper admin (a feedback team member or the Caper account),
+    /// stamped by the server. Missing means not an admin.
+    public var admin: Bool? = nil
+
+    public var isAdmin: Bool { admin == true }
 }
 
 /// One `content.mentions` entry, as resolved by the server on send.

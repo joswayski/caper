@@ -210,10 +210,9 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
     assert_eq!(mine[0]["peer"]["id"], team_id.as_str());
     assert_eq!(mine[0]["peer"]["displayName"], "Caper");
     let conversation = mine[0]["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        mine[0]["lastSeq"], mine[0]["readSeq"],
-        "the reporter sent it"
-    );
+    // The forward counts as sent by the reporter; Caper's reply is unread.
+    assert_eq!(mine[0]["readSeq"], "1");
+    assert_eq!(mine[0]["lastSeq"], "2");
     let theirs = directs(&app, "jose").await;
     assert_eq!(theirs.len(), 1);
     assert_eq!(theirs[0]["id"], conversation.as_str());
@@ -237,6 +236,16 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
         forward["forward"]["message"]["content"]["text"],
         "@Feedback uploads fail on iOS"
     );
+    assert_eq!(
+        forward["author"].get("admin"),
+        None,
+        "only the team is badged"
+    );
+    let acknowledgement = &page["messages"][1];
+    assert_eq!(acknowledgement["content"]["text"], ACKNOWLEDGEMENT);
+    assert_eq!(acknowledgement["author"]["id"], team_id.as_str());
+    assert_eq!(acknowledgement["author"]["name"], "Caper");
+    assert_eq!(acknowledgement["author"]["admin"], true);
     let (_, own) = history(&app, "alice", &conversation).await;
     assert_eq!(own["channel"]["name"], "Caper");
 
@@ -247,6 +256,9 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
     let latest = own["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(latest["content"]["text"], "Thanks, looking now");
     assert_eq!(latest["author"]["name"], "jose");
+    assert_eq!(latest["author"]["admin"], true, "team replies are badged");
+    // Team members are badged everywhere they write; others never are.
+    assert_eq!(first["author"].get("admin"), None);
     let (status, original) = request(
         &app,
         "GET",
@@ -425,6 +437,24 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
         .unwrap();
     send(&app, "jose", &conversation, "Fixed in the next build", None).await;
     send(&app, "alice", &conversation, "Thank you!", None).await;
+
+    // Caper acknowledged each person once within the hour, however many reports.
+    let acknowledgements: Vec<(String, String)> = sqlx::query_as(
+        "SELECT r.username,m.payload->'content'->>'text' FROM public.messages m
+         JOIN public.chat_sessions cs ON cs.id=m.session_id JOIN public.users u ON u.id=cs.user_id
+         JOIN public.direct_conversations d ON d.channel_id=m.channel_id JOIN public.users r ON r.id=d.feedback_user_id
+         WHERE u.team_account ORDER BY r.username",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        acknowledgements,
+        [
+            ("alice".into(), ACKNOWLEDGEMENT.into()),
+            ("bob".into(), ACKNOWLEDGEMENT.into())
+        ]
+    );
 
     // Leaving the team removes access to everyone else's conversations.
     sqlx::query("UPDATE public.feedback_team SET deleted_at=now() WHERE user_id=$1")

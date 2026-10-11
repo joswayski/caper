@@ -287,7 +287,8 @@ async fn resolve(
     // DMs: the other participant of an accepted conversation (not personal
     // notes) unless either blocked the other. Feedback conversations: the
     // person and every feedback team member except the author (the team
-    // account has no devices). Channels: every reader except the author and
+    // account has no devices); the team account's own messages reach only
+    // the person. Channels: every reader except the author and
     // anyone who blocked them; readers who haven't joined hear only about
     // messages that @mention them by name.
     let candidates: Vec<Candidate> = sqlx::query_as(
@@ -305,6 +306,8 @@ async fn resolve(
              JOIN public.users u ON u.id=r.id
              WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.feedback_user_id IS NOT NULL
                AND u.id<>$3 AND u.deleted_at IS NULL AND NOT u.team_account
+               -- The team account's acknowledgements are for the person only.
+               AND (u.id=d.feedback_user_id OR NOT EXISTS(SELECT 1 FROM public.users a WHERE a.id=$3 AND a.team_account))
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                    AND ((b.blocker_id=u.id AND b.blocked_id=$3) OR (b.blocker_id=$3 AND b.blocked_id=u.id)))
              UNION ALL

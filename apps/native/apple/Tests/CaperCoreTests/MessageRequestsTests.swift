@@ -69,6 +69,13 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertFalse(DirectMessageConversation(id: "dm", peer: conversations[1].peer, lastSeq: "0", readSeq: "0").feedback)
     }
 
+    func testAdminAuthorsAreMarkedOnlyWhenTheServerSaysSo() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(ChatAuthor.self, from: Data(json.utf8)) }
+        XCTAssertTrue(try decode(#"{"id":"jose","name":"Jose","isGuest":false,"admin":true}"#).isAdmin)
+        XCTAssertFalse(try decode(#"{"id":"fake","name":"Jose","isGuest":false}"#).isAdmin)
+        XCTAssertFalse(try decode(#"{"id":"fake","name":"Jose","isGuest":false,"admin":false}"#).isAdmin)
+    }
+
     func testBlocksAndPrivacyPayloads() throws {
         let blocks = try JSONDecoder().decode(BlocksResponse.self, from: Data(#"""
         {"blocks":[{"id":"member000001","username":"maya","displayName":"Maya","avatarId":31},{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":null}]}
