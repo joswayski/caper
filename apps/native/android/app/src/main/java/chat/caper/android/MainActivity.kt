@@ -1107,13 +1107,15 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
                     DropdownMenu(audioOpen, { audioOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                         Column(Modifier.width(220.dp).padding(12.dp).semantics { contentDescription = "${participant.name} local audio settings" }) {
                             val volume = voice.participantVolumes[participant.id] ?: 100
+                            // SurfaceRaised also names surfaceVariant, so the menu inherits TextMuted.
+                            // Keep control labels primary while the percentage and hint stay muted.
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Text)
                                 Text("$volume%", fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
                             }
                             Slider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, Modifier.semantics { contentDescription = "${participant.name} volume" }, valueRange = 0f..200f)
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Mute", Modifier.weight(1f), fontSize = 12.sp)
+                                Text("Mute", Modifier.weight(1f), fontSize = 12.sp, color = Text)
                                 Switch(participant.id in voice.locallyMutedParticipants, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" }, colors = caperSwitchColors())
                             }
                             Text("Only changes what you hear.", color = TextMuted, fontSize = 10.sp)
