@@ -10255,7 +10255,7 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(12)
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Forwarded · live").size(11.0).color(MUTED));
+                            ui.label(RichText::new("Forwarded").size(11.0).color(MUTED));
                             if let Some(original) = &forward.message {
                                 forwarding::original(ui, original, &mut self.reaction_textures);
                                 // The original's files as of the forward snapshot.
@@ -10268,6 +10268,7 @@ impl CaperApp {
                                 let count = original
                                     .thread
                                     .as_ref()
+                                    .filter(|summary| summary.reply_count > 0)
                                     .map(|summary| {
                                         format!(
                                             "{} {} · ",
