@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Investigate failure with Amp
-        uses: joswayski/automation@c2da73134d8565d67d6c938db5d459465320ece8
+        uses: joswayski/automation@c5bc2bedc826be07dc3802f1dd31ff60409afa7e
         with:
           enabled: ${{ vars.AMP_REPAIR_ENABLED }}
           dry-run: ${{ vars.AMP_REPAIR_DRY_RUN == 'true' }}
