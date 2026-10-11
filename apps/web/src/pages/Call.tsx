@@ -458,7 +458,7 @@ interface CallProps {
   mentionDirectory?: MentionCandidate[];
   /** Opens (or starts) a DM from a mention's profile card. */
   onMessagePerson?: (username: string) => Promise<void>;
-  profileSpaces?: Space[];
+  profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
   /** A notice above the composer, such as a DM request still waiting. */

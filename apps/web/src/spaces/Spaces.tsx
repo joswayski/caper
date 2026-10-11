@@ -3061,7 +3061,12 @@ export default function Spaces({
       displayName: author.name,
       avatarId: author.avatarId ?? undefined,
     });
-  const profileSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
+  const ownedSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
+  // Don't offer the open space to someone who is already in it.
+  const profileSpaces = (personId: string) =>
+    directView || !detail.members.some((member) => member.id === personId)
+      ? ownedSpaces
+      : ownedSpaces.filter((space) => space.id !== detail.space.id);
 
   return (
     <>

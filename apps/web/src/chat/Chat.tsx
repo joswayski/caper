@@ -214,7 +214,7 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
-  profileSpaces?: Space[];
+  profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
 }) {
@@ -1721,7 +1721,7 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
-            spaces={profileSpaces}
+            spaces={profileSpaces?.(mentionCard.person.id)}
             onBlock={
               onBlockAuthor &&
               ((author) => {

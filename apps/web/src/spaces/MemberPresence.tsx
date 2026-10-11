@@ -28,7 +28,7 @@ export default function MemberPresence({
   accountId?: string;
   onMessagePerson: (username: string) => Promise<void>;
   onBlockAuthor: (author: ChatAuthor) => void;
-  profileSpaces: Space[];
+  profileSpaces: (personId: string) => Space[];
   onClose: () => void;
 }) {
   const [page, setPage] = useState(0);
@@ -125,7 +125,7 @@ export default function MemberPresence({
           key={profile.person.id}
           target={profile}
           onClose={() => setProfile(undefined)}
-          spaces={profileSpaces}
+          spaces={profileSpaces(profile.person.id)}
           onBlock={(author) => {
             setProfile(undefined);
             onBlockAuthor(author);
