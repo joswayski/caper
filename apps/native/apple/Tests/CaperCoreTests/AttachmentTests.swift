@@ -844,13 +844,27 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testIndexedPNGEmbedsAWideGamutProfile() throws {
-        let profile = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3)?.copyICCData().map { $0 as Data })
-        let palette = try XCTUnwrap(IndexedPNG.palette(width: 2, height: 1, rgba: [255, 0, 0, 255, 0, 255, 0, 255]))
+        let p3 = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))
+        let profile = try XCTUnwrap(p3.copyICCData().map { $0 as Data })
+        let rgba: [UInt8] = [123, 47, 81, 255, 21, 179, 96, 255, 208, 93, 42, 255]
+        let palette = try XCTUnwrap(IndexedPNG.palette(width: 3, height: 1, rgba: rgba))
         let png = try XCTUnwrap(IndexedPNG.encode(palette, iccProfile: profile))
         XCTAssertEqual(Array(png[37..<41]), Array("iCCP".utf8), "the colour chunk follows IHDR")
         let source = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        XCTAssertNotNil(image.colorSpace?.copyICCData(), "ImageIO reads the embedded profile")
+        let space = try XCTUnwrap(image.colorSpace)
+        XCTAssertEqual(space.model, .indexed)
+        // An indexed space maps its palette through the base RGB space; the
+        // wrapper itself has no ICC profile to copy.
+        let base = try XCTUnwrap(space.baseColorSpace)
+        XCTAssertEqual(base.model, .rgb)
+        XCTAssertEqual(try XCTUnwrap(base.copyICCData().map { $0 as Data }), profile, "ImageIO reads the original Display P3 profile")
+        XCTAssertEqual(try XCTUnwrap(AttachmentPreparer.draw(image, in: p3)), rgba, "the profile preserves the palette's colour values")
+
+        let srgbPNG = try XCTUnwrap(IndexedPNG.encode(palette))
+        let srgbSource = try XCTUnwrap(CGImageSourceCreateWithData(srgbPNG as CFData, nil))
+        let srgbImage = try XCTUnwrap(CGImageSourceCreateImageAtIndex(srgbSource, 0, nil))
+        XCTAssertNotEqual(try XCTUnwrap(AttachmentPreparer.draw(srgbImage, in: p3)), rgba, "an sRGB replacement must not pass the P3 round-trip")
     }
 
     func testChecksumsMatchKnownVectors() {
