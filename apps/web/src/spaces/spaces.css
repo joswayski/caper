@@ -1794,11 +1794,6 @@
 .member-manager ul + .dialog-section-heading {
   margin-top: 18px;
 }
-.member-manager-empty {
-  margin: 10px 0 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
 .danger-zone {
   margin-bottom: 5px;
 }

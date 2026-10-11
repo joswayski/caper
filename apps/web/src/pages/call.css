@@ -3,17 +3,6 @@
   min-height: 100dvh;
   background: var(--blackout);
 }
-.call-destination {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-decoration: none;
-}
-@media (hover: hover) {
-  .call-destination:hover {
-    color: var(--text);
-  }
-}
 .voice-panel {
   --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
@@ -340,14 +329,6 @@
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
-.eyebrow {
-  margin: 0 0 8px;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
 .call-room {
   width: min(1400px, calc(100% - 56px));
   min-height: calc(100vh - 104px);
@@ -388,17 +369,6 @@
   padding: 20px 16px;
   overflow-y: auto;
 }
-.panel-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.panel-heading h1 {
-  margin: 0;
-  letter-spacing: -0.04em;
-  font-size: 1.3rem;
-}
 .channel-link {
   display: flex;
   align-items: center;
@@ -426,11 +396,6 @@
   .channel-link:hover:not([aria-current]) {
     background: rgb(182 77 50 / 0.22);
   }
-}
-.voice-roster-label {
-  margin: 24px 9px 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
 }
 .voice-actions {
   min-width: 0;
@@ -742,20 +707,6 @@
   outline: 2px solid var(--terracotta-bright);
   outline-offset: 3px;
 }
-.primary-button {
-  height: 48px;
-  margin-top: 5px;
-  border: 0;
-  border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
-  font-weight: 700;
-  cursor: pointer;
-}
-.primary-button:disabled {
-  opacity: 0.5;
-  cursor: wait;
-}
 .call-error {
   color: #ff9b82;
   font-size: 0.9rem;
@@ -1059,34 +1010,6 @@
 .mic-comparison audio {
   width: 100%;
   height: 44px;
-}
-.processing-details {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  margin-top: 16px;
-  color: var(--text-muted);
-  font-size: 0.68rem;
-}
-.processing-detail {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.processing-detail > button {
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  color: var(--text-muted);
-  background: transparent;
-  font-size: 0.6rem;
-  font-weight: 700;
-  cursor: help;
 }
 .call-diagnostics {
   color: var(--text-muted);

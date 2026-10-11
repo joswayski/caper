@@ -235,7 +235,6 @@
 @media (hover: hover) {
   .chat-history button:hover:not(:disabled),
   :is(.chat-state, .chat-inline-error) button:hover:not(:disabled),
-  .chat-pinned-edit-actions > button:not(.chat-edited):hover:not(:disabled),
   .chat-send-status button:hover:not(:disabled),
   .chat-reactors-status button:hover:not(:disabled),
   .chat-thread-older:hover:not(:disabled),
@@ -985,16 +984,6 @@
 }
 .chat-pins-dialog {
   width: min(580px, 100%);
-}
-.chat-pins-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.chat-pins-heading h3 {
-  margin: 0;
 }
 .chat-pinned-message {
   position: relative;
@@ -3038,7 +3027,7 @@ a.chat-file:hover {
 :is(.chat-message-actions, .chat-reaction-picker-heading, .chat-forward-dialog, .chat-edit-dialog, .chat-mention-card)
   button,
 :is(.chat-history, .chat-state, .chat-inline-error, .chat-send-status, .chat-refresh-error) button,
-:is(.chat-forward-card, .chat-pinned-message, .chat-pinned-edit-actions) > button,
+:is(.chat-forward-card, .chat-pinned-message) > button,
 .chat-thread-older,
 .chat-thread-send-row button,
 .chat-forward-destinations label {
@@ -3051,7 +3040,7 @@ a.chat-file:hover {
   :is(.chat-message-actions, .chat-reaction-picker-heading, .chat-forward-dialog, .chat-edit-dialog, .chat-mention-card)
     button,
   :is(.chat-history, .chat-state, .chat-inline-error, .chat-send-status, .chat-refresh-error) button,
-  :is(.chat-forward-card, .chat-pinned-message, .chat-pinned-edit-actions) > button,
+  :is(.chat-forward-card, .chat-pinned-message) > button,
   .chat-thread-older,
   .chat-thread-send-row button,
   .chat-forward-destinations label {
