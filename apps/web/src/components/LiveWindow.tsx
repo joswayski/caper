@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines,
   ChevronDown,
@@ -364,9 +364,19 @@ export default function LiveWindow() {
       <div className="live-glow" aria-hidden="true" />
       <div className="live-scene" ref={sceneRef} suppressHydrationWarning>
         <div className="live-shadow" aria-hidden="true" />
-        {[5, 4, 3, 2, 1].map((depth) => (
-          <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />
-        ))}
+        <div className="live-chassis" aria-hidden="true">
+          <span data-side="top" />
+          <span data-side="right" />
+          <span data-side="bottom" />
+          <span data-side="left" />
+          {["top-left", "top-right", "bottom-right", "bottom-left"].map((corner) => (
+            <span className="live-chassis-corner" data-corner={corner} key={corner}>
+              <span />
+              <span />
+              <span />
+            </span>
+          ))}
+        </div>
         <div className="live-window">
           <div className="sim-demo spaces-room navigation-open" aria-label="Simulated Caper conversation">
             <aside className="sim-rail" aria-label="Demo space">

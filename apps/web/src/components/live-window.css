@@ -51,6 +51,7 @@
 .live-scene {
   --depth: 1;
   --counter-scale: 1.4;
+  --frame-radius: 6px;
   touch-action: pan-y pinch-zoom;
   position: absolute;
   left: var(--scene-left, 0);
@@ -76,8 +77,8 @@
   transform-style: preserve-3d;
 }
 /* Arrival, once, when the window is first shown. It moves the whole scene
-   (translate composes with the pose transform), so the chassis slabs travel
-   with the window and never pass in front of it. */
+   (translate composes with the pose transform), so the solid chassis travels
+   with the window and never passes in front of it. */
 .live-stage[data-ready] {
   animation: live-fade 0.5s ease-out backwards;
 }
@@ -95,7 +96,7 @@
   }
 }
 
-/* Chassis: stacked slabs read as the window's thickness when it turns. */
+/* One solid chassis: continuous side faces join the front to its back. */
 .live-shadow {
   position: absolute;
   inset: 10% 6% -4%;
@@ -106,17 +107,118 @@
   transform: translate3d(0, 34px, -90px);
   pointer-events: none;
 }
-.live-slab {
+.live-chassis {
+  --thickness: calc(28.8px * var(--depth));
+  --half-thickness: calc(var(--thickness) / 2);
+  --body-top: var(--border);
+  --body-bottom: #252a2d;
   position: absolute;
   inset: 0;
-  border: 1px solid #1d2326;
-  border-radius: 6px;
-  background: #0d1012;
-  transform: translateZ(calc(var(--z) * var(--depth) * 1px));
+  border-radius: var(--frame-radius);
+  transform-style: preserve-3d;
   pointer-events: none;
 }
-.live-slab:nth-child(3) {
-  background: #0a0c0d;
+.live-chassis::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--blackout);
+  backface-visibility: hidden;
+  transform: translateZ(calc(-1 * var(--thickness))) rotateY(180deg);
+  content: "";
+}
+.live-chassis > [data-side] {
+  position: absolute;
+  backface-visibility: hidden;
+}
+/* Subpixel overlap keeps antialiasing from opening seams between faces. */
+.live-chassis > :is([data-side="top"], [data-side="bottom"]) {
+  left: calc(var(--frame-radius) - 0.2px);
+  width: calc(100% - 2 * var(--frame-radius) + 0.4px);
+  height: var(--thickness);
+}
+.live-chassis > [data-side="top"] {
+  top: calc(-1 * var(--half-thickness));
+  background: var(--body-top);
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(90deg);
+}
+.live-chassis > [data-side="bottom"] {
+  bottom: calc(-1 * var(--half-thickness));
+  background: var(--body-bottom);
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateX(-90deg);
+}
+.live-chassis > :is([data-side="left"], [data-side="right"]) {
+  top: calc(var(--frame-radius) - 0.2px);
+  width: var(--thickness);
+  height: calc(100% - 2 * var(--frame-radius) + 0.4px);
+  background: linear-gradient(var(--body-top), var(--body-bottom));
+}
+.live-chassis > [data-side="left"] {
+  left: calc(-1 * var(--half-thickness));
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateY(-90deg);
+}
+.live-chassis > [data-side="right"] {
+  right: calc(-1 * var(--half-thickness));
+  transform: translateZ(calc(-1 * var(--half-thickness))) rotateY(90deg);
+}
+
+/* Extrude the same rounded outline as the front, not rounded side rectangles.
+   Three 30-degree facets per quarter circle stay within 0.21px of its 6px arc.
+   Their chord width/centers are normalized to --frame-radius. */
+.live-chassis-corner {
+  --corner-color: var(--body-top);
+  position: absolute;
+  left: var(--frame-radius);
+  top: var(--frame-radius);
+  transform-style: preserve-3d;
+}
+.live-chassis-corner[data-corner="top-right"] {
+  left: auto;
+  right: var(--frame-radius);
+  transform: rotateZ(90deg);
+}
+.live-chassis-corner:is([data-corner="bottom-right"], [data-corner="bottom-left"]) {
+  --corner-color: var(--body-bottom);
+  top: auto;
+  bottom: var(--frame-radius);
+}
+.live-chassis-corner[data-corner="bottom-right"] {
+  left: auto;
+  right: var(--frame-radius);
+  transform: rotateZ(180deg);
+}
+.live-chassis-corner[data-corner="bottom-left"] {
+  transform: rotateZ(270deg);
+}
+.live-chassis-corner > span {
+  position: absolute;
+  left: calc(-0.258819045 * var(--frame-radius) - 0.2px);
+  top: calc(-1 * var(--half-thickness));
+  width: calc(0.51763809 * var(--frame-radius) + 0.4px);
+  height: var(--thickness);
+  background: var(--corner-color);
+  backface-visibility: hidden;
+  transform: translate3d(
+      calc(var(--cx) * var(--frame-radius)),
+      calc(var(--cy) * var(--frame-radius)),
+      calc(-1 * var(--half-thickness))
+    )
+    rotateZ(var(--arc-angle)) rotateX(90deg);
+}
+.live-chassis-corner > :nth-child(1) {
+  --cx: -0.9330127;
+  --cy: -0.25;
+  --arc-angle: 285deg;
+}
+.live-chassis-corner > :nth-child(2) {
+  --cx: -0.6830127;
+  --cy: -0.6830127;
+  --arc-angle: 315deg;
+}
+.live-chassis-corner > :nth-child(3) {
+  --cx: -0.25;
+  --cy: -0.9330127;
+  --arc-angle: 345deg;
 }
 
 .live-window {
@@ -125,12 +227,14 @@
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   border: 1px solid #2b3134;
-  border-radius: 6px;
+  border-radius: var(--frame-radius);
   background: #111416;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.05),
     0 30px 80px rgb(0 0 0 / calc(0.45 * (1 - var(--depth))));
-  transform-style: preserve-3d;
+  /* The conversation and its border are one front face. Raising the content
+     separately makes it intersect and cover the border under perspective. */
+  transform-style: flat;
 }
 
 .live-window > .live-status {
@@ -360,14 +464,14 @@
 
 /* Fully open, the window becomes plain 2D layout. Coplanar layers inside a 3D
    context make hit testing unreliable (clicks can land on a scroll container
-   instead of the control drawn on top). The edge plates are fully transparent
-   by now, so dropping the 3D structure causes no visible change. */
+   instead of the control drawn on top). The chassis has no thickness by now,
+   so dropping the 3D structure causes no visible change. */
 .live-scene[data-settled],
 .live-scene[data-settled] :is(.lz, .live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel) {
   transform: none;
   transform-style: flat;
 }
-.live-scene[data-settled] .live-slab,
+.live-scene[data-settled] .live-chassis,
 .live-scene[data-settled] .live-shadow {
   display: none;
 }
@@ -503,7 +607,6 @@
   overflow: hidden;
   border-radius: inherit;
   background: var(--surface-conversation);
-  transform: translateZ(1px);
 }
 /* Decorative content must not trigger the real app's hover styles or profile
    tooltips. Keep hit testing only on scroll regions; presses still reach the
@@ -822,7 +925,7 @@ html.live-sheet-open {
     transform: translateY(24px) scale(0.97);
   }
 }
-.live-scene[data-mode="sheet"][data-active] :is(.live-slab, .live-shadow) {
+.live-scene[data-mode="sheet"][data-active] :is(.live-chassis, .live-shadow) {
   display: none;
 }
 .live-scene[data-mode="sheet"][data-active] .live-window {
