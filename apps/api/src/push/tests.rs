@@ -5,6 +5,7 @@ use axum::{
     http::{Request, Version},
     response::{IntoResponse, Response},
 };
+use chrono::{TimeDelta, Utc};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -172,7 +173,7 @@ fn previews_trim_truncate_to_180_characters_and_name_empty_messages() {
     );
     assert_eq!(
         (direct.title.as_str(), direct.body.as_str(), direct.thread()),
-        ("Alice", "Sent a message", "dm0000000001")
+        ("Alice", "Sent a message", "dm0000000001".to_owned())
     );
 }
 
@@ -2324,4 +2325,387 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
         Some("session ended")
     );
     assert!(h.fcm.take().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn invitations_notify_without_grants_and_recheck_consent_before_delivery(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    register(&h, &bob, &bob.token, "apns", APNS_TOKEN).await;
+    let (android_session, _) = session(&pool, bob.id).await;
+    register(&h, &bob, &android_session, "fcm", "fcm:invite-bob").await;
+    assert_eq!(
+        put_json(
+            &h.app,
+            "/api/notifications/settings",
+            &bob.token,
+            json!({"level":"mentions"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (space_id, space_external) = space(&pool, &alice, &[]).await;
+    let path = format!("/api/spaces/{space_external}/members");
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &path,
+            Some(&alice.token),
+            None,
+            json!({"username":"bob"})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &path,
+            Some(&alice.token),
+            None,
+            json!({"username":"bob"})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let first: i64 = sqlx::query_scalar("SELECT id FROM public.notifications WHERE user_id=$1")
+        .bind(bob.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let events = live::read(&pool, bob.id, 0, first, None).await.unwrap();
+    let event = events[0].1.as_ref().unwrap();
+    assert_eq!(event["kind"], "space.invitation");
+    assert_eq!(event["notificationId"], first.to_string());
+    assert_eq!(event["spaceId"], space_external);
+    assert_eq!(event["body"], "Alice invited you to Studio.");
+    assert!(event.get("messageId").is_none() && event.get("channelId").is_none());
+    assert!(
+        live::read(&pool, alice.id, 0, first, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &format!("/api/spaces/{space_external}"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    deliver(&h).await;
+    let apns = h.apns.take();
+    let fcm = h.fcm.take();
+    assert_eq!((apns.len(), fcm.len()), (1, 1));
+    assert_eq!(apns[0].body["notificationId"], first.to_string());
+    assert_eq!(
+        apns[0].body["aps"]["thread-id"],
+        format!("invitation:{first}")
+    );
+    assert_eq!(apns[0].body["aps"]["alert"]["title"], "You’re invited!");
+    assert_eq!(fcm[0].body["message"]["data"]["kind"], "space.invitation");
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &format!("/api/spaces/{space_external}/invitation"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        live::read(&pool, bob.id, 0, first, None).await.unwrap()[0]
+            .1
+            .is_none()
+    );
+
+    let secret = channel(&pool, space_id, "planning", true, &[]).await;
+    let channel_path = format!("/api/spaces/{space_external}/channels/{secret}");
+    let invite_path = format!("{channel_path}/members");
+    let invite = || {
+        call(
+            &h.app,
+            "POST",
+            &invite_path,
+            Some(&alice.token),
+            None,
+            json!({"username":"bob"}),
+        )
+    };
+    // A muted/nothing channel silences messages, not a new consent request.
+    assert_eq!(
+        put_json(
+            &h.app,
+            &format!("{channel_path}/notifications"),
+            &bob.token,
+            json!({"level":"nothing","mutedUntil":"forever"})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        put_json(
+            &h.app,
+            &format!("/api/spaces/{space_external}/notifications"),
+            &bob.token,
+            json!({"level":"nothing","mutedUntil":"forever"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(invite().await.0, StatusCode::CREATED);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &format!("/api/chat/channels/{secret}/messages"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let second: i64 =
+        sqlx::query_scalar("SELECT max(id) FROM public.notifications WHERE user_id=$1")
+            .bind(bob.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let event = live::read(&pool, bob.id, first, second, None)
+        .await
+        .unwrap()[0]
+        .1
+        .clone()
+        .unwrap();
+    assert_eq!(event["kind"], "channel.invitation");
+    assert_eq!(event["channelId"], secret);
+    assert_eq!(event["body"], "Alice invited you to #planning in Studio.");
+    // A provider retry must recheck cancellation, not preserve old consent.
+    h.apns
+        .reply(503, json!({"reason":"ServiceUnavailable"}), None);
+    deliver(&h).await;
+    assert_eq!(h.apns.take().len(), 1);
+    assert_eq!(h.fcm.take().len(), 1);
+    assert_eq!(
+        call(
+            &h.app,
+            "DELETE",
+            &format!("{channel_path}/members/{}", bob.external_id),
+            Some(&alice.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    sqlx::query(
+        "UPDATE public.notification_deliveries SET available_at=now() WHERE delivered_at IS NULL",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    deliver(&h).await;
+    assert!(h.apns.take().is_empty());
+    // Cooldown elapsed: a new invitation cannot revive the old retry/event.
+    sqlx::query("UPDATE public.channel_invitations SET updated_at=now()-interval '25 hours' WHERE user_id=$1")
+        .bind(bob.id).execute(&pool).await.unwrap();
+    assert_eq!(invite().await.0, StatusCode::CREATED);
+    let third: i64 =
+        sqlx::query_scalar("SELECT max(id) FROM public.notifications WHERE user_id=$1")
+            .bind(bob.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let replay = live::read(&pool, bob.id, first, third, None).await.unwrap();
+    assert_eq!(replay.len(), 2);
+    assert!(replay[0].1.is_none() && replay[1].1.is_some());
+    // Block after enqueue suppresses both the gateway and both providers.
+    assert_eq!(
+        put_json(
+            &h.app,
+            &format!("/api/blocks/{}", alice.external_id),
+            &bob.token,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    deliver(&h).await;
+    assert!(h.apns.take().is_empty() && h.fcm.take().is_empty());
+    assert!(
+        live::read(&pool, bob.id, second, third, None)
+            .await
+            .unwrap()[0]
+            .1
+            .is_none()
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn invitation_delivery_respects_account_pause_presence_and_expired_consent(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let (space_id, external) = space(&pool, &alice, &[]).await;
+    let invite_path = format!("/api/spaces/{external}/members");
+    for case in [
+        "off", "paused", "held", "idle", "always", "declined", "expired", "logout",
+    ] {
+        let recipient = person(&pool, case).await;
+        register(
+            &h,
+            &recipient,
+            &recipient.token,
+            "fcm",
+            &format!("fcm:{case}"),
+        )
+        .await;
+        let settings = match case {
+            "off" => json!({"level":"nothing"}),
+            "always" => json!({"mobile":"always"}),
+            _ => json!({"level":"mentions"}),
+        };
+        assert_eq!(
+            put_json(
+                &h.app,
+                "/api/notifications/settings",
+                &recipient.token,
+                settings
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        if case == "paused" {
+            // Pause storage is supported; the account API does not expose DND yet.
+            sqlx::query("UPDATE public.notification_settings SET paused_until=now()+interval '1 hour' WHERE user_id=$1")
+                .bind(recipient.id).execute(&pool).await.unwrap();
+        }
+        assert_eq!(
+            call(
+                &h.app,
+                "POST",
+                &invite_path,
+                Some(&alice.token),
+                None,
+                json!({"username":case})
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+        let notification: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM public.notifications WHERE user_id=$1")
+                .bind(recipient.id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        if case == "off" || case == "paused" {
+            assert!(notification.is_none(), "{case} must not enqueue alerts");
+            continue;
+        }
+        let notification = notification.unwrap();
+        if matches!(case, "held" | "idle" | "always") {
+            let (_, desktop_hash) = session(&pool, recipient.id).await;
+            active(&h, &recipient, &desktop_hash).await;
+            deliver(&h).await;
+            if case == "always" {
+                assert_eq!(h.fcm.take().len(), 1, "always sends despite active desktop");
+            } else {
+                assert!(h.fcm.take().is_empty(), "whenInactive waits");
+                let held: bool = sqlx::query_scalar("SELECT held AND available_at>now()+interval '50 seconds' FROM public.notification_deliveries WHERE notification_id=$1")
+                    .bind(notification).fetch_one(&pool).await.unwrap();
+                assert!(held);
+                if case == "idle" {
+                    clear_presence(&recipient).await;
+                }
+                sqlx::query("UPDATE public.notification_deliveries SET available_at=now() WHERE notification_id=$1")
+                    .bind(notification).execute(&pool).await.unwrap();
+                deliver(&h).await;
+                assert_eq!(h.fcm.take().len(), usize::from(case == "idle"));
+            }
+            clear_presence(&recipient).await;
+            continue;
+        }
+        match case {
+            "declined" => assert_eq!(
+                call(
+                    &h.app,
+                    "DELETE",
+                    &format!("/api/spaces/{external}/invitation"),
+                    Some(&recipient.token),
+                    None,
+                    Value::Null
+                )
+                .await
+                .0,
+                StatusCode::NO_CONTENT
+            ),
+            "expired" => {
+                // Keep the generation timestamps identical, but outside the consent lifetime.
+                let old = Utc::now() - TimeDelta::days(8);
+                sqlx::query("UPDATE public.space_invitations SET updated_at=$1 WHERE space_id=$2 AND user_id=$3")
+                    .bind(old).bind(space_id).bind(recipient.id).execute(&pool).await.unwrap();
+                sqlx::query("UPDATE public.notifications SET created_at=$1 WHERE id=$2")
+                    .bind(old)
+                    .bind(notification)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "logout" => {
+                assert_eq!(
+                    call(
+                        &h.app,
+                        "POST",
+                        "/api/auth/logout",
+                        Some(&recipient.token),
+                        None,
+                        Value::Null
+                    )
+                    .await
+                    .0,
+                    StatusCode::NO_CONTENT
+                );
+            }
+            _ => unreachable!(),
+        }
+        deliver(&h).await;
+        assert!(
+            h.fcm.take().is_empty(),
+            "{case} must suppress pending delivery"
+        );
+        if case != "logout" {
+            assert!(
+                live::read(&pool, recipient.id, 0, notification, None)
+                    .await
+                    .unwrap()[0]
+                    .1
+                    .is_none()
+            );
+        }
+    }
 }

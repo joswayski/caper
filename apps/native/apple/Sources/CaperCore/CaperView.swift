@@ -672,6 +672,12 @@ private struct WorkspaceView: View {
         // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
         .modifier(MediaViewerHost())
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
+        .onChange(of: model.notificationInvitation, initial: true) { _, invitation in
+            if let invitation { sheet = .invitation(invitation); model.notificationInvitation = nil }
+        }
+        .onChange(of: model.notificationChannelInvitation, initial: true) { _, invitation in
+            if let invitation { sheet = .channelInvitation(invitation); model.notificationChannelInvitation = nil }
+        }
         .task(id: model.detail?.space.id) {
             guard sheet == nil, model.detail != nil else { return }
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }

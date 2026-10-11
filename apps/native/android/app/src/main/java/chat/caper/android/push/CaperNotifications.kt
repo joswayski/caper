@@ -42,6 +42,7 @@ internal object CaperNotifications {
     const val EXTRA_CONVERSATION_ID = "conversationId"
     const val EXTRA_SPACE_ID = "spaceId"
     const val EXTRA_CHANNEL_ID = "channelId"
+    const val EXTRA_KIND = "kind"
     private const val NOTIFICATION_ID = 1
     private const val MESSAGE_IDS = "chat.caper.android.messageIds"
     private const val MEDIA_FILES = "chat.caper.android.notificationMedia"
@@ -99,6 +100,7 @@ internal object CaperNotifications {
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         if (payload.conversationId != null) open.putExtra(EXTRA_CONVERSATION_ID, payload.conversationId)
         else open.putExtra(EXTRA_SPACE_ID, payload.spaceId).putExtra(EXTRA_CHANNEL_ID, payload.channelId)
+        open.putExtra(EXTRA_KIND, payload.kind)
         val pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val dismiss = PendingIntent.getBroadcast(context, 0,
             Intent(context, NotificationDismissReceiver::class.java).setData(Uri.fromParts("caper-dismiss", payload.tag, null)),
@@ -107,8 +109,8 @@ internal object CaperNotifications {
         val notification = NotificationCompat.Builder(context, payload.channel)
             .setSmallIcon(R.drawable.ic_caper_notification).setColor(Terracotta.toArgb())
             .setLargeIcon(avatar)
-            .setStyle(style).setContentTitle(payload.title).setContentText(payload.body)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE).setContentIntent(pending).setAutoCancel(true)
+            .setStyle(if (payload.invitation) NotificationCompat.BigTextStyle().bigText(payload.body) else style).setContentTitle(payload.title).setContentText(payload.body)
+            .setCategory(if (payload.invitation) NotificationCompat.CATEGORY_EVENT else NotificationCompat.CATEGORY_MESSAGE).setContentIntent(pending).setAutoCancel(true)
             .setDeleteIntent(dismiss).setTimeoutAfter(86_400_000)
             .addExtras(Bundle().apply {
                 putStringArrayList(MESSAGE_IDS, ArrayList((seen + payload.messageId).takeLast(MAX_MESSAGES)))

@@ -17,6 +17,7 @@ pub(super) enum Kind {
     ChannelMessage,
     MentionUser,
     MentionEveryone,
+    Invitation,
 }
 
 impl Kind {
@@ -26,6 +27,7 @@ impl Kind {
             Self::ChannelMessage => "channel.message",
             Self::MentionUser => "mention.user",
             Self::MentionEveryone => "mention.everyone",
+            Self::Invitation => "invitation",
         }
     }
 }
@@ -47,6 +49,10 @@ pub(super) struct Preferences {
 pub(super) fn notifies(kind: Kind, preferences: &Preferences) -> bool {
     if preferences.account == Some(Level::Nothing) || preferences.paused {
         return false;
+    }
+    // Conversation levels/mutes govern messages, not new consent requests.
+    if kind == Kind::Invitation {
+        return true;
     }
     if (preferences.channel_muted || preferences.space_muted) && kind != Kind::MentionUser {
         return false;

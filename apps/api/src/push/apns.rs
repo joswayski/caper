@@ -143,11 +143,15 @@ pub(super) fn payload(alert: &Alert) -> Value {
             "mutable-content": 1,
         },
         "kind": alert.kind,
-        "messageId": alert.message_id,
         "sender": alert.sender,
         "senderId": alert.sender_id,
         "senderAvatarId": alert.sender_avatar_id,
     });
+    if let Some(id) = &alert.notification_id {
+        payload["notificationId"] = json!(id);
+    } else {
+        payload["messageId"] = json!(alert.message_id);
+    }
     if let Some(attachment) = &alert.attachment {
         payload["attachmentUrl"] = json!(attachment.url);
         payload["attachmentContentType"] = json!(attachment.content_type);
@@ -165,6 +169,15 @@ pub(super) fn payload(alert: &Alert) -> Value {
             payload["channelId"] = json!(channel_id);
             payload["conversationTitle"] = json!(title);
             payload["recipientCount"] = json!(recipient_count);
+        }
+        Conversation::Invitation {
+            space_id,
+            channel_id,
+        } => {
+            payload["spaceId"] = json!(space_id);
+            if let Some(id) = channel_id {
+                payload["channelId"] = json!(id);
+            }
         }
     }
     payload

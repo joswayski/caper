@@ -44,7 +44,11 @@ The native UI and platform projects still require exact-head Apple CI before the
   APNs sandbox (`apnsSandbox`) and `iOS-Release.entitlements` production (`apns`).
   Unsigned simulator builds cannot receive APNs tokens, so the opt-in stays hidden
   there.
-- macOS has the controls only; its local notifications are phase 2.
+- **Invitations.** Space/private-channel invitations are regular alerts with
+  independent grouping. Tapping refreshes pending invitations and presents
+  Accept/Decline review, never automatic acceptance, private history or voice.
+- macOS receives local notifications from the account gateway while running;
+  it has no APNs delivery after quit.
 
 Physical signed devices must still validate opt-in, permission denial and
 re-enable, token rotation, logout and account switching, sandbox and production

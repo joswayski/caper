@@ -850,6 +850,19 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   emit(10, media);
   await vi.waitFor(() => assert.equal(shown.length, 4));
   assert.equal(shown[3].options.body, "A new sketch", "a rejected original preserves the notification text");
+  emit(11, { kind: "space.invitation", notificationId: "91", messageId: undefined, channelId: undefined });
+  assert.equal(shown.length, 5, "a space invitation needs no message or channel");
+  shown[4].onclick?.();
+  assert.equal(destination, "/spaces?space=space0000001");
+  emit(12, { kind: "space.invitation", notificationId: "91", messageId: undefined, channelId: undefined });
+  assert.equal(shown.length, 5, "invitation replay is deduplicated independently of messages");
+  emit(13, { kind: "channel.invitation", notificationId: "92", messageId: undefined, channelId: "chan00000001" });
+  assert.equal(shown.length, 6, "reading a channel does not suppress an invitation");
+  shown[5].onclick?.();
+  assert.equal(destination, "/spaces?space=space0000001&invite=chan00000001");
+  emit(14, { kind: "space.invitation", notificationId: "93" });
+  emit(15, { kind: "channel.invitation", notificationId: "94", conversationId: "dm0000000001" });
+  assert.equal(shown.length, 6, "malformed invitations cannot fall through to conversation navigation");
   let complete!: (response: Response) => void;
   vi.mocked(fetch).mockImplementationOnce(
     () =>
@@ -857,11 +870,11 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
         complete = resolve;
       }),
   );
-  emit(11, media);
+  emit(16, media);
   stop();
   complete(new Response("png"));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(shown.length, 4, "an original finishing after logout cannot create another notification");
+  assert.equal(shown.length, 6, "an original finishing after logout cannot create another notification");
   destination = undefined;
   shown[2].onclick?.();
   assert.equal(destination, undefined, "old-account notifications cannot navigate after logout");

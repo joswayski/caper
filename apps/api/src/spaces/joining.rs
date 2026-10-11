@@ -156,6 +156,9 @@ pub(super) async fn add_channel_member(
     }
     sqlx::query("INSERT INTO public.channel_invitations(channel_id,user_id,status) VALUES($1,$2,'pending') ON CONFLICT(channel_id,user_id) DO UPDATE SET status='pending',updated_at=now()")
         .bind(id).bind(member.0).execute(&mut *tx).await.map_err(database_error)?;
+    crate::push::invite(&mut tx, member.0, principal.user.id, space_id, Some(id))
+        .await
+        .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,

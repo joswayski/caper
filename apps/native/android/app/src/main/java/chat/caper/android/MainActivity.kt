@@ -212,6 +212,7 @@ class MainActivity : ComponentActivity() {
             intent.getStringExtra(CaperNotifications.EXTRA_CONVERSATION_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_SPACE_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_CHANNEL_ID),
+            intent.getStringExtra(CaperNotifications.EXTRA_KIND),
         )
     }
 
@@ -281,6 +282,14 @@ internal data class VoiceJoinIntent(
     }
     LaunchedEffect(state.invitations) { (overlay as? Overlay.Invitation)?.let { shown -> if (state.invitations.none { it.id == shown.space.id }) overlay = null } }
     var navigationOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(state.notificationInvitation, state.notificationBrowseSpace, state.selectedSpace?.space?.id) {
+        state.notificationInvitation?.let { overlay = Overlay.Invitation(it); viewModel.consumeNotificationInvitation() }
+        if (state.notificationBrowseSpace != null && state.notificationBrowseSpace == state.selectedSpace?.space?.id) {
+            overlay = null
+            navigationOpen = true
+            viewModel.consumeNotificationInvitation()
+        }
+    }
     VoiceChimes(voice)
 
     // Web: closing User Settings, or a panel opened from it, returns focus to its button.

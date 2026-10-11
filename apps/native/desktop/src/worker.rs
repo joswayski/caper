@@ -26,6 +26,13 @@ pub enum Command {
         generation: u64,
         token: String,
     },
+    OpenInvitation {
+        epoch: u64,
+        navigation: u64,
+        token: String,
+        space: String,
+        channel: Option<String>,
+    },
     /// Web's background membership reconcile: `GET /api/spaces`, then the
     /// open space's detail while it is still listed. `revision` and
     /// `navigation` come back unchanged so the app can discard a snapshot
@@ -477,6 +484,13 @@ pub enum Event {
     NotificationError {
         epoch: u64,
         error: String,
+    },
+    InvitationLoaded {
+        epoch: u64,
+        navigation: u64,
+        space: String,
+        channel: Option<String>,
+        result: Result<(Spaces, Option<SpaceDetail>), String>,
     },
     Forward {
         generation: u64,
@@ -1254,6 +1268,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             ids,
         },
+        Command::OpenInvitation {
+            epoch,
+            navigation,
+            token,
+            space,
+            channel,
+        } => {
+            let result = api
+                .spaces(&token)
+                .and_then(|spaces| {
+                    let detail =
+                        if channel.is_some() && spaces.spaces.iter().any(|item| item.id == space) {
+                            Some(api.space(&token, &space)?)
+                        } else {
+                            None
+                        };
+                    Ok((spaces, detail))
+                })
+                .map_err(|error| error.to_string());
+            Event::InvitationLoaded {
+                epoch,
+                navigation,
+                space,
+                channel,
+                result,
+            }
+        }
         Command::RefreshMembership {
             epoch,
             request,

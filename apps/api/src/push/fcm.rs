@@ -195,12 +195,16 @@ fn outcome(status: u16, body: &Value, after: Option<Duration>) -> Outcome {
 pub(super) fn message(token: &str, alert: &Alert) -> Value {
     let mut data = json!({
         "kind": alert.kind,
-        "messageId": alert.message_id,
         "title": alert.title,
         "body": alert.body,
         "sender": alert.sender,
         "senderId": alert.sender_id,
     });
+    if let Some(id) = &alert.notification_id {
+        data["notificationId"] = json!(id);
+    } else {
+        data["messageId"] = json!(alert.message_id);
+    }
     if let Some(id) = alert.sender_avatar_id {
         data["senderAvatarId"] = json!(id.to_string());
     }
@@ -220,6 +224,15 @@ pub(super) fn message(token: &str, alert: &Alert) -> Value {
             data["spaceId"] = json!(space_id);
             data["channelId"] = json!(channel_id);
             data["conversationTitle"] = json!(title);
+        }
+        Conversation::Invitation {
+            space_id,
+            channel_id,
+        } => {
+            data["spaceId"] = json!(space_id);
+            if let Some(id) = channel_id {
+                data["channelId"] = json!(id);
+            }
         }
     }
     json!({

@@ -64,6 +64,9 @@ credentials.
   one per DM or channel (tagged with its ID), in the `direct_messages`,
   `channel_messages` or `mentions` notification channel. Nothing shows for the
   conversation already on screen. Tapping opens the DM or channel.
+- **Invitations.** Space/private-channel invitations use the `invitations` OS
+  channel with their own IDs and text/event style. Tapping refreshes pending
+  invitations and opens Accept/Decline review, not private history or voice.
 - **Controls.** The space menu, each channel's menu and a new DM row menu (⋯ or long
   press) set notification levels and mutes with `/api/notifications/settings` and the
   override routes. Changes show at once and revert with an inline error when a save

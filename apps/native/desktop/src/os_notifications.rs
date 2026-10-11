@@ -15,7 +15,10 @@ use std::{
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     #[cfg(target_os = "windows")]
-    pub message_id: String,
+    pub message_id: Option<String>,
+    #[cfg(target_os = "windows")]
+    pub notification_id: Option<String>,
+    pub kind: Option<String>,
     pub title: String,
     pub body: String,
     pub created_at: String,
@@ -29,7 +32,16 @@ pub struct Alert {
 }
 
 impl Alert {
+    pub fn invitation(&self) -> bool {
+        matches!(
+            self.kind.as_deref(),
+            Some("space.invitation" | "channel.invitation")
+        )
+    }
     pub fn conversation(&self) -> Option<&str> {
+        if self.invitation() {
+            return None;
+        }
         self.conversation_id
             .as_deref()
             .or(self.channel_id.as_deref())
@@ -341,10 +353,12 @@ fn platform_show(
     register(APP_ID, "Caper", None)
         .map_err(|_| "Couldn’t register desktop notifications.".to_owned())?;
     let mut toast = Toast::new();
-    toast
-        .text1(&alert.title)
-        .text2(&alert.body)
-        .tag(&alert.message_id);
+    let tag = if let Some(id) = &alert.notification_id {
+        format!("invitation:{id}")
+    } else {
+        alert.message_id.clone().unwrap_or_default()
+    };
+    toast.text1(&alert.title).text2(&alert.body).tag(&tag);
     if let Some(image) = image.and_then(|path| Image::new_local(path).ok()) {
         toast.image(
             1,
@@ -375,7 +389,7 @@ fn platform_show(
     {
         std::thread::sleep(Duration::from_millis(200));
     }
-    let _ = manager.remove(&alert.message_id);
+    let _ = manager.remove(&tag);
     Ok(())
 }
 
@@ -399,6 +413,20 @@ mod tests {
         Message,
         handshake::server::{Request, Response},
     };
+
+    #[test]
+    fn invitation_is_not_a_message_or_a_focused_conversation() {
+        let alert: Alert = serde_json::from_value(json!({
+            "kind":"channel.invitation", "notificationId":"91", "title":"You’re invited!",
+            "body":"Maya invited you to #planning in Studio.", "createdAt":Utc::now().to_rfc3339(),
+            "spaceId":"space0000001", "channelId":"channel00001"
+        }))
+        .unwrap();
+        assert!(alert.invitation());
+        assert_eq!(alert.conversation(), None);
+        assert!(alert.fresh());
+        assert_eq!(alert.channel_id.as_deref(), Some("channel00001"));
+    }
 
     #[test]
     fn account_feed_resumes_sparse_ids_without_duplicate_alerts_or_a_ui_loop() {

@@ -1700,6 +1700,16 @@ export default function Spaces({
   const [membershipError, setMembershipError] = useState<string>();
   const [browseOpen, setBrowseOpen] = useState(false);
   const [channelInvitation, setChannelInvitation] = useState<ChannelInvitation>();
+  const notificationInvite = useRef(
+    embedded || typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("invite"),
+  );
+  useEffect(() => {
+    if (!view || view.detail.space.id !== selected.spaceId || !notificationInvite.current) return;
+    const invite = view.detail.channelInvitations?.find((item) => item.channel.id === notificationInvite.current);
+    notificationInvite.current = null;
+    if (invite) setChannelInvitation(invite);
+    else setNotice("This invitation is no longer available.");
+  }, [view, selected.spaceId]);
   const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);

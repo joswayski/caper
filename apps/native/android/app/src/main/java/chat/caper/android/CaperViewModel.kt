@@ -75,6 +75,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var pendingChannelIntent: Pair<String, String>? = null
+    private var pendingInvitationIntent: Triple<String, String, String?>? = null
+    private var notificationRouteRevision = 0L
     private val directHistories = linkedMapOf<String, ChatHistory>()
     private var directHistoryJob: Job? = null
     private var openingDirectId: String? = null
@@ -170,7 +172,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val pending = pendingDirectIntent?.let { id -> mutable.value.directConversations.firstOrNull { it.id == id } }
                 val pendingChannel = pendingChannelIntent?.takeIf { (space, _) -> list.spaces.any { it.id == space } }
                 pendingChannelIntent = null
-                if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
+                val invite = pendingInvitationIntent
+                pendingInvitationIntent = null
+                if (invite != null) { finishRestoring(); openFromNotification(null, invite.second, invite.third, invite.first) }
+                else if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
                 else if (pendingChannel != null) selectSpace(pendingChannel.first, pendingChannel.second)
                 else list.spaces.firstOrNull()?.let { selectSpace(it.id) } ?: finishRestoring()
             } catch (error: Throwable) {
@@ -251,6 +256,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         tokens.clear()
         drafts.clear()
         notificationEdits = null
+        pendingInvitationIntent = null
+        pendingChannelIntent = null
+        pendingDirectIntent = null
         if (token != null) {
             viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
             viewModelScope.launch { runCatching { api.logout(token) } }
@@ -259,8 +267,57 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** A notification tap: a DM by [conversationId], or a channel by [spaceId] and [channelId]. */
-    fun openFromNotification(conversationId: String?, spaceId: String?, channelId: String?) {
+    fun openFromNotification(conversationId: String?, spaceId: String?, channelId: String?, kind: String? = null) {
         val id = Regex("^[A-Za-z0-9]{12}$")
+        val routeRevision = ++notificationRouteRevision
+        pendingInvitationIntent = null
+        consumeNotificationInvitation()
+        if (kind == "space.invitation" || kind == "channel.invitation") {
+            if (conversationId != null || spaceId == null || !id.matches(spaceId) ||
+                kind == "space.invitation" && channelId != null ||
+                kind == "channel.invitation" && (channelId == null || !id.matches(channelId))) return
+            pendingDirectIntent = null; pendingChannelIntent = null
+            if (mutable.value.screen != SessionScreen.Home) {
+                pendingInvitationIntent = Triple(kind, spaceId, channelId)
+                return
+            }
+            val epoch = accountGeneration
+            val navigation = generation
+            val directNavigation = directOpeningRevision
+            viewModelScope.launch {
+                try {
+                    val token = requireAccountToken()
+                    val list = api.spaces(token)
+                    if (epoch != accountGeneration || routeRevision != notificationRouteRevision ||
+                        navigation != generation || directNavigation != directOpeningRevision) return@launch
+                    mutable.value = mutable.value.copy(spaces = list.spaces, invitations = list.invitations, limits = list.limits)
+                    if (kind == "space.invitation") {
+                        val invitation = list.invitations.firstOrNull { it.id == spaceId }
+                        mutable.value = mutable.value.copy(notificationInvitation = invitation,
+                            error = if (invitation == null) "This invitation is no longer available." else null)
+                    } else {
+                        if (list.spaces.none { it.id == spaceId }) {
+                            mutable.value = mutable.value.copy(error = "This invitation is no longer available.")
+                            return@launch
+                        }
+                        val detail = api.space(token, spaceId)
+                        if (epoch != accountGeneration || routeRevision != notificationRouteRevision ||
+                            navigation != generation || directNavigation != directOpeningRevision) return@launch
+                        if (detail.channelInvitations.none { it.channel.id == channelId }) {
+                            mutable.value = mutable.value.copy(error = "This invitation is no longer available.")
+                            return@launch
+                        }
+                        if (showsSpace(mutable.value, spaceId)) mutable.value = mutable.value.copy(selectedSpace = detail)
+                        else selectSpace(spaceId)
+                        mutable.value = mutable.value.copy(notificationBrowseSpace = spaceId)
+                    }
+                } catch (error: Throwable) {
+                    if (epoch == accountGeneration && routeRevision == notificationRouteRevision && navigation == generation &&
+                        directNavigation == directOpeningRevision) mutable.value = mutable.value.copy(error = message(error))
+                }
+            }
+            return
+        }
         if (conversationId != null) {
             if (!id.matches(conversationId)) return
             pendingChannelIntent = null
@@ -275,6 +332,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (current.selectedChannel?.id == channelId) return
         val loaded = current.selectedSpace?.takeIf { it.space.id == spaceId }?.channels?.firstOrNull { it.id == channelId }
         if (loaded != null) selectChannel(loaded) else selectSpace(spaceId, channelId)
+    }
+
+    fun consumeNotificationInvitation() {
+        mutable.value = mutable.value.copy(notificationInvitation = null, notificationBrowseSpace = null)
     }
 
     suspend fun canEnablePush(): Boolean {

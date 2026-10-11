@@ -5,7 +5,9 @@ notification and mute controls, and an account-wide gateway feed for local OS
 notifications in open web tabs and running macOS/Windows/Linux apps. Phone
 delivery alone is gated by `NOTIFICATIONS_ENABLED` and validated provider
 credentials. Desktop delivery needs no provider credentials. Closed-browser Web
-Push, notifications after desktop quit and invitation alerts remain unimplemented.
+Push and notifications after desktop quit remain unimplemented.
+Space/private-channel invitation alerts are implemented (October 11); see
+[the invitation contract and rollout](#invitation-alerts-october-11-2026).
 Space/channel unread dots are implemented (October 11) on all clients; see
 [the unread contract and rollout](media.md#space-and-channel-unread-indicators-october-11-2026).
 These dots are independent of notification levels, OS permission and mutes;
@@ -202,6 +204,93 @@ reads only after the existing signature check, including cached responses.
   APNs registration, service worker or closed-browser Web Push. Mobile browsers
   requiring service-worker notifications still rely on the native phone apps.
 
+### Invitation alerts (October 11, 2026)
+
+- Space and private-channel owners inviting an existing account create
+  `space.invitation` or `channel.invitation` alerts for that recipient only.
+  The invite, notification and session-bound device deliveries commit together,
+  under the recipient lock used to order gateway cursors. No message, membership,
+  private grant or channel join is created. Duplicate/rejected attempts do not
+  notify, and existing invitations are not backfilled.
+- Account `nothing` and stored `paused_until` suppress invitations. `all` and
+  `mentions` allow them. Conversation levels and mutes apply to messages, not
+  new invitation consent requests. This change adds no new preferences or DND UI.
+- APNs, FCM and the gateway carry a positive decimal-string `notificationId`,
+  `kind`, `spaceId`, and `channelId` only for private-channel invitations; they
+  carry no `messageId` or `conversationId`. Title is `You’re invited!`; body is
+  `Alice invited you to Studio.` or `Alice invited you to #planning in Studio.`
+  (the usual 180-character cutoff applies). IDs group each invitation separately
+  from conversation notifications. Android adds an **Invitations** OS channel
+  and a text/event notification; iOS uses a regular alert rather than donating
+  a message communication intent. Android/local desktop retain sender artwork;
+  iOS invitation alerts use the normal app icon.
+- Phone delivery uses the existing credentials/advertisement and 24-hour cutoff.
+  With `whenInactive`, its first attempt checks presence, holds for 60 seconds
+  while another session is active, then drops if still active; `always` sends
+  immediately. Gateway replay and provider retries recheck pending, unexpired
+  consent, the original invitation generation, blocks, live users/resources,
+  membership (required for a private-channel invite; absent for a space invite),
+  and account preferences. Acceptance, decline, cancellation or later reinvitation
+  cannot revive an old queued alert. Already-sent provider alerts cannot be recalled.
+- Taps refresh invitations and open existing Accept/Decline controls on web,
+  Android, iOS/macOS and Rust desktop. Web routes to `/spaces?space=…` for spaces
+  and `/spaces?space=…&invite=…` for private channels. Android and Rust desktop
+  show the private invitation cards in Browse; Apple and web show the review
+  sheet/dialog. A tap does not accept, request private history or enter voice.
+  Unavailable private invitations show a notice instead. Local alert delivery
+  still requires an open browser tab or running desktop app and OS permission.
+
+#### Invitation deployment order
+
+1. No infrastructure, secrets, new provider credentials or capability changes
+   are needed. Existing account notification gateway, APNs/FCM enablement and
+   iOS extension provisioning must already work. Keep the existing API replica
+   and shared-state policy. Merging does not deploy anything.
+2. After merge and successful main image/native builds, set `MERGED_SHA` to that
+   full merged commit. Release the compatible web/native readers before emitting
+   invitations from the server; they continue to handle existing message payloads.
+   Web and native can release independently. Complete native build and physical
+   Android/signed-iOS tap acceptance before distributing those builds. Older
+   clients may ignore these new alerts or route a private-channel tap as an
+   inaccessible conversation, so client uptake matters:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+3. Deploy API. Its existing direct migration startup applies additive
+   `202610110003_invitation_notifications.sql`, permits non-message sources and
+   creates the shared eligibility view with runtime SELECT grants. No manual
+   database writes or backfill are required. Wait for the workflow for this SHA:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+4. Deploy the gateway after the migration. API supplies phone push; updated
+   gateways supply local alerts, so both roles need this backend revision:
+
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+5. With separate owner/recipient accounts, invite to a space and a private
+   channel. Confirm one alert, correct review target, no grant/history/voice
+   before acceptance, account Off, active-desktop phone hold, cancellation before
+   retry, stale taps and logout. Check physical phones and minimized desktops;
+   loopback APNs/FCM tests do not prove vendor delivery. Roll back clients with
+   the previous web image or a corrected higher native build number. For backend
+   rollback, use a reviewed build retaining the applied SQLx migration ledger;
+   do not drop the migration/view or delete invitation/notification data. No
+   deployment was performed in this change.
+
 ### HTTP contract
 
 All routes need account authentication (guests get 401), use camelCase JSON and
@@ -297,6 +386,13 @@ token revocation, `Retry-After`, backoff and the 24-hour cutoff, logout
 revocation, and the parity fixture. Not yet validated: real APNs or FCM, and
 physical Android or signed iOS devices. Keep each platform out of
 `PUSH_PLATFORMS` until it has been.
+
+Invitation tests use disposable Postgres/Valkey and loopback provider servers
+to cover pending consent, cancellation/reinvitation, blocks, preferences,
+presence holds, expiry and logout. Browser tap checks use labelled fixtures at
+desktop/mobile widths; Rust desktop tests and standalone Kotlin payload tests
+pass. The full Android build is blocked by the missing SDK; Apple/Windows builds,
+native tap/rendering checks and physical-phone invitation delivery remain unverified.
 
 ### Rollout
 
@@ -578,7 +674,7 @@ Android notification channels and iOS thread identifiers map from the category.
 | --- | --- | --- | --- |
 | `direct.message` | Direct messages | Someone messages you 1:1 | Phase 1 |
 | `channel.message` | Channel messages | New message where your level is *All* | Phase 1 |
-| `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Phase 2 |
+| `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Built; see invitation contract above |
 | `mention.user`, `mention.everyone` | Mentions | You are @mentioned, or `@everyone`/`@here` is used | Mentions first, then phase 1 |
 | `message.reply`, `thread.reply` | Replies | Replies/threads exist (not implemented yet) | With replies |
 | `message.reaction` | Reactions | Opt-in: *All / DMs only / Never* | Later |

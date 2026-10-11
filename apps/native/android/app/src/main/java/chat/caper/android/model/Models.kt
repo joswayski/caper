@@ -381,6 +381,8 @@ data class AppUiState(
     val spaces: List<Space> = emptyList(),
     val unreadSpaces: List<UnreadSpace> = emptyList(),
     val invitations: List<Space> = emptyList(),
+    val notificationInvitation: Space? = null,
+    val notificationBrowseSpace: String? = null,
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,

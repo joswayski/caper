@@ -185,6 +185,19 @@ final class NotificationSettingsTests: XCTestCase {
         XCTAssertFalse(NotificationRoute.direct(conversationID: "dm0000000001")
             .isOpen(spaceID: nil, channelID: nil, directMessageID: "dm0000000002"))
     }
+
+    func testInvitationsOpenReviewRatherThanAnInaccessibleConversation() {
+        let space: [AnyHashable: Any] = ["kind": "space.invitation", "notificationId": "91", "spaceId": "space0000001"]
+        let channel: [AnyHashable: Any] = ["kind": "channel.invitation", "notificationId": "92",
+            "spaceId": "space0000001", "channelId": "chan00000002"]
+        XCTAssertEqual(NotificationRoute(userInfo: space), .invitation(spaceID: "space0000001", channelID: nil))
+        let route = NotificationRoute(userInfo: channel)
+        XCTAssertEqual(route, .invitation(spaceID: "space0000001", channelID: "chan00000002"))
+        XCTAssertFalse(route!.isOpen(spaceID: "space0000001", channelID: "chan00000002", directMessageID: nil))
+        XCTAssertNil(NotificationRoute(userInfo: ["kind": "channel.invitation", "spaceId": "space0000001"]))
+        XCTAssertNil(NotificationRoute(userInfo: ["kind": "space.invitation", "spaceId": "../secret"]))
+        XCTAssertNil(NotificationRoute(userInfo: ["kind": "space.invitation", "spaceId": "space0000001", "channelId": "chan00000002"]))
+    }
 }
 
 // MARK: API and model
