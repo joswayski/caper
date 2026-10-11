@@ -2152,6 +2152,18 @@ final class CaperParityUITests: XCTestCase {
             thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        navigation.tap()
+        app.descendants(matching: .any)["selected-space-name"].tap()
+        app.buttons["Browse channels"].tap()
+        let search = app.textFields["Search channels"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: search.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(app.buttons["Close navigation"].isHittable, "The search editor keeps its horizontal gestures")
+        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).press(forDuration: 0.01,
+            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.85)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
+        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)

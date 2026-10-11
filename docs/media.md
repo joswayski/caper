@@ -6182,7 +6182,8 @@ to touch, preserving mouse selection. Drafts and conversation state survive
 navigation. Wide layouts are unchanged.
 
 This supersedes the edge/target restrictions in the historical navigation
-records above. Apple channel-search mode keeps its Close navigation control.
+records above. Apple channel-search mode excludes only the search field's
+measured bounds, so its surrounding content can still swipe back to chat.
 Existing sliding media-viewer paging already starts across the viewer and is
 unchanged; zoom/pan and modal/thread interactions remain separate.
 
@@ -6190,7 +6191,7 @@ unchanged; zoom/pan and modal/thread interactions remain separate.
 | --- | --- |
 | Web | `npm run check` passes; `npm test -- --maxWorkers=2` passes all 565 tests. `scripts/test-desktop-navigation.mjs` passes in Chromium touch emulation against labelled disposable fixtures: center-start Browse/Members, header-button and backdrop swipes, finger tracking, fling/halfway/snap-back, vertical/cancel/multitouch guards, reduced motion, release-click suppression and draft/history retention. Inspected 390px default/Browse/Members and mid-drag captures, plus 320px Members. Two fixture timeouts in the initial unbounded Vitest run passed on the bounded-worker retry. Not Safari or physical-device acceptance. |
 | Android | SDK 36 `:app:compileDebugKotlin :app:testDebugUnitTest` passes (300 tests, 0 failures). An initial JVM compilation was killed under memory contention; the one-worker, bounded-heap retry passes. `smoke.py` now covers center-start navigation and Members backdrop dismissal, but was not run: no device/KVM in this orb. No native gesture/rendering acceptance. |
-| iOS/macOS | The shared drawer no longer requires a 24pt edge start. The iOS parity test covers center-start navigation, vertical scrolling, retained draft and Members backdrop dismissal. No Swift/Xcode toolchain here: no compile, XCTest, simulator or device validation. |
+| iOS/macOS | The shared drawer no longer requires a 24pt edge start. The iOS parity test covers center-start navigation, vertical scrolling, retained draft, search-editor exclusion with swipeable search-mode content, and Members backdrop dismissal. No Swift/Xcode toolchain here: no compile, XCTest, simulator or device validation. |
 | Rust desktop | Linux application tests pass (406 passed, 12 existing ignored); fmt, application-package Clippy (`--all-targets --no-deps -D warnings`) and debug build pass. Linked egui touch/render/accessibility regression covers center-start Browse/Members, finger-position tracking, vertical/cancel/paused-drag guards, panel/backdrop closing and retained draft/composer exclusion. Inspected 2x Xvfb chat/Browse/Members button-driven renders; this is not physical touch input. Touch-only in narrow windows; wide layouts and mouse drags are unchanged. No physical touchscreen, Windows or macOS acceptance. |
 | Containers/services | No Docker daemon for an image build; Vite production build passes directly. No backend, infrastructure, secrets/configuration or database change. No deployment performed. |
 

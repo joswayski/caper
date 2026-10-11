@@ -311,6 +311,7 @@ private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
+    var excludedStart: CGRect = .null
     let navigate: () -> Void
     @Environment(Drawer.self) private var drawer: Drawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -329,7 +330,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        tracking = enabled && drawer != nil && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
+                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
                     }
                     guard tracking == true, let drawer else { return }
                     drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
@@ -809,6 +810,7 @@ private struct ChannelSidebar: View {
     let close: () -> Void
     @State private var channelsExpanded = true
     @State private var channelSearch = ""
+    @State private var searchFrame: CGRect = .null
     @State private var browsing = false
     #if os(macOS)
     @State private var directHeadingHovered = false
@@ -901,6 +903,7 @@ private struct ChannelSidebar: View {
 
                     if browsing {
                     TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
                         HStack(spacing: 4) {
                             Button { Task { await model.select(channel: channel) } } label: {
@@ -1031,7 +1034,7 @@ private struct ChannelSidebar: View {
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
-        .modifier(BrowseSwipe(open: true, enabled: narrow && !browsing && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: close))
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
