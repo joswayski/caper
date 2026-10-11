@@ -8962,7 +8962,8 @@ impl CaperApp {
             });
         }
         for member in members {
-            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let tint = ui.painter().add(egui::Shape::Noop);
+            let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add_space(16.0);
                 let status = self
@@ -8972,6 +8973,15 @@ impl CaperApp {
                 presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
                 ui.label(bold(&member.display_name).size(12.0));
             });
+            let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
+            if response.hovered() || response.has_focus() {
+                ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, RAISED));
+            }
+            if response.clicked() {
+                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false }, &response, true);
+            }
         }
         if page_count > 1 {
             ui.horizontal(|ui| {
@@ -9782,7 +9792,7 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &author, avatar_id, "Now", false, grouped.then_some("Now"), |ui| {
+                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
                                 ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -10096,33 +10106,16 @@ impl CaperApp {
                                 && !was_hovered
                                 && !ui.input(|input| input.pointer.any_down()))
                         {
-                            self.mention_card = Some(MentionCard {
-                                pill: PillClick {
-                                    id: response.id,
-                                    rect: response.rect,
-                                    entry: model::Mention {
-                                        kind: "user".into(),
-                                        id: Some(pin.author.id.clone()),
-                                        username: None,
-                                    },
-                                },
-                                author: Some(pin.author.clone()),
-                                focus_on_open: response.clicked() || response.long_touched(),
-                                opening: None,
-                                error: None,
-                                fresh: true,
-                            });
+                            self.open_author_card(
+                                &pin.author,
+                                &response,
+                                response.clicked() || response.long_touched(),
+                            );
                         }
                     });
             }
-            let (timestamp, body) = message_row(
-                ui,
-                &message.author.name,
-                message.author.avatar_id,
-                &time,
-                message.author.is_guest,
-                short.as_deref(),
-                |ui| {
+            let (timestamp, profile, body) =
+                message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
                     // Compact follow-ups have no header line for the hover
                     // actions to sit beside: keep their text clear of them
                     // instead of under them (web floats the first line).
@@ -10152,8 +10145,10 @@ impl CaperApp {
                         },
                         grouped && edited,
                     )
-                },
-            );
+                });
+            if let Some(response) = profile {
+                self.open_author_card(&message.author, &response, true);
+            }
             // The header's time, or a grouped row's inline marker.
             if message.forward.is_none()
                 && edited
@@ -12018,6 +12013,31 @@ impl CaperApp {
             self.people.as_deref().unwrap_or_default(),
             &self.directs,
         )
+    }
+
+    /// Authors and member rows use the same card and ID-based resolution as mentions.
+    fn open_author_card(
+        &mut self,
+        author: &model::Author,
+        response: &egui::Response,
+        focus_on_open: bool,
+    ) {
+        self.mention_card = Some(MentionCard {
+            pill: PillClick {
+                id: response.id,
+                rect: response.rect,
+                entry: model::Mention {
+                    kind: "user".into(),
+                    id: Some(author.id.clone()),
+                    username: None,
+                },
+            },
+            author: Some(author.clone()),
+            focus_on_open,
+            opening: None,
+            error: None,
+            fresh: true,
+        });
     }
 
     /// The card for a clicked person pill: below the pill, or above it when
@@ -14229,17 +14249,39 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 /// empty so the text lines up, showing the short time while hovered. Screen
 /// readers still get the author and `time` there.
 ///
-/// Returns the header timestamp's rect (the edit-history target; `None` for
-/// grouped rows) and the body's result.
+/// Returns the timestamp (edit history), an activated author profile target,
+/// and the body's result. Grouped rows have no header/profile targets.
 fn message_row<R>(
     ui: &mut egui::Ui,
-    author: &str,
-    avatar_id: Option<i32>,
+    author: &model::Author,
     time: &str,
-    guest: bool,
     grouped: Option<&str>,
+    profile: bool,
     body: impl FnOnce(&mut egui::Ui) -> R,
-) -> (Option<egui::Rect>, R) {
+) -> (Option<egui::Rect>, Option<egui::Response>, R) {
+    let profile = profile && !author.is_guest;
+    let mut activated = None;
+    let mut profile_response = |ui: &egui::Ui, response: egui::Response| {
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("Open profile for {}", author.name),
+            )
+        });
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect.expand(2.0),
+                4.0,
+                Stroke::new(2.0, TERRACOTTA),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if response.clicked() {
+            activated = Some(response);
+        }
+    };
     let shown = egui::Frame::new()
         .inner_margin(egui::Margin {
             left: 18,
@@ -14259,18 +14301,49 @@ fn message_row<R>(
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Label,
                             true,
-                            format!("{author} {time}"),
+                            format!("{} {time}", author.name),
                         )
                     });
                     let result = ui.vertical(body).inner;
                     return (Err(column), result);
                 }
-                avatar(ui, author, avatar_id, 34.0, false);
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(34.0, 34.0),
+                    if profile {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                paint_avatar(ui, rect, &author.name, author.avatar_id);
+                if profile {
+                    if response.hovered() {
+                        ui.painter()
+                            .circle_stroke(rect.center(), 19.0, Stroke::new(2.0, BORDER));
+                    }
+                    profile_response(ui, response);
+                }
                 ui.vertical(|ui| {
                     let timestamp = ui
                         .horizontal_wrapped(|ui| {
-                            ui.label(bold(author).size(13.0));
-                            if guest {
+                            let name = ui.add(
+                                egui::Label::new(bold(&author.name).size(13.0)).sense(if profile {
+                                    egui::Sense::click()
+                                } else {
+                                    egui::Sense::hover()
+                                }),
+                            );
+                            if profile {
+                                if name.hovered() {
+                                    ui.painter().hline(
+                                        name.rect.x_range(),
+                                        name.rect.bottom(),
+                                        Stroke::new(1.0, TEXT),
+                                    );
+                                }
+                                profile_response(ui, name);
+                            }
+                            if author.is_guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
                             }
                             ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
@@ -14284,7 +14357,7 @@ fn message_row<R>(
         });
     let (head, result) = shown.inner;
     match head {
-        Ok(timestamp) => (Some(timestamp), result),
+        Ok(timestamp) => (Some(timestamp), activated, result),
         Err(column) => {
             if let Some(short) = grouped
                 && ui.rect_contains_pointer(shown.response.rect)
@@ -14297,7 +14370,7 @@ fn message_row<R>(
                     MUTED,
                 );
             }
-            (None, result)
+            (None, None, result)
         }
     }
 }
@@ -21870,6 +21943,83 @@ mod tests {
         app.mention_card
             .as_ref()
             .and_then(|card| card.pill.entry.id.as_deref())
+    }
+
+    #[test]
+    fn author_avatars_names_and_member_rows_open_profiles() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        for members_visible in [false, true] {
+            app.members_visible = members_visible;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let targets: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Open profile for Maya"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .map(|rect| {
+                    egui::pos2(
+                        (rect.x0 + rect.x1) as f32 / 2.0,
+                        (rect.y0 + rect.y1) as f32 / 2.0,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                targets.len(),
+                if members_visible { 3 } else { 2 },
+                "avatar, name, and optionally member row"
+            );
+            for target in targets {
+                click_at(&mut app, &context, target);
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "profile resolves the author/member by ID"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                let output = render(&mut app, &context, vec![]);
+                assert!(!shows(&output, "Message"));
+                render(&mut app, &context, press(egui::Key::Enter));
+                let output = render(&mut app, &context, vec![]);
+                assert!(
+                    shows(&output, "@maya") && shows(&output, "Message"),
+                    "focus returns and Enter reopens the profile"
+                );
+                render(&mut app, &context, press(egui::Key::Escape));
+                render(&mut app, &context, vec![]);
+            }
+        }
+        app.members_visible = false;
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.author.is_guest = true;
+        }
+        app.timeline.reset(messages, "4").unwrap();
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            !output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Open profile for Maya")),
+            "guest authors have no account profile"
+        );
     }
 
     #[test]

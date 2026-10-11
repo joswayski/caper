@@ -1009,12 +1009,29 @@
   overflow-y: auto;
   margin: 8px 0;
 }
-.space-member-presence li {
+.member-profile-trigger {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   min-height: 44px;
   padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .member-profile-trigger:hover {
+    background: var(--surface-raised);
+  }
+}
+.member-profile-trigger:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 .member-presence-avatar {
   position: relative;
@@ -1026,12 +1043,8 @@
   color: #fff;
   font-size: 0.75rem;
 }
-.space-member-presence li > span:last-child {
-  display: grid;
-  align-items: center;
-  min-width: 0;
-}
 .space-member-presence strong {
+  min-width: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 0.75rem;

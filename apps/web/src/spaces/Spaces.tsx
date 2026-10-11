@@ -2972,6 +2972,12 @@ export default function Spaces({
     </div>
   );
 
+  const messagePerson = async (username: string) => {
+    const conversation = await createDirectConversation(username);
+    setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+    openDirect(conversation);
+  };
+
   return (
     <>
       <Call
@@ -3060,11 +3066,7 @@ export default function Spaces({
           ...(people ?? []),
           ...directs.map((conversation) => conversation.peer),
         ]}
-        onMessagePerson={async (username) => {
-          const conversation = await createDirectConversation(username);
-          setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-          openDirect(conversation);
-        }}
+        onMessagePerson={messagePerson}
         onOpenForward={async (message) => {
           const revision = navigationRevision.current;
           const { source } = await forwardedConversation(message, AbortSignal.timeout(10_000));
@@ -3091,6 +3093,8 @@ export default function Spaces({
                   spaceId={detail.space.id}
                   members={detail.members}
                   demo={detail.space.demo}
+                  accountId={account?.id}
+                  onMessagePerson={messagePerson}
                   onClose={onClose}
                 />
               )
