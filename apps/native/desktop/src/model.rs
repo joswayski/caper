@@ -274,6 +274,9 @@ pub struct Author {
     /// stamped by the server. Old servers omit it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub admin: bool,
+    /// The Caper account's automatic replies, badged ADMIN BOT.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1824,6 +1827,7 @@ mod tests {
                 name: "A".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
             },
             content: Content {
                 version: 1,
@@ -3022,12 +3026,14 @@ mod tests {
     #[test]
     fn admin_authors_are_marked_only_when_the_server_says_so() {
         let author = |json| serde_json::from_value::<Author>(json).unwrap();
-        assert!(
-            author(
-                serde_json::json!({"id": "jose", "name": "Jose", "isGuest": false, "admin": true})
-            )
-            .admin
+        let jose = author(
+            serde_json::json!({"id": "jose", "name": "Jose", "isGuest": false, "admin": true}),
         );
+        assert!(jose.admin && !jose.bot);
+        let caper = author(
+            serde_json::json!({"id": "caper", "name": "Caper", "isGuest": false, "admin": true, "bot": true}),
+        );
+        assert!(caper.admin && caper.bot);
         assert!(!author(serde_json::json!({"id": "fake", "name": "Jose", "isGuest": false})).admin);
         let plain = author(serde_json::json!({"id": "fake", "name": "Jose", "isGuest": false}));
         assert!(serde_json::to_value(&plain).unwrap().get("admin").is_none());

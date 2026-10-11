@@ -7,7 +7,7 @@ struct SharedOriginalView: View {
             HStack(spacing: 8) {
                 Avatar(name: message.author.name, size: 24, avatarID: message.author.avatarId)
                 Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                if message.author.isAdmin { AdminBadge() }
+                if message.author.isAdmin { AdminBadge(author: message.author) }
                 if message.editedAt != nil { Text("edited").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
             }
             // File-only messages carry empty text; hide the empty row.

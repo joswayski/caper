@@ -124,8 +124,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   message or its thread here." Composers, thread composers included, suggest
   `@feedback` ("Send to the Caper team") after matching people in channels and
   DMs, but not inside a feedback conversation. The server does the forwarding.
-  Messages from Caper admins (`author.admin`) show a gold "ADMIN" badge with
-  a soft glow after the name, including forwarded originals.
+  Messages from Caper admins (`author.admin`) show a gold "ADMIN" badge ("ADMIN
+  BOT" for Caper's automatic replies) with a soft glow after the name,
+  including forwarded originals.
 - Notification controls govern phone push and local desktop notifications.
   The space menu and each channel's options menu set
   **Notifications** (Default, All messages, Only @mentions, Nothing) and

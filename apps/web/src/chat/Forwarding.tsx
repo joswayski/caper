@@ -130,7 +130,7 @@ function OriginalMessage({
           <Avatar avatarId={message.author.avatarId} name={message.author.name} />
         </span>
         <strong>{message.author.name}</strong>
-        {message.author.admin && <AdminBadge />}
+        {message.author.admin && <AdminBadge bot={message.author.bot} />}
         {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}
       </header>
       {message.content.text && (

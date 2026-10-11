@@ -16,9 +16,14 @@ class ProtocolTest {
     @Test fun `admin authors are marked only when the server says so`() {
         val decode = { author: String -> Json.decodeFromString<ChatMessage>(
             """{"id":"message00001","channelId":"channel00001","seq":"1","author":$author,"content":{"version":1,"type":"text","text":"hi"},"createdAt":"2026-10-11T00:00:00Z","clientMessageId":"id"}""",
-        ).author.admin }
-        assertTrue(decode("""{"id":"account00001","name":"Jose","isGuest":false,"admin":true}"""))
-        assertFalse(decode("""{"id":"account00002","name":"Jose","isGuest":false}"""))
+        ).author }
+        val jose = decode("""{"id":"account00001","name":"Jose","isGuest":false,"admin":true}""")
+        assertTrue(jose.admin); assertFalse(jose.bot)
+        assertEquals("ADMIN", adminBadgeLabel(jose.bot))
+        assertFalse(decode("""{"id":"account00002","name":"Jose","isGuest":false}""").admin)
+        val caper = decode("""{"id":"account00003","name":"Caper","isGuest":false,"admin":true,"bot":true}""")
+        assertTrue(caper.admin && caper.bot)
+        assertEquals("ADMIN BOT", adminBadgeLabel(caper.bot))
     }
 
     @Test fun `path ids reject traversal and wrong lengths`() {

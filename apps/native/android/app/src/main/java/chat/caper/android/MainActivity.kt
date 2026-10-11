@@ -143,6 +143,7 @@ import chat.caper.android.data.muteActive
 import chat.caper.android.data.override
 import chat.caper.android.data.spaceKey
 import chat.caper.android.data.spaceMuted
+import chat.caper.android.data.adminBadgeLabel
 import chat.caper.android.data.directRowTag
 import chat.caper.android.data.directUnread
 import chat.caper.android.data.emptyConversationNote
@@ -2381,10 +2382,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
 }
-/** Marks a Caper admin's message, in the pin gold with a soft glow. The server stamps it, so a look-alike name can't. */
-@Composable internal fun AdminBadge() {
+/** Marks a Caper admin's message (ADMIN BOT for the Caper account's automatic replies), in the pin gold with a
+ * soft glow. The server stamps it, so a look-alike name can't. */
+@Composable internal fun AdminBadge(bot: Boolean = false) {
     Surface(color = PinGold.copy(alpha = 0.10f), border = BorderStroke(1.dp, PinGold.copy(alpha = 0.55f)), shape = MaterialTheme.shapes.extraSmall) {
-        Text("ADMIN", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = PinGold, fontSize = 8.sp, fontWeight = FontWeight.Bold,
+        Text(adminBadgeLabel(bot), Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = PinGold, fontSize = 8.sp, fontWeight = FontWeight.Bold,
             style = androidx.compose.ui.text.TextStyle(shadow = androidx.compose.ui.graphics.Shadow(PinGold.copy(alpha = 0.6f), blurRadius = 8f)))
     }
 }
@@ -2400,7 +2402,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     state.attachmentProgress, state.localAttachmentPreviews,
     edited = message.forward == null && message.revision > 1, openHistory = openHistory,
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
-    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped, admin = message.author.admin,
+    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped, admin = message.author.admin, bot = message.author.bot,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2411,6 +2413,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     /** No avatar or header under the same person's previous message; the time shows on pointer hover. */
     grouped: Boolean = false,
     admin: Boolean = false,
+    bot: Boolean = false,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -2418,7 +2421,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (grouped) Box(
             // The empty avatar column still names the author and time for screen readers.
             Modifier.width(34.dp).clearAndSetSemantics {
-                contentDescription = listOfNotNull(author, "Admin".takeIf { admin }, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
+                contentDescription = listOfNotNull(author, adminBadgeLabel(bot).takeIf { admin }, "Guest".takeIf { guest }, timeLabel(createdAt).ifEmpty { null }).joinToString(", ")
             },
             contentAlignment = Alignment.TopCenter,
         ) {
@@ -2429,7 +2432,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
                 // A long name gives way first, so the time and tags stay whole.
                 Text(author, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (admin) { Spacer(Modifier.width(7.dp)); AdminBadge() }
+                if (admin) { Spacer(Modifier.width(7.dp)); AdminBadge(bot) }
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
                 if (edited) { Spacer(Modifier.width(7.dp)); Text("(edited)", Modifier.clickable(onClickLabel = "View edit history", onClick = openHistory), color = TextMuted, fontSize = 10.sp) }

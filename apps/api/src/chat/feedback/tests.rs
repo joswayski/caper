@@ -246,6 +246,7 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
     assert_eq!(acknowledgement["author"]["id"], team_id.as_str());
     assert_eq!(acknowledgement["author"]["name"], "Caper");
     assert_eq!(acknowledgement["author"]["admin"], true);
+    assert_eq!(acknowledgement["author"]["bot"], true, "badged ADMIN BOT");
     let (_, own) = history(&app, "alice", &conversation).await;
     assert_eq!(own["channel"]["name"], "Caper");
 
@@ -257,6 +258,7 @@ async fn feedback_reaches_the_team_with_its_thread_or_context_and_they_can_reply
     assert_eq!(latest["content"]["text"], "Thanks, looking now");
     assert_eq!(latest["author"]["name"], "jose");
     assert_eq!(latest["author"]["admin"], true, "team replies are badged");
+    assert_eq!(latest["author"].get("bot"), None, "people are never bots");
     // Team members are badged everywhere they write; others never are.
     assert_eq!(first["author"].get("admin"), None);
     let (status, original) = request(

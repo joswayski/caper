@@ -5,6 +5,8 @@ export interface ChatAuthor {
   isGuest: boolean;
   /** Sent by a Caper admin (a feedback team member or the Caper account), stamped by the server. */
   admin?: boolean;
+  /** The Caper account's automatic messages, badged ADMIN BOT. */
+  bot?: boolean;
 }
 
 export type ChatAttachmentKind = "image" | "video" | "audio" | "file";

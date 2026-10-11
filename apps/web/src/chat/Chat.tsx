@@ -1150,7 +1150,7 @@ export default function Chat({
             <div>
               <header className={grouped ? "sr-only" : undefined}>
                 <strong>{author?.name ?? name}</strong>
-                {author?.admin && <AdminBadge />}
+                {author?.admin && <AdminBadge bot={author.bot} />}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}

@@ -440,7 +440,7 @@ pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoj
     ui.horizontal(|ui| {
         ui.label(RichText::new(&message.author.name).strong().size(13.0));
         if message.author.admin {
-            crate::admin_badge(ui);
+            crate::admin_badge(ui, message.author.bot);
         }
     });
     crate::linked_text(ui, &message.id, &message.content.text);

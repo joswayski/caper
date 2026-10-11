@@ -2276,10 +2276,11 @@ When a report is forwarded, the **Caper** account replies in that conversation
 "Thanks! The Caper team got this and is looking into it. We'll reply here.",
 at most once an hour per person. It notifies only the person (`Caper · Feedback`),
 so they know it arrived. Team replies show the team member's own name and avatar
-with a gold **ADMIN** badge. Every message a feedback team member sends anywhere,
-and the Caper account's messages, carry the badge: the server stamps
-`author.admin: true` when the message is sent, so a look-alike display name can't
-claim it. Messages keep the badge they were sent with.
+with a gold **ADMIN** badge. Every message a feedback team member sends anywhere
+carries it, and the Caper account's automatic replies read **ADMIN BOT**: the
+server stamps `author.admin: true` (plus `author.bot: true` for Caper) when the
+message is sent, so a look-alike display name can't claim it. Messages keep the
+badge they were sent with.
 
 This is not a support desk: there are no assignments, statuses, canned replies,
 team roles or in-app team management. Reports don't record the sender's app
@@ -2319,9 +2320,9 @@ platform, version or commit.
   subscriptions) also admits active `feedback_team` members for feedback
   conversations. Removing a member revokes access immediately, including queued
   pushes. Push and local notification titles read `Sender · Feedback`.
-- Message authors may carry `admin: true` (absent otherwise; older clients ignore
-  it). Clients show the gold **ADMIN** badge after the name in messages, threads
-  and forwarded originals.
+- Message authors may carry `admin: true`, and Caper's also `bot: true` (absent
+  otherwise; older clients ignore them). Clients show the gold **ADMIN** (or
+  **ADMIN BOT**) badge after the name in messages, threads and forwarded originals.
 - Clients show a neutral **Feedback** tag on the conversation, hide Block there,
   explain who can read it when it is empty, and suggest `@feedback` (**Send to
   the Caper team**) in channels, threads and DMs, but not inside a feedback

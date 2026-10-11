@@ -71,7 +71,12 @@ final class MessageRequestsTests: XCTestCase {
 
     func testAdminAuthorsAreMarkedOnlyWhenTheServerSaysSo() throws {
         let decode = { (json: String) in try JSONDecoder().decode(ChatAuthor.self, from: Data(json.utf8)) }
-        XCTAssertTrue(try decode(#"{"id":"jose","name":"Jose","isGuest":false,"admin":true}"#).isAdmin)
+        let jose = try decode(#"{"id":"jose","name":"Jose","isGuest":false,"admin":true}"#)
+        XCTAssertTrue(jose.isAdmin)
+        XCTAssertEqual(jose.adminBadge, "ADMIN")
+        let caper = try decode(#"{"id":"caper","name":"Caper","isGuest":false,"admin":true,"bot":true}"#)
+        XCTAssertTrue(caper.isAdmin)
+        XCTAssertEqual(caper.adminBadge, "ADMIN BOT")
         XCTAssertFalse(try decode(#"{"id":"fake","name":"Jose","isGuest":false}"#).isAdmin)
         XCTAssertFalse(try decode(#"{"id":"fake","name":"Jose","isGuest":false,"admin":false}"#).isAdmin)
     }

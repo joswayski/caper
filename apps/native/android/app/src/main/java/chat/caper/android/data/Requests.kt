@@ -16,6 +16,9 @@ internal fun messageRequests(conversations: List<DirectConversation>): List<Dire
 internal fun directUnread(conversation: DirectConversation): Boolean = !conversation.incoming &&
     runCatching { BigInteger(conversation.lastSeq) > BigInteger(conversation.readSeq) }.getOrDefault(false)
 
+/** The gold badge after a Caper admin's name: `ADMIN BOT` for the Caper account's automatic replies. */
+internal fun adminBadgeLabel(bot: Boolean): String = if (bot) "ADMIN BOT" else "ADMIN"
+
 /** The small muted tag after a DM row's name: `Feedback` for a conversation with the Caper team. */
 internal fun directRowTag(conversation: DirectConversation): String? = if (conversation.feedback) "Feedback" else null
 

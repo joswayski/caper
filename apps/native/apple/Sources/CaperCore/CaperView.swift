@@ -1018,16 +1018,18 @@ private struct ChannelSidebar: View {
 
 /// One DM in the sidebar, with its options menu: a context menu (press and
 /// hold on iPhone), plus a "…" on hover on macOS. Personal notes have none.
-/// Marks a Caper admin's message, in the pin gold with a soft glow. The
-/// server stamps it, so a look-alike display name can't claim it.
+/// Marks a Caper admin's message (ADMIN BOT for the Caper account's automatic
+/// replies), in the pin gold with a soft glow. The server stamps it, so a
+/// look-alike display name can't claim it.
 struct AdminBadge: View {
+    let author: ChatAuthor
     var body: some View {
-        Text("ADMIN").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.pinGold)
+        Text(author.adminBadge).font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.pinGold)
             .padding(.horizontal, 5)
             .background(CaperTheme.pinGold.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.pinGold.opacity(0.55)))
             .shadow(color: CaperTheme.pinGold.opacity(0.45), radius: 4)
-            .accessibilityLabel("Admin")
+            .accessibilityLabel(author.adminBadge.capitalized)
     }
 }
 
@@ -3033,7 +3035,7 @@ private struct MessageRow: View {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
-                        if message.author.isAdmin { AdminBadge() }
+                        if message.author.isAdmin { AdminBadge(author: message.author) }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                         if edited { editedMarker }

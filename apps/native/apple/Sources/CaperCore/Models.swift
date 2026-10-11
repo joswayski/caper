@@ -255,8 +255,12 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     /// Sent by a Caper admin (a feedback team member or the Caper account),
     /// stamped by the server. Missing means not an admin.
     public var admin: Bool? = nil
+    /// The Caper account's automatic replies, badged ADMIN BOT.
+    public var bot: Bool? = nil
 
     public var isAdmin: Bool { admin == true }
+    /// The gold badge's text after an admin's name.
+    public var adminBadge: String { bot == true ? "ADMIN BOT" : "ADMIN" }
 }
 
 /// One `content.mentions` entry, as resolved by the server on send.

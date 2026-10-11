@@ -290,7 +290,8 @@ async fn forward(
 }
 
 /// Tells the person their feedback arrived, as the team account, unless the
-/// team account already did within the hour. It notifies only them.
+/// team account already did within the hour. It notifies only them. Its
+/// author is marked `bot`, which clients badge ADMIN BOT.
 async fn acknowledge(
     tx: &mut Transaction<'_, Postgres>,
     channel: i64,
@@ -315,7 +316,7 @@ async fn acknowledge(
     let seq = head + 1;
     let client_id = Uuid::new_v4();
     let content = json!({"version":1,"type":"text","text":ACKNOWLEDGEMENT});
-    let payload = json!({"id":random_id(15),"channelId":external,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id,"admin":true},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    let payload = json!({"id":random_id(15),"channelId":external,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":false,"avatarId":avatar_id,"admin":true,"bot":true},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
     let hash = Sha256::digest(ACKNOWLEDGEMENT.as_bytes()).to_vec();
     let message: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id")
         .bind(payload["id"].as_str()).bind(channel).bind(session).bind(client_id).bind(hash).bind(seq).bind(&payload)

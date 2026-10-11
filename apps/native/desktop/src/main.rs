@@ -925,6 +925,7 @@ impl CaperApp {
                             name: "Fixture Owner".into(),
                             is_guest: false,
                             admin: false,
+                            bot: false,
                             avatar_id: Some(0),
                         },
                     });
@@ -1131,6 +1132,7 @@ impl CaperApp {
                             name: author_name.into(),
                             is_guest: false,
                             admin: false,
+                            bot: false,
                         };
                         message.content.text = text.into();
                         message.seq = "1".into();
@@ -1356,6 +1358,7 @@ impl CaperApp {
                                 name: "Maya".into(),
                                 is_guest: false,
                                 admin: false,
+                                bot: false,
                             },
                             typing: true,
                             revision: 1,
@@ -1651,6 +1654,7 @@ impl CaperApp {
                     name: name.into(),
                     is_guest: false,
                     admin: false,
+                    bot: false,
                 },
                 content: Content {
                     version: 1,
@@ -1704,6 +1708,7 @@ impl CaperApp {
                 name: "Fixture Owner".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
                 avatar_id: Some(0),
             },
         });
@@ -14297,11 +14302,13 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 ///
 /// Returns the header timestamp's rect (the edit-history target; `None` for
 /// grouped rows) and the body's result.
-/// The tags after an author's name: GUEST, or a Caper admin's gold ADMIN.
+/// The tags after an author's name: GUEST, or a Caper admin's gold ADMIN
+/// (ADMIN BOT for the Caper account's automatic replies).
 #[derive(Clone, Copy, Default)]
 struct AuthorTags {
     guest: bool,
     admin: bool,
+    bot: bool,
 }
 
 impl AuthorTags {
@@ -14309,13 +14316,20 @@ impl AuthorTags {
         Self {
             guest: author.is_guest,
             admin: author.admin,
+            bot: author.bot,
         }
     }
 }
 
-/// Marks a Caper admin's message, in the pin gold with a soft glow. The
-/// server stamps it, so a look-alike display name can't claim it.
-fn admin_badge(ui: &mut egui::Ui) {
+/// The gold badge's text after a Caper admin's name.
+fn admin_badge_label(bot: bool) -> &'static str {
+    if bot { "ADMIN BOT" } else { "ADMIN" }
+}
+
+/// Marks a Caper admin's message (ADMIN BOT for the Caper account's automatic
+/// replies), in the pin gold with a soft glow. The server stamps it, so a
+/// look-alike display name can't claim it.
+fn admin_badge(ui: &mut egui::Ui, bot: bool) {
     let gold = Color32::from_rgb(0xe4, 0xc7, 0x6a);
     egui::Frame::new()
         .fill(Color32::from_rgba_unmultiplied(228, 199, 106, 26))
@@ -14332,7 +14346,12 @@ fn admin_badge(ui: &mut egui::Ui) {
             color: Color32::from_rgba_unmultiplied(228, 199, 106, 60),
         })
         .show(ui, |ui| {
-            ui.label(RichText::new("ADMIN").size(9.0).strong().color(gold))
+            ui.label(
+                RichText::new(admin_badge_label(bot))
+                    .size(9.0)
+                    .strong()
+                    .color(gold),
+            )
         });
 }
 
@@ -14376,7 +14395,7 @@ fn message_row<R>(
                         .horizontal_wrapped(|ui| {
                             ui.label(bold(author).size(13.0));
                             if tags.admin {
-                                admin_badge(ui);
+                                admin_badge(ui, tags.bot);
                             }
                             if tags.guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
@@ -17296,6 +17315,7 @@ mod tests {
                 name: "Maya".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
             },
             typing: true,
             revision: "1".into(),
@@ -23584,6 +23604,7 @@ mod tests {
                 name: "Member".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
             },
         }
     }
@@ -25288,6 +25309,7 @@ mod tests {
                 name: "Member".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
             },
             content: Content {
                 version: 1,
@@ -25333,6 +25355,7 @@ mod tests {
                 name: "Self".into(),
                 is_guest: false,
                 admin: false,
+                bot: false,
             },
         });
         let author = Author {
@@ -25341,6 +25364,7 @@ mod tests {
             name: "Other".into(),
             is_guest: false,
             admin: false,
+            bot: false,
         };
         let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
             generation: 1,

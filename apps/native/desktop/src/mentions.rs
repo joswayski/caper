@@ -706,6 +706,7 @@ mod tests {
             avatar_id: Some(7),
             is_guest: false,
             admin: false,
+            bot: false,
         };
         let members = [
             Member {
