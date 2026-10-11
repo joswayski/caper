@@ -4,7 +4,7 @@ import Wordmark from "../components/Wordmark";
 
 // Mailbox that answers privacy and account-deletion requests.
 const CONTACT = "privacy@caper.chat";
-const UPDATED = "October 4, 2026";
+const UPDATED = "October 11, 2026";
 
 export const Route = createFileRoute("/privacy")({
   head: () => ({ meta: [{ title: "Privacy - Caper" }] }),
@@ -47,6 +47,10 @@ function Privacy() {
               <b className="text-content">Your spaces and channels</b>: what you create, join, and who you add.
             </li>
             <li>
+              <b className="text-content">A notification token for your phone</b>, if you allow notifications on iPhone
+              or Android. It lets us send you message alerts, and we stop using it when you sign out on that phone.
+            </li>
+            <li>
               <b className="text-content">Basic service logs</b>, such as errors and connection timings, used to keep
               Caper working. Sign-in requests record a one-way hash of your IP address to limit abuse.
             </li>
@@ -72,6 +76,9 @@ function Privacy() {
             <li>Amazon Web Services hosts Caper and sends sign-in emails.</li>
             <li>Cloudflare carries voice and network traffic, and stores attached files.</li>
             <li>Axiom stores service logs.</li>
+            <li>
+              Apple and Google deliver phone notifications, which include the sender and a short preview of the message.
+            </li>
           </ul>
         </Section>
 
