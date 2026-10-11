@@ -6170,6 +6170,31 @@ upload service is healthy.
    deployment command; native rollback needs a corrected higher-build-number
    release. No data rollback is required.
 
+### Quicker Browse button slides (October 11, 2026)
+
+Back, Close and channel selection use the same conversation-over-Browse slide,
+with a 220ms button duration. Apple supplies the animation explicitly with the
+navigation state change, rather than depending only on the layer's fallback.
+Finger tracking, swipe release velocity and cancellation, the rising account
+bar, and reduced-motion behavior remain unchanged. The member drawer's timing
+is unchanged. Rust desktop uses the shorter slide in narrow windows.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 565 `npm test` tests pass. The button-frame regression from `scripts/test-desktop-navigation.mjs` passes independently against the labelled local API fixture at 390px and 320px: 220ms intermediate positions in both directions, hidden/inert chat while browsing, retained draft and instant reduced-motion navigation. Chromium touch-emulated settled and test-frozen intermediate renders were inspected; the recorder dropped transition frames, so the recording is not evidence of smooth motion. Linux WebKit 27.2 with an iPhone profile passes button timing, intermediate pose, return tap, draft retention and reduced motion; the frozen intermediate render was inspected. These are browser emulations, not physical phones. The complete navigation script remains blocked by its existing presence mock; a scratch run skipping that wait also stops at a member-drawer gesture check. |
+| Android | Button timing updated; the latest swipe-release curves and member-drawer button spring retained. `:app:compileDebugKotlin` cannot configure because the Android SDK is absent. No Kotlin compilation, native rendering or physical-device validation. |
+| iOS/macOS | Explicit button animation and shorter fallback implemented; the latest swipe-release curves and Reduce Motion retained. No Swift compiler or Xcode in this orb, so no native build, UI test or device validation. The reported snap is not reproduced on a physical device here. |
+| Rust desktop | Fmt, application-package Clippy (`--all-targets --no-deps -- -D warnings`) and the debug build pass; 403 application tests pass with 12 existing device/audio tests ignored. The test and app executables were linked with LLVM (`cargo rustc --tests -- -Clink-arg=-fuse-ld=lld` and `cargo rustc --bin caper-desktop -- -Clink-arg=-fuse-ld=lld`) after the default linker exceeded the orb's memory limit. Inspected a 390px Linux/Xvfb window: chat, Browse, intermediate return slide and settled chat. This is not macOS/Windows or mobile-device acceptance. |
+| Services | No API, gateway, infrastructure, secrets/configuration or database changes. No deployment performed. |
+
+Web and native clients can release independently. After merge, use the web
+deployment and native release commands in the preceding deployment order,
+substituting this change's merged revision. On real iPhone/Android clients and
+mobile Safari/Chrome, verify Back and channel return animate, swipes still track
+and settle, drafts survive, and Reduce Motion switches instantly. Roll back web
+to the previous image; native rollback requires a corrected higher-build-number
+release. No data rollback is needed.
+
 ## Swipe release finish (October 11, 2026)
 
 Browse/conversation and phone member-drawer swipes now settle from the held pose
