@@ -2569,12 +2569,8 @@ private struct ChatView: View {
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     #if os(macOS)
-                    // Suggestions cover history without resizing it or triggering bottom-follow.
-                    .overlay(alignment: .topLeading) {
-                        ComposerSuggestionsView(controller: composerAutocomplete)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .alignmentGuide(.top) { $0[.bottom] + 6 }
-                    }
+                    // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
+                    .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
                     #endif
                 }
                 Button { Task { await chat.send() } } label: {
@@ -2616,6 +2612,7 @@ private struct ChatView: View {
             }
             #endif
             #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ChatComposerAnchorKey>(controller: composerAutocomplete))
             // Drawn above the whole conversation so the timeline's clipping
             // and later rows never cover a hovered chip's tooltip.
             .overlayPreferenceValue(ReactionTooltipKey.self) { tooltip in
@@ -2910,11 +2907,7 @@ private struct NativeThreadView: View {
                     .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                     #endif
                     #if os(macOS)
-                    .overlay(alignment: .topLeading) {
-                        ComposerSuggestionsView(controller: composerAutocomplete)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .alignmentGuide(.top) { $0[.bottom] + 6 }
-                    }
+                    .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
@@ -2930,6 +2923,9 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ThreadComposerAnchorKey>(controller: composerAutocomplete))
+            #endif
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
@@ -3790,6 +3786,41 @@ private struct ReactionTooltip {
     let text: String
     let anchor: Anchor<CGRect>
 }
+
+#if os(macOS)
+/// A composer box whose suggestions the surrounding conversation draws.
+private protocol ComposerAnchorKey: PreferenceKey where Value == Anchor<CGRect>? {}
+extension ComposerAnchorKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
+}
+private enum ChatComposerAnchorKey: ComposerAnchorKey {}
+private enum ThreadComposerAnchorKey: ComposerAnchorKey {}
+
+/// Mac suggestions cover history above the composer without resizing it or
+/// triggering bottom-follow. They are drawn by the whole conversation, not as
+/// an overflowing overlay on the composer: clicks and accessibility hit-testing
+/// only reach views inside their parent's frame.
+private struct ComposerSuggestionsOverlay<Key: ComposerAnchorKey>: ViewModifier {
+    @ObservedObject var controller: ComposerAutocompleteController
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(Key.self) { anchor in
+            // Only while suggestions show, so no layer covers the conversation otherwise.
+            if let anchor, controller.match != nil {
+                GeometryReader { proxy in
+                    let box = proxy[anchor]
+                    ComposerSuggestionsView(controller: controller)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: box.width)
+                        .alignmentGuide(.leading) { _ in -box.minX }
+                        .alignmentGuide(.top) { size in -(box.minY - 6 - size.height) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+}
+#endif
 
 private struct ReactionTooltipKey: PreferenceKey {
     static var defaultValue: ReactionTooltip? { nil }
