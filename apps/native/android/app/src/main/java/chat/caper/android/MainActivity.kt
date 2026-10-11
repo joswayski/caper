@@ -989,7 +989,7 @@ private fun Modifier.browseDrag(
                         Text("${invitation.inviter.displayName} (@${invitation.inviter.username}) invited you to ${detail.space.name}.", color = TextMuted, fontSize = 11.sp)
                         Text("Expires seven days after it was sent.", color = TextMuted, fontSize = 10.sp)
                         Text("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.", color = TextMuted, fontSize = 10.sp)
-                        Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Accept") } }
+                        Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Accept") } }
                     }
                 }
             }
@@ -1363,7 +1363,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
         Row(Modifier.fillMaxSize()) {
             ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
-            if (!narrow && state.thread != null) Box(Modifier.width(width.dp).fillMaxHeight()) {
+            // The thread opens beside the conversation (web's `.chat-thread-panel`).
+            if (!narrow && state.thread != null) Box(Modifier.entrance(MOTION_BASE, dx = 12.dp).width(width.dp).fillMaxHeight()) {
                 threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
                     ThreadConversation(state, viewModel, Modifier.fillMaxSize())
                 }
@@ -1403,7 +1404,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            ThreadConversation(state, viewModel, Modifier.fillMaxSize().systemBarsPadding().imePadding())
+            ThreadConversation(state, viewModel, Modifier.entrance(MOTION_BASE, dx = 12.dp).fillMaxSize().systemBarsPadding().imePadding())
         }
     }
 }
@@ -1551,7 +1552,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
                     Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
-                if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
+                if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
                 if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             HorizontalDivider(color = Border)
@@ -1671,8 +1672,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
                             shape = MaterialTheme.shapes.small,
                             colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Terracotta, contentColor = Color.White,
-                                disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                                containerColor = Action, contentColor = OnAction,
+                                disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
                             ),
                         ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
                     }
@@ -1725,7 +1726,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         return true
     }
     if (count > 0) Surface(
-        Modifier.widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
+        Modifier.entrance(MOTION_FAST, dy = 4.dp).widthIn(max = 260.dp).fillMaxWidth().padding(bottom = 6.dp), color = SurfaceRaised,
         shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
     ) {
         LazyColumn(Modifier.heightIn(max = 192.dp).padding(vertical = 4.dp), state = list) {
@@ -1852,6 +1853,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
+    // Rows sent or received while the reader is at the live end settle in; see Arrivals.
+    val arrivals = remember { Arrivals() }
+    arrivals.observe(
+        if (inThread) "thread" else "channel",
+        (if (inThread) state.thread?.rootId else state.selectedChannel?.id).orEmpty(),
+        messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId),
+        !state.messagesLoading && state.messagesError == null &&
+            if (inThread) state.thread?.let { !it.loading && !it.hasNewer } == true else !state.hasNewerMessages && !state.loadingNewer,
+    )
     LaunchedEffect(state.focusRevision, state.selectedChannel?.id) {
         val target = state.focusedMessageId ?: return@LaunchedEffect
         val run = rows.filterIsInstance<TimelineRow.Blocked>().firstOrNull { it.run.messages.any { message -> message.id == target } }
@@ -1890,7 +1901,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     } }
     val skeleton = inThread && state.thread?.loading == true && messages.none { it.threadRootId == state.thread.rootId }
-    val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
     val empty = messages.isEmpty() && state.pendingMessage == null && !(inThread && state.thread?.loading == true)
     val firstRow = if (inThread) 0 else 1
     val newer = !inThread && state.hasNewerMessages
@@ -1932,7 +1942,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
                     }
-                } else Column(Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) PinGold.copy(alpha = 0.1f) else Color.Transparent)) {
+                } else Column(Modifier.arrival(arrivals, message.clientMessageId).background(if (state.focusedMessageId == message.id) TerracottaWash else if (!inThread && state.thread?.rootId == message.id) PinGold.copy(alpha = 0.1f) else Color.Transparent)) {
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -1964,8 +1974,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // Your unsent message joins your run like a sent one.
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
                     pending.threadRootId, jumpTarget = state.focusedMessageId)
-                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
-                Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
+                Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
+                    MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
+                    Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
+                }
             }
         } }
         if (empty) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
@@ -2661,8 +2673,7 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
 
 /** Web's three 4px dots: 1.2 s bounce staggered by .15 s, still when animations are off. */
 @Composable private fun TypingDots() {
-    val context = LocalContext.current
-    val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val still = reducedMotion()
     val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing-dots")
     Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(3) { index ->
@@ -2738,14 +2749,14 @@ internal fun counterTone(count: Int): Color = when {
 /**
  * Web's one primary button for sign-in and the profile (account/controls.tsx): compact, with a
  * spinner beside the pending label and a minimum width so that label never resizes it. Disabled
- * or pending, it dims (to 60%, as on web) rather than turning grey.
+ * or pending, it steps back to neutral chrome, as on web.
  */
 @Composable private fun PrimaryButton(
     label: String, pendingLabel: String, pending: Boolean, enabled: Boolean, modifier: Modifier = Modifier,
     minWidth: Dp = 200.dp, onClick: () -> Unit,
 ) = Button(
     onClick, modifier.widthIn(min = minWidth), enabled = enabled && !pending, shape = MaterialTheme.shapes.small,
-    colors = ButtonDefaults.buttonColors(disabledContainerColor = Terracotta.copy(alpha = 0.6f), disabledContentColor = Color.White.copy(alpha = 0.6f)),
+    colors = primaryButtonColors(),
     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
 ) {
     if (pending) {
@@ -2880,7 +2891,7 @@ internal fun counterTone(count: Int): Color = when {
         (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Spacer(Modifier.height(16.dp))
         Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
-            enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+            enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
         ) { Text(if (state.busy) "Creating…" else "Create space") }
         TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
     }
@@ -2921,7 +2932,7 @@ internal fun counterTone(count: Int): Color = when {
             Button({
                 if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
                 else { error = null; start(username) { error = it } }
-            }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small) {
+            }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                 PendingLabel("Start conversation", "Opening…", busy)
             }
         }
@@ -2955,7 +2966,7 @@ internal fun counterTone(count: Int): Color = when {
     CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         OutlinedTextField(name, { name = it.codePointTake(80); if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
-        Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small) { Text("Save name") }
+        Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false)
@@ -2984,7 +2995,7 @@ internal fun counterTone(count: Int): Color = when {
                 PendingLabel("Decline", "Declining…", busy && accepting == false)
             }
             Spacer(Modifier.width(8.dp))
-            Button({ accepting = true; accept() }, enabled = !busy, shape = MaterialTheme.shapes.small) {
+            Button({ accepting = true; accept() }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                 PendingLabel("Accept", "Accepting…", busy && accepting == true)
             }
         }
@@ -3024,7 +3035,7 @@ internal fun counterTone(count: Int): Color = when {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)
             OutlinedButton({ name = channel.name; private = channel.private }, enabled = dirty && !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Reset") }
             Spacer(Modifier.width(8.dp))
-            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { PendingLabel("Save changes", "Saving…", state.busy) }
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", state.busy) }
         }
     }) {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
@@ -3069,7 +3080,7 @@ internal fun counterTone(count: Int): Color = when {
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (!busy) submitMember() }))
         Spacer(Modifier.width(8.dp))
-        Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small) { Text(action) }
+        Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(action) }
     }
     success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
@@ -3176,7 +3187,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     close: () -> Unit, label: String, busy: Boolean, pendingLabel: String = "Saving…", canSubmit: Boolean = true, action: () -> Unit,
 ) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
     TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-    Button(action, enabled = !busy && canSubmit, shape = MaterialTheme.shapes.small) { PendingLabel(label, pendingLabel, busy) }
+    Button(action, enabled = !busy && canSubmit, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel(label, pendingLabel, busy) }
 }
 
 /** Web's spaces/client.ts validation copy. */

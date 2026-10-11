@@ -1154,10 +1154,10 @@
 .spaces-empty .primary {
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
@@ -1247,9 +1247,9 @@
   cursor: pointer;
 }
 .empty-channel-actions > .primary {
-  border-color: var(--terracotta);
-  color: #fff;
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 /* On phones the stage has no header; the Browse toggle takes its place. */
 .empty-channel {
@@ -1651,8 +1651,9 @@
   cursor: pointer;
 }
 .space-dialog .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .space-dialog .danger {
   border-color: #b93646;
@@ -1967,10 +1968,10 @@
 .channel-preview .primary {
   min-height: 38px;
   padding: 0 14px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.76rem;
   font-weight: 700;
@@ -1978,8 +1979,8 @@
 }
 @media (hover: hover) {
   .channel-preview .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
 }
 .channel-preview .primary:disabled {
@@ -2017,8 +2018,8 @@
   .spaces-state button:hover:not(:disabled),
   .spaces-empty .primary:hover:not(:disabled),
   .empty-channel-actions > .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
   .space-dialog .danger:hover:not(:disabled) {
     border-color: #d44355;
@@ -2033,6 +2034,31 @@
     color: #ff8c9a;
     background: rgb(185 54 70 / 0.12);
   }
+}
+:is(
+    .space-dialog .primary,
+    .spaces-state button,
+    .spaces-empty .primary,
+    .empty-channel-actions > .primary,
+    .channel-preview .primary,
+    .direct-request-bar .primary
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .space-dialog .primary,
+  .spaces-state button,
+  .spaces-empty .primary,
+  .empty-channel-actions > .primary,
+  .channel-preview .primary,
+  .direct-request-bar .primary
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 /* Gated: on touch, Back would keep its hover after the tap that opened Browse. */
 @media (hover: hover) {
@@ -2506,13 +2532,14 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   cursor: pointer;
 }
 .direct-request-bar .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 @media (hover: hover) {
   .direct-request-bar .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
   .direct-request-bar .secondary:hover:not(:disabled) {
     border-color: var(--text-muted);

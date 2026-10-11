@@ -25,6 +25,7 @@ mod media_proxy;
 mod mentions;
 mod metadata;
 mod model;
+mod motion;
 mod navigation;
 mod notifications;
 mod os_notifications;
@@ -55,6 +56,8 @@ use worker::{
     AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
 };
 
+/// Arriving messages settle up from this far below (web's `caper-message-in`).
+const ARRIVE_OFFSET: egui::Vec2 = egui::vec2(0.0, 6.0);
 /// Longest the loading page waits for the first conversation at launch.
 const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 /// How to request account deletion, linked from Privacy settings (Google Play
@@ -71,6 +74,12 @@ const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
 const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
+/// Primary actions are eggshell with blackout labels (shared/design.css `--action`);
+/// terracotta stays for selection and focus.
+const ACTION: Color32 = Color32::from_rgb(241, 237, 228);
+const ACTION_HOVER: Color32 = Color32::from_rgb(251, 249, 244);
+const ACTION_PRESS: Color32 = Color32::from_rgb(221, 215, 203);
+const ON_ACTION: Color32 = BLACKOUT;
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
@@ -707,6 +716,8 @@ struct CaperApp {
     thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
     thread_only_rows: BTreeSet<String>,
+    /// Which timeline and thread rows just arrived, to settle them in.
+    arrivals: motion::Arrivals,
     reaction_picker: Option<String>,
     reaction_search: String,
     reaction_search_focus: bool,
@@ -927,6 +938,7 @@ impl CaperApp {
             thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
             thread_only_rows: BTreeSet::new(),
+            arrivals: motion::Arrivals::default(),
             reaction_picker: None,
             reaction_search: String::new(),
             reaction_search_focus: false,
@@ -10042,10 +10054,15 @@ impl CaperApp {
         let escape_taken = self.reaction_picker.is_some()
             || self.reactors_view.is_some()
             || egui::Popup::is_any_open(ui.ctx());
-        if self.thread_view.is_some() && narrow {
-            self.thread_panel(ui);
-        } else {
-            if self.thread_view.is_some() {
+        // The thread opens beside the conversation (over it when narrow),
+        // sliding in from the trailing edge.
+        let thread_alone = self.thread_view.is_some() && narrow;
+        if self.thread_view.is_some() {
+            let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
+            let from = motion::mark(ui);
+            if narrow {
+                self.thread_panel(ui);
+            } else {
                 egui::SidePanel::right("message-thread")
                     .default_width(340.0)
                     .min_width(300.0)
@@ -10053,6 +10070,15 @@ impl CaperApp {
                     .frame(egui::Frame::new().fill(CONVERSATION))
                     .show_inside(ui, |ui| self.thread_panel(ui));
             }
+            motion::settle(
+                ui.ctx(),
+                ui.layer_id(),
+                from,
+                progress,
+                motion::rise(progress, egui::vec2(12.0, 0.0)),
+            );
+        }
+        if !thread_alone {
             self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
@@ -10086,6 +10112,24 @@ impl CaperApp {
         let has_newer = thread.has_newer;
         let window = thread.window;
         let error = thread.error.clone();
+        let pending = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
+        self.arrivals.observe(
+            "thread",
+            &root,
+            self.timeline
+                .messages()
+                .filter(|message| {
+                    message.thread_root_id.as_deref() == Some(&root)
+                        && window.is_none_or(|window| window.contains(message))
+                })
+                .map(|message| message.client_message_id.as_str())
+                .chain(pending.map(|pending| pending.id.as_str())),
+            !loading && !has_newer,
+            ui.input(|input| input.time),
+        );
         // DMs are named after the other person, without a channel `#`.
         let direct = self.selected_direct.is_some();
         let (conversation, broadcast_label) = if direct {
@@ -10157,7 +10201,8 @@ impl CaperApp {
                 .show_inside(ui, |ui| {
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
-                    ui.label(&pending.text);
+                    let arrival = self.arrival(ui.ctx(), &pending.id);
+                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| ui.label(&pending.text));
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
@@ -10632,6 +10677,19 @@ impl CaperApp {
                         });
                     }
                 });
+            // Web's arrivals: the rows below, with the pending send last.
+            let pending = self.pending.as_ref().filter(|pending| pending.thread_root_id.is_none());
+            self.arrivals.observe(
+                "channel",
+                self.selected_direct.as_deref().or(self.selected_channel.as_deref()).unwrap_or_default(),
+                self.timeline
+                    .messages()
+                    .filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message)))
+                    .map(|message| message.client_message_id.as_str())
+                    .chain(pending.map(|pending| pending.id.as_str())),
+                !self.opening && !self.loading && !self.has_newer && !self.context_loading,
+                ui.input(|input| input.time),
+            );
             // Keep loading/retry inside the existing message viewport. Do not
             // touch the retained history's scroll state or paging anchors.
             if self.navigation_state(ui) {
@@ -10754,36 +10812,39 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
-                        message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
-                            // File-only messages have no text row.
-                            if !pending.text.is_empty() {
-                                ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
-                            }
-                        });
-                        self.attachment_list(ui, &pending.attachments, true);
-                        if let Some(rejection) = &pending.rejection {
-                            egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
-                                ui.colored_label(ERROR, format!("Not sent. {rejection}"));
-                                ui.horizontal(|ui| {
-                                    let button = |label| egui::Button::new(RichText::new(label).size(12.0)).min_size(egui::vec2(60.0, 32.0));
-                                    if toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
-                                        .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
-                                        && let Some(rejected) = self.take_rejected() {
-                                        self.draft = rejected.text;
-                                        self.restore_drafts(rejected.attachments);
-                                        ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
-                                    }
-                                    if toned(ui, QUIET_TONE, true, button("Dismiss")).clicked() { self.discard_rejected(); }
-                                });
-                            });
-                        } else if !pending.sending {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(ERROR, if pending.upload_failed { "Failed to upload." } else { "Not confirmed yet." });
-                                if ui.button(if pending.upload_failed { "Retry" } else { "Retry send" }).clicked() {
-                                    self.send_message();
+                        let arrival = self.arrival(ui.ctx(), &pending.id);
+                        motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
+                                // File-only messages have no text row.
+                                if !pending.text.is_empty() {
+                                    ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
                                 }
                             });
-                        }
+                            self.attachment_list(ui, &pending.attachments, true);
+                            if let Some(rejection) = &pending.rejection {
+                                egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
+                                    ui.colored_label(ERROR, format!("Not sent. {rejection}"));
+                                    ui.horizontal(|ui| {
+                                        let button = |label| egui::Button::new(RichText::new(label).size(12.0)).min_size(egui::vec2(60.0, 32.0));
+                                        if toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
+                                            .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
+                                            && let Some(rejected) = self.take_rejected() {
+                                            self.draft = rejected.text;
+                                            self.restore_drafts(rejected.attachments);
+                                            ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+                                        }
+                                        if toned(ui, QUIET_TONE, true, button("Dismiss")).clicked() { self.discard_rejected(); }
+                                    });
+                                });
+                            } else if !pending.sending {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(ERROR, if pending.upload_failed { "Failed to upload." } else { "Not confirmed yet." });
+                                    if ui.button(if pending.upload_failed { "Retry" } else { "Retry send" }).clicked() {
+                                        self.send_message();
+                                    }
+                                });
+                            }
+                        });
                     }
                     if self.timeline.messages().next().is_none()
                         && self.pending.is_none()
@@ -10962,7 +11023,18 @@ impl CaperApp {
         in_thread: bool,
         grouped: bool,
     ) {
-        self.message_in(ui, message, in_thread, false, grouped);
+        let arrival = self.arrival(ui.ctx(), &message.client_message_id);
+        motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+            self.message_in(ui, message, in_thread, false, grouped);
+        });
+    }
+
+    /// A row's entrance: 1 unless it just arrived at the live end.
+    fn arrival(&self, context: &egui::Context, client_message_id: &str) -> f32 {
+        let now = context.input(|input| input.time);
+        self.arrivals
+            .arrived(client_message_id, now)
+            .map_or(1.0, |start| motion::progress(context, start, motion::SLOW))
     }
 
     fn message_in(
@@ -11732,6 +11804,7 @@ impl CaperApp {
                 context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mention-card")));
                 self.mention_card(context);
             });
+        motion::modal(context, modal.response.layer_id);
         if close || (!card_was_open && self.mention_card.is_none() && modal.should_close()) {
             self.showing_pins = false;
             self.mention_card = None;
@@ -11980,6 +12053,12 @@ impl CaperApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             for draft in &mut self.draft_files {
+                let entering = motion::entrance(
+                    ui.ctx(),
+                    egui::Id::new(("draft-chip", draft.key)),
+                    motion::BASE,
+                );
+                let from = motion::mark(ui);
                 let (rect, chip) =
                     ui.allocate_exact_size(egui::vec2(236.0, 48.0), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
@@ -12060,6 +12139,13 @@ impl CaperApp {
                     MUTED,
                 );
                 if uploading {
+                    // Progress glides between updates instead of jumping.
+                    let shown = motion::glide(
+                        ui.ctx(),
+                        egui::Id::new(("draft-progress", draft.key)),
+                        draft.progress.clamp(0.0, 1.0),
+                        motion::BASE,
+                    );
                     let track = egui::Rect::from_min_max(
                         egui::pos2(text_left, rect.bottom() - 5.0),
                         egui::pos2(rect.right() - 34.0, rect.bottom() - 3.0),
@@ -12068,10 +12154,7 @@ impl CaperApp {
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             track.min,
-                            egui::vec2(
-                                track.width() * draft.progress.clamp(0.0, 1.0),
-                                track.height(),
-                            ),
+                            egui::vec2(track.width() * shown, track.height()),
                         ),
                         1.0,
                         TERRACOTTA,
@@ -12148,6 +12231,14 @@ impl CaperApp {
                 {
                     retry = Some(draft.key);
                 }
+                // Each file pops into the composer, as on web.
+                motion::settle(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    from,
+                    entering,
+                    motion::grow(entering, 0.94, rect.center()),
+                );
             }
         });
         if let Some(key) = remove {
@@ -13143,7 +13234,10 @@ impl CaperApp {
                                     // Full width with a centered label.
                                     let button = ui
                                         .vertical_centered_justified(|ui| {
-                                            ui.add_enabled(
+                                            toned_rounded(
+                                                ui,
+                                                PRIMARY_TONE,
+                                                7,
                                                 !busy,
                                                 egui::Button::new(
                                                     bold(if card.opening.is_some() {
@@ -13153,9 +13247,6 @@ impl CaperApp {
                                                     })
                                                     .size(12.0),
                                                 )
-                                                .fill(TERRACOTTA)
-                                                .stroke(Stroke::new(1.0, TERRACOTTA))
-                                                .corner_radius(7)
                                                 .min_size(egui::vec2(0.0, 36.0)),
                                             )
                                         })
@@ -13442,12 +13533,6 @@ impl CaperApp {
                 format!("Remove {name}?")
             }),
         };
-        context
-            .layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("dialog-backdrop"),
-            ))
-            .rect_filled(context.viewport_rect(), 0.0, Color32::from_black_alpha(190));
         let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
         let settings = matches!(dialog, Dialog::Settings);
         let width: f32 = if matches!(dialog, Dialog::Audio) {
@@ -13517,6 +13602,7 @@ impl CaperApp {
         let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .fade_in(false)
             .show(context, |ui| {
                 // Every modal keeps a viewport-bounded shell so asynchronous
                 // content changes scroll rather than resize or recenter it.
@@ -13750,6 +13836,20 @@ impl CaperApp {
                         }
                     });
             });
+        // The dialog rises into place while its scrim fades in, faster.
+        motion::overlay(context, modal.response.layer_id, motion::BASE, 8.0, true);
+        let scrim = motion::shown_at(context, modal.response.layer_id)
+            .map_or(1.0, |start| motion::progress(context, start, motion::FAST));
+        context
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("dialog-backdrop"),
+            ))
+            .rect_filled(
+                context.viewport_rect(),
+                0.0,
+                Color32::from_black_alpha((190.0 * scrim).round() as u8),
+            );
         if dialog_was_open && dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
             // A fast click can deliver press and release in the opening frame.
             // Neither event may dismiss the dialog that click just opened.
@@ -16394,23 +16494,31 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
         egui::Sense::click()
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 58.0), sense);
-    let fill = if disabled {
-        Color32::from_rgb(91, 48, 39)
+    let (fill, border, label) = if disabled {
+        PRIMARY_DISABLED
+    } else if response.is_pointer_button_down_on() {
+        PRIMARY_TONE.press
     } else if response.hovered() {
-        TERRACOTTA_BRIGHT
+        PRIMARY_TONE.hover
     } else {
-        TERRACOTTA
+        PRIMARY_TONE.rest
     };
-    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter().rect(
+        rect,
+        7.0,
+        fill,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
     ui.painter().text(
         egui::pos2(rect.left() + 21.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         text,
         egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
-        if disabled { MUTED } else { TEXT },
+        label,
     );
     let center = egui::pos2(rect.right() - 22.0, rect.center().y);
-    let stroke = Stroke::new(1.5, if disabled { MUTED } else { TEXT });
+    let stroke = Stroke::new(1.5, label);
     ui.painter().line_segment(
         [
             egui::pos2(center.x - 9.0, center.y),
@@ -16555,7 +16663,7 @@ fn name_field(
 
 /// A framed button's (fill, border, text) at rest, hovered, and pressed or
 /// keyboard-focused.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Tone {
     rest: (Color32, Color32, Color32),
     hover: (Color32, Color32, Color32),
@@ -16566,10 +16674,14 @@ const PRESSED: Color32 = Color32::from_rgb(57, 35, 30);
 
 /// Web's `.primary`.
 const PRIMARY_TONE: Tone = Tone {
-    rest: (TERRACOTTA, TERRACOTTA, TEXT),
-    hover: (TERRACOTTA_BRIGHT, TERRACOTTA_BRIGHT, TEXT),
-    press: (Color32::from_rgb(150, 62, 40), TERRACOTTA_BRIGHT, TEXT),
+    rest: (ACTION, ACTION, ON_ACTION),
+    hover: (ACTION_HOVER, ACTION_HOVER, ON_ACTION),
+    press: (ACTION_PRESS, ACTION_PRESS, ON_ACTION),
 };
+
+/// A disabled `.primary` steps back to neutral chrome, unfaded, rather than a
+/// half-transparent eggshell.
+const PRIMARY_DISABLED: (Color32, Color32, Color32) = (RAISED, BORDER, MUTED);
 
 /// Web's `.secondary`: a neutral hover, like the dialogs' Cancel.
 const SECONDARY_TONE: Tone = Tone {
@@ -16672,9 +16784,21 @@ fn toned_rounded(
     enabled: bool,
     button: egui::Button<'_>,
 ) -> egui::Response {
+    let tone = if !enabled && tone == PRIMARY_TONE {
+        Tone {
+            rest: PRIMARY_DISABLED,
+            hover: PRIMARY_DISABLED,
+            press: PRIMARY_DISABLED,
+        }
+    } else {
+        tone
+    };
     ui.scope(|ui| {
         let visuals = ui.visuals_mut();
         visuals.override_text_color = None;
+        if !enabled && tone.rest == PRIMARY_DISABLED {
+            visuals.disabled_alpha = 1.0;
+        }
         let widgets = &mut visuals.widgets;
         for (state, (fill, border, text)) in [
             (&mut widgets.noninteractive, tone.rest),

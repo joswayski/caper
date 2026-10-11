@@ -337,6 +337,7 @@ impl CaperApp {
                             input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
                         });
                 });
+            crate::motion::modal(context, modal.response.layer_id);
             if previous_size != Some(modal.response.rect.size()) {
                 context.request_repaint(); // Recenter after draft/error or viewport size changes.
             }
@@ -464,6 +465,7 @@ impl CaperApp {
                             }
                         });
                 });
+            crate::motion::modal(context, modal.response.layer_id);
             if previous_selection != history.selected
                 || previous_size != Some(modal.response.rect.size())
             {

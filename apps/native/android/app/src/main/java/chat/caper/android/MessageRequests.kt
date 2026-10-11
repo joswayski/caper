@@ -91,7 +91,7 @@ import kotlinx.coroutines.launch
             append(" (@${peer.username}) wants to message you. You don't share a space.")
         }, color = TextMuted, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Accept") }
+            Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Accept") }
             OutlinedButton({ working = true; error = null; viewModel.declineRequest(request, left) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Decline", color = Text) }
             TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Block", color = ErrorText) }
