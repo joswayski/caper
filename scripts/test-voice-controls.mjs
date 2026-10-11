@@ -1152,7 +1152,7 @@ try {
       );
     const headerActionFits = () =>
       evaluate(
-        `const button = document.querySelector('.header-voice .channel-join, .header-voice .voice-leave'), bounds = button.getBoundingClientRect(), label = button.querySelector('span').getBoundingClientRect(); return label.left > bounds.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom;`,
+        `const button = document.querySelector('.header-voice .channel-join, .header-voice .voice-leave'), bounds = button.getBoundingClientRect(), text = button.querySelector('span'), label = text.getBoundingClientRect(); if (!text.getClientRects().length) return !!button.getAttribute('aria-label') && !!button.querySelector('svg'); return label.left > bounds.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom;`,
       );
     const checkChannelTargets = () => {
       for (const area of ["leading padding", "icon", "name", "trailing padding"]) {

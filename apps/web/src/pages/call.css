@@ -1715,29 +1715,48 @@
   font-size: 0.78rem;
   font-weight: 700;
 }
+/* Phones: one bordered group of icons beside the name, as in Slack. The
+   labels stay as accessible names; one face is enough, since Browse lists everyone. */
 @media (max-width: 760px) {
   .header-voice {
-    gap: 6px;
+    flex: none;
+    gap: 2px;
     margin-right: 0;
-    padding-right: 0;
-    border-right: 0;
+    padding: 0 2px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
-  .header-voice-mute {
-    width: 44px;
-    height: 44px;
-    display: grid;
+  .header-voice:not(:has(.header-voice-people)) {
+    padding-left: 2px;
+  }
+  .header-voice-people {
+    margin-right: 2px;
   }
   .header-voice-elsewhere {
     display: flex;
   }
-  /* One face is enough beside the action; Browse lists everyone. */
   .header-voice-count,
-  .header-voice-people .voice-stack-avatar + .voice-stack-avatar {
+  .header-voice-people .voice-stack-avatar + .voice-stack-avatar,
+  .header-voice :is(.channel-join-label, .voice-leave > span) {
     display: none;
   }
-  .header-voice-join,
-  .header-voice .voice-leave {
-    padding: 0 10px;
+  .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) {
+    width: 44px;
+    min-height: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+  }
+  .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) svg {
+    width: 20px;
+    height: 20px;
+  }
+  .header-voice .header-voice-mute.active {
+    color: #ff7182;
   }
 }
 @media (hover: hover) {

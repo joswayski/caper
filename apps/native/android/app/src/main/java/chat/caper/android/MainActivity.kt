@@ -121,6 +121,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1202,6 +1203,12 @@ internal fun voicePeopleSummary(names: List<String>): String = when {
     else -> "No one is in voice"
 }
 
+/** Phones' line under the conversation name: "N members · M in voice", leaving out parts that don't apply. */
+internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull(
+    members?.let { "$it ${if (it == 1) "member" else "members"}" },
+    inVoice.takeIf { it > 0 }?.let { "$it in voice" },
+).joinToString(" · ")
+
 /** Web's voice-stack faces: up to [limit] small avatars, each overlapping the one before. */
 @Composable internal fun VoiceFaces(people: List<Participant>, limit: Int, size: Dp, ring: Color, speaking: Set<String> = emptySet()) {
     val shown = people.take(limit)
@@ -1224,8 +1231,8 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
 /**
  * Web's header voice: who is in voice in the open channel, then one Join, Switch here,
  * Joining… or Leave action. Channel rows carry no join, so empty channels stay a single line.
- * [compact] (phones) keeps one face and drops the count so the channel name keeps room.
- * [mute] (phones in a call) sits before the action, since Browse holds the account bar.
+ * [compact] (phones) is one bordered group of icons beside the name, as in Slack: one face,
+ * no count or labels (they stay as accessible names), and [mute] before the action during a call.
  */
 @Composable internal fun HeaderVoice(
     people: List<Participant>,
@@ -1240,40 +1247,52 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
     speaking: Set<String> = emptySet(),
     mute: (@Composable () -> Unit)? = null,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)) {
-        if (people.isNotEmpty()) {
-            val summary = voicePeopleSummary(people.map { it.name })
-            Row(Modifier.clearAndSetSemantics { contentDescription = summary }, verticalAlignment = Alignment.CenterVertically) {
-                VoiceFaces(people, if (compact) 1 else 3, 24.dp, SurfaceConversation, speaking)
-                if (!compact) {
-                    Spacer(Modifier.width(6.dp))
-                    Text("${people.size}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, style = TabularNumbers)
-                }
-            }
+    val label = when (action) { HeaderVoiceAction.Joining -> "Joining…"; HeaderVoiceAction.Switch -> "Switch here"; else -> "Join voice" }
+    val description = when (action) {
+        HeaderVoiceAction.Joining -> "Joining voice in #$channelName"
+        HeaderVoiceAction.Switch -> "Switch voice to #$channelName"
+        else -> "Join voice"
+    }
+    val active = enabled && action != HeaderVoiceAction.Joining
+    val prepare by rememberUpdatedState(onPrepare)
+    val joinModifier = Modifier
+        // Web prepares the join on touch-down, before the tap completes.
+        .pointerInput(active) { awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (active) prepare()
+        } }
+        .semantics {
+            contentDescription = if (action == HeaderVoiceAction.Joining) description else unavailableLabel ?: description
+            if (action == HeaderVoiceAction.Joining) stateDescription = "Busy"
+        }
+    val summary = voicePeopleSummary(people.map { it.name })
+    if (compact) return PhoneVoiceGroup(face = people.isNotEmpty()) {
+        if (people.isNotEmpty()) Box(Modifier.padding(end = 2.dp).clearAndSetSemantics { contentDescription = summary }) {
+            VoiceFaces(people, 1, 24.dp, SurfaceConversation, speaking)
         }
         mute?.invoke()
-        val padding = PaddingValues(horizontal = if (compact) 10.dp else 12.dp)
-        if (action == HeaderVoiceAction.Leave) HeaderLeaveButton(compact, onLeave)
-        else {
-            val label = when (action) { HeaderVoiceAction.Joining -> "Joining…"; HeaderVoiceAction.Switch -> "Switch here"; else -> "Join voice" }
-            val description = when (action) {
-                HeaderVoiceAction.Joining -> "Joining voice in #$channelName"
-                HeaderVoiceAction.Switch -> "Switch voice to #$channelName"
-                else -> "Join voice"
+        if (action == HeaderVoiceAction.Leave) HeaderLeaveIcon(onLeave)
+        else IconButton(onJoin, Modifier.size(48.dp).then(joinModifier), enabled = active) {
+            Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(20.dp), tint = if (active) TerracottaLight else TerracottaLight.copy(alpha = 0.6f))
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (people.isNotEmpty()) {
+            Row(Modifier.clearAndSetSemantics { contentDescription = summary }, verticalAlignment = Alignment.CenterVertically) {
+                VoiceFaces(people, 3, 24.dp, SurfaceConversation, speaking)
+                Spacer(Modifier.width(6.dp))
+                Text("${people.size}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, style = TabularNumbers)
             }
-            val active = enabled && action != HeaderVoiceAction.Joining
-            val prepare by rememberUpdatedState(onPrepare)
+        }
+        val padding = PaddingValues(horizontal = 12.dp)
+        if (action == HeaderVoiceAction.Leave) TextButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
+            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = padding) {
+            Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+        } else {
             // Web's terracotta-tinted voice button; disabled or joining, it dims rather than turning grey.
-            OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp)
-                // Web prepares the join on touch-down, before the tap completes.
-                .pointerInput(active) { awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    if (active) prepare()
-                } }
-                .semantics {
-                    contentDescription = if (action == HeaderVoiceAction.Joining) description else unavailableLabel ?: description
-                    if (action == HeaderVoiceAction.Joining) stateDescription = "Busy"
-                },
+            OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp).then(joinModifier),
                 enabled = active, shape = MaterialTheme.shapes.small,
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = TerracottaWash, contentColor = TerracottaLight,
                     disabledContainerColor = TerracottaWash, disabledContentColor = TerracottaLight.copy(alpha = 0.6f)),
@@ -1287,16 +1306,21 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
     }
 }
 
-/** The header's Leave: it ends the call the same way as the dock's. */
-@Composable private fun HeaderLeaveButton(compact: Boolean, onLeave: () -> Unit) {
-    TextButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
-        shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted),
-        contentPadding = PaddingValues(horizontal = if (compact) 10.dp else 12.dp)) {
-        Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+/** Phones' voice group: one 1dp bordered container of 48dp icon buttons, led by a face when anyone is in voice. */
+@Composable private fun PhoneVoiceGroup(face: Boolean, content: @Composable () -> Unit) {
+    Row(Modifier.border(1.dp, Border, RoundedCornerShape(8.dp)).padding(start = if (face) 8.dp else 2.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) { content() }
+}
+
+/** Phones' icon-only Leave: it ends the call the same way as the dock's. */
+@Composable private fun HeaderLeaveIcon(onLeave: () -> Unit) {
+    IconButton(onLeave, Modifier.size(48.dp)) {
+        Icon(painterResource(R.drawable.lucide_phone_off), "Leave voice", Modifier.size(20.dp), tint = TextMuted)
     }
 }
+
+/** Web's active (muted) tint for the phone header's mic. */
+private val HeaderMutedRed = Color(0xFFFF7182)
 
 /**
  * Phones keep the call's mute in the conversation header, since Browse holds the account bar.
@@ -1305,15 +1329,15 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
 @Composable internal fun HeaderMuteButton(muted: Boolean, monitoring: Boolean, onToggle: () -> Unit) {
     IconButton(onToggle, Modifier.size(48.dp).semantics { if (monitoring) stateDescription = "Stop mic test to change mute" }, enabled = !monitoring) {
         Icon(painterResource(if (muted) R.drawable.lucide_mic_off else R.drawable.lucide_mic), if (muted) "Unmute microphone" else "Mute microphone",
-            Modifier.size(20.dp), tint = if (muted) TerracottaBright else TextMuted)
+            Modifier.size(20.dp), tint = if (muted) HeaderMutedRed else TextMuted)
     }
 }
 
-/** A DM, or any conversation without its own voice, still offers the call's mute and Leave on phones. */
+/** A DM, or any conversation without its own voice, still offers the call's mute and Leave on phones, in the same group. */
 @Composable internal fun HeaderVoiceElsewhere(mute: @Composable () -> Unit, onLeave: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    PhoneVoiceGroup(face = false) {
         mute()
-        HeaderLeaveButton(compact = true, onLeave)
+        HeaderLeaveIcon(onLeave)
     }
 }
 
@@ -1575,8 +1599,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // Kept per conversation, so switching channels or DMs and coming back restores it.
     fun updateDraft(value: TextFieldValue) { draft = value; viewModel.drafts[channel.id] = value.text }
     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
-    // Phones' More menu, holding Pins and Members.
-    var headerMenuOpen by remember(channel.id) { mutableStateOf(false) }
     var showingPins by remember(channel.id) { mutableStateOf(false) }
     // Switching to Pins must not discard the channel's measured scroll position.
     val timelineState = key(channel.id) { rememberLazyListState() }
@@ -1592,98 +1614,111 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val live = state.gateway == GatewayStatus.LIVE
         var showConnection by remember(channel.id) { mutableStateOf(false) }
         LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-        // On phones Back's arrow and More's dots, not their 48dp touch targets, line up with the messages' 18dp inset.
-        val menuOpen = channelMenuOpen || headerMenuOpen
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = if (narrow) 4.dp else 18.dp)
-            .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !menuOpen)
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !menuOpen && !channel.direct && joined),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
-            }
-            // Phones keep Block in a 1:1 DM's title menu; Pins and Members are in the More menu.
-            if (narrow && direct != null) Box(Modifier.weight(1f)) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+        // Web: the open channel's voice follows its name, apart from Pins and Members.
+        val channelVoice = !channel.direct && joined && BuildConfig.ENABLE_NATIVE_VOICE
+        val demo = state.selectedSpace?.space?.demo == true
+        val available = if (channelVoice) state.voiceAvailable(channel) else null
+        // Phones compose Browse only while it shows, so the header asks for availability too.
+        if (channelVoice) LaunchedEffect(channel.id, demo, state.account?.id, available) {
+            if (available == null) viewModel.checkVoiceAvailability(channel)
+        }
+        val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
+        val activeHere = activeChannel == channel.id
+        val voicePeople = when {
+            !channelVoice -> emptyList()
+            activeHere -> voice.participants
+            else -> state.voiceRosters[voiceRootKey(demo, channel.id)].orEmpty()
+        }
+        // Phones: who is here, under the name (web's "N members · M in voice").
+        val memberCount = state.selectedSpace?.members?.size?.takeIf { !channel.direct && joined && !demo }
+        val subtitle = headerSubtitle(memberCount, voicePeople.size)
+        val title = if (channel.direct) channel.name else "# ${channel.name}"
+        val inCall = voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING
+        // Phones keep the call's mute in the header, since Browse holds the account bar.
+        val headerMute: (@Composable () -> Unit)? = if (narrow && inCall) {
+            { HeaderMuteButton(voice.muted, voice.monitoring) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) } }
+        } else null
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val headerWidth = maxWidth
+            // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
+            Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = if (narrow) 8.dp else 18.dp)
+                .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+                .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
+                }
+                // Phones: the name opens the conversation's menu, as in Slack; Pins, Members and Block move there.
+                if (narrow) Column(Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                    .background(if (channelMenuOpen) Surface else Color.Transparent)
                     .clickable(role = Role.Button) { channelMenuOpen = true }
-                    .semantics(mergeDescendants = true) { contentDescription = "${channel.name} channel menu" }, verticalAlignment = Alignment.CenterVertically) {
-                    Text(channel.name, Modifier.weight(1f, fill = false), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+                    .semantics(mergeDescendants = true) { contentDescription = "${if (channel.direct) "" else "#"}${channel.name} options" }
+                    .padding(horizontal = 8.dp, vertical = 2.dp), verticalArrangement = Arrangement.Center) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(title, Modifier.weight(1f, fill = false), color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+                    }
+                    if (subtitle.isNotEmpty()) Text(subtitle, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else Text(title, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (channelVoice) {
+                    val joiningHere = (activeHere && voice.phase == VoiceState.Phase.CONNECTING) || pendingVoiceJoin?.channelId == channel.id
+                    val denied = channel.id in state.deniedVoiceChannels
+                    val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+                        !denied && available == true
+                    val action = when {
+                        // Web: a call that is reconnecting here stays one Leave away.
+                        activeHere && (voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING) -> HeaderVoiceAction.Leave
+                        joiningHere -> HeaderVoiceAction.Joining
+                        activeChannel != null && !activeHere -> HeaderVoiceAction.Switch
+                        else -> HeaderVoiceAction.Join
+                    }
+                    HeaderVoice(
+                        people = voicePeople,
+                        action = action, channelName = channel.name, enabled = actionEnabled,
+                        unavailableLabel = if (denied) null else voiceJoinUnavailableLabel(available),
+                        compact = narrow,
+                        onJoin = { joinVoice(channel) }, onPrepare = { viewModel.prepareVoiceJoin(channel) }, onLeave = leaveVoice,
+                        speaking = if (activeHere) voice.speakingParticipants else emptySet(),
+                        mute = headerMute,
+                    )
+                    // A thin rule separates voice from the channel's Pins and Members.
+                    if (!narrow) Box(Modifier.width(1.dp).height(28.dp).background(Border))
+                } else if (headerMute != null) HeaderVoiceElsewhere(headerMute, leaveVoice)
+                if (!narrow) IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
                 }
-                DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(text = { Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) Text else ErrorText) },
-                        onClick = { channelMenuOpen = false; toggleBlock() })
+                // Right of Pins and the same size, as on web.
+                if (!narrow && !channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
+                        Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
                 }
-            } else Text(if (channel.direct) channel.name else "# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            // Web: the open channel's voice follows its name, apart from Pins and Members.
-            val inCall = voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING
-            // Phones keep the call's mute in the header, since Browse holds the account bar.
-            val headerMute: (@Composable () -> Unit)? = if (narrow && inCall) {
-                { HeaderMuteButton(voice.muted, voice.monitoring) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) } }
-            } else null
-            if (!channel.direct && joined && BuildConfig.ENABLE_NATIVE_VOICE) {
-                val demo = state.selectedSpace?.space?.demo == true
-                val available = state.voiceAvailable(channel)
-                // Phones compose Browse only while it shows, so the header asks for availability too.
-                LaunchedEffect(channel.id, demo, state.account?.id, available) {
-                    if (available == null) viewModel.checkVoiceAvailability(channel)
+                if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
-                val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
-                val activeHere = activeChannel == channel.id
-                val joiningHere = (activeHere && voice.phase == VoiceState.Phase.CONNECTING) || pendingVoiceJoin?.channelId == channel.id
-                val denied = channel.id in state.deniedVoiceChannels
-                val actionEnabled = pendingVoiceJoin == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
-                    !denied && available == true
-                val action = when {
-                    // Web: a call that is reconnecting here stays one Leave away.
-                    activeHere && (voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING) -> HeaderVoiceAction.Leave
-                    joiningHere -> HeaderVoiceAction.Joining
-                    activeChannel != null && !activeHere -> HeaderVoiceAction.Switch
-                    else -> HeaderVoiceAction.Join
-                }
-                HeaderVoice(
-                    people = if (activeHere) voice.participants else state.voiceRosters[voiceRootKey(demo, channel.id)].orEmpty(),
-                    action = action, channelName = channel.name, enabled = actionEnabled,
-                    unavailableLabel = if (denied) null else voiceJoinUnavailableLabel(available),
-                    compact = narrow,
-                    onJoin = { joinVoice(channel) }, onPrepare = { viewModel.prepareVoiceJoin(channel) }, onLeave = leaveVoice,
-                    speaking = if (activeHere) voice.speakingParticipants else emptySet(),
-                    mute = headerMute,
+                if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
+                if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            // Web's title menu spans the header, inset 8dp, under it.
+            if (narrow) DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, Modifier.width(headerWidth - 16.dp), offset = DpOffset(8.dp, 0.dp),
+                containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                DropdownMenuItem(
+                    text = { Text("Pins", fontSize = 14.sp) },
+                    leadingIcon = { Icon(painterResource(R.drawable.lucide_pin), null, Modifier.size(18.dp), tint = TextMuted) },
+                    onClick = { channelMenuOpen = false; showingPins = true },
                 )
-                // A thin rule separates voice from the channel's Pins and Members.
-                if (!narrow) Box(Modifier.width(1.dp).height(28.dp).background(Border))
-            } else if (headerMute != null) HeaderVoiceElsewhere(headerMute, leaveVoice)
-            if (!narrow) IconButton({ showingPins = !showingPins }, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_pin), "Pins", Modifier.size(20.dp), tint = TextMuted)
+                if (!channel.direct && joined) DropdownMenuItem(
+                    text = { Text(if (membersVisible) "Hide members" else "Members", fontSize = 14.sp) },
+                    leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted) },
+                    trailingIcon = if (memberCount != null) { { Text("$memberCount", color = TextMuted, fontSize = 13.sp, style = TabularNumbers) } } else null,
+                    onClick = { channelMenuOpen = false; toggleMembers() },
+                )
+                // A 1:1 DM keeps Block / Unblock here on phones.
+                if (direct != null) DropdownMenuItem(
+                    text = { Text(if (direct.blocked) "Unblock" else "Block", fontSize = 14.sp, color = if (direct.blocked) Text else ErrorText) },
+                    leadingIcon = { Spacer(Modifier.size(18.dp)) },
+                    onClick = { channelMenuOpen = false; toggleBlock() },
+                )
             }
-            // Right of Pins and the same size, as on web.
-            if (!narrow && !channel.direct && joined) IconButton(toggleMembers, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
-                    Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
-            }
-            if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-                Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-            if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
-            // Phones fold Pins and Members into one menu, leaving room for voice.
-            if (narrow) Box {
-                IconButton({ headerMenuOpen = true }, Modifier.size(48.dp)) {
-                    Icon(painterResource(R.drawable.lucide_ellipsis), "More channel options", Modifier.size(20.dp), tint = if (headerMenuOpen) Text else TextMuted)
-                }
-                DropdownMenu(headerMenuOpen, { headerMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                    DropdownMenuItem(
-                        text = { Text("Pins", fontSize = 13.sp) },
-                        leadingIcon = { Icon(painterResource(R.drawable.lucide_pin), null, Modifier.size(16.dp), tint = TextMuted) },
-                        onClick = { headerMenuOpen = false; showingPins = true },
-                    )
-                    if (!channel.direct && joined) DropdownMenuItem(
-                        text = { Text(if (membersVisible) "Hide members" else "Members", fontSize = 13.sp) },
-                        leadingIcon = { Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(16.dp), tint = TextMuted) },
-                        onClick = { headerMenuOpen = false; toggleMembers() },
-                    )
-                }
-            }
-            if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…",
-                Modifier.padding(end = if (narrow) 14.dp else 0.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
         HorizontalDivider(color = Border)
         if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1716,9 +1751,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !menuOpen)
+        MessageTimeline(state, viewModel, Modifier.weight(1f).browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
             // A left swipe opens the member list, as a right one opens Browse.
-            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !menuOpen && !channel.direct && joined),
+            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen && !channel.direct && joined),
             listState = timelineState, follow = timelineFollow) {
             channelPending?.error?.let { pending ->
                 val editable = canEditRejectedMessage(draft.text, channelPending.text)

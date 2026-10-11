@@ -133,10 +133,12 @@ iOS/macOS and Rust desktop). After the channel name, the open channel shows up
 to three faces of who is in its voice with a count, then Join voice, Switch here
 (connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
 a thin divider separates it from Pins and Members. Phones show only the
-conversation below that header: Pins and Members fold into a `⋯` menu, the
-header adds the call's mute while in voice (and mute plus Leave in a DM), voice
-errors appear above the composer, and channels, rosters, the account bar and
-the voice dock stay in Browse.
+conversation below a Slack-style header: the channel name (with "N members · M
+in voice" beneath it) opens the channel's menu of Pins and Members, and one
+bordered group holds a face and icon-only voice buttons (headphones to join or
+switch; mute and Leave while in voice; mute and Leave in a DM). Voice errors
+appear above the composer, and channels, rosters, the account bar and the voice
+dock stay in Browse.
 Channel rows no longer carry a Join action: empty channels are a single line,
 and only occupied channels add the `N in voice` line with its collapsible
 roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click

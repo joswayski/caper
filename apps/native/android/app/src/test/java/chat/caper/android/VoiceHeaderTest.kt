@@ -10,4 +10,11 @@ class VoiceHeaderTest {
         assertEquals("Maya, Alex and Sam are in voice", voicePeopleSummary(listOf("Maya", "Alex", "Sam")))
         assertEquals("Maya, Alex, Sam and 2 more are in voice", voicePeopleSummary(listOf("Maya", "Alex", "Sam", "Jo", "Lee")))
     }
+
+    @Test fun `phone subtitle counts members and people in voice, omitting what does not apply`() {
+        assertEquals("12 members · 3 in voice", headerSubtitle(12, 3))
+        assertEquals("1 member", headerSubtitle(1, 0))
+        assertEquals("2 in voice", headerSubtitle(null, 2))
+        assertEquals("", headerSubtitle(null, 0))
+    }
 }

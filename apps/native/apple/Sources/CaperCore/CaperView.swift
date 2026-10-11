@@ -1449,44 +1449,68 @@ private struct HeaderVoice: View {
     var body: some View {
         let people = voiceOccupants(model, channelID: channel.id)
         let action = ChannelVoiceAction(model: model, channel: channel)
-        HStack(spacing: narrow ? 6 : 10) {
-            if !people.isEmpty {
-                let summary = Self.summary(people.map(\.name))
-                Group {
-                    if narrow {
-                        faces(people, limit: 1, count: false, speaking: action.active)
-                    } else {
-                        ViewThatFits(in: .horizontal) {
-                            faces(people, limit: 3, count: true, speaking: action.active)
-                            faces(people, limit: 1, count: false, speaking: action.active)
-                        }
-                    }
-                }
-                .help(summary)
-                .accessibilityElement(children: .ignore)
-                .accessibilityAddTraits(.isImage)
-                .accessibilityLabel(summary)
-                .accessibilityIdentifier("header-voice-people")
-            }
-            if narrow && inVoiceCall(model.voice) { HeaderMuteButton(voice: model.voice) }
-            if action.leaves {
-                HeaderLeaveButton(model: model)
+        Group {
+            if narrow {
+                // Phones: one bordered group of icons beside the name, as in Slack. The
+                // labels stay as accessible names; one face is enough, since Browse lists everyone.
+                HStack(spacing: 2) {
+                    if !people.isEmpty { occupants(people, speaking: action.active).padding(.trailing, 2) }
+                    if inVoiceCall(model.voice) { HeaderMuteButton(voice: model.voice) }
+                    if action.leaves { HeaderLeaveButton(model: model, compact: true) } else { join(action, compact: true) }
+                }.modifier(CompactVoiceGroup(leading: people.isEmpty ? 2 : 8))
             } else {
-                Button { Task { await model.joinVoice(channel: channel) } } label: {
-                    HStack(spacing: 6) {
-                        CaperIcon(name: "headphones", size: 14)
-                        Text(action.title).lineLimit(1)
-                    }
+                HStack(spacing: 10) {
+                    if !people.isEmpty { occupants(people, speaking: action.active) }
+                    if action.leaves { HeaderLeaveButton(model: model, compact: false) } else { join(action, compact: false) }
                 }
-                .buttonStyle(HeaderVoiceButton(primary: true)).fixedSize()
-                .disabled(!action.enabled)
-                .help(action.help)
-                .accessibilityLabel(action.description(header: true))
-                .accessibilityIdentifier("join-voice-button")
-                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
             }
         }
         .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+    }
+
+    private func occupants(_ people: [VoiceSpectator], speaking active: Bool) -> some View {
+        let summary = Self.summary(people.map(\.name))
+        return Group {
+            if narrow {
+                faces(people, limit: 1, count: false, speaking: active)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    faces(people, limit: 3, count: true, speaking: active)
+                    faces(people, limit: 1, count: false, speaking: active)
+                }
+            }
+        }
+        .help(summary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isImage)
+        .accessibilityLabel(summary)
+        .accessibilityIdentifier("header-voice-people")
+    }
+
+    /// Join voice, Switch here or Joining…: labelled on wider layouts, an icon on phones.
+    @ViewBuilder private func join(_ action: ChannelVoiceAction, compact: Bool) -> some View {
+        let button = Button { Task { await model.joinVoice(channel: channel) } } label: {
+            if compact {
+                CaperIcon(name: "headphones", size: 20)
+            } else {
+                HStack(spacing: 6) {
+                    CaperIcon(name: "headphones", size: 14)
+                    Text(action.title).lineLimit(1)
+                }
+            }
+        }
+        Group {
+            if compact {
+                button.buttonStyle(HeaderVoiceIconButton(tint: CaperTheme.terracottaBright))
+            } else {
+                button.buttonStyle(HeaderVoiceButton(primary: true)).fixedSize()
+            }
+        }
+        .disabled(!action.enabled)
+        .help(action.help)
+        .accessibilityLabel(action.description(header: true))
+        .accessibilityIdentifier("join-voice-button")
+        .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
     }
 
     private func faces(_ people: [VoiceSpectator], limit: Int, count: Bool, speaking active: Bool) -> some View {
@@ -1505,6 +1529,31 @@ private struct HeaderVoice: View {
     }
 }
 
+/// Phones group the header's voice controls in one bordered container.
+private struct CompactVoiceGroup: ViewModifier {
+    /// Room before a face; buttons need less.
+    let leading: CGFloat
+    func body(content: Content) -> some View {
+        content.padding(.leading, leading).padding(.trailing, 2)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border, lineWidth: 1))
+            .fixedSize()
+    }
+}
+
+/// An icon-only 44-point control in a phone header's voice group.
+private struct HeaderVoiceIconButton: ButtonStyle {
+    var tint: Color = CaperTheme.muted
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.foregroundStyle(tint)
+            .frame(width: 44, height: 44)
+            .background(configuration.isPressed ? CaperTheme.raised : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+            .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
+    }
+}
+
 /// The call's microphone toggle in a phone's conversation header: the same
 /// action as the account bar's, which stays in Browse.
 private struct HeaderMuteButton: View {
@@ -1512,29 +1561,40 @@ private struct HeaderMuteButton: View {
     var body: some View {
         Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
             CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
-                .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
-        }.buttonStyle(SidebarIconButton()).help(voice.muted ? "Unmute" : "Mute")
-            .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
-            .accessibilityValue(voice.muted ? "Muted" : "On")
-            .accessibilityIdentifier("header-mute")
+        }
+        // Web's phone header tints a muted microphone red (#ff7182).
+        .buttonStyle(HeaderVoiceIconButton(tint: voice.muted ? Color(red: 1, green: 113/255, blue: 130/255) : CaperTheme.muted))
+        .help(voice.muted ? "Unmute" : "Mute")
+        .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
+        .accessibilityValue(voice.muted ? "Muted" : "On")
+        .accessibilityIdentifier("header-mute")
     }
 }
 
-/// Leave (or, before connecting, Cancel) the call from the conversation header.
+/// Leave (or, before connecting, Cancel) the call from the conversation header:
+/// labelled on wider layouts, an icon on phones.
 private struct HeaderLeaveButton: View {
     let model: AppModel
+    let compact: Bool
     var body: some View {
         let connected = model.voice.phase == .connected
-        Button {
+        let button = Button {
             if connected { CaperEffects.shared.play(.disconnect) }
             model.leaveVoice()
         } label: {
-            HStack(spacing: 6) {
-                CaperIcon(name: "phone-off", size: 14)
-                Text(connected ? "Leave" : "Cancel").lineLimit(1)
+            if compact {
+                CaperIcon(name: "phone-off", size: 20)
+            } else {
+                HStack(spacing: 6) {
+                    CaperIcon(name: "phone-off", size: 14)
+                    Text(connected ? "Leave" : "Cancel").lineLimit(1)
+                }
             }
         }
-        .buttonStyle(HeaderVoiceButton(primary: false)).fixedSize()
+        Group {
+            if compact { button.buttonStyle(HeaderVoiceIconButton()) }
+            else { button.buttonStyle(HeaderVoiceButton(primary: false)).fixedSize() }
+        }
         .help(connected ? "Disconnect" : "Cancel joining voice")
         .accessibilityLabel(connected ? "Leave voice" : "Cancel joining voice")
         .accessibilityIdentifier("header-leave-voice")
@@ -2244,6 +2304,74 @@ private struct ChatView: View {
     private var peerConversation: DirectMessageConversation? {
         model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
     }
+    private var headerTitle: String {
+        model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName
+    }
+    private var headerTitleLabel: String {
+        model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)"
+    }
+    /// The space's member count, where the member list applies to a joined channel.
+    private var memberCount: Int? {
+        guard membersAvailable, headerVoiceChannel != nil, let detail = model.detail, detail.space.demo != true else { return nil }
+        return detail.members.count
+    }
+    /// Web's headerSubtitle under a phone's title: "N members · M in voice", omitting what does not apply.
+    private var headerSubtitle: String? {
+        var parts: [String] = []
+        if let count = memberCount { parts.append("\(count) \(count == 1 ? "member" : "members")") }
+        if let channel = headerVoiceChannel {
+            let inVoice = voiceOccupants(model, channelID: channel.id).count
+            if inVoice > 0 { parts.append("\(inVoice) in voice") }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    /// Phones: the name is the conversation's menu trigger, as in Slack, holding
+    /// Pins, Members and (in a 1:1 DM) Block. It fills the width the voice group leaves.
+    private var titleMenu: some View {
+        let direct = model.selectedDirectMessageID != nil
+        let membersTitle = membersVisible ? "Hide members" : "Members"
+        return Menu {
+            Button { showingPins = true } label: { Label("Pins", systemImage: "pin") }
+            if membersAvailable {
+                Button(action: toggleMembers) {
+                    Label(memberCount.map { "\(membersTitle) · \($0)" } ?? membersTitle, systemImage: "person.2")
+                }
+            }
+            if let conversation = peerConversation {
+                Divider()
+                blockMenuItem(conversation)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(headerTitle).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    CaperIcon(name: "chevron-down", size: 14).foregroundStyle(CaperTheme.muted)
+                }
+                if let subtitle = headerSubtitle {
+                    Text(subtitle).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .modifier(ControlHover())
+        .accessibilityLabel("\(direct ? "" : "#")\(direct ? chat.channelName : chat.channelName.lowercased()) options")
+        .accessibilityIdentifier("channel-title-menu")
+        // Web keeps its visually hidden heading beside the menu: the conversation's
+        // name for assistive technology, as on wider layouts.
+        .background {
+            Text(headerTitleLabel).font(CaperTheme.font(14, weight: .bold)).lineLimit(1)
+                .foregroundStyle(Color.clear)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .allowsHitTesting(false)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel(headerTitleLabel)
+                .accessibilityIdentifier("selected-channel-name")
+        }
+    }
     private var timelineEntries: [TimelineEntry] {
         BlockedMessages.entries(chat.displayedChannelMessages, blocked: chat.blockedAuthorIDs, viewerID: viewerID, revealed: revealedBlocked)
     }
@@ -2404,26 +2532,17 @@ private struct ChatView: View {
                 if narrow {
                     Button(action: browse) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
-                }
-                // Phones keep Block in a 1:1 DM's title menu; Pins and Members are in the header's ⋯ menu.
-                if narrow, let conversation = peerConversation {
-                    Menu { blockMenuItem(conversation) } label: {
-                        HStack(spacing: 6) {
-                            Text(chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
-                            CaperIcon(name: "chevron-down")
-                        }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).foregroundStyle(CaperTheme.text)
-                        .accessibilityLabel("Direct message with \(chat.channelName)")
-                        .accessibilityHint("Open channel menu")
-                        .accessibilityIdentifier("selected-channel-name")
+                    // Phones: the name opens the conversation's menu, as in Slack; Pins,
+                    // Members and a 1:1 DM's Block move there.
+                    titleMenu
                 } else {
-                    Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                    Text(headerTitle).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                         // A long name truncates only once the voice faces have compacted.
                         .layoutPriority(1)
-                        .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
+                        .accessibilityLabel(headerTitleLabel)
                         .accessibilityIdentifier("selected-channel-name")
+                    Spacer()
                 }
-                Spacer()
                 // Before the buttons, so they stay put when the status comes and goes.
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -2440,28 +2559,12 @@ private struct ChatView: View {
                     }
                 } else if narrow && inVoiceCall(voice) {
                     // A DM or preview has no voice of its own; phones still offer the call's mute and Leave.
-                    HStack(spacing: 6) {
+                    HStack(spacing: 2) {
                         HeaderMuteButton(voice: voice)
-                        HeaderLeaveButton(model: model)
-                    }
+                        HeaderLeaveButton(model: model, compact: true)
+                    }.modifier(CompactVoiceGroup(leading: 2))
                 }
-                if narrow {
-                    // Phones fold Pins and Members into one menu, leaving room for voice.
-                    Menu {
-                        Button { showingPins = true } label: { Label("Pins", systemImage: "pin") }
-                        if membersAvailable {
-                            Button(action: toggleMembers) { Label(membersVisible ? "Hide members" : "Members", systemImage: "person.2") }
-                        }
-                    } label: {
-                        CaperIcon(name: "ellipsis", size: 20).foregroundStyle(CaperTheme.muted)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                    .frame(width: 44, height: 44).fixedSize()
-                    .contentShape(Rectangle()).modifier(ControlHover())
-                    .help("More").accessibilityLabel("More channel options")
-                    .accessibilityIdentifier("channel-more-menu")
-                } else {
+                if !narrow {
                     Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                         .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
                         .accessibilityIdentifier("channel-pins")
@@ -2471,17 +2574,16 @@ private struct ChatView: View {
                             .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
                             .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
                     }
-                }
-                if !narrow, let conversation = peerConversation {
-                    Menu { blockMenuItem(conversation) } label: { CaperIcon(name: "ellipsis", size: 20) }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28)
-                        .contentShape(Rectangle()).modifier(ControlHover())
-                        .help("Conversation options").accessibilityLabel("Conversation options")
-                        .accessibilityIdentifier("dm-options")
+                    if let conversation = peerConversation {
+                        Menu { blockMenuItem(conversation) } label: { CaperIcon(name: "ellipsis", size: 20) }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28)
+                            .contentShape(Rectangle()).modifier(ControlHover())
+                            .help("Conversation options").accessibilityLabel("Conversation options")
+                            .accessibilityIdentifier("dm-options")
+                    }
                 }
             }
-            // The phone menu's 44-point target already insets its icon from the edge.
-            .padding(.leading, narrow ? 13 : 18).padding(.trailing, narrow ? 6 : 18).frame(height: 50)
+            .padding(.leading, narrow ? 13 : 18).padding(.trailing, narrow ? 10 : 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                 .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 .modifier(MembersSwipe(open: membersVisible, enabled: narrow && membersAvailable && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))

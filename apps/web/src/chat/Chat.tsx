@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, MoreHorizontal, Pin, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -172,6 +172,7 @@ export default function Chat({
   headerVoice,
   headerActions,
   headerMenu,
+  headerSubtitle,
   readOnly = false,
   composerNotice,
   composerBanner,
@@ -206,8 +207,10 @@ export default function Chat({
   /** The open channel's voice, right after its name. */
   headerVoice?: ReactNode;
   headerActions?: ReactNode;
-  /** Phones fold Pins and these items into one header menu, leaving room for voice. */
+  /** Phones fold Pins and these items into the menu their channel name opens. */
   headerMenu?: ReactNode;
+  /** A line under the name on phones, such as member and voice counts. */
+  headerSubtitle?: ReactNode;
   readOnly?: boolean;
   composerNotice?: ReactNode;
   /** Shown above an active composer. */ composerBanner?: ReactNode;
@@ -1433,12 +1436,10 @@ export default function Chat({
             {direct ? "" : "# "}
             {channelName}
           </h2>
-          {headerVoice}
-          {pinsToggle}
-          {headerActions}
-          {state.phase === "ready" && (
+          {/* Phones: the name opens the channel's menu, as in Slack; Pins and Members move there. */}
+          {showTitle && state.phase === "ready" && (
             <details
-              className="chat-header-more"
+              className="chat-title-menu"
               onClick={(event) => {
                 // Choosing an item closes the menu.
                 if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
@@ -1454,8 +1455,13 @@ export default function Chat({
                 if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
               }}
             >
-              <summary aria-label="More channel options" title="More">
-                <MoreHorizontal size={20} aria-hidden="true" />
+              <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
+                <span className="chat-title-name">
+                  {direct ? "" : "# "}
+                  {channelName}
+                  <ChevronDown size={16} aria-hidden="true" />
+                </span>
+                {headerSubtitle && <small className="chat-title-subtitle">{headerSubtitle}</small>}
               </summary>
               <div className="chat-header-menu">
                 <button type="button" aria-haspopup="dialog" onClick={() => setShowPins(true)}>
@@ -1466,6 +1472,10 @@ export default function Chat({
               </div>
             </details>
           )}
+          {headerVoice}
+          {pinsToggle}
+          {headerActions}
+
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
               {state.phase === "error" ? "Offline" : "Connecting…"}

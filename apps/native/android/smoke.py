@@ -560,29 +560,28 @@ def main() -> None:
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
     back = find(narrow, description="Back to Browse")
-    channel = find(narrow, text="# general")
+    # Phones: the channel name opens the channel's menu, as in Slack.
+    channel = find(narrow, description="#general options")
     assert back is not None and channel is not None, "Narrow navigation shows a back arrow and the channel name"
     assert center(back)[0] < center(channel)[0], "The back arrow must precede the channel name, as on the web"
-    assert find(narrow, description="# general channel menu") is None, "A phone channel title has no dropdown"
+    left, top, right, bottom = map(int, re.findall(r"\d+", channel.attrib["bounds"]))
+    assert bottom - top >= 96, "The channel title must have a 48dp touch target"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    # Phones fold Pins and Members into one More menu at the header's end, leaving room for voice.
+    # Phones fold Pins and Members into the title's menu, leaving room for voice; there is no separate More button.
     assert find(narrow, description="Pins") is None, "Phone header has no separate Pins button"
     assert find(narrow, description="Show member list") is None, "Phone header has no separate Members button"
-    more = find(narrow, description="More channel options")
-    assert more is not None and center(channel)[0] < center(more)[0], "More follows the channel name"
-    left, top, right, bottom = map(int, re.findall(r"\d+", more.attrib["bounds"]))
-    assert right - left >= 96 and bottom - top >= 96, "More must have a 48dp touch target"
+    assert find(narrow, description="More channel options") is None, "The channel name is the phone menu trigger"
     # Below the header, phones show only the conversation; the account bar stays in Browse.
     for browse_only in ("User Settings", "Mute microphone", "Deafen audio"):
         assert find(narrow, description=browse_only) is None, f"{browse_only!r} belongs in Browse on phones"
-    tap(description="More channel options")
+    tap(description="#general options")
     menu = wait_for(text="Members")
-    assert find(menu, text="Pins") is not None, "The More menu opens Pins"
+    assert find(menu, text="Pins") is not None, "The title menu opens Pins"
     tap(text="Pins")
     wait_for(text="Close")
     tap(text="Close")
-    wait_for(description="More channel options")
+    wait_for(description="#general options")
     # Navigation starts at the middle of the content, not at a screen edge.
     width, middle = 780, "844"
     adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
@@ -591,14 +590,14 @@ def main() -> None:
     wait_for(description="Close navigation")
     adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
     wait_for(description="Back to Browse")
-    tap(description="More channel options")
+    tap(description="#general options")
     tap(text="Members")
     wait_for(description="Close member list")
     members_open = capture("caper-android-narrow-members", "Members")
-    more = find(members_open, description="More channel options")
+    title = find(members_open, description="#general options")
     close_members = find(members_open, description="Close member list")
-    assert more is not None and close_members is not None
-    assert center(more)[1] < center(close_members)[1], "Member overlay must leave the header exposed"
+    assert title is not None and close_members is not None
+    assert center(title)[1] < center(close_members)[1], "Member overlay must leave the header exposed"
 
     def members_closed(message: str) -> None:
         deadline = time.monotonic() + 10
@@ -606,7 +605,7 @@ def main() -> None:
             assert time.monotonic() < deadline, message
             time.sleep(0.5)
 
-    tap(description="More channel options")
+    tap(description="#general options")
     tap(text="Hide members")
     members_closed("Hide members must close the member overlay")
     # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
@@ -762,8 +761,10 @@ def main() -> None:
     left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
     # viewport() sets density 320: 48dp is 96 physical pixels.
     assert right - left >= 96 and bottom - top >= 96, "The header voice action must have a 48dp touch target"
-    more = find(voice_ready, description="More channel options")
-    assert more is not None and center(action)[0] < center(more)[0], "Join voice sits before the More menu"
+    title = find(voice_ready, description="#general options")
+    assert title is not None and center(title)[0] < center(action)[0], "Join voice follows the channel name"
+    # Phones show the voice action as an icon; its label stays as the accessible name.
+    assert find(voice_ready, text="Join voice") is None, "Phone header voice has no text label"
     assert find(voice_ready, description="Pins") is None and find(voice_ready, description="Show member list") is None
     assert find(voice_ready, description="Mute microphone") is None, "Phones show header mute only during a call"
     tap(description="Back to Browse")

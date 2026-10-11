@@ -1424,6 +1424,15 @@ export default function Call({
       </div>
     );
   })();
+  const memberCount = membersPanel && channelJoined ? mentionMembers?.length : undefined;
+  const inVoiceHere = voiceless || !channelJoined ? 0 : rosterFor(channel?.id).people.length;
+  const headerSubtitle =
+    [
+      memberCount != null && `${memberCount} ${memberCount === 1 ? "member" : "members"}`,
+      inVoiceHere > 0 && `${inVoiceHere} in voice`,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined;
   let navigation: ReactNode;
   if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor);
   else if (channelNavigation) navigation = channelNavigation;
@@ -1765,6 +1774,7 @@ export default function Call({
                 )
               }
               headerVoice={headerVoice}
+              headerSubtitle={headerSubtitle}
               headerMenu={
                 membersPanel && (
                   <button
@@ -1775,6 +1785,7 @@ export default function Call({
                   >
                     <Users aria-hidden="true" />
                     {membersVisible ? "Hide members" : "Members"}
+                    {memberCount != null && <small>{memberCount}</small>}
                   </button>
                 )
               }

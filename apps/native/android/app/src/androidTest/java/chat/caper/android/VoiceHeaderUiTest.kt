@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import chat.caper.android.model.Participant
@@ -54,6 +55,10 @@ class VoiceHeaderUiTest {
         // Phones keep one face and drop the count; the summary still names everyone.
         compose.runOnIdle { compact.value = true }
         compose.onNodeWithContentDescription("Maya, Alex, Sam and 1 more are in voice").assertExists()
+        // Phones show icons only; each label stays as the accessible name.
+        compose.onNodeWithText("Switch here").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Switch voice to #design").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(3, joined) }
 
         compose.runOnIdle { action.value = HeaderVoiceAction.Joining }
         compose.onNodeWithContentDescription("Joining voice in #design").assertIsNotEnabled()
@@ -61,7 +66,8 @@ class VoiceHeaderUiTest {
         compose.runOnIdle { action.value = HeaderVoiceAction.Leave }
         compose.onNodeWithContentDescription("Join voice").assertDoesNotExist()
         compose.onNodeWithContentDescription("Leave voice").performClick()
-        compose.runOnIdle { assertEquals(2, joined); assertEquals(1, left) }
+        compose.onNodeWithText("Leave").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(3, joined); assertEquals(1, left) }
     }
 
     @Test fun phoneHeaderMutesBeforeTheActionDuringACall() {

@@ -216,13 +216,14 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(iOS)
-    /// Phones keep Pins and Members in the conversation header's More menu.
-    private func chooseFromMoreMenu(_ item: String, in app: XCUIApplication) {
-        let more = app.descendants(matching: .any)["channel-more-menu"]
-        XCTAssertTrue(more.waitForExistence(timeout: 3), "The phone header has a More menu")
-        more.tap()
-        let choice = app.buttons[item].firstMatch
-        XCTAssertTrue(choice.waitForExistence(timeout: 3), "The More menu offers \(item)")
+    /// Phones keep Pins and Members in the menu the conversation's name opens.
+    /// Members carries the member count ("Members · 3"), so match its start.
+    private func chooseFromTitleMenu(_ item: String, in app: XCUIApplication) {
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertTrue(title.waitForExistence(timeout: 3), "The phone header's title opens the conversation menu")
+        title.tap()
+        let choice = app.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", item, "\(item) ·")).firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 3), "The title menu offers \(item)")
         choice.tap()
     }
     #endif
@@ -1167,8 +1168,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(headerMute.frame.width, 44)
         XCTAssertGreaterThanOrEqual(headerMute.frame.height, 44)
         XCTAssertLessThan(headerMute.frame.maxX, headerLeave.frame.minX + 1, "The microphone sits before Leave")
-        XCTAssertLessThan(headerLeave.frame.maxX, app.descendants(matching: .any)["channel-more-menu"].frame.minX + 1,
-                          "Leave sits before the More menu")
+        XCTAssertGreaterThan(headerMute.frame.minX, app.descendants(matching: .any)["channel-title-menu"].frame.maxX - 1,
+                          "The voice group follows the title menu")
+        XCTAssertGreaterThanOrEqual(headerLeave.frame.width, 44)
+        XCTAssertLessThan(headerLeave.frame.width, 60, "Phone headers show Leave as an icon, without its text")
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertEqual(title.label, "#general options")
+        XCTAssertEqual(staticTexts("Leave", in: app).count, 0, "Phone headers show no voice text labels")
         app.buttons["Back to Browse"].tap()
         #else
         XCTAssertFalse(headerMute.exists, "Wide layouts keep the microphone in the account bar")
@@ -1363,7 +1369,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(join.frame.minX, name.frame.maxX - 1, "Voice follows the channel name")
         XCTAssertLessThan(join.frame.maxX, pins.frame.minX, "Voice sits before Pins, not between Pins and Members")
         XCTAssertLessThan(pins.frame.maxX, toggle.frame.minX + 1, "Members sits right of Pins")
-        XCTAssertFalse(app.descendants(matching: .any)["channel-more-menu"].exists, "Wide headers keep separate Pins and Members buttons")
+        XCTAssertFalse(app.descendants(matching: .any)["channel-title-menu"].exists, "Wide headers keep separate Pins and Members buttons")
         XCTAssertFalse(app.buttons["header-mute"].exists, "Wide layouts keep the microphone in the account bar")
         capture("members-hidden", app: app)
         toggle.tap()
@@ -2196,20 +2202,24 @@ final class CaperParityUITests: XCTestCase {
         let channel = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
-        // Phones fold Pins and Members into one More menu, leaving the header room for voice.
-        XCTAssertFalse(app.buttons["channel-pins"].exists, "Pins lives in the phone header's More menu")
-        XCTAssertFalse(app.buttons["Show member list"].exists, "Members lives in the phone header's More menu")
-        let more = app.descendants(matching: .any)["channel-more-menu"]
-        XCTAssertTrue(more.isHittable, "The phone header has one More menu")
-        XCTAssertEqual(more.label, "More channel options")
-        XCTAssertGreaterThanOrEqual(more.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(more.frame.height, 44)
-        // Touch has no channel-row shortcut: voice is joined from the header, after the name.
+        // Phones: the name opens the conversation's menu, as in Slack; Pins and Members move there.
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Pins lives in the phone title menu")
+        XCTAssertFalse(app.buttons["Show member list"].exists, "Members lives in the phone title menu")
+        XCTAssertFalse(app.descendants(matching: .any)["channel-more-menu"].exists, "There is no separate More button")
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertTrue(title.isHittable, "The phone header's title is the conversation menu")
+        XCTAssertEqual(title.label, "#general options")
+        XCTAssertGreaterThan(title.frame.minX, navigation.frame.maxX - 1, "Back arrow leads the title menu")
+        XCTAssertGreaterThanOrEqual(title.frame.height, 44)
+        // Touch has no channel-row shortcut: voice is joined from the header's icon group, after the name.
         let join = app.buttons["join-voice-button"]
         XCTAssertTrue(join.isHittable, "Phones join voice from the conversation header")
+        XCTAssertEqual(join.label, "Join voice")
+        XCTAssertGreaterThanOrEqual(join.frame.width, 44)
         XCTAssertGreaterThanOrEqual(join.frame.height, 44)
-        XCTAssertGreaterThan(join.frame.minX, channel.frame.maxX - 1, "Voice follows the channel name")
-        XCTAssertLessThan(join.frame.maxX, more.frame.minX + 1, "Voice sits left of the More menu")
+        XCTAssertLessThan(join.frame.width, 60, "Phone headers show Join as an icon, without its text")
+        XCTAssertGreaterThan(join.frame.minX, title.frame.maxX - 1, "Voice follows the title menu")
+        XCTAssertEqual(staticTexts("Join voice", in: app).count, 0, "Phone headers show no voice text labels")
         XCTAssertFalse(app.buttons["header-mute"].exists, "The header's microphone appears only during a call")
         XCTAssertGreaterThan(channel.frame.width, 0, "The channel name keeps room beside the voice action")
         // Below the header is only the conversation: the account bar stays in Browse.
@@ -2243,7 +2253,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
-        chooseFromMoreMenu("Members", in: app)
+        chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
@@ -2258,15 +2268,15 @@ final class CaperParityUITests: XCTestCase {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: staticTexts("Members", in: app).firstMatch)
         XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the backdrop right closes the member list")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        chooseFromMoreMenu("Pins", in: app)
+        chooseFromTitleMenu("Pins", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
         assertStaticText("No pinned messages", in: app, timeout: 2)
         capture("narrow-empty-pins", app: app)
         app.buttons["Messages"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
-        XCTAssertTrue(more.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
+        XCTAssertTrue(title.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
-        chooseFromMoreMenu("Members", in: app)
+        chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
