@@ -362,7 +362,7 @@ async fn profile_format_validation_happens_in_the_app_before_database_access() {
 async fn profile_rejects_reserved_names_before_database_access() {
     let (mut state, _) = state();
     state.reserved_usernames = accounts::ReservedUsernames::from_env(
-        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", " Trust,team ")]),
+        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", " HelpDesk ")]),
     );
     let router = app(state);
     for username in [
@@ -370,18 +370,28 @@ async fn profile_rejects_reserved_names_before_database_access() {
         "CAPERS",
         "ADMIN",
         "admins",
+        " AdMiNiStRaToR ",
+        "administrators",
         "feedback",
         "SUPPORT",
         "mod",
         "mods",
+        "MODERATOR",
+        "moderators",
         "SECURITY",
         "staff",
         "JOSE",
         "caperchat",
         "aaron",
         "joswayski",
+        "official",
+        "SYSTEM",
         "TRUST",
         "team",
+        "safety",
+        " CAPER_SUPPORT ",
+        "caper_feedback",
+        "HELPDESK",
     ] {
         let (status, body) = call(
             router.clone(),
@@ -394,15 +404,17 @@ async fn profile_rejects_reserved_names_before_database_access() {
         assert_eq!(status, StatusCode::CONFLICT, "{username}");
         assert_eq!(body["error"], "username unavailable");
     }
-    let (status, _) = call(
-        router,
-        "POST",
-        "/api/account/profile",
-        None,
-        json!({"username":"supporter","displayName":"Someone"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    for username in ["supporter", "moderator2", "caper_supporter"] {
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/api/account/profile",
+            None,
+            json!({"username":username,"displayName":"Someone"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{username}");
+    }
 }
 
 #[tokio::test]
@@ -441,9 +453,6 @@ async fn profile_updates_preserve_reserved_names_but_reject_new_claims(pool: sql
     let (mut state, _) = state();
     state.database = Some(pool.clone());
     state.auth = auth::AuthVerifier::new();
-    state.reserved_usernames = accounts::ReservedUsernames::from_env(
-        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", "trust")]),
-    );
     let router = app(state);
     for (current, requested, succeeds, expected_username) in [
         (Some("support"), " SUPPORT ", true, Some("support")),

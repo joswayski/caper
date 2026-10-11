@@ -45,12 +45,23 @@ impl Default for ReservedUsernames {
                 "capers",
                 "admin",
                 "admins",
+                "administrator",
+                "administrators",
                 "mod",
                 "mods",
+                "moderator",
+                "moderators",
                 "support",
                 "feedback",
                 "security",
                 "staff",
+                "official",
+                "system",
+                "team",
+                "trust",
+                "safety",
+                "caper_support",
+                "caper_feedback",
                 "jose",
                 "caperchat",
                 "aaron",
@@ -202,7 +213,7 @@ mod tests {
         let configured =
             ReservedUsernames::from_env(&RuntimeEnvironment::from_values_for_test([(
                 "RESERVED_USERNAMES",
-                " Trust, TEAM , ,caper",
+                " HelpDesk, PRODUCT , ,caper",
             )]));
         for name in [
             "caper",
@@ -219,8 +230,8 @@ mod tests {
             "caperchat",
             "aaron",
             "joswayski",
-            "trust",
-            "team",
+            "helpdesk",
+            "product",
         ] {
             assert!(configured.contains(name));
         }

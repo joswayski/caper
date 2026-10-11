@@ -676,11 +676,8 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
         json!({"type":"ready","cursor":historical.to_string()})
     );
     next(&mut socket, "subscribed", Some("alerts")).await;
-    transmit(&mut socket, json!({"type":"subscribe","kind":"notifications","id":"other","userIds":[users[0].0.to_string()]})).await;
-    assert_eq!(
-        next(&mut socket, "error", Some("other")).await["status"],
-        400
-    );
+    // Do not discard notification frames while waiting for an unrelated error:
+    // an unchanged head must not insert another ready before the live event.
     let live = insert(3, recipient).await;
     let event = next(&mut socket, "event", Some("alerts")).await["event"].clone();
     assert_eq!(event["type"], "notification.created");
@@ -688,6 +685,15 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
     assert_eq!(event["senderAvatarId"], 317);
     assert_eq!(event["channelId"], external);
     assert_eq!(event["body"], "private preview");
+    assert_eq!(
+        next(&mut socket, "event", Some("alerts")).await["event"],
+        json!({"type":"ready","cursor":live.to_string()})
+    );
+    transmit(&mut socket, json!({"type":"subscribe","kind":"notifications","id":"other","userIds":[users[0].0.to_string()]})).await;
+    assert_eq!(
+        next(&mut socket, "error", Some("other")).await["status"],
+        400
+    );
     drop(socket);
     // Resume includes only this account's rows, even though the cursor is global.
     let mut replay = connect(address, &users[1].1).await;
@@ -697,12 +703,14 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
     )
     .await;
     for seq in [historical, live] {
-        assert_eq!(
-            next(&mut replay, "event", Some("alerts")).await["event"]["seq"],
-            seq.to_string()
-        );
+        let event = next(&mut replay, "event", Some("alerts")).await["event"].clone();
+        assert_eq!(event["type"], "notification.created");
+        assert_eq!(event["seq"], seq.to_string());
     }
-    next(&mut replay, "event", Some("alerts")).await;
+    assert_eq!(
+        next(&mut replay, "event", Some("alerts")).await["event"],
+        json!({"type":"ready","cursor":live.to_string()})
+    );
     drop(replay);
     sqlx::query(
         "UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2",
@@ -724,6 +732,11 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
         json!({"type":"ready","cursor":suppressed.to_string()})
     );
     next(&mut replay, "subscribed", Some("alerts")).await;
+    let suppressed_live = insert(5, recipient).await;
+    assert_eq!(
+        next(&mut replay, "event", Some("alerts")).await["event"],
+        json!({"type":"ready","cursor":suppressed_live.to_string()})
+    );
     sqlx::query("UPDATE public.account_sessions SET revoked_at=now() WHERE token_hash=$1")
         .bind(&users[1].2)
         .execute(&pool)
