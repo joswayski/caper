@@ -20,6 +20,9 @@ pub struct Alert {
     pub body: String,
     pub created_at: String,
     pub sender_avatar_id: Option<i32>,
+    pub attachment_url: Option<String>,
+    pub attachment_content_type: Option<String>,
+    pub attachment_size: Option<u64>,
     pub conversation_id: Option<String>,
     pub space_id: Option<String>,
     pub channel_id: Option<String>,
@@ -164,19 +167,101 @@ fn avatar(index: Option<i32>, directory: &std::path::Path) -> Option<std::path::
     Some(path)
 }
 
+fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::io::{Cursor, Read};
+    let url = url::Url::parse(alert.attachment_url.as_deref()?).ok()?;
+    let size = alert.attachment_size?;
+    let content_type = alert.attachment_content_type.as_deref()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !["/original/", "/preview/"].iter().any(|prefix| {
+            url.path().strip_prefix(prefix).is_some_and(|id| {
+                !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+        })
+        || !(1..=50_000_000).contains(&size)
+        || !matches!(
+            content_type,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+        )
+    {
+        return None;
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+    let response = client.get(url).send().ok()?;
+    if response.status() != reqwest::StatusCode::OK
+        || response
+            .content_length()
+            .is_some_and(|length| length > size)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    response.take(size + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 != size {
+        return None;
+    }
+    let image = if content_type != "image/avif" {
+        let mut reader = image::ImageReader::new(Cursor::new(&bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(64 * 1024 * 1024);
+        limits.max_image_width = Some(16_384);
+        limits.max_image_height = Some(16_384);
+        reader.limits(limits);
+        let mut decoder = reader.into_decoder().ok()?;
+        let orientation = image::ImageDecoder::orientation(&mut decoder).ok()?;
+        let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
+        image.apply_orientation(orientation);
+        image.thumbnail(1024, 1024)
+    } else {
+        let original = directory.join("original");
+        std::fs::write(&original, bytes).ok()?;
+        let image = (|| {
+            let binary = crate::ffmpeg::binary()?;
+            let probe = crate::ffmpeg::probe(binary, &original).ok()?;
+            crate::ffmpeg::poster(binary, &original, &probe, 1024)
+        })();
+        let _ = std::fs::remove_file(original);
+        image::DynamicImage::ImageRgb8(image?)
+    };
+    let output = directory.join("upload.png");
+    image.save(&output).ok()?;
+    Some(output)
+}
+
 pub fn show(
     alert: Alert,
     stopped: Arc<AtomicBool>,
+    suppressed: impl Fn() -> bool,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
-    if stopped.load(Ordering::Relaxed) {
+    if stopped.load(Ordering::Relaxed) || suppressed() {
         return Ok(());
     }
     let directory =
         std::env::temp_dir().join(format!("caper-notification-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).map_err(|_| "Couldn’t prepare a notification.".to_owned())?;
+    #[cfg(unix)]
+    let created = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&directory)
+    };
+    #[cfg(not(unix))]
+    let created = std::fs::create_dir(&directory);
+    created.map_err(|_| "Couldn’t prepare a notification.".to_owned())?;
     let image = avatar(alert.sender_avatar_id, &directory);
-    let result = platform_show(&alert, image.as_deref(), stopped, clicked);
+    let media = attachment(&alert, &directory);
+    let result = if stopped.load(Ordering::Relaxed) || suppressed() {
+        Ok(())
+    } else {
+        platform_show(&alert, image.as_deref(), media.as_deref(), stopped, clicked)
+    };
     // Keep artwork and activation handlers until dismissal, expiry or logout.
     let _ = std::fs::remove_dir_all(directory);
     result
@@ -186,6 +271,7 @@ pub fn show(
 fn platform_show(
     alert: &Alert,
     image: Option<&std::path::Path>,
+    media: Option<&std::path::Path>,
     stopped: Arc<AtomicBool>,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
@@ -203,7 +289,10 @@ fn platform_show(
         .action("default", "Open Caper")
         .timeout(10_000);
     if let Some(path) = image.and_then(|path| path.to_str()) {
-        notification.icon(path).image_path(path);
+        notification.icon(path);
+    }
+    if let Some(path) = media.or(image).and_then(|path| path.to_str()) {
+        notification.image_path(path);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -233,6 +322,7 @@ fn platform_show(
 fn platform_show(
     alert: &Alert,
     image: Option<&std::path::Path>,
+    media: Option<&std::path::Path>,
     stopped: Arc<AtomicBool>,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
@@ -256,6 +346,9 @@ fn platform_show(
                 .with_placement(ImagePlacement::AppLogoOverride)
                 .with_hint_crop(ImageHintCrop::Circle),
         );
+    }
+    if let Some(media) = media.and_then(|path| Image::new_local(path).ok()) {
+        toast.image(2, media.with_placement(ImagePlacement::Hero));
     }
     let activated = Arc::new(AtomicBool::new(false));
     let done = activated.clone();
@@ -283,6 +376,7 @@ fn platform_show(
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn platform_show(
     _: &Alert,
+    _: Option<&std::path::Path>,
     _: Option<&std::path::Path>,
     _: Arc<AtomicBool>,
     _: impl Fn() + Send + 'static,

@@ -148,6 +148,11 @@ pub(super) fn payload(alert: &Alert) -> Value {
         "senderId": alert.sender_id,
         "senderAvatarId": alert.sender_avatar_id,
     });
+    if let Some(attachment) = &alert.attachment {
+        payload["attachmentUrl"] = json!(attachment.url);
+        payload["attachmentContentType"] = json!(attachment.content_type);
+        payload["attachmentSize"] = json!(attachment.size);
+    }
     match &alert.conversation {
         Conversation::Direct { id } => payload["conversationId"] = json!(id),
         Conversation::Channel {

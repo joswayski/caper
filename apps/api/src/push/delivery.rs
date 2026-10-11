@@ -42,7 +42,7 @@ struct Claimed {
     read: bool,
     kind: String,
     message_id: String,
-    text: Option<String>,
+    message: serde_json::Value,
     channel_id: String,
     channel_name: String,
     space_id: Option<String>,
@@ -79,7 +79,7 @@ impl Claimed {
         )
     }
 
-    fn alert(&self) -> Alert {
+    fn alert(&self, cdn: Option<&crate::assets::CdnSigner>) -> Alert {
         let conversation = match (&self.space_id, &self.space_name) {
             (Some(space_id), Some(space_name)) => Conversation::Channel {
                 space_id: space_id.clone(),
@@ -98,8 +98,12 @@ impl Claimed {
             &self.sender,
             &self.sender_id,
             self.sender_avatar_id,
-            self.text.as_deref().unwrap_or_default(),
+            self.message
+                .pointer("/content/text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
         )
+        .with_content(&self.message, cdn)
     }
 }
 
@@ -116,7 +120,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
     // One statement claims a batch under a lease and reads what sending needs,
     // including current access, blocks, preferences and the DM read cursor.
     // Holds and provider retries must not preserve revoked notification consent.
-    let claimed: Vec<Claimed> = sqlx::query_as(
+    let mut claimed: Vec<Claimed> = sqlx::query_as(
         "WITH due AS (
              SELECT id FROM public.notification_deliveries
              WHERE delivered_at IS NULL AND abandoned_at IS NULL AND available_at <= now()
@@ -153,7 +157,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
                 m.created_at AS message_at,
                 (ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq) AS read,
-                n.kind, m.external_id AS message_id, m.payload->'content'->>'text' AS text,
+                n.kind, m.external_id AS message_id, m.payload AS message,
                 ch.external_id AS channel_id, ch.name AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
@@ -186,6 +190,13 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
     .map_err(|_| ())?;
     if claimed.is_empty() {
         return Ok(false);
+    }
+    let mut messages: Vec<_> = claimed.iter().map(|row| row.message.clone()).collect();
+    crate::assets::notification_content(&workers.pool, &mut messages)
+        .await
+        .map_err(|_| ())?;
+    for (row, message) in claimed.iter_mut().zip(messages) {
+        row.message = message;
     }
     stream::iter(claimed)
         .for_each_concurrent(CONCURRENCY, |claimed| async move {
@@ -233,7 +244,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     Attempt::Sent(
         workers
             .push
-            .send(platform, &claimed.address, &claimed.alert())
+            .send(
+                platform,
+                &claimed.address,
+                &claimed.alert(workers.cdn.as_deref()),
+            )
             .await,
     )
 }

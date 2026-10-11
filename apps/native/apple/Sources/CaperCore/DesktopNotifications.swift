@@ -76,9 +76,24 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
                 if let attachment = try? UNNotificationAttachment(identifier: "sender", url: url, options: nil) { content.attachments = [attachment] }
             }
         }
-        let request = UNNotificationRequest(identifier: "\(accountID ?? ""):\(epoch):\(messageID)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { _ in
-            if let temporary { try? FileManager.default.removeItem(at: temporary) }
+        let account = accountID
+        let generation = epoch
+        let senderTemporary = temporary
+        Task { [weak self] in
+            let media = await NotificationAttachment.load(event)
+            guard let self, self.accountID == account, self.epoch == generation,
+                  !(NSApp.isActive && !model.navigationOpen && model.isShowing(route)) else {
+                if let media { try? FileManager.default.removeItem(at: media.url) }
+                if let senderTemporary { try? FileManager.default.removeItem(at: senderTemporary) }
+                return
+            }
+            if let media { content.attachments = [media] }
+            let request = UNNotificationRequest(identifier: "\(account ?? ""):\(generation):\(messageID)", content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(request) { error in
+                if let senderTemporary { try? FileManager.default.removeItem(at: senderTemporary) }
+                // Successful attachments belong to the system until notification removal.
+                if error != nil, let media { try? FileManager.default.removeItem(at: media.url) }
+            }
         }
     }
 

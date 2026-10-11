@@ -5450,8 +5450,19 @@ payloads, routes, retries and configuration.
   notifications from an account-wide gateway feed, independently of the current
   channel. They include sender artwork, focused-conversation suppression,
   reconnect deduplication, click navigation and logout cleanup. macOS uses an
-  avatar attachment rather than replacing the app icon. Closed-browser Web Push,
-  macOS APNs and keep-running-in-tray behavior remain unimplemented.
+  upload or sender-avatar attachment rather than replacing the app icon.
+  Closed-browser Web Push, macOS APNs and keep-running-in-tray behavior remain
+  unimplemented.
+- Phone and local desktop/browser notifications can preview one image or video
+  through a 15-minute signed URL: images use their existing original (up to
+  50,000,000 bytes); videos use only their existing chat poster (at most 512 KiB),
+  even when the video exceeds 50 MB. No video bytes are downloaded. The receiving
+  device creates its own temporary PNG; notifications never upload or store
+  another R2 rendition. Captions survive; missing posters, documents,
+  oversized/expired media and decoder/download failures fall back to descriptive
+  text. URL expiry does not erase an already-downloaded preview. Multiple message
+  attachments remain supported. See [limits and client behavior](notifications.md#uploaded-file-previews)
+  and [the CDN/server/client deployment order](notifications.md#uploaded-file-preview-deployment-order).
 
 The additive `202610090002_live_notifications.sql` index supports account
 notification cursors. Deploy API/migration, then gateway, then independent web
@@ -5470,6 +5481,17 @@ Sender-avatar/local-notification validation (October 9, 2026):
 | Android | Avatar parser regression added; no Android SDK/build/device available in this orb. FCM physical receipt and rendered MessagingStyle remain unverified. |
 | iOS/macOS | Extension/bundle/entitlement changes and macOS local delivery implemented; no Swift/Xcode build, XCTest, signed provisioning or OS banner inspection available in this orb. Signed iOS communication banners, extension fallback, macOS attachments and minimized activation require native acceptance. |
 | Containers | No Docker daemon in this orb. Web production build and Rust compilation checked directly; images not built or executed. |
+
+Uploaded-file preview validation (October 11, 2026; 50 MB / poster-only follow-up):
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/gateway/CDN | Workspace tests and Clippy pass; all 46 disposable API Postgres/Valkey tests and two account integration tests pass. Mock APNs/FCM and the gateway receive the existing PNG poster for a 120 MB video whose stored snapshot has `preview:{}`; missing posters and deletion remove media fields. Unit cases cover the 50,000,000-byte boundary, documents, multiple files and forwarded snapshots. CDN tests retain signature/expiry protection and assert CORS. No live R2 or provider sends. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (565 tests). Chromium downloads a local HTTPS PNG poster into a 1024 × 576 blob and a 12,588,863-byte image into a 1024 × 1024 blob. Malformed/expired/mismatched/oversized inputs fall back; request logs confirm no original-video fetch, including videos below the cap. Gateway tests check text fallback and logout during a download. Browser OS presentation, Safari and physical mobile browsers remain unverified. |
+| Rust desktop | 403 libwebrtc-linked Linux tests pass (12 existing opt-in tests ignored); application Clippy and format checks pass. The initial original-only implementation's real Linux/Dunst photo, video-still and document fallback renders and Open callbacks passed. The follow-up removes video decoding and reuses the image renderer for posters; FFmpeg remains needed only for AVIF notification originals. Windows runtime, packaged FFmpeg and minimized-window activation remain unverified. |
+| Android | Image/poster parser regression and private FileProvider added; original-video MIME is rejected. XML parses, but no Android SDK build/JUnit run, device or real FCM MessagingStyle preview validation in this orb. |
+| iOS/macOS | Shared bounded image/poster downloader included directly in the service extension and CaperCore; sources stream to disk rather than keeping a 50 MB body in extension memory. No Swift/Xcode build, XCTest, signed iOS push, extension expiry or macOS banner validation. |
+| Containers | No Docker daemon; application builds/compilation checked directly. No image builds or deployment performed. |
 
 `202610080002_notifications.sql` drops the unused SNS-era `push_devices`,
 `push_notifications` and `push_deliveries` tables; `202610030002_push.sql` stays

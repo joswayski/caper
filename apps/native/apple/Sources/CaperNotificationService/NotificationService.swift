@@ -2,34 +2,50 @@ import Intents
 import UIKit
 import UserNotifications
 
-/// Uses only shipped artwork and the push payload. No account token, shared
-/// keychain, network request, or WebRTC dependency is needed in this process.
+/// Bundled sender artwork and optional signed original downloads. No account
+/// token, shared keychain, provider credential or WebRTC dependency.
 final class NotificationService: UNNotificationServiceExtension {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
     private var original: UNNotificationContent?
+    private var download: Task<Void, Never>?
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         lock.lock(); handler = contentHandler; original = request.content; lock.unlock()
-        guard let intent = Self.intent(for: request.content) else { finish(request.content); return }
+        download = Task { [self] in
+            let attachment = await NotificationAttachment.load(request.content.userInfo)
+            guard !Task.isCancelled, let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
+                if let attachment { try? FileManager.default.removeItem(at: attachment.url) }
+                return
+            }
+            if let attachment { content.attachments = [attachment] }
+            decorate(content)
+        }
+    }
+
+    private func decorate(_ content: UNNotificationContent) {
+        guard let intent = Self.intent(for: content) else { finish(content); return }
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .incoming
         interaction.donate { [self] error in
-            guard error == nil, let updated = try? request.content.updating(from: intent) else {
-                finish(request.content); return
+            guard error == nil, let updated = try? content.updating(from: intent).mutableCopy() as? UNMutableNotificationContent else {
+                finish(content); return
             }
+            updated.attachments = content.attachments
             finish(updated)
         }
     }
 
     override func serviceExtensionTimeWillExpire() {
+        download?.cancel()
         lock.lock(); let fallback = original; lock.unlock()
         if let fallback { finish(fallback) }
     }
 
     private func finish(_ content: UNNotificationContent) {
         lock.lock(); let callback = handler; handler = nil; lock.unlock()
-        callback?(content)
+        if let callback { callback(content) }
+        else { for attachment in content.attachments { try? FileManager.default.removeItem(at: attachment.url) } }
     }
 
     static func intent(for content: UNNotificationContent) -> INSendMessageIntent? {

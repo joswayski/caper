@@ -987,12 +987,22 @@ fn manage(
                         }
                         let events = events.clone();
                         let context = context.clone();
+                        let visible = visible.clone();
                         thread::spawn(move || {
                             let target = alert.clone();
+                            let conversation = alert.conversation().map(str::to_owned);
                             let clicks = events.clone();
                             let repaint = context.clone();
-                            if let Err(error) =
-                                crate::os_notifications::show(alert, stopped, move || {
+                            if let Err(error) = crate::os_notifications::show(
+                                alert,
+                                stopped,
+                                || {
+                                    visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
+                                        Some(id.as_str()) == conversation.as_deref()
+                                            && at.elapsed() < Duration::from_secs(2)
+                                    })
+                                },
+                                move || {
                                     repaint
                                         .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                                     repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -1004,8 +1014,8 @@ fn manage(
                                             alert: target.clone(),
                                         },
                                     );
-                                })
-                            {
+                                },
+                            ) {
                                 send(&events, &context, Event::NotificationError { epoch, error });
                             }
                         });

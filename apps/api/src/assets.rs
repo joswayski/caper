@@ -364,6 +364,15 @@ impl CdnSigner {
 
     pub(crate) fn url(&self, key: &str, now: i64) -> String {
         let expires = (now.div_euclid(DAY) + 2) * DAY;
+        self.signed_url(key, expires)
+    }
+
+    /// Short-lived access to an existing upload object for notification rendering.
+    pub(crate) fn notification_url(&self, key: &str, now: i64) -> String {
+        self.signed_url(key, now + 15 * 60)
+    }
+
+    fn signed_url(&self, key: &str, expires: i64) -> String {
         let signature =
             URL_SAFE_NO_PAD.encode(hmac(&self.secret, format!("{key}\n{expires}").as_bytes()));
         format!("{}/{key}?exp={expires}&sig={signature}", self.origin)
@@ -1069,6 +1078,60 @@ pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Resul
                     .is_some_and(|id| gone.iter().any(|g| g == id))
                 {
                     attachment.insert("unavailable".into(), Value::Bool(true));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Hydrate existing video posters only in notification copies, including old
+/// snapshots whose `preview` marker carries no type or byte size. Never upload.
+pub(crate) async fn notification_content(
+    pool: &PgPool,
+    messages: &mut [Value],
+) -> Result<(), ApiError> {
+    mark_deleted(pool, messages).await?;
+    let ids: Vec<String> = messages
+        .iter()
+        .flat_map(|message| {
+            attachment_pointers(message)
+                .iter()
+                .filter_map(|p| message.pointer(p))
+        })
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|file| file["kind"] == "video")
+        .filter_map(|file| file["id"].as_str().map(str::to_owned))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let posters: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT external_id,preview_content_type,preview_byte_size FROM public.assets
+         WHERE external_id=ANY($1) AND kind='video' AND uploaded_at IS NOT NULL
+           AND deleted_at IS NULL AND preview_content_type IS NOT NULL
+           AND preview_byte_size BETWEEN 1 AND $2",
+    )
+    .bind(&ids)
+    .bind(PREVIEW_MAX_BYTES)
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?;
+    for message in messages {
+        for pointer in attachment_pointers(message) {
+            let Some(files) = message.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for file in files.iter_mut().filter(|file| file["kind"] == "video") {
+                // Only database-verified poster metadata is eligible; no original-video fallback.
+                file.as_object_mut()
+                    .expect("attachment object")
+                    .remove("preview");
+                if let Some((_, content_type, size)) =
+                    posters.iter().find(|(id, _, _)| file["id"] == *id)
+                {
+                    file["preview"] = json!({"contentType":content_type,"size":size});
                 }
             }
         }

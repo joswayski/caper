@@ -90,6 +90,8 @@ function headersFor(object) {
   headers.set("x-content-type-options", "nosniff");
   if (!VIEWABLE.has(type)) headers.set("content-security-policy", "default-src 'none'; sandbox");
   headers.set("cross-origin-resource-policy", "cross-origin");
+  // Signed GETs can be read by clients to render a device-only notification image.
+  headers.set("access-control-allow-origin", "*");
   // Objects never change once uploaded; the signed URL itself rotates daily.
   headers.set("cache-control", PRIVATE);
   return headers;
@@ -116,6 +118,7 @@ export default {
       if (hit) {
         const response = new Response(hit.body, hit);
         response.headers.set("cache-control", PRIVATE);
+        response.headers.set("access-control-allow-origin", "*");
         return response;
       }
     }
