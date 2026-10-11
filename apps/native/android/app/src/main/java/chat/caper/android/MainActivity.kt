@@ -16,6 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -551,11 +552,21 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     }
 
     /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float = 0f) {
+    fun settle(open: Boolean, velocity: Float? = null) {
         val target = if (open) 1f else 0f
         if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+            if (velocity == null) {
+                progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
+            } else {
+                val remaining = target - progress.value
+                val distance = abs(remaining)
+                val speed = if (remaining > 0f) velocity else -velocity
+                // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
+                val duration = if (speed > 0f) (3000f * distance / speed).coerceIn(160f, 320f).toInt() else 320
+                val slope = if (distance > 0f) (speed * duration / 1000f / distance).coerceIn(0f, 3f) else 0f
+                progress.animateTo(target, tween(duration, easing = CubicBezierEasing(0.2f, 0.2f * slope, 0.35f, 1f)))
+            }
         }
     }
 }

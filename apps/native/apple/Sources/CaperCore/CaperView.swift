@@ -290,7 +290,7 @@ private struct BrowseLayer: ViewModifier {
         let uncovered = drag ?? (showsBrowse ? 1 : 0)
         let reduceMotion = self.reduceMotion
         // Follow the finger while dragged and spring into place otherwise,
-        // keeping a release's own spring (and speed).
+        // keeping a release's own timing.
         content.transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
@@ -348,10 +348,13 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     let travelled = abs(uncovered - (open ? 1 : 0))
                     let commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(value.translation.width) >= 40))
                     let target: CGFloat = commit != open ? 1 : 0
-                    // Carry the finger's speed into the spring, relative to the distance left.
+                    // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
                     let remaining = target - uncovered
-                    let velocity = abs(remaining) > 0.01 ? opening * value.velocity.width / drawer.travel / remaining : 0
-                    withAnimation(reduceMotion ? nil : .interpolatingSpring(duration: 0.35, bounce: 0, initialVelocity: min(max(velocity, -20), 20))) {
+                    let distance = abs(remaining)
+                    let speed = (remaining > 0 ? 1 : -1) * opening * value.velocity.width / drawer.travel
+                    let duration = speed > 0 ? min(0.32, max(0.16, 3 * distance / speed)) : 0.32
+                    let slope = distance > 0 ? min(3, max(0, speed * duration / distance)) : 0
+                    withAnimation(reduceMotion ? nil : .timingCurve(0.2, Double(0.2 * slope), 0.35, 1, duration: Double(duration))) {
                         drawer.drag = nil
                         if commit {
                             // Only Browse marks its switch; the member list animates inside the conversation.
@@ -1501,7 +1504,7 @@ private struct MembersOverlay: View {
         let travel = width + 8 + 48
         let reduceMotion = self.reduceMotion
         // As in BrowseLayer: follow the finger while dragged and spring into
-        // place otherwise, keeping a release's own spring (and speed).
+        // place otherwise, keeping a release's own timing.
         let settle: (inout Transaction) -> Void = { transaction in
             if drag != nil || reduceMotion { transaction.animation = nil }
             else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
