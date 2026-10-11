@@ -1120,8 +1120,11 @@ Rules shared by every client:
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
-  never re-compressed. A size-only transcode is kept only when at least 10%
-  smaller; the audio track is never dropped.
+  never re-compressed. The output bitrate is the target at the output size,
+  but never above the source's own bitrate (floor still applies), so a lean
+  HEVC clip converted only for compatibility does not grow. A size-only
+  transcode is kept only when at least 10% smaller; the audio track is never
+  dropped.
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
@@ -1155,7 +1158,7 @@ open-source Chromium builds without H.264 keep the original file.
 | --- | --- | --- | --- | --- |
 | Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
-| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetWriter H.264 at the shared size and bitrate; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
 | Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
 
 ### Server-side processing (parked)
@@ -1386,11 +1389,12 @@ are cached by attachment id. Stills follow the shared rules and encoder table
 above (exact indexed PNG via a Swift encoder over the Compression framework's
 DEFLATE, libwebp lossless, AVIF through the bundled libavif, else WebP/JPEG at
 `imageQuality`), scaled to `imageMaxEdge`; HEIC is never uploaded when
-conversion succeeds. Videos use the largest
-`AVAssetExportSession` size preset whose output short edge stays within
-`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
-Presets choose their own bitrates, so `videoBitrateKbps` and
-`audioBitrateKbps` are not applied. Previews and poster frames use
+conversion succeeds. Videos are re-encoded with `AVAssetReader` and
+`AVAssetWriter` (H.264/AAC MP4) at the shared output size and bitrate, with
+`audioBitrateKbps` for AAC; the original uploads on failure. Export presets
+were dropped because they cannot take a bitrate and the HDR video composition
+overrode their size: an iPhone 1440×1920 HEVC clip was stored unscaled at
+about twice the original's bitrate. Previews and poster frames use
 `previewEdge`. Taps open images and videos in the in-app viewer (below) and
 files at their signed URL in the system browser. Audio plays through `AVPlayer` with the app's existing audio
 session. Unit tests cover decoding, URL refresh decisions, compression
