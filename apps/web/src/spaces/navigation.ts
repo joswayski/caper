@@ -9,6 +9,84 @@ export interface PreparedSpace {
   historyError?: string;
 }
 
+export interface PreparedDirect {
+  history?: GeneralChatHistory;
+  historyError?: string;
+}
+
+// Like channel navigation, DMs prepare read-only history before replacing the
+// displayed chat. Private snapshots live only for this mounted Spaces page.
+export function createDirectNavigation() {
+  const entries = new Map<string, { expires: number; controller: AbortController; result: Promise<PreparedDirect> }>();
+  const visited = new Map<string, PreparedDirect>();
+  const forget = (id: string) => {
+    visited.delete(id);
+    entries.get(id)?.controller.abort();
+    entries.delete(id);
+  };
+  const prepare = (id: string) => {
+    const cached = entries.get(id);
+    if (cached && cached.expires > Date.now()) return cached;
+    cached?.controller.abort();
+    const controller = new AbortController();
+    const result = (async () => {
+      try {
+        const history = await loadChatHistory(id, controller.signal);
+        if (history.space.id !== "" || history.channel.direct !== true)
+          throw new Error("The chat service returned the wrong conversation.");
+        return { history };
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof ChatHistoryError && [401, 403, 404].includes(error.status)))
+          throw error;
+        return { historyError: error instanceof Error ? error.message : "Messages are unavailable." };
+      }
+    })();
+    const entry = { expires: Date.now() + 5_000, controller, result };
+    entries.delete(id);
+    entries.set(id, entry);
+    if (entries.size > 4) forget(entries.keys().next().value!);
+    void result.catch(() => {
+      if (entries.get(id) === entry) forget(id);
+    });
+    return entry;
+  };
+  return {
+    peek: (id: string) => visited.get(id),
+    prefetch(id: string) {
+      if (!visited.get(id)?.history) void prepare(id).result.catch(() => undefined);
+    },
+    take(id: string, signal: AbortSignal): Promise<PreparedDirect> {
+      const retained = visited.get(id);
+      if (retained?.history) return Promise.resolve(retained);
+      const entry = prepare(id);
+      entries.delete(id);
+      signal.addEventListener("abort", () => entry.controller.abort(), { once: true });
+      return entry.result;
+    },
+    remember(id: string, view: PreparedDirect) {
+      visited.delete(id);
+      visited.set(id, view);
+      if (visited.size > 20) visited.delete(visited.keys().next().value!);
+    },
+    rememberHistory(history: GeneralChatHistory) {
+      // Cleanup must not resurrect a declined or inaccessible conversation.
+      // A search window is not a latest-page snapshot: its replay cursor can
+      // sit beyond messages that have not been loaded into that window.
+      if (history.hasNewer) {
+        forget(history.channel.id);
+        return;
+      }
+      if (visited.has(history.channel.id)) visited.set(history.channel.id, { history });
+    },
+    forget,
+    clear() {
+      for (const entry of entries.values()) entry.controller.abort();
+      entries.clear();
+      visited.clear();
+    },
+  };
+}
+
 // Scoped to one mounted Spaces page. Speculation only fetches
 // reads: no voice, sockets, identity sessions, or persistent private-data cache.
 export function createSpaceNavigation() {

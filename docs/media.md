@@ -290,26 +290,42 @@ same space's member page/presence subscription. Rust desktop retains member
 statuses and pagination, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
-Web direct-message history is loaded only by `ChatClient`; opening a conversation
-does not issue a second page-level read. Switching away aborts its in-flight
-history and the previous channel's voice-availability request. Loading failures
-remain visible with an explicit Retry; cancellation does not become a UI error.
-`scripts/test-direct-messages.mjs` checks request counts, rapid switches and
-failure/retry at desktop/390px using the disposable native parity fixture beside
-Vite. `scripts/test-channel-joining.mjs` checks voice-status cancellation with its
-own browser mocks; run it without the parity API/gateway listening. Native request
-lifetimes are independent implementations and are unchanged by these web-only
-fixes. No API, gateway, migration, infrastructure, secret or native release is
-required; deploy web independently through the existing web deployment workflow.
+Web direct messages use page-scoped prepared histories like channels. Hover/focus
+speculates only history reads (never a session, read receipt, request acceptance
+or voice join); clicking shares that request and commits the title and messages
+together. Cold loads retain the displayed conversation. Visited DMs retain their
+latest timeline and replay cursor, then catch up through the authorized gateway
+without refetching the first page. The cache keeps at most 20 visited DMs and four
+five-second speculative reads, and disappears when the Spaces page unmounts.
+DM-only switches do not reload the selected space or dim its rail icon; icons
+retain the same corners when hovered or selected. Switching away aborts a pending
+DM history read and the previous channel's voice-availability request. Loading
+failures remain visible with an explicit Retry; cancellation is not a UI error.
+`node scripts/test-direct-messages.mjs --navigation` checks shared hover/click reads, cold-load
+cancellation, cached switches, stable message/rail frames, replay and failure/retry
+at desktop/390px using the disposable native parity fixture beside Vite.
+`scripts/test-channel-joining.mjs` checks voice-status cancellation with its
+own browser mocks; run it without the parity API/gateway listening.
+
+Android and Apple retain DM snapshots and replay cursors in their account-scoped
+navigation state; Rust desktop uses its existing bounded navigation cache for
+global DM targets. Native cold DM loads retain the current conversation, and
+superseded results cannot replace a newer selection. macOS and Rust desktop DM
+rows prefetch on hover/focus; iOS and Android have no hover requirement. Apple and
+Rust desktop rail icons also keep fixed corners. Native clients are independent
+implementations: browser fixture results do not prove their rendering or gateway
+behavior. Apple tests/rendering require Xcode; Android requires its SDK and device
+checks; Rust desktop tests and rendering use its Linux build prerequisites.
+No API, gateway, migration, infrastructure or secret change is required. Web,
+Android, Apple and Rust desktop releases can deploy independently.
 
 Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
 against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
 and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
-the Linux orb; Apple regressions require Xcode CI and macOS/iOS render validation.
+the Linux orb; Apple regressions require Xcode and macOS/iOS render validation.
 iOS shares the Apple repeat-click/presence fixes without hover speculation.
-Android navigation is unchanged and does not preload channels on hover; physical
-device and live-network checks remain separate. No API, infrastructure, secret or
-database rollout is needed; web and affected native releases are independent.
+Android channel navigation remains unchanged and does not preload on hover;
+physical device and live-network checks remain separate.
 
 ### Application gateway and account presence
 

@@ -738,7 +738,7 @@ private struct SpaceRailButton: View {
     let narrow: Bool
     private var selected: Bool { model.selectedSpaceID == space.id }
     private var name: String { space.demo == true ? "Caper" : space.name }
-    private var corner: CGFloat { selected ? 8 : 12 }
+    private let corner: CGFloat = 12
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
@@ -975,6 +975,9 @@ private struct ChannelSidebar: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                         .contentShape(Rectangle())
                                 }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
+                                    .modifier(NavigationPrefetchModifier {
+                                        if let selfConversation { model.prefetch(directMessage: selfConversation) }
+                                    })
                                     .accessibilityIdentifier("dm-self")
                             }
                             ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
@@ -1051,6 +1054,7 @@ private struct DirectMessageSidebarRow: View {
         Button { Task { await model.select(directMessage: conversation) } } label: { rowLabel }
             .buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
             .modifier(ControlHover())
+            .modifier(NavigationPrefetchModifier { model.prefetch(directMessage: conversation) })
             .accessibilityValue(rowState)
     }
 
@@ -4419,6 +4423,7 @@ private struct MessageRequestsList: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).modifier(ControlHover())
+                    .modifier(NavigationPrefetchModifier { model.prefetch(directMessage: request) })
                     .accessibilityLabel("\(request.peer.displayName), @\(request.peer.username)")
                     .accessibilityValue(selected ? "Selected" : "")
                     .accessibilityIdentifier("message-request-\(request.id)")

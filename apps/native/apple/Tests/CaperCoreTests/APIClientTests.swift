@@ -2274,6 +2274,56 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testDirectMessagesSharePrefetchAndRestoreSeparateSnapshots() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let first = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "a", username: "alpha", displayName: "Alpha"), lastSeq: "9007199254740993", readSeq: "0")
+        let second = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "b", username: "beta", displayName: "Beta"), lastSeq: "7", readSeq: "0")
+        model.directMessages = [first, second]
+        let prefetched = expectation(description: "read-only history fetched")
+        var reads: [String: Int] = [:]
+        var sessions = 0
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            if path.hasSuffix("/messages") {
+                let id = String(path.split(separator: "/")[3])
+                reads[id, default: 0] += 1
+                let cursor = id == first.id ? "9007199254740993" : "7"
+                if id == first.id && reads[id] == 1 { prefetched.fulfill() }
+                return (200, Data("""
+                {"space":{"id":"","name":"Direct messages"},"channel":{"id":"\(id)","name":"\(id)","direct":true},"messages":[{"id":"message-\(id)","channelId":"\(id)","seq":"\(cursor)","author":{"id":"other","name":"Other","isGuest":false},"content":{"version":1,"type":"text","text":"Only in \(id)"},"createdAt":"now","clientMessageId":"client-\(id)"}],"cursor":"\(cursor)","hasMore":false}
+                """.utf8))
+            }
+            if path == "/api/chat/session" {
+                sessions += 1
+                return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            }
+            if path.hasSuffix("/read") || path == "/api/auth/logout" { return (204, Data()) }
+            throw URLError(.badURL)
+        }
+        model.prefetch(directMessage: first)
+        await fulfillment(of: [prefetched], timeout: 2)
+        XCTAssertEqual(sessions, 0, "hover never creates a sending capability")
+        await model.select(directMessage: first)
+        model.chat.draft = "private Alpha draft"
+        await model.select(directMessage: second)
+        XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "7")
+        XCTAssertEqual(model.chat.messages.map(\.content.text), ["Only in dm0000000002"])
+        XCTAssertEqual(model.chat.draft, "")
+        await model.select(directMessage: first)
+        XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "9007199254740993")
+        XCTAssertEqual(model.chat.messages.map(\.content.text), ["Only in dm0000000001"])
+        XCTAssertEqual(model.chat.currentSnapshot()?.channel?.direct, true)
+        XCTAssertEqual(model.chat.draft, "private Alpha draft")
+        XCTAssertEqual(reads, [first.id: 1, second.id: 1], "visited DMs never reload the first page")
+        let openSessions = sessions
+        await model.select(directMessage: first)
+        XCTAssertEqual(sessions, openSessions, "repeat clicks preserve the live chat")
+        await model.logout()
+        XCTAssertEqual(model.navigationCacheCounts.visited, 0)
+    }
+
+    @MainActor
     func testDirectMessageNavigationWorksWithoutSpaceAndClearsOnLogout() async throws {
         let model = AppModel(api: client())
         model.account = Account(id: "me", username: "me", displayName: "Me")
