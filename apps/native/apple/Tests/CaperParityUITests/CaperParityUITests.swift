@@ -347,7 +347,9 @@ final class CaperParityUITests: XCTestCase {
             capture("\(scope)-autocomplete-closed", app: app)
             composer.typeText(":")
             let thumbsUp = try require(app.buttons["emoji-suggestion-1f44d"], timeout: 5, "Missing default emoji choices")
-            XCTAssertTrue(thumbsUp.isHittable, "The overlaid popup must accept clicks")
+            // The popup is placed from the composer's bounds, which arrive a layout pass after it appears.
+            let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: thumbsUp)
+            XCTAssertEqual(XCTWaiter.wait(for: [hittable], timeout: 5), .completed, "The overlaid popup must accept clicks")
             XCTAssertLessThan(thumbsUp.frame.maxY, composer.frame.minY, "Suggestions belong above the composer")
             assertStationary()
             capture("\(scope)-autocomplete-defaults", app: app)
