@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
+    collections::HashSet,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -1368,6 +1369,11 @@ pub(crate) fn spawn_publisher(chat: Chat) {
     });
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
+    // Claim a batch and project it into forward destinations, then commit
+    // before the broker round trip so destination channel locks are never held
+    // across the network. Projection is idempotent (unchanged snapshots are
+    // skipped): a crash or broker failure after this commit leaves the events
+    // unpublished, and the next claim re-projects them as a no-op.
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
     let rows: Vec<PendingEvent> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id,u.display_name FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
@@ -1377,6 +1383,31 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     forwarding::project_events(&mut tx, &rows)
         .await
         .map_err(|_| ())?;
+    tx.commit().await.map_err(|_| ())?;
+    // Reclaim exactly the projected rows that are still unpublished, so no
+    // event is published before its projection. Rows another replica claimed
+    // meanwhile are skipped; it projected them too.
+    let mut tx = chat.pool.begin().await.map_err(|_| ())?;
+    let (channels, seqs): (Vec<i64>, Vec<i64>) = rows.iter().map(|row| (row.0, row.1)).unzip();
+    let reclaimed: HashSet<(i64, i64)> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT e.channel_id,e.seq FROM public.channel_events e
+         JOIN unnest($1::bigint[], $2::bigint[]) AS p(channel_id, seq) ON e.channel_id=p.channel_id AND e.seq=p.seq
+         WHERE e.published_at IS NULL FOR UPDATE OF e SKIP LOCKED",
+    )
+    .bind(&channels)
+    .bind(&seqs)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ())?
+    .into_iter()
+    .collect();
+    let rows: Vec<PendingEvent> = rows
+        .into_iter()
+        .filter(|row| reclaimed.contains(&(row.0, row.1)))
+        .collect();
+    if rows.is_empty() {
+        return Ok(true);
+    }
     let count = rows.len();
     let mut publishes = redis::pipe();
     let (mut channels, mut seqs) = (Vec::with_capacity(count), Vec::with_capacity(count));

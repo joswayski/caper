@@ -342,8 +342,9 @@ async fn thread(
 }
 
 /// Project source edits, reactions and replies into destination replay logs.
-/// This runs inside the publisher's transaction, so a crash cannot permanently
-/// lose an update. Forward events never recurse: every reference is flattened.
+/// The publisher commits this before publishing the source events, which stay
+/// pending until then, so a crash cannot permanently lose an update; repeating
+/// it is a no-op. Forward events never recurse: every reference is flattened.
 pub(super) async fn project_events(
     tx: &mut Transaction<'_, Postgres>,
     events: &[super::PendingEvent],
