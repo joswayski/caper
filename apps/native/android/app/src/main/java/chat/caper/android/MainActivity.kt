@@ -966,7 +966,7 @@ private fun Modifier.browseDrag(
                         }
                     }
                     if (people.isNotEmpty() && rosterOpen) {
-                        if (activeChannel == channel.id) VoiceRoster(voice)
+                        if (activeChannel == channel.id) VoiceRoster(voice, state.account)
                         else people.forEach { participant ->
                             Row(Modifier.fillMaxWidth().padding(start = 42.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(participant.name, 28.dp, avatarId = participant.avatarId)
@@ -993,7 +993,7 @@ private fun Modifier.browseDrag(
                     }
                 }
             }
-            if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
+            if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice, state.account)
             state.openError?.let { error ->
                 Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
@@ -1133,10 +1133,11 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     )
 }
 
-@Composable internal fun VoiceRoster(voice: VoiceState) {
+@Composable internal fun VoiceRoster(voice: VoiceState, account: Account?) {
     if (voice.participants.isEmpty()) return
     val context = LocalContext.current
     voice.participants.forEach { participant ->
+        val name = if (participant.id == voice.selfId) account?.displayName ?: participant.name else participant.name
         key(participant.id) {
             var audioOpen by remember(voice.channelId) { mutableStateOf(false) }
             // Long-press opens the audio menu, like a browser's context menu on touch.
@@ -1144,10 +1145,10 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp)
                 .then(if (menuAvailable) Modifier.clip(MaterialTheme.shapes.small).combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
                 .padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(participant.name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
+                Avatar(name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(painterResource(R.drawable.lucide_volume_x), null, Modifier.size(10.dp), tint = TerracottaBright)
@@ -2025,7 +2026,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val presented = state.messages.firstOrNull { it.id == messageId }
         if (presented == null) LaunchedEffect(messageId) { reactorsTarget = null }
         else key(messageId) {
-            ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
+            ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors) { reactorsTarget = null }
         }
     }
     mentionTarget?.let { card ->
@@ -2419,7 +2420,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     reactorsTarget?.let { (id, emoji) ->
         state.pinnedMessages.find { it.id == id }?.let { current ->
-            ReactorsSheet(current, emoji, state.chatAuthorId ?: state.account?.id, viewModel::reactors) { reactorsTarget = null }
+            ReactorsSheet(current, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors) { reactorsTarget = null }
         }
     }
     conversationTarget?.let { target ->

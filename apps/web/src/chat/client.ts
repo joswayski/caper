@@ -406,6 +406,8 @@ export class ChatClient {
   identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
     this.accountId = signedIn ? accountId : undefined;
+    if (signedIn && accountId && this.state.author?.id === accountId)
+      this.update({ author: { ...this.state.author, name } });
     const saved = storedSession();
     // Guest identity may persist. Account names are not unique: mint a fresh
     // capability from the current account cookie rather than matching by name.
@@ -1444,6 +1446,8 @@ export class ChatClient {
   }
 
   private update(change: Partial<ChatViewState>) {
+    if (change.author && !change.author.isGuest)
+      change = { ...change, messages: change.messages ?? this.timeline.messages };
     if (change.messages) change = { ...change, pinnedMessages: this.timeline.pinnedMessages };
     if (change.messages && (this.pinIntents.size || this.editIntents.size || this.reactionIntents.size)) {
       const project = (message: ChatMessage): ChatMessage => {
@@ -1488,6 +1492,25 @@ export class ChatClient {
         messages: change.messages.map(project),
         pinnedMessages: [...pinned.values()].map(project),
       };
+    }
+    const own = change.author ?? this.state.author;
+    if (own && !own.isGuest) {
+      const author = (value: ChatAuthor) => (value.id === own.id ? { ...value, name: own.name } : value);
+      const message = (value: ChatMessage): ChatMessage => ({
+        ...value,
+        author: author(value.author),
+        ...(value.pin ? { pin: { ...value.pin, author: author(value.pin.author) } } : {}),
+        ...(value.thread ? { thread: { ...value.thread, participants: value.thread.participants.map(author) } } : {}),
+        ...(value.forward?.message ? { forward: { ...value.forward, message: message(value.forward.message) } } : {}),
+      });
+      change = {
+        ...change,
+        ...(change.author ? { author: author(change.author) } : {}),
+        ...(change.messages ? { messages: change.messages.map(message) } : {}),
+        ...(change.pinnedMessages ? { pinnedMessages: change.pinnedMessages.map(message) } : {}),
+      };
+      const pending = "pendingSend" in change ? change.pendingSend : this.state.pendingSend;
+      if (pending?.author) change.pendingSend = { ...pending, author: author(pending.author) };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)

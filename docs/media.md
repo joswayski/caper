@@ -6612,3 +6612,41 @@ Follow-ups to full-surface swipes and swipe release timing:
    usual release commands for the merged revision. Roll back web to the previous
    image; native rollback requires a corrected higher-build-number release. No
    data rollback is needed.
+
+## Own profile refresh (October 11, 2026)
+
+A successful display-name/username save updates retained self identities by
+account ID in the editing client: members, invitations, self-DMs, chat authors,
+pins, thread participants, forwarded authors, reaction lists and profile cards.
+The local voice roster uses the saved display name without leaving the call.
+Conversation selection, drafts, rejected sends, historical text and replay
+cursors stay intact. Other open sessions still use their existing refresh
+behavior; this change adds no realtime profile event.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 578 `npm test` tests pass after rebasing onto current main. `node scripts/test-profile-refresh.mjs` passes against labelled loopback API mocks at 1280px and 390px: space/private-channel settings, stale snapshots, failed save, same-name peer, cached navigation and retained draft/history. Inspected 2x Chromium settings captures; narrow Chromium is not a physical phone. No live SFU/profile-change acceptance. |
+| Android | Implementation and regression test added. Gradle `testDebugUnitTest --tests '*ProfileValidationTest'` stops at missing Android SDK; no Kotlin compilation or device acceptance. |
+| iOS/macOS | Implementation and regression test added. No Swift compiler or Xcode here; no build, XCTest, simulator or device acceptance. |
+| Rust desktop | Formatting passes. All 45 actual `model.rs` tests and Clippy pass through a disposable model-only Cargo harness, including the profile/history/cursor regression. Full desktop application build and UI/device acceptance were not run. |
+| Services | Root workspace formatting, tests (159 passed, 60 existing ignored) and Clippy pass. No API/gateway changes; ignored database/Valkey tests were not run. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is needed. Merging deploys nothing.
+2. Release web from the merged revision through the usual web deployment. Verify
+   profile save followed by space/private-channel settings and cached navigation.
+   Set `MERGED_SHA` to this PR's merge commit and confirm its web image exists:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/test Android, Apple and desktop on supported hosts before distributing
+   their independent client releases. Verify the same identity update during an
+   active call without losing conversation state. Roll back web to its previous
+   image; native rollback requires a corrected higher-build-number release. No
+   data rollback is needed.
