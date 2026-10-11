@@ -564,6 +564,8 @@ private struct WorkspaceView: View {
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
                         }
+                        // Returning from Browse must not reopen the keyboard on its own.
+                        .environment(\.composerCovered, showsBrowse)
                         // Full height, under the status bar and home indicator too, with a
                         // soft shadow cast from the conversation's edge onto Browse, like the web's.
                         .background {
