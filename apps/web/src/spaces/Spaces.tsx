@@ -29,6 +29,8 @@ import { getAccount, normalizeUsername, usernameError, type Account } from "../a
 import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
+import { forwardedConversation } from "../chat/Forwarding";
+import type { ChatMessage } from "../chat/types";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
@@ -1662,6 +1664,7 @@ export default function Spaces({
   const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
     embedded ? {} : selectedFromUrl(),
   );
+  const [focusMessage, setFocusMessage] = useState<ChatMessage>();
   const navigationRevision = useRef(0);
   const activeSpace = useRef(selected.spaceId);
   activeSpace.current = selected.spaceId;
@@ -1720,6 +1723,7 @@ export default function Spaces({
 
   const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string) => {
     navigationRevision.current++;
+    setFocusMessage(undefined);
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
     channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => {
@@ -1899,6 +1903,7 @@ export default function Spaces({
     if (embedded) return;
     const pop = () => {
       navigationRevision.current++;
+      setFocusMessage(undefined);
       // Space and channel dialogs belong to the view being left; closing them
       // keeps a save from applying stale state to the space Back opens.
       setDialog(undefined);
@@ -3076,6 +3081,18 @@ export default function Spaces({
           setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
           openDirect(conversation);
         }}
+        onOpenForward={async (message) => {
+          const revision = navigationRevision.current;
+          const { source } = await forwardedConversation(message, AbortSignal.timeout(10_000));
+          if (revision !== navigationRevision.current) return true;
+          if (!source) return false;
+          if (source.spaceId) choose(source.spaceId, source.message.channelId);
+          else choose(detail.space.id || undefined, undefined, false, source.message.channelId);
+          setFocusMessage(source.message);
+          setNavigationOpen(false);
+          return true;
+        }}
+        focusMessage={focusMessage}
         onHistoryChange={(history) => {
           navigation.current.rememberHistory(history);
           directCache.current.rememberHistory(history);

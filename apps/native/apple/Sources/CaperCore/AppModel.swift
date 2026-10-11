@@ -113,6 +113,7 @@ public final class AppModel {
     private let preferredInitialSpaceID: String?
     private var generation = 0
     private var navigationGeneration = 0
+    private var openingForward = false
     private var voiceJoinGeneration = 0
     private var peopleRequest = 0
     private var navigationCacheEpoch = 0
@@ -157,6 +158,7 @@ public final class AppModel {
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
         chatModel.onDirectMessageBlocked = { [weak self] in
@@ -495,6 +497,46 @@ public final class AppModel {
             guard generation == attempt, navigationGeneration == navigation else { return }
             if let error = error as? APIError, [401, 403, 404].contains(error.status) { invalidateNavigation(channelID: conversation.id) }
             navigationError = FriendlyError.message(for: error)
+        }
+    }
+
+    public func openForwardedConversation(_ wrapper: ChatMessage) async -> Bool {
+        guard !openingForward else { return false }
+        openingForward = true
+        defer { openingForward = false }
+        let attempt = generation; let navigation = navigationGeneration
+        do {
+            let conversation = try await chat.forwardedConversation(message: wrapper)
+            guard generation == attempt, navigationGeneration == navigation else { return false }
+            guard let source = conversation.source else {
+                chat.forwardConversationTarget = wrapper
+                return false
+            }
+            guard source.message.id == conversation.root?.id, source.message.channelId == conversation.root?.channelId else {
+                throw APIError(status: 502, message: "Conversation is unavailable.")
+            }
+            if chat.channelID != source.message.channelId {
+                if let spaceID = source.spaceId {
+                    let detail = try await api.space(spaceID)
+                    guard generation == attempt, navigationGeneration == navigation else { return false }
+                    await navigate(space: detail.space, channelID: source.message.channelId)
+                } else {
+                    let conversations = try await api.directMessages()
+                    guard generation == attempt, navigationGeneration == navigation else { return false }
+                    guard let direct = conversations.first(where: { $0.id == source.message.channelId }) else {
+                        throw APIError(status: 404, message: "Conversation is unavailable.")
+                    }
+                    directMessages = conversations
+                    await select(directMessage: direct)
+                }
+                guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
+            }
+            guard chat.channelID == source.message.channelId else { return false }
+            return await chat.goToMessage(source.message)
+        } catch is CancellationError { return false }
+        catch {
+            if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
+            return false
         }
     }
 
@@ -1697,6 +1739,7 @@ public final class ChatModel {
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     @ObservationIgnored public var onReadCursor: (() -> Void)?
+    @ObservationIgnored public var onOpenForward: ((ChatMessage) async -> Bool)?
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.
     public private(set) var blockedAuthorIDs: Set<String> = []
@@ -1718,7 +1761,8 @@ public final class ChatModel {
     @ObservationIgnored public var onDirectMessageBlocked: (() -> Void)?
     public var viewerID: String? { session?.author.id ?? viewerAccountID() }
     private let api: APIClient
-    private var channelID: String?
+    /// Read by AppModel to follow a forwarded message to its conversation.
+    private(set) var channelID: String?
     private var spaceID: String?
     private var session: ChatSession?
     private var subscriptionID: String?

@@ -455,11 +455,16 @@ public struct ForwardDestination: Codable, Identifiable, Sendable {
     public let direct: Bool
 }
 public struct ForwardDestinations: Decodable, Sendable { public let destinations: [ForwardDestination] }
+public struct ForwardSource: Decodable, Sendable {
+    public let spaceId: String?
+    public let message: ChatMessage
+}
 public struct ForwardConversationHistory: Decodable, Sendable {
     public let root: ChatMessage?
     public var messages: [ChatMessage]
     public let cursor: String
     public var hasMore: Bool
+    public let source: ForwardSource?
 }
 public struct MessageForwardEvent: Decodable, Sendable {
     public let type: String

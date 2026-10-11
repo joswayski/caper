@@ -745,11 +745,19 @@ pub struct ForwardDestinations {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ForwardSource {
+    pub space_id: Option<String>,
+    pub message: Message,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ForwardConversation {
     pub root: Option<Message>,
     pub messages: Vec<Message>,
     pub cursor: String,
     pub has_more: bool,
+    pub source: Option<ForwardSource>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

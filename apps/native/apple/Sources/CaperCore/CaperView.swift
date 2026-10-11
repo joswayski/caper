@@ -1481,7 +1481,10 @@ private struct MembersOverlay: View {
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                .transaction(settle) { $0.offset(x: (1 - shown) * travel) }
+                // Fully closed, it is also transparent (as BrowseLayer does), which
+                // drops it from the accessibility tree; accessibilityHidden alone
+                // left its "Members" header visible to VoiceOver and UI tests.
+                .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
@@ -2946,6 +2949,7 @@ private struct MessageRow: View {
     var continued = false
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
+    var forwardOpened: (() -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -3029,7 +3033,9 @@ private struct MessageRow: View {
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
                 }
-                ForwardCardView(message: message) { chat.forwardConversationTarget = message }
+                ForwardCardView(message: message) {
+                    Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
+                }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
@@ -4024,7 +4030,7 @@ private struct PinnedMessagesView: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
-                                    mentionCards: mentionCards, inThread: true, inPins: true) { actionTarget = message }
+                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close) { actionTarget = message }
                                 Button {
                                     mentionCard = nil
                                     Task { if await chat.goToMessage(message) { close() } }
