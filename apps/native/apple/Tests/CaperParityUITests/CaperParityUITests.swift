@@ -490,8 +490,7 @@ final class CaperParityUITests: XCTestCase {
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
-        // By label: the channel's composer is still in the tree, and the thread
-        // panel's "message-thread" identifier replaces this text view's own.
+        // By label: the channel's composer is still in the tree too.
         let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
                                    timeout: 5, "Missing thread composer")
         XCTAssertTrue(focus(composer))
