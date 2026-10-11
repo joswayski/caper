@@ -850,7 +850,13 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(Array(png[37..<41]), Array("iCCP".utf8), "the colour chunk follows IHDR")
         let source = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        XCTAssertNotNil(image.colorSpace?.copyICCData(), "ImageIO reads the embedded profile")
+        let space = try XCTUnwrap(image.colorSpace)
+        // ImageIO keeps a palette image indexed; the profile is its base RGB space's.
+        let rgb = try XCTUnwrap(space.model == .indexed ? space.baseColorSpace : Optional(space), "model \(space.model.rawValue)")
+        let read = try XCTUnwrap(rgb.copyICCData().map { $0 as Data },
+                                 "ImageIO reads the embedded profile (model \(space.model.rawValue), base \(String(describing: rgb.name)))")
+        let sRGB = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)?.copyICCData().map { $0 as Data })
+        XCTAssertNotEqual(read, sRGB, "the embedded wide-gamut profile, not an sRGB default")
     }
 
     func testChecksumsMatchKnownVectors() {
