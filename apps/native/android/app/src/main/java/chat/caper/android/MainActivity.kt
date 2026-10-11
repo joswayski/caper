@@ -306,7 +306,7 @@ internal data class VoiceJoinIntent(
                     // Web's first-space page: an account with no spaces names one.
                     else if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
                         state.spaces.none { !it.demo } && state.selectedDirectId == null && !navigationOpen)
-                        FirstSpaceScreen(state, viewModel) { navigationOpen = true }
+                        FirstSpaceScreen(state, viewModel)
                     else HomeScreen(
                         state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                     )
@@ -2863,7 +2863,7 @@ internal fun counterTone(count: Int): Color = when {
     else CaperDialog("Edit profile", close) { form() }
 }
 
-@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel, browse: () -> Unit) {
+@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     val limits = state.limits
@@ -2881,7 +2881,6 @@ internal fun counterTone(count: Int): Color = when {
         Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
         ) { Text(if (state.busy) "Creating…" else "Create space") }
-        OutlinedButton(browse, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Direct messages") }
         TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
     }
 }

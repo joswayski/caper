@@ -6509,9 +6509,6 @@ impl CaperApp {
                                 {
                                     self.logout();
                                 }
-                                if secondary_button(ui, "Direct messages", true).clicked() {
-                                    self.navigation_open = true;
-                                }
                             });
                         });
                     });
@@ -20504,7 +20501,7 @@ mod tests {
     }
 
     #[test]
-    fn first_space_page_can_open_global_direct_navigation() {
+    fn first_space_page_omits_direct_navigation() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -20513,6 +20510,20 @@ mod tests {
         );
         assert!(app.needs_first_space());
         assert_eq!(app.directs.len(), 1);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Name your space"));
+        assert!(texts.contains(&"Create space"));
+        assert!(!texts.contains(&"Direct messages"));
+        // Global DM navigation still belongs to the workspace, not setup.
         app.navigation_open = true;
         assert!(!app.needs_first_space());
         render(&mut app, &context, vec![]);
