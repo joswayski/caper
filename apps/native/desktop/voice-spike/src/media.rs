@@ -3195,7 +3195,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let mut peak = 0u16;
-        for _ in 0..10 {
+        // The first frames can still be the decoder warming up on a slow
+        // runner; read up to everything that was sent until the voice shows.
+        for _ in 0..80 {
+            if peak > 1_000 {
+                break;
+            }
             let frame = tokio::time::timeout(Duration::from_secs(2), decoded.next_frame())
                 .await
                 .unwrap()
