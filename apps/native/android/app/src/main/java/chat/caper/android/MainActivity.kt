@@ -476,11 +476,10 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             // Leaves room for the account bar, which rises over the conversation.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
-                                Row(Modifier.weight(1f)) {
+                                Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
-                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp))
-                                            .browseSwipeRegion(drawer, enabled = state.selectedChannel != null),
+                                        Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, joinVoice, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
@@ -495,6 +494,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 if (membersShown || membersInView) {
                                     Box(Modifier.fillMaxSize().padding(top = 54.dp).graphicsLayer { alpha = members.progress.value }
                                         .background(Color.Black.copy(alpha = 0.25f))
+                                        .browseSwipeRegion(members, enabled = membersShown)
                                         .then(if (membersShown) Modifier.clickable(
                                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                                             indication = null,
@@ -543,7 +543,7 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
     val progress = Animatable(if (open) 1f else 0f)
     var dragging = false
-    /** Set when a touch lands on the timeline or channel list; elsewhere keeps its own drags. */
+    /** Set when a touch lands on content or its header; editors and audio controls keep their own drags. */
     var regionTouched = false
 
     fun drag(value: Float) {
@@ -597,7 +597,7 @@ private fun Modifier.membersLayer(drawer: BrowseDrawer): Modifier = graphicsLaye
     shadowElevation = 16.dp.toPx()
 }
 
-// Only the timeline/sidebar starts this gesture; the composer and audio controls
+// Content, headers and drawer backdrops start this gesture; the composer and audio controls
 // keep their native drags.
 private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean): Modifier =
     if (drawer == null || !enabled) this else pointerInput(drawer) {
@@ -1453,7 +1453,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         var showConnection by remember(channel.id) { mutableStateOf(false) }
         LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
         // On phones Back's arrow, not its 48dp touch target, lines up with the messages' 18dp inset.
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 4.dp else 18.dp, end = 18.dp)
+            .browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow && !membersVisible && !channelMenuOpen)
+            .browseSwipeRegion(LocalMembersDrawer.current, enabled = narrow && !channelMenuOpen && !channel.direct && joined),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }

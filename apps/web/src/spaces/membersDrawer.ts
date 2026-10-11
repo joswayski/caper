@@ -12,7 +12,7 @@ import { BLOCKING, OWN_GESTURES, RELEASE_EASING, SETTLE } from "./browseTransiti
 
 // On phones the member list is a drawer over the conversation. Like Browse, it
 // slides in and out with the same timing and follows a finger: left on the
-// conversation opens it, and right on the panel closes it.
+// conversation opens it, and right on the panel or backdrop closes it.
 
 const PANEL = ":scope > .space-member-presence";
 const BACKDROP = ":scope > .member-list-backdrop";
@@ -163,7 +163,6 @@ export function useMembersDrawer(
         const { enabled, open } = latest.current;
         const target = event.target as HTMLElement;
         const room = event.currentTarget;
-        const { panel } = parts();
         if (
           !enabled ||
           event.pointerType !== "touch" ||
@@ -171,8 +170,9 @@ export function useMembersDrawer(
           document.querySelector(BLOCKING) ||
           window.getSelection()?.type === "Range" ||
           target.closest(OWN_GESTURES) ||
-          // Open, the panel itself closes; closed, the conversation opens it.
-          !(open ? panel : room.querySelector(":scope > .stage"))?.contains(target)
+          // The open drawer owns the whole room, including its backdrop.
+          // Closed, only the conversation opens it.
+          !(open ? room : room.querySelector(":scope > .stage"))?.contains(target)
         )
           return;
         const id = event.pointerId,

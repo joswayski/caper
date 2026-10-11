@@ -564,6 +564,14 @@ def main() -> None:
     members_button = find(narrow, description="Show member list")
     assert pins is not None and members_button is not None, "Phone header shows Pins and Members"
     assert center(pins)[0] < center(members_button)[0], "Members sits right of Pins"
+    # Navigation starts at the middle of the content, not at a screen edge.
+    width, middle = 780, "844"
+    adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
+    assert find(hierarchy(), description="Back to Browse") is not None, "Vertical scrolling stays in chat"
+    adb("shell", "input", "swipe", str(width // 2), middle, str(width - 10), middle, "150")
+    wait_for(description="Close navigation")
+    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
+    wait_for(description="Back to Browse")
     tap(description="Show member list")
     members_open = capture("caper-android-narrow-members", "Members")
     members_title = find(members_open, text="Members")
@@ -581,14 +589,18 @@ def main() -> None:
     members_closed("Hide member list must close the member overlay")
     # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
     # The 390x844 viewport at DPR 2; mid-height is in the timeline and on the panel.
-    width, middle = 780, "844"
-    adb("shell", "input", "swipe", str(width * 9 // 10), middle, str(width // 5), middle, "150")
+    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
     wait_for(text="Members")
     assert find(hierarchy(), description="Back to Browse") is not None, "A left swipe opens Members, not Browse"
     # The panel spans 103-383dp. Swipe past half its travel (280dp plus a 32dp margin): a shorter
     # swipe closes it only as a fling, which a busy emulator can report too slowly.
     adb("shell", "input", "swipe", str(width * 2 // 5), middle, str(width - 10), middle, "150")
     members_closed("A right swipe on the member panel must close it")
+    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
+    wait_for(text="Members")
+    adb("shell", "input", "swipe", "40", middle, str(width - 10), middle, "150")
+    members_closed("A right swipe on the backdrop must close Members without opening Browse")
+    assert find(hierarchy(), description="Back to Browse") is not None
     tap(description="Back to Browse")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")

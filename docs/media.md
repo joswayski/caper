@@ -6169,3 +6169,55 @@ upload service is healthy.
    production. Roll back web with the previous known-good image SHA using the same
    deployment command; native rollback needs a corrected higher-build-number
    release. No data rollback is required.
+
+### Full-surface screen swipes (October 11, 2026)
+
+Narrow touch layouts accept horizontal navigation from the middle of the content,
+not just its edges. Right from chat opens Browse; left from Browse returns to
+chat. Left from a joined channel opens Members, and right from its panel or
+backdrop closes it. Headers, channel rows and space rails also accept navigation
+swipes. Vertical scrolling, text editors, audio controls, open dialogs/menus and
+text selections keep their own gestures. Web and Rust desktop restrict navigation
+to touch, preserving mouse selection. Drafts and conversation state survive
+navigation. Wide layouts are unchanged.
+
+This supersedes the edge/target restrictions in the historical navigation
+records above. Apple channel-search mode keeps its Close navigation control.
+Existing sliding media-viewer paging already starts across the viewer and is
+unchanged; zoom/pan and modal/thread interactions remain separate.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` passes; `npm test -- --maxWorkers=2` passes all 565 tests. `scripts/test-desktop-navigation.mjs` passes in Chromium touch emulation against labelled disposable fixtures: center-start Browse/Members, header-button and backdrop swipes, finger tracking, fling/halfway/snap-back, vertical/cancel/multitouch guards, reduced motion, release-click suppression and draft/history retention. Inspected 390px default/Browse/Members and mid-drag captures, plus 320px Members. Two fixture timeouts in the initial unbounded Vitest run passed on the bounded-worker retry. Not Safari or physical-device acceptance. |
+| Android | SDK 36 `:app:compileDebugKotlin :app:testDebugUnitTest` passes (300 tests, 0 failures). An initial JVM compilation was killed under memory contention; the one-worker, bounded-heap retry passes. `smoke.py` now covers center-start navigation and Members backdrop dismissal, but was not run: no device/KVM in this orb. No native gesture/rendering acceptance. |
+| iOS/macOS | The shared drawer no longer requires a 24pt edge start. The iOS parity test covers center-start navigation, vertical scrolling, retained draft and Members backdrop dismissal. No Swift/Xcode toolchain here: no compile, XCTest, simulator or device validation. |
+| Rust desktop | Linux application tests pass (406 passed, 12 existing ignored); fmt, application-package Clippy (`--all-targets --no-deps -D warnings`) and debug build pass. Linked egui touch/render/accessibility regression covers center-start Browse/Members, finger-position tracking, vertical/cancel/paused-drag guards, panel/backdrop closing and retained draft/composer exclusion. Inspected 2x Xvfb chat/Browse/Members button-driven renders; this is not physical touch input. Touch-only in narrow windows; wide layouts and mouse drags are unchanged. No physical touchscreen, Windows or macOS acceptance. |
+| Containers/services | No Docker daemon for an image build; Vite production build passes directly. No backend, infrastructure, secrets/configuration or database change. No deployment performed. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is required. Web, Android, Apple and Rust desktop can release
+   independently; merging does not deploy them.
+2. After merge, wait for the immutable web image for that revision. From an
+   authenticated infrastructure checkout with the production Kubernetes context,
+   set `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Before native distribution, build/test on supported hosts with
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios`,
+   `bash apps/native/apple/build.sh macos` and `bash apps/native/desktop/build.sh`.
+   Run the Android smoke and Apple parity tests on supported devices/simulators;
+   check center/header/rail/backdrop starts, vertical scrolling, text selection,
+   audio controls, drafts and reduced motion on real clients. For Rust desktop,
+   use a narrow touch window and check unchanged wide/mouse behavior. Build output
+   is not a signed/store release; use the existing release process after native
+   acceptance.
+4. Verify the same cases on deployed mobile web. Roll back web with the previous
+   known-good image SHA using step 2; native rollback needs a corrected
+   higher-build-number release. No data rollback is required.

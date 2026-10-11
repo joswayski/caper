@@ -241,12 +241,14 @@ export function dragBrowse(opening: boolean, update: (open: boolean) => void): B
 }
 
 export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
+// Tappable rows, links and buttons can start a swipe; their release click is
+// suppressed only after a horizontal drag wins. Composer/audio controls own drags.
 export const OWN_GESTURES =
-  "input, textarea, select, [contenteditable=true], [role=slider], a, summary, button:not(.channel-select, .direct-select)";
+  ".chat-composer, .voice-panel, input, textarea, select, [contenteditable=true], [role=slider], audio, video";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left
- * from Browse returns. Text entry, links, controls, open menus and selections
+ * from Browse returns. Text entry, sliders, open menus and selections
  * keep their own gestures. `change` sets Browse at once; the slide animates it.
  */
 export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: boolean) => void) | undefined) {
