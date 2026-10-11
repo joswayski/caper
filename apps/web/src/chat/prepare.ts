@@ -501,8 +501,15 @@ export function videoPlan(probe: VideoProbe, settings: CompressionSettings): Vid
     action: "transcode",
     reasons,
     ...output,
-    bitrateKbps: videoTargetKbps(output.width, output.height, settings),
+    bitrateKbps: outputKbps(videoTargetKbps(output.width, output.height, settings), probe.bitrateKbps),
   };
+}
+
+/** The target, but never above the source's own bitrate: a compatibility
+ * transcode of a lean HEVC clip must not grow it. The floor still applies. */
+export function outputKbps(targetKbps: number, sourceKbps: number | undefined) {
+  if (sourceKbps === undefined || !(sourceKbps > 0)) return targetKbps;
+  return Math.max(MIN_VIDEO_KBPS, Math.min(targetKbps, Math.round(sourceKbps)));
 }
 
 /** A transcode for playability (codec or container) is always kept; one for
