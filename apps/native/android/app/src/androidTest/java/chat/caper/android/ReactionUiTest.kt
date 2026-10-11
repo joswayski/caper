@@ -154,7 +154,7 @@ class ReactionUiTest {
                     }
                 }
                 target.value?.let { emoji ->
-                    ReactorsSheet(message.value, emoji, "self", { shown ->
+                    ReactorsSheet(message.value, emoji, "self", null, { shown ->
                         loads++
                         gate.await()
                         if (failNext) { failNext = false; throw IOException("Simulated reactor load failure") }
