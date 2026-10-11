@@ -40,6 +40,10 @@ function Privacy() {
               <b className="text-content">Messages you send</b>, stored so the people in that channel can read them.
             </li>
             <li>
+              <b className="text-content">Files you attach</b>, stored so the people in that channel can open them.
+              Photos are re-encoded on your device before upload, which removes embedded details such as location.
+            </li>
+            <li>
               <b className="text-content">Your spaces and channels</b>: what you create, join, and who you add.
             </li>
             <li>
@@ -66,16 +70,17 @@ function Privacy() {
         <Section title="Who handles data for us">
           <ul className="list-disc space-y-2 pl-5">
             <li>Amazon Web Services hosts Caper and sends sign-in emails.</li>
-            <li>Cloudflare carries voice and network traffic.</li>
+            <li>Cloudflare carries voice and network traffic, and stores attached files.</li>
             <li>Axiom stores service logs.</li>
           </ul>
         </Section>
 
         <Section title="How long we keep it">
           <p>
-            Messages and your account stay until they're deleted. Leaving a space or channel, or being removed from one,
-            ends your access but keeps the record. We keep a history of your sign-ins; one-time sign-in codes are
-            removed after a week.
+            Messages and your account stay until they're deleted. Attached files are removed from storage about a day
+            after they're deleted; uploads that are never sent are removed within a day. Leaving a space or channel, or
+            being removed from one, ends your access but keeps the record. We keep a history of your sign-ins; one-time
+            sign-in codes are removed after a week.
           </p>
         </Section>
 

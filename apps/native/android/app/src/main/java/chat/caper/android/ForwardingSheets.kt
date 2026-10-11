@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ApiException
+import chat.caper.android.data.withFreshUrls
 import chat.caper.android.data.friendlyError
 import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
@@ -33,14 +34,21 @@ import java.math.BigInteger
 import java.util.UUID
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun SharedOriginal(message: ChatMessage) {
+@Composable private fun SharedOriginal(
+    message: ChatMessage, state: AppUiState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId)
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
-        LinkedText(message.content.text, fontSize = 14.sp)
+        // A file-only original has empty text: show just its files, in their processing state.
+        if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
+        MessageAttachments(
+            message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
+            state?.attachmentProgress.orEmpty(), caption = message.author.name,
+        )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(18.dp))
@@ -64,7 +72,9 @@ import java.util.UUID
     Text(annotated, fontSize = fontSize)
 }
 
-@Composable internal fun ForwardCard(message: ChatMessage, open: () -> Unit) {
+@Composable internal fun ForwardCard(
+    message: ChatMessage, state: AppUiState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> }, open: () -> Unit,
+) {
     val forward = message.forward ?: return
     Surface(Modifier.padding(start = 62.dp, end = 18.dp, bottom = 8.dp).fillMaxWidth(), shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -72,7 +82,7 @@ import java.util.UUID
             val original = forward.message
             if (original == null) Text("Original conversation unavailable.", color = TextMuted)
             else {
-                SharedOriginal(original)
+                SharedOriginal(original, state, onAttachmentFailed)
                 TextButton(open, shape = MaterialTheme.shapes.small) { Text("${original.thread?.replyCount?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
             }
         }

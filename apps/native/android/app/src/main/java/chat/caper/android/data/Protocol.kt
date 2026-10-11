@@ -17,7 +17,9 @@ internal fun ChatMessage.validated(
     require(this.channelId == channelId) { "Message channel mismatch." }
     require(sequencePattern.matches(seq) && runCatching { BigInteger(seq) }.isSuccess) { "Invalid message sequence." }
     require(content.version == 1 && content.type == "text") { "Unsupported message content." }
-    require((content.text.isNotEmpty() || forward != null) && content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
+    // Text may be empty when files are attached or a message is forwarded; like the web, an
+    // empty string is never fatal.
+    require(content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
     require(content.text.none { it.isISOControl() && it != '\n' && it != '\t' }) { "Invalid message text." }
     require(runCatching { Instant.parse(createdAt) }.isSuccess) { "Invalid message timestamp." }
     require(revision >= 1) { "Invalid content revision." }

@@ -20,6 +20,8 @@ class GatewayClient(
     private val baseUrl: String, private val token: String?, private val channelId: String,
     initialCursor: String, private val onMessage: (ChatMessage) -> Unit,
     private val onReaction: (ReactionUpdate) -> Unit = {},
+    private val onAttachments: (AttachmentsUpdate) -> Unit = {},
+    private val onAttachmentProgress: (AttachmentProgress) -> Unit = {},
     private val onPin: (PinUpdate) -> Unit = {},
     private val onForward: (ForwardUpdate) -> Unit = {},
     private val onEdit: (EditUpdate) -> Unit = {},
@@ -180,6 +182,21 @@ class GatewayClient(
                 } else if (n > applied) error("Logical delivery gap")
                 maybePromote(s)
             }
+            "message.attachments" -> {
+                val next = attachmentsSequence(event, channelId)
+                val n = next.toBigIntegerOrNull() ?: error("Invalid sequence")
+                val local = s.chatPosition.toBigIntegerOrNull() ?: error("Invalid cursor")
+                if (n == local + BigInteger.ONE) s.chatPosition = next else if (n > local) error("Non-contiguous replay")
+                val applied = cursor.toBigIntegerOrNull() ?: error("Invalid cursor")
+                if (n == applied + BigInteger.ONE) {
+                    val update = json.decodeFromJsonElement(AttachmentsUpdate.serializer(), event).validated(channelId)
+                    cursor = next
+                    onAttachments(update)
+                } else if (n > applied) error("Logical delivery gap")
+                maybePromote(s)
+            }
+            // Ephemeral and unsequenced like typing; a malformed one is dropped, never fatal.
+            "attachment.progress" -> if (s === active) attachmentProgress(event, channelId)?.let(onAttachmentProgress)
             "message.pin" -> {
                 val next = pinSequence(event, channelId)
                 val n = next.toBigIntegerOrNull() ?: error("Invalid sequence")

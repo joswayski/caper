@@ -68,6 +68,28 @@ if [[ ! -f "$RN_DIR/src/rnnoise_data.c" ]]; then
 fi
 test -f "$RN_DIR/COPYING"
 
+# AVIF photo encoding: libavif 1.4.2 with aom 3.15.1's encoder as one static
+# XCFramework, built from SHA-256-pinned upstream sources and smoke-tested on
+# every slice by joswayski/libavif-apple (Neon on arm64, SSE/AVX on x86_64).
+# The bundled licence texts must be the ones that release ships.
+AVIF_RELEASE=libavif-1.4.2-aom-3.15.1-r2
+AVIF_ZIP_SHA=d42a48c0dc0aa2c4efbbb213dc925fcb4bfdc8f9865ed8f4074ab4dc348fd579
+AVIF_DIR="$ROOT/.build/libavif-1.4.2"
+AVIF_ZIP="$ROOT/.build/$AVIF_RELEASE.zip"
+if [[ ! -f "$AVIF_DIR/libavif.xcframework/Info.plist" || "$(cat "$AVIF_DIR/release.txt" 2>/dev/null)" != "$AVIF_RELEASE" ]]; then
+  mkdir -p "$ROOT/.build"
+  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors "https://github.com/joswayski/libavif-apple/releases/download/$AVIF_RELEASE/libavif.xcframework.zip" -o "$AVIF_ZIP"
+  echo "$AVIF_ZIP_SHA  $AVIF_ZIP" | shasum -a 256 -c -
+  rm -rf "$AVIF_DIR"
+  mkdir -p "$AVIF_DIR"
+  unzip -q "$AVIF_ZIP" -d "$AVIF_DIR"
+  echo "$AVIF_RELEASE" >"$AVIF_DIR/release.txt"
+fi
+test -f "$AVIF_DIR/libavif.xcframework/Info.plist"
+for license in libavif-LICENSE.txt libaom-LICENSE.txt libaom-PATENTS.txt; do
+  cmp -s "$AVIF_DIR/$license" "$ROOT/Resources/$license" || { echo "Resources/$license differs from $AVIF_RELEASE's; copy it from $AVIF_DIR." >&2; exit 1; }
+done
+
 XCODEGEN_COMMIT=21ac9944b0ab546a07422dbed86f33dd2ebd76f8
 XCODEGEN="$ROOT/.build/xcodegen-$XCODEGEN_COMMIT"
 if [[ ! -d "$XCODEGEN/.git" ]]; then

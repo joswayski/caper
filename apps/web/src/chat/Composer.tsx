@@ -1,8 +1,22 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
+import { Paperclip } from "lucide-react";
+import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
 import type { MentionCandidate } from "./mentions.ts";
+import { MAX_ATTACHMENTS } from "./uploads.ts";
+
+/** Files picked for the next message; the conversation owns their uploads. */
+export interface ComposerAttachments {
+  /** Whether new files can be added (uploads configured, conversation writable). */
+  enabled: boolean;
+  drafts: DraftAttachment[];
+  /** A problem adding files, such as too many. */
+  error?: string;
+  onAdd: (files: File[]) => void;
+  onRemove: (key: string) => void;
+}
 
 export interface ComposerHandle {
   /** Puts a rejected message back into the composer to edit. */
@@ -22,7 +36,11 @@ interface ComposerProps {
   sending: boolean;
   sendRejected: boolean;
   /** The pending send, if any. A new one clears the draft it was sent from. */
-  pendingSend?: { clientMessageId: string; text: string; threadRootId?: string };
+  pendingSend?: {
+    clientMessageId: string;
+    text: string;
+    threadRootId?: string;
+  };
   authorId?: string;
   mentionMembers?: MentionCandidate[];
   onSend: (text: string) => Promise<unknown> | undefined;
@@ -32,6 +50,7 @@ interface ComposerProps {
   onResize: (resize: () => boolean) => void;
   /** Whether a draft exists, for actions that would replace it. */
   onDraftPresence: (hasDraft: boolean) => void;
+  attachments?: ComposerAttachments;
 }
 
 /**
@@ -54,10 +73,12 @@ export default function Composer({
   onTyping,
   onResize,
   onDraftPresence,
+  attachments,
 }: ComposerProps) {
   const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const people = useMemo(() => mentionMembers?.filter((member) => member.id !== authorId), [mentionMembers, authorId]);
   const suggestions = useComposerSuggestions({
     id: "chat",
@@ -141,20 +162,48 @@ export default function Composer({
   }));
 
   const characterCount = Array.from(draft).length;
+  const error = validationError ?? attachments?.error;
+  const canAttach = !!attachments?.enabled;
 
   return (
     <>
-      {validationError && (
+      {error && (
         <p className="chat-inline-error" role="alert">
-          {validationError}
+          {error}
         </p>
       )}
+      {attachments && <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} />}
       <form
+        data-attach={canAttach || undefined}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
+        {canAttach && (
+          <>
+            <button
+              type="button"
+              className="chat-attach"
+              aria-label="Attach files"
+              title="Attach files"
+              disabled={attachments.drafts.length >= MAX_ATTACHMENTS}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip size={17} aria-hidden="true" />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                attachments.onAdd([...(event.target.files ?? [])]);
+                event.target.value = "";
+              }}
+            />
+          </>
+        )}
         <label className="sr-only" htmlFor="chat-message">
           Message {channelName}
         </label>

@@ -11,6 +11,13 @@ export default defineConfig({
           include: ["tests/**/*.test.mjs"],
         },
       },
+      {
+        test: {
+          name: "cdn",
+          environment: "node",
+          include: ["apps/cdn/**/*.test.mjs"],
+        },
+      },
     ],
   },
 });

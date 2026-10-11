@@ -4,6 +4,7 @@
 use crate::spaces::channel_access;
 use crate::{
     ApiError, AppState, RuntimeEnvironment, account_token,
+    assets::{self, CdnSigner},
     auth::random_id,
     mentions::{self, Mention},
     spaces::{channel_participation, session_user},
@@ -38,11 +39,22 @@ pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
 const PAGE: i64 = 50;
 const BROKER_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Unsequenced broker events: typing and media processing progress. Gateways
+/// forward them without touching the durable delivery cursor.
+pub(crate) fn ephemeral(event: &Value) -> bool {
+    matches!(
+        event["type"].as_str(),
+        Some("typing.updated" | "attachment.progress")
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct Chat {
     pub pool: PgPool,
     pub broker: redis::Client,
     pub wake: Arc<Notify>,
+    /// Signs attachment delivery URLs; absent until the CDN is configured.
+    pub cdn: Option<Arc<CdnSigner>>,
     /// One multiplexed broker connection shared by outbox publishes and typing
     /// updates, instead of a new TCP/TLS handshake per message. A failed call
     /// drops it so the next caller reconnects.
@@ -75,7 +87,9 @@ impl Chat {
             std::env::var("VALKEY_ALLOW_INSECURE").is_ok_and(|v| v == "true" || v == "1");
         crate::media_store::validate_url(&url, insecure).map_err(|_| "invalid chat VALKEY_URL")?;
         let broker = redis::Client::open(url).map_err(|_| "invalid chat VALKEY_URL")?;
-        Ok(Some(Self::new(pool, broker)))
+        let mut chat = Self::new(pool, broker);
+        chat.cdn = CdnSigner::from_env(environment)?;
+        Ok(Some(chat))
     }
 
     pub(crate) fn new(pool: PgPool, broker: redis::Client) -> Self {
@@ -83,6 +97,7 @@ impl Chat {
             pool,
             broker,
             wake: Arc::new(Notify::new()),
+            cdn: None,
             connection: Arc::new(Mutex::new(None)),
         }
     }
@@ -197,7 +212,15 @@ async fn history(
     query.validate()?;
     let user = request_user(&chat.pool, &headers).await?;
     Ok(Json(
-        conversation_window(&chat.pool, &channel, &query, user, None).await?,
+        signed_conversation_window(
+            &chat.pool,
+            &channel,
+            &query,
+            user,
+            None,
+            chat.cdn.as_deref(),
+        )
+        .await?,
     ))
 }
 
@@ -211,7 +234,15 @@ async fn thread_history(
     query.validate()?;
     let user = request_user(&chat.pool, &headers).await?;
     Ok(Json(
-        conversation_window(&chat.pool, &channel, &query, user, Some(&root)).await?,
+        signed_conversation_window(
+            &chat.pool,
+            &channel,
+            &query,
+            user,
+            Some(&root),
+            chat.cdn.as_deref(),
+        )
+        .await?,
     ))
 }
 
@@ -261,12 +292,61 @@ async fn conversation_page(
     .await
 }
 
+#[cfg(test)]
+pub(crate) async fn history_with(
+    pool: &PgPool,
+    channel: &str,
+    before: Option<i64>,
+    user: Option<i64>,
+    cdn: Option<&CdnSigner>,
+) -> Result<Value, ApiError> {
+    signed_conversation_window(
+        pool,
+        channel,
+        &HistoryQuery {
+            before: before.map(|value| value.to_string()),
+            ..HistoryQuery::default()
+        },
+        user,
+        None,
+        cdn,
+    )
+    .await
+}
+
+/// Attachment state and fresh delivery URLs for messages leaving the server:
+/// history pages, thread roots and replies, pins and single messages.
+async fn deliver(
+    pool: &PgPool,
+    cdn: Option<&CdnSigner>,
+    messages: &mut [Value],
+) -> Result<(), ApiError> {
+    assets::mark_deleted(pool, messages).await?;
+    for message in messages.iter_mut() {
+        *message = assets::sign_attachments(std::mem::take(message), cdn);
+    }
+    Ok(())
+}
+
+/// A history or thread window without attachment URL signing.
+#[cfg(test)]
 async fn conversation_window(
     pool: &PgPool,
     channel: &str,
     query: &HistoryQuery,
     user: Option<i64>,
     root: Option<&str>,
+) -> Result<Value, ApiError> {
+    signed_conversation_window(pool, channel, query, user, root, None).await
+}
+
+async fn signed_conversation_window(
+    pool: &PgPool,
+    channel: &str,
+    query: &HistoryQuery,
+    user: Option<i64>,
+    root: Option<&str>,
+    cdn: Option<&CdnSigner>,
 ) -> Result<Value, ApiError> {
     query.validate()?;
     // Hold a shared channel lock from captured head through payload reads. A
@@ -357,9 +437,11 @@ async fn conversation_window(
         .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
         .collect();
     forwarding::hydrate(&mut tx, &mut rows).await?;
+    deliver(pool, cdn, &mut rows).await?;
     if let Some((_, root, avatar, name)) = thread_root {
         let mut roots = vec![enrich_author(root, avatar, name.as_deref())];
         forwarding::hydrate(&mut tx, &mut roots).await?;
+        deliver(pool, cdn, &mut roots).await?;
         return Ok(
             json!({"root":roots[0],"messages":rows,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer}),
         );
@@ -377,6 +459,7 @@ async fn conversation_window(
             .map(|(payload, avatar, name)| enrich_author(payload, avatar, name.as_deref()))
             .collect();
         forwarding::hydrate(&mut tx, &mut pins).await?;
+        deliver(pool, cdn, &mut pins).await?;
     }
     let mut channel_identity = json!({"id":channel,"name":channel_name});
     if space_id.is_none() {
@@ -456,7 +539,11 @@ async fn session(
 #[serde(rename_all = "camelCase")]
 struct SendInput {
     client_message_id: Uuid,
+    #[serde(default)]
     text: String,
+    /// Uploaded files from `POST /api/assets`, in display order.
+    #[serde(default)]
+    attachment_ids: Vec<String>,
     thread_root_id: Option<String>,
     #[serde(default)]
     broadcast: bool,
@@ -591,7 +678,12 @@ async fn set_pin(
 /// size validation, persistence, outbox creation, or notifications. No BO2 rule
 /// is hard-coded: that was an example, not the demo's policy.
 fn prepare_text(text: &str) -> Result<Value, ApiError> {
-    if text.trim().is_empty()
+    prepare_content(text, false)
+}
+
+/// Text may be empty only when the message carries attachments.
+fn prepare_content(text: &str, has_attachments: bool) -> Result<Value, ApiError> {
+    if (text.trim().is_empty() && !has_attachments)
         || text.chars().count() > 4000
         || text
             .chars()
@@ -612,18 +704,19 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = persist_message(
+    let payload = send_message(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
         input.client_message_id,
         &input.text,
+        &input.attachment_ids,
         input.thread_root_id.as_deref(),
         input.broadcast,
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(payload))
+    Ok(Json(assets::sign_attachments(payload, chat.cdn.as_deref())))
 }
 
 fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -737,9 +830,10 @@ async fn persist(
     client_id: Uuid,
     text: &str,
 ) -> Result<Value, ApiError> {
-    persist_message(pool, channel, token, client_id, text, None, false).await
+    send_message(pool, channel, token, client_id, text, &[], None, false).await
 }
 
+#[cfg(test)]
 async fn persist_message(
     pool: &PgPool,
     channel: &str,
@@ -749,7 +843,32 @@ async fn persist_message(
     root: Option<&str>,
     broadcast: bool,
 ) -> Result<Value, ApiError> {
-    let content = prepare_text(text)?;
+    send_message(pool, channel, token, client_id, text, &[], root, broadcast).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_message(
+    pool: &PgPool,
+    channel: &str,
+    token: &str,
+    client_id: Uuid,
+    text: &str,
+    attachment_ids: &[String],
+    root: Option<&str>,
+    broadcast: bool,
+) -> Result<Value, ApiError> {
+    if attachment_ids.len() > assets::MAX_PER_MESSAGE
+        || attachment_ids
+            .iter()
+            .enumerate()
+            .any(|(i, id)| attachment_ids[..i].contains(id))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "attach up to 10 different files",
+        ));
+    }
+    let mut content = prepare_content(text, !attachment_ids.is_empty())?;
     if broadcast && root.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -801,9 +920,13 @@ async fn persist_message(
     if let (None, Some(user_id)) = (space_id, user_id) {
         crate::direct::authorize_send(&mut tx, channel_id, user_id).await?;
     }
-    // Preserve existing normal-message retry hashes, but bind reply retries to
-    // their destination and broadcast choice as well as their text.
-    let hash = Sha256::digest(text.as_bytes()).to_vec();
+    // Preserve existing text-only retry hashes; replies are also bound to their
+    // destination and broadcast choice below, and files to their ids.
+    let hash = if attachment_ids.is_empty() {
+        Sha256::digest(text.as_bytes()).to_vec()
+    } else {
+        Sha256::digest(format!("{text}\0{}", attachment_ids.join(",")).as_bytes()).to_vec()
+    };
     let existing: Option<(i64, Vec<u8>, Value)> = sqlx::query_as("SELECT session_id, request_hash, payload FROM public.messages WHERE channel_id = $1 AND client_message_id = $2")
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     if let Some((sender, original, payload)) = existing {
@@ -841,6 +964,12 @@ async fn persist_message(
             "sending too quickly; try again shortly",
         ));
     }
+    if !attachment_ids.is_empty() {
+        let owner =
+            user_id.ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "sign in to send files"))?;
+        content["attachments"] =
+            Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
+    }
     let content =
         with_mentions(&mut tx, content, &mentions::parse(text, space_id.is_some())).await?;
     let seq = head + 1;
@@ -877,6 +1006,7 @@ async fn persist_message(
     }
     let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload, thread_root_id, broadcast) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
         .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(thread_root.as_ref().map(|row| row.0)).bind(broadcast).fetch_one(&mut *tx).await.map_err(database_error)?;
+    assets::link(&mut tx, attachment_ids, message_id).await?;
     // Notifications are decided later from this outbox row; edits never add one.
     if user_id.is_some() {
         crate::push::enqueue(&mut tx, message_id)

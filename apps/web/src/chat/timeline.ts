@@ -1,5 +1,6 @@
 import {
   sequence,
+  type ChatAttachmentsEvent,
   type ChatEditEvent,
   type ChatForwardEvent,
   type ChatMessage,
@@ -7,16 +8,25 @@ import {
   type ChatReactionEvent,
   type ChatThreadSummary,
 } from "./types.ts";
-import { mergeEditedContent } from "./edits.ts";
+import { mergeEditedContent, withNewerAttachments } from "./edits.ts";
 
 const MAX_PENDING_EVENTS = 256;
-type DurableEvent = ChatMessage | ChatReactionEvent | ChatPinEvent | ChatForwardEvent | ChatEditEvent;
+type DurableEvent =
+  | ChatMessage
+  | ChatReactionEvent
+  | ChatAttachmentsEvent
+  | ChatPinEvent
+  | ChatForwardEvent
+  | ChatEditEvent;
+
+export type ChatTimelineEvent = DurableEvent;
 
 export class ChatTimeline {
   private cursorValue = 0n;
   private readonly byId = new Map<string, ChatMessage>();
   private readonly eventBuffer = new Map<bigint, DurableEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
+  private readonly unseenAttachments = new Map<string, ChatAttachmentsEvent>();
   private readonly forwardUpdates = new Map<string, ChatMessage>();
   private readonly pinUpdates = new Map<string, ChatMessage>();
   private readonly editUpdates = new Map<string, ChatMessage>();
@@ -55,6 +65,7 @@ export class ChatTimeline {
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
+    this.unseenAttachments.clear();
     this.threadSummaries.clear();
     if (this.cursorValue === 0n) this.forwardUpdates.clear();
     this.sortedMessages = undefined;
@@ -91,6 +102,7 @@ export class ChatTimeline {
     this.applyContiguous(next, message);
     if (
       this.unseenReactions.size > MAX_PENDING_EVENTS ||
+      this.unseenAttachments.size > MAX_PENDING_EVENTS ||
       [...this.editUpdates.keys()].filter((id) => !this.byId.has(id) && !this.pinnedById.has(id)).length >
         MAX_PENDING_EVENTS
     )
@@ -123,6 +135,28 @@ export class ChatTimeline {
     if (!this.byId.has(event.messageId)) {
       const previous = this.unseenReactions.get(event.messageId);
       if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenReactions.set(event.messageId, event);
+    }
+  }
+
+  /** Same revision rule as reactions: a replayed older event (for example a
+   * stale "processing") never overwrites a newer snapshot. */
+  private mergeAttachments(event: ChatAttachmentsEvent) {
+    const update = { content: { attachments: event.attachments }, attachmentsSeq: event.seq };
+    const existing = this.byId.get(event.messageId);
+    if (existing) {
+      const next = withNewerAttachments(existing, update);
+      if (next !== existing) {
+        this.byId.set(existing.id, next);
+        this.sortedMessages = undefined;
+      }
+    } else {
+      const previous = this.unseenAttachments.get(event.messageId);
+      if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenAttachments.set(event.messageId, event);
+    }
+    // Pinned copies (including pins outside loaded history) show the same files.
+    for (const collection of [this.pinnedById, this.pinUpdates]) {
+      const current = collection.get(event.messageId);
+      if (current) collection.set(event.messageId, withNewerAttachments(current, update));
     }
   }
 
@@ -230,9 +264,13 @@ export class ChatTimeline {
     if (snapshot.pinSeq !== undefined) this.pinUpdates.set(snapshot.id, snapshot);
     if (snapshot.pin) {
       const forward = this.forwardUpdates.get(snapshot.id);
+      const pinned = withNewerAttachments(
+        snapshot,
+        this.byId.get(snapshot.id) ?? this.pinnedById.get(snapshot.id) ?? snapshot,
+      );
       this.pinnedById.set(
         snapshot.id,
-        forward ? { ...snapshot, forward: forward.forward, forwardSeq: forward.forwardSeq } : snapshot,
+        forward ? { ...pinned, forward: forward.forward, forwardSeq: forward.forwardSeq } : pinned,
       );
     } else this.pinnedById.delete(snapshot.id);
     const visible = this.byId.get(snapshot.id);
@@ -247,6 +285,7 @@ export class ChatTimeline {
       if (message.type === "message.pin") this.mergePin(message);
       else if (message.type === "message.forward") this.mergeForwardMessage(message.message);
       else if (message.type === "message.edited") this.mergeEdit(message.message);
+      else if (message.type === "message.attachments") this.mergeAttachments(message);
       else this.mergeReactions(message);
       return;
     }
@@ -268,14 +307,14 @@ export class ChatTimeline {
       this.sortedMessages = undefined;
     } else {
       // reset puts fresh rows first; retain their author metadata even when a
-      // cached row carries a more recent HTTP reaction snapshot.
-      const newerReactions = sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0");
-      if (newerReactions || (summary && summary !== existing.thread)) {
-        this.byId.set(message.id, {
-          ...existing,
-          ...(newerReactions ? { reactions: message.reactions, reactionSeq: message.reactionSeq } : {}),
-          ...(summary ? { thread: summary } : {}),
-        });
+      // cached row carries a more recent reaction, attachment or thread snapshot.
+      let next = withNewerAttachments(existing, message);
+      if (sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) {
+        next = { ...next, reactions: message.reactions, reactionSeq: message.reactionSeq };
+      }
+      if (summary && summary !== existing.thread) next = { ...next, thread: summary };
+      if (next !== existing) {
+        this.byId.set(message.id, next);
         this.sortedMessages = undefined;
       }
     }
@@ -283,6 +322,11 @@ export class ChatTimeline {
     if (unseen) {
       this.mergeReactions(unseen);
       this.unseenReactions.delete(message.id);
+    }
+    const unseenAttachments = this.unseenAttachments.get(message.id);
+    if (unseenAttachments) {
+      this.mergeAttachments(unseenAttachments);
+      this.unseenAttachments.delete(message.id);
     }
     this.mergePinMessage(message);
     this.mergeForwardMessage(message);

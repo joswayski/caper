@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.20",
+    "@jsquash/avif": "2.1.1",
+    "@jsquash/webp": "1.5.0",
     "@pierre/diffs": "^1.5.1",
     "@radix-ui/react-slider": "^1.4.7",
     "@tanstack/react-router": "^1.170.29",
@@ -21,6 +23,7 @@
     "@twemoji/svg": "^15.0.0",
     "emoji-picker-react": "^4.22.3",
     "lucide-react": "^0.468.0",
+    "mediabunny": "1.61.1",
     "nitro": "3.0.260610-beta",
     "onnxruntime-web": "1.23.2",
     "react": "^19.2.0",

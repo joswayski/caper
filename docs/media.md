@@ -966,6 +966,358 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
+## Uploads and attachments
+
+Signed-in members attach up to 10 files to a message. Bytes never pass through
+AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
+straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
+from its own domain after checking a signature the API issued.
+
+### Data model
+
+One `assets` row per logical file (`202610090010_assets.sql`), shared by future
+purposes such as avatars (`purpose`, today only `attachment`). An optional
+preview is a fixed derived object beside the original, not another row:
+
+| Object | Key |
+| --- | --- |
+| Original | `original/{asset id}` |
+| Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
+
+`message_id`/`position` link a sent file to one message. Message content keeps
+its version 1 `type:"text"` shape and gains an optional `attachments` array
+(`id, kind, contentType, name, size, width, height, durationMs, preview`).
+**Stored payloads never contain URLs.** Rows are never deleted (matching the
+retain-records policy): `deleted_at` hides a file and `purged_at` records that
+its R2 objects were removed.
+
+### Upload flow
+
+1. `POST /api/assets` (account cookie/bearer) with channel, name, type, exact
+   byte size, optional dimensions/duration and preview size. The API checks
+   channel access, locks the user row, enforces quota, 30 reservations/minute
+   and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
+   URLs (15 minutes). The signature covers `content-type`, `content-length`
+   and the download name in `content-disposition`, so R2 rejects other bytes.
+2. The client uploads the preview, then the original, directly to R2.
+3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
+   exact reserved size, and for inline types checks magic bytes from a 64-byte
+   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
+   send transaction the API locks the sender's ready, unattached uploads for
+   that channel, embeds their descriptions and links them. Text may be empty
+   only when files are attached. Attachment IDs join the idempotency hash;
+   text-only hashes are unchanged.
+
+`GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
+returns fresh URLs for visible attachments (like Discord's refresh endpoint)
+for tabs open longer than a URL's lifetime.
+
+### Limits and quota
+
+- Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
+  bytes, original plus preview. No separate per-file limit; one file may use
+  the whole allowance. Space owners are not charged for members' uploads.
+- Quota counts what is **stored** (after browser compression), and reservations
+  count immediately so parallel uploads cannot overshoot.
+- Bytes stay counted until the purge loop removes the objects. That bounds
+  upload/delete/re-upload churn to the allowance.
+- Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
+  not implemented.
+
+### Delivery and URL signing
+
+Every response or socket frame that carries a message signs URLs as it leaves:
+history, the send response, and both gateway paths (live and replay, including
+the legacy socket). URLs look like
+`https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
+cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
+three days out, serves allowlisted image/video/audio types inline, forces every
+other type to download as `application/octet-stream`, and always sends
+`nosniff` plus a sandboxing CSP. PDFs are the one document type that opens in
+a browser tab (`inline` with their file name and no page CSP, which would stop
+Chrome's viewer); the API only completes a PDF whose bytes start with `%PDF-`.
+Range requests (video seeking) are supported.
+The edge cache is keyed by object, after signature verification. A leaked URL
+works until it expires, as with Discord's signed attachment links.
+
+### Client compression and previews
+
+Clients compress before upload, using settings the API serves with
+`GET /api/assets/usage` (`compression`), so operators tune them with
+configuration and an API restart, not a client release. The goal is smaller
+files **without visible quality loss**; when a platform cannot meet a rule it
+uploads the original instead of a worse file.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `ASSET_PALETTE_COLORS` | 256 | Stills with at most this many distinct colours become a **lossless** indexed PNG (the exact-palette path from Captures). 0 disables. |
+| `ASSET_IMAGE_FORMAT` | avif | Photo format: `avif`, or `webp`. Clients that cannot encode AVIF use WebP. |
+| `ASSET_AVIF_QUALITY` | 85 | AVIF photo quality (libavif scale). 85 matches WebP q92 on SSIMULACRA2 at 19% fewer bytes on 12 MP photos. |
+| `ASSET_IMAGE_QUALITY` | 92 | WebP photo quality (JPEG where WebP encoding is unavailable). 100 disables lossy photo encoding in either format. |
+| `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
+| `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
+| `ASSET_VIDEO_BITRATE_KBPS` | 6000 | Target bitrate at 1080p, scaled by pixel count for smaller videos (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
+
+Rules shared by every client:
+
+- **Lossless stays lossless.** PNG, BMP, TIFF and lossless WebP (screenshots,
+  UI, drawings) are never encoded lossily: the smaller of an indexed PNG (when
+  the colours fit) and libwebp lossless WebP (`method 3`, `exact`), else the
+  original. Pixels are identical and the ICC profile is kept. Real screenshots
+  have thousands of colours from text anti-aliasing, so this matters: lossy
+  WebP visibly blurred text in testing. Lossless WebP made 2880×1800
+  screenshots 70–74% smaller.
+- **Photos** (JPEG, HEIC/HEIF, lossy WebP) are re-encoded as AVIF at
+  `ASSET_AVIF_QUALITY` when `imageFormat` is `avif`, else (or when AVIF
+  encoding fails, or for HDR/other colour spaces) as lossy WebP at
+  `ASSET_IMAGE_QUALITY`, and kept only when at least 10% smaller. HEIC is
+  always converted (browsers cannot show it). Re-encoding applies the EXIF
+  orientation and drops EXIF/XMP/GPS. A missing `imageFormat` (older API)
+  means WebP.
+- **Originals that upload unchanged lose their metadata losslessly:** JPEG
+  APPn segments other than JFIF, ICC and Adobe are dropped (orientation is kept
+  as a minimal Exif segment), PNG `eXIf`/`tEXt`/`zTXt`/`iTXt` chunks are
+  dropped, and MP4/MOV `udta`/`meta` boxes under `moov` and each track are
+  renamed `free` and zero-filled in place, so locations are gone and sample
+  data is byte-identical.
+- **Video** is transcoded to H.264/AAC MP4 only when needed: the short edge is
+  above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
+  do not play everywhere), or the bitrate is more than 1.25× the target.
+  Otherwise the original uploads unchanged, so already-efficient phone video is
+  never re-compressed. A size-only transcode is kept only when at least 10%
+  smaller; the audio track is never dropped.
+- **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
+  1000-nit peak) where the platform can do it; otherwise the original uploads
+  unchanged rather than a washed-out SDR copy.
+- **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+
+AVIF quality parity. `avifQuality` is libavif's quality scale as of
+libavif 1.0 (`avifenc -q`). On five 9–14 MP photos, quality 85 scored
+SSIMULACRA2 83.3 against 83.0 for WebP q92 at 81% of its bytes. libavif 1.3+
+with aom 3.13+ switches stills to aom `tune=iq`, which shifts that scale, so
+Android and Apple pin `tune=ssim`; desktop's rav1e maps quality 85 to
+quantizer index 55 (calibrated to within 0.05 points on average).
+
+Why H.264 and not HEVC/AV1: chat apps send H.264 (WhatsApp, Telegram and
+Signal encode it on the phone; Slack and Teams deliver it; Discord plays HEVC
+only where the device already can). Streaming services that ship software AV1
+decoders also store an H.264 rendition, which would defeat the storage saving,
+and browsers cannot use a bundled decoder for `<video>` (Safari plays AV1 only
+on devices with AV1 hardware).
+
+The server never transcodes: it verifies the stored bytes (exact size, and
+magic bytes for inline types) and charges quota for exactly what was stored,
+so a client that skips compression only spends its own allowance faster.
+
+Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
+Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
+open-source Chromium builds without H.264 keep the original file.
+
+### Encoders by platform
+
+| Platform | Photos (AVIF) | Lossless | Video and HDR | Size cost |
+| --- | --- | --- | --- | --- |
+| Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
+| Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
+
+### Server-side processing (parked)
+
+A server pipeline was built and then deliberately not shipped: clients
+uploaded originals to S3, an arm64 Lambda (`apps/media-worker`) compressed
+them (lossless WebP/AVIF, H.264 with HDR tone mapping, FLAC, gzip) into R2,
+and the API pushed `message.attachments` updates. Encoding on our servers
+costs roughly $0.003–0.02 per video minute, which a $5/month plan cannot
+absorb for heavy uploaders, while client encoders are free. It remains in the
+history of joswayski/caper#246 (contract `9d3709b`, API `5f23d15`, worker
+`08797de`, `72f8514`, `c5f57ea`) and joswayski/infrastructure#129 (`8ae9ace`) for when it
+is needed. Clients still accept the optional `status`
+(`processing|ready|failed`), `animated` and `attachmentsSeq` fields and the
+`message.attachments` / `attachment.progress` events it used; today's API
+never sends them, and an absent `status` means ready.
+
+Follow-ups:
+
+- Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
+  in the browser; the inline image is the preview).
+- Location written as a timed metadata track or a top-level XMP `uuid` box in
+  MP4 is not removed; WebP originals keep EXIF/XMP chunks.
+- HEVC/AV1 delivery once every client can play it; chunked parallel encoding
+  if server processing returns.
+- JPEG XL: Chrome 155 (October 2026) decodes it by default, Safari since 17
+  and Firefox from 158. Its draw for us is lossless JPEG recompression
+  (about 20% smaller and byte-for-byte reversible), but Android has no
+  platform decoder, desktop and older browsers would need one, and AVIF
+  already gives about 19% over WebP on photos. Revisit once Android and our
+  native clients can display it.
+
+Editing a message changes its text only; its attachments are kept, and a
+message with files may be edited to empty text. A forward embeds a snapshot of
+its source message, including its attachments, whose URLs are signed with the
+forward; they refresh when the forward is reloaded, not through
+`POST /api/assets/urls`. Pinned messages and thread replies show their files.
+Thread replies may carry files through the API; the client composers attach
+files only in channels and DMs.
+
+### In-app viewer
+
+Clicking a sent image or video opens it almost full screen inside the app on
+every client (`MediaViewer.tsx` on web, `MediaViewer.kt` on Android, the
+`AttachmentViews.swift` viewer on iPhone/iPad/Mac, `viewer.rs` on desktop),
+like Discord's. The viewer holds that message's ready images and videos in
+message order, starting at the one clicked: arrows, Left/Right or a swipe move
+between them (no wrap) with an "n / m" counter. Images show the preview until
+the original loads, zoom with double-click/double-tap, pinch or Ctrl+scroll,
+and pan while zoomed; animated GIF/WebP play. Videos autoplay with sound and
+pause when you move away or close; GIF-style videos (`animated`) loop muted.
+Each viewer has Save/Download, Open in browser and Close (Esc, the dark area,
+or a swipe down on phones). URLs come from each client's existing fresh-URL
+cache, and a refused load asks for one refresh. Audio and other files keep
+their inline behaviour; pending rows never open the viewer.
+
+Desktop has no platform video player or AVIF decoder, so it ships a trimmed,
+static FFmpeg built from pinned sources by
+[joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop)
+(FFmpeg 9.0.2, x264, dav1d 1.5.4, zimg 3.0.6; GPL-2.0-or-later, run as a
+separate program so the app stays Apache-2.0). `build.sh` and `build.ps1`
+download its `ffmpeg-9.0.2-r1` release, check the zip's SHA-256 and package
+`ffmpeg` (`ffmpeg.exe`) beside the app, with its licences, `SOURCES.txt` and
+build recipe in `ffmpeg-licenses/` (`/usr/share/doc/caper-desktop/` in the
+.deb). That repo's CI smoke-tests the app's exact commands on Linux and on a
+Windows runner, where Media Foundation's H.264 encoder (asked for High profile)
+and x264 both pass; a newer build is a new release revision and a new pin. The
+app uses it to:
+
+- compress videos before upload with the shared rules (sizes are FFmpeg
+  expressions on the rotated frame, so portrait video keeps its shape),
+  reporting "Compressing… N%" on the draft chip; any failure uploads the
+  original;
+- play videos in the viewer: one FFmpeg decodes RGBA frames at a constant rate
+  into an egui texture, another decodes 48 kHz stereo PCM for rodio, and audio
+  is the clock (the wall clock without sound). FFmpeg has no TLS; it streams
+  the signed CDN URL through a loopback range proxy (`media_proxy.rs`, bound to
+  127.0.0.1 with an unguessable per-video token). Seeking restarts both
+  decoders at the new time;
+- decode AVIF and HEIC originals for the full-size viewer.
+
+It is found beside the executable (`/usr/lib/caper-desktop` for the .deb) or
+at `CAPER_FFMPEG`. Without it (a development build), videos upload unchanged
+and the viewer offers the browser. The ignored real-FFmpeg tests run against
+the shipped build with `CAPER_FFMPEG` set to it and `CAPER_FFMPEG_FIXTURES` set
+to a full FFmpeg (lavfi test sources, libx265) that makes their inputs.
+
+### Deletion and purge
+
+An API loop (every minute, `FOR UPDATE SKIP LOCKED`, safe across replicas):
+
+- Marks uploads never completed after 1 hour, or completed but never sent
+  after 24 hours, as deleted.
+- Removes R2 objects for deleted rows: immediately when the file was never
+  sent, 24 hours after deletion when it was (so moderators can still inspect
+  it), then sets `purged_at` and releases quota.
+
+History marks deleted attachments `unavailable` without URLs. No user-facing
+message or file delete exists yet; account deletion should set `deleted_at` on
+the owner's assets when that flow lands.
+
+### Configuration
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
+| `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
+| `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
+| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
+| `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
+
+The bucket needs a CORS rule allowing `PUT` from the web origin with the
+`content-type` and `content-disposition` headers (managed in
+`joswayski/infrastructure`). The Worker (`apps/cdn/wrangler.toml`) binds the
+bucket as `MEDIA`, runs on `cdn.caper.chat` / `cdn.staging.caper.chat`, and
+holds `ASSET_CDN_SIGNING_SECRET` as a Worker secret:
+
+```sh
+cd apps/cdn
+npx wrangler secret put ASSET_CDN_SIGNING_SECRET --env staging
+npx wrangler deploy --env staging
+```
+
+### Platform status
+
+| Platform | Send files | Show files |
+| --- | --- | --- |
+| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
+Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
+within an hour, or after a 403/404, at most once per stale URL; decoded images
+are cached by attachment id. Stills follow the shared rules and encoder table
+above (exact indexed PNG via a Swift encoder over the Compression framework's
+DEFLATE, libwebp lossless, AVIF through the bundled libavif, else WebP/JPEG at
+`imageQuality`), scaled to `imageMaxEdge`; HEIC is never uploaded when
+conversion succeeds. Videos use the largest
+`AVAssetExportSession` size preset whose output short edge stays within
+`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
+Presets choose their own bitrates, so `videoBitrateKbps` and
+`audioBitrateKbps` are not applied. Previews and poster frames use
+`previewEdge`. Taps open images and videos in the in-app viewer (below) and
+files at their signed URL in the system browser. Audio plays through `AVPlayer` with the app's existing audio
+session. Unit tests cover decoding, URL refresh decisions, compression
+decisions, the indexed-PNG round trip through ImageIO, the upload request
+sequence and a file-only send against a stubbed `URLProtocol`. They were
+written without a Swift toolchain and await macOS CI; Photos/file pickers,
+drag and drop, AVKit playback, export presets on real media, live R2 uploads
+and physical devices are not yet validated.
+
+### Validation
+
+- Rust unit tests: SigV4 presigning matches AWS's published S3 example, signed
+  upload headers, day-snapped delivery URLs, a signature vector shared with the
+  Worker tests, configuration rules, sniffing and name/type normalization.
+- Postgres integration test (fake S3 server): quota with previews, access
+  denial, exact-size and magic-byte verification, ordered single-use linking,
+  history signing, URL refresh visibility, purge timing and quota release.
+- Worker tests (`npm run test:cdn`): signature, expiry, tampering, inline versus
+  download headers, ranges, HEAD.
+- Web tests: tolerant attachment validation, upload request sequence, storage
+  full errors, file-only sends.
+- Chromium against a local API, gateway, Postgres 16, Valkey, a fake S3 server
+  and the real Worker code: a 1.6 MB PNG uploaded as a 143 KB WebP, a second
+  member received it live through the gateway, history reload and a 390 px
+  layout rendered, a tampered signature returned 404.
+- Google Chrome (stable, Linux) against the same stack: a flat 2560×1440 PNG
+  uploaded as a 9.5 KB lossless indexed PNG (from 104 KB), and a 4 s 2560×1440
+  VP9/Opus WebM was transcoded in the browser to a 1920×1080 H.264 + Opus MP4
+  (2.3 MB → 805 KB) that played back with its poster. Rust and web tests cover
+  the settings, the flood limits and an indexed-PNG decode round-trip.
+- Not yet validated: live R2 (signature acceptance, signed `content-length`
+  and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders
+  (including Opus-in-MP4 playback on Safari), and physical phones. Desktop has
+  not uploaded to a live API/R2/CDN; its Windows file dialog and drag and drop
+  and the Linux portal dialog have not been exercised interactively.
+- Rust desktop unit tests: tolerant attachment parsing, URL expiry and
+  refresh batching with one retry after 403/404, compression decisions, a
+  pixel-exact palette PNG round trip, MP4 header probing, and the upload
+  request sequence against a loopback fake server (exact storage headers and
+  length, no credentials on storage `PUT`s, `attachmentIds` only when present,
+  storage-full errors). The labelled `--fixture parity-attachments` preview
+  was rendered under Xvfb (software Vulkan) at 1440×900 and 900×700.
+- Android: JVM unit tests cover tolerant attachment parsing, URL expiry and
+  refresh decisions, the compression decisions (palette PNG versus lossy versus
+  keep, preview sizing, video target height), a lossless indexed-PNG round trip
+  through the JDK decoder, and the reserve, presigned `PUT`, complete and send
+  sequence against MockWebServer (exact headers, no credentials sent to
+  storage). Not yet validated on Android: the Compose attachment UI and pickers
+  on an emulator or device, Bitmap/WebP encoding and EXIF handling, Media3
+  Transformer transcoding and playback, and uploads to live R2/CDN.
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking

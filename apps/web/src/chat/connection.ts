@@ -1,5 +1,7 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
 import {
+  isChatAttachmentProgressEvent,
+  isChatAttachmentsEvent,
   isChatAuthor,
   isChatEditEvent,
   isChatForwardEvent,
@@ -7,6 +9,8 @@ import {
   isChatPinEvent,
   isChatReactionEvent,
   sequence,
+  type ChatAttachmentProgressEvent,
+  type ChatAttachmentsEvent,
   type ChatEditEvent,
   type ChatEvent,
   type ChatForwardEvent,
@@ -16,16 +20,20 @@ import {
   type ChatTypingEvent,
 } from "./types.ts";
 
+type ApplyResult = "applied" | "buffered" | "duplicate" | "overflow";
+
 export interface ChatConnectionCallbacks {
-  message: (message: ChatMessage) => "applied" | "buffered" | "duplicate" | "overflow";
+  message: (message: ChatMessage) => ApplyResult;
   cursor: () => string;
   status: (online: boolean) => void;
   resync: () => void;
   typing?: (event: ChatTypingEvent) => void;
-  reactions?: (event: ChatReactionEvent) => "applied" | "buffered" | "duplicate" | "overflow";
-  pin?: (event: ChatPinEvent) => "applied" | "buffered" | "duplicate" | "overflow";
-  forward?: (event: ChatForwardEvent) => "applied" | "buffered" | "duplicate" | "overflow";
-  edit?: (event: ChatEditEvent) => "applied" | "buffered" | "duplicate" | "overflow";
+  reactions?: (event: ChatReactionEvent) => ApplyResult;
+  attachments?: (event: ChatAttachmentsEvent) => ApplyResult;
+  progress?: (event: ChatAttachmentProgressEvent) => void;
+  pin?: (event: ChatPinEvent) => ApplyResult;
+  forward?: (event: ChatForwardEvent) => ApplyResult;
+  edit?: (event: ChatEditEvent) => ApplyResult;
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -36,7 +44,7 @@ function parseEvent(value: unknown): ChatEvent {
     sequence(event.cursor);
     return { type: "ready", cursor: event.cursor };
   }
-  if (isChatReactionEvent(event)) return event;
+  if (isChatReactionEvent(event) || isChatAttachmentsEvent(event) || isChatAttachmentProgressEvent(event)) return event;
   if (isChatPinEvent(event)) return event;
   if (isChatForwardEvent(event)) return event;
   if (isChatEditEvent(event)) return event;
@@ -91,6 +99,13 @@ export class ChatConnection {
         status: this.callbacks.status,
         error: () => this.callbacks.resync(),
         event: (value) => {
+          // Progress is ephemeral and unsequenced: drop a malformed frame rather
+          // than reloading history over a missing percentage.
+          if (
+            (value as { type?: unknown } | null)?.type === "attachment.progress" &&
+            !isChatAttachmentProgressEvent(value)
+          )
+            return;
           let event: ChatEvent;
           try {
             event = parseEvent(value);
@@ -107,8 +122,20 @@ export class ChatConnection {
             if (event.channelId === this.channelId) this.callbacks.typing?.(event);
             return;
           }
+          if (event.type === "attachment.progress") {
+            if (event.channelId === this.channelId) this.callbacks.progress?.(event);
+            return;
+          }
           if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {
             if (this.callbacks.reactions(event) === "overflow") this.callbacks.resync();
+            return;
+          }
+          if (
+            event.type === "message.attachments" &&
+            event.channelId === this.channelId &&
+            this.callbacks.attachments
+          ) {
+            if (this.callbacks.attachments(event) === "overflow") this.callbacks.resync();
             return;
           }
           if (event.type === "message.pin" && event.channelId === this.channelId && this.callbacks.pin) {
