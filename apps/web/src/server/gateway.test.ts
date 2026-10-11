@@ -868,3 +868,91 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   assert.ok(shown.every((notification) => notification.closed));
   assert.ok(![...storage.values()].some((value) => value.includes("A new sketch")), "storage never contains previews");
 });
+
+test("browser alerts download images outside the cross-tab lock and coalesce unread refreshes", async (t) => {
+  const f = setup(t);
+  setAppGatewayForTests(f.gateway);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "hidden", hasFocus: () => false }));
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  // Serializes callbacks like the Web Locks API.
+  let tail: Promise<unknown> = Promise.resolve();
+  vi.stubGlobal("navigator", {
+    locks: {
+      request: (_name: string, callback: () => unknown) => {
+        const run = tail.then(callback);
+        tail = run.catch(() => undefined);
+        return run;
+      },
+    },
+  });
+  const shown: string[] = [];
+  vi.stubGlobal(
+    "Notification",
+    class {
+      static permission = "granted";
+      onclick?: () => void;
+      onclose?: () => void;
+      constructor(_title: string, options: NotificationOptions) {
+        shown.push(options.tag ?? "");
+      }
+      close() {
+        this.onclose?.();
+      }
+    },
+  );
+  let refreshes = 0;
+  const stop = watchBrowserNotifications(
+    "account",
+    () => undefined,
+    () => refreshes++,
+  );
+  t.onTestFinished(() => {
+    stop();
+    setAppGatewayForTests(undefined);
+  });
+  f.hello(0);
+  const id = f.subscribe(0).id;
+  const emit = (seq: number, change: object = {}) =>
+    f.sockets[0].frame({
+      type: "event",
+      id,
+      event: {
+        type: "notification.created",
+        seq: String(seq),
+        messageId: `message${seq}`,
+        title: "Maya · #design",
+        body: "A new sketch",
+        spaceId: "space0000001",
+        channelId: "chan00000002",
+        createdAt: new Date().toISOString(),
+        ...change,
+      },
+    });
+  let complete!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementationOnce(
+    () =>
+      new Promise<Response>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  emit(1, {
+    attachmentUrl: "https://cdn.test/original/photo1?exp=123&sig=test",
+    attachmentContentType: "image/png",
+    attachmentSize: 3,
+  });
+  emit(2);
+  emit(3);
+  await vi.waitFor(() => assert.deepEqual(shown, ["caper:account:message2", "caper:account:message3"]));
+  assert.equal(refreshes, 0);
+  vi.advanceTimersByTime(1_000);
+  assert.equal(refreshes, 1, "a burst of notifications triggers one unread refresh");
+  complete(new Response("too many bytes"));
+  await vi.waitFor(() => assert.equal(shown.length, 3));
+  assert.equal(shown[2], "caper:account:message1", "the slow download still presents its own alert");
+});

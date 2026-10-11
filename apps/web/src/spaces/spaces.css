@@ -95,7 +95,8 @@
   border-radius: 50%;
   background: var(--text);
 }
-.channel-select .channel-unread {
+.channel-select .channel-unread,
+.channel-directory .channel-unread {
   flex: 0 0 6px;
   width: 6px;
   height: 6px;

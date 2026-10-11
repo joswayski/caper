@@ -97,6 +97,7 @@ class CaperMessagingService : FirebaseMessagingService() {
         // requests, blocks, mutes and levels, so no per-push API call is needed.
         if (!PushRegistration.enabled(this)) return
         val payload = PushPayload.parse(message.data) ?: return
+        PushActivity.received.tryEmit(Unit)
         if (ForegroundConversation.id == payload.tag) return
         CaperNotifications.show(this, payload)
     }

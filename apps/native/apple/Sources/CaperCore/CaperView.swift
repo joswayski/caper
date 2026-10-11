@@ -596,6 +596,7 @@ private struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(SideClip())
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
+                .onChange(of: narrow, initial: true) { _, narrow in model.narrowLayout = narrow }
                 .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -919,15 +920,22 @@ private struct ChannelSidebar: View {
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
                         HStack(spacing: 4) {
+                            // Includes unjoined channels, such as one where you were mentioned.
+                            let unread = model.channelUnread(channel.id)
                             Button { Task { await model.select(channel: channel) } } label: {
-                                HStack { CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer(); Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10)) }
-                                    // The whole row is the target, including the gap before Joined/Preview.
-                                    .padding(.vertical, 6)
-                                    #if os(iOS)
-                                    .frame(minHeight: 44)
-                                    #endif
-                                    .contentShape(Rectangle())
+                                HStack {
+                                    CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer()
+                                    if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                                    Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10))
+                                }
+                                // The whole row is the target, including the gap before Joined/Preview.
+                                .padding(.vertical, 6)
+                                #if os(iOS)
+                                .frame(minHeight: 44)
+                                #endif
+                                .contentShape(Rectangle())
                             }.buttonStyle(.plain).modifier(ControlHover())
+                                .accessibilityValue(unread ? "Unread activity" : "")
                             // Web's owner-only Manage button, also for channels you haven't joined.
                             if model.isOwner {
                                 Button { sheet = .manageChannel(channel) } label: { CaperIcon(name: "settings", size: 16) }
@@ -1156,7 +1164,7 @@ private struct ChannelSidebarItem: View {
         let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
         return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
-    private var unread: Bool { model.unreadSpaces.contains { $0.channels.contains { $0.id == channel.id } } }
+    private var unread: Bool { model.channelUnread(channel.id) }
 
     @ViewBuilder private var optionsMenuItems: some View {
         if model.isOwner {
@@ -1179,9 +1187,10 @@ private struct ChannelSidebarItem: View {
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                             .opacity(nameOpacity)
                         Text(channel.name).lineLimit(1).opacity(nameOpacity)
-                        if muted { MutedBell() }
                         Spacer(minLength: 0)
+                        // Web and Android order: the unread dot, then the bell.
                         if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                        if muted { MutedBell() }
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
