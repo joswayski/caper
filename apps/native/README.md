@@ -211,8 +211,8 @@ links live in `apps/web/src/downloads.ts` and stay hidden until set.
   `scripts/testflight-distribute.py` adds each build to every tester group and
   submits it for Beta App Review when an external group needs it; people who join
   the TestFlight public link get new builds automatically.
-- Store reviewers sign in with the API's review account (`AUTH_REVIEW_EMAIL` and
-  `AUTH_REVIEW_CODE`, see `docs/media.md`), because sign-in codes are emailed.
+- Store reviewers sign up with their own email like anyone else; Apple's Beta App
+  Review for the external "Friends & Family" group passed that way.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.

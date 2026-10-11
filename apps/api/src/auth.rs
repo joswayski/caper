@@ -31,45 +31,6 @@ struct EnabledAuth {
     secret: Arc<[u8]>,
     sender: Arc<dyn email::EmailSender>,
     limits: AuthLimits,
-    review: Option<ReviewAccount>,
-}
-
-/// One account whose sign-in code is fixed, for App Store and Google Play
-/// reviewers who cannot read the account's inbox. Its code is never emailed and
-/// still goes through the normal challenge, attempt and rate limits.
-#[derive(Clone)]
-struct ReviewAccount {
-    email: String,
-    code: String,
-}
-
-impl ReviewAccount {
-    fn from_env(environment: &RuntimeEnvironment) -> Result<Option<Self>, String> {
-        Self::parse(
-            environment.get("AUTH_REVIEW_EMAIL"),
-            environment.get("AUTH_REVIEW_CODE"),
-        )
-    }
-
-    fn parse(email: Option<String>, code: Option<String>) -> Result<Option<Self>, String> {
-        let email = email.filter(|value| !value.trim().is_empty());
-        let code = code.filter(|value| !value.trim().is_empty());
-        let (email, code) = match (email, code) {
-            (None, None) => return Ok(None),
-            (Some(email), Some(code)) => (email, code),
-            _ => return Err("AUTH_REVIEW_EMAIL and AUTH_REVIEW_CODE must be set together".into()),
-        };
-        let email = normalize_email(&email)
-            .map_err(|_| "AUTH_REVIEW_EMAIL must be a deliverable email address".to_string())?;
-        let code = code.trim().to_string();
-        if code.len() != 6 || !code.bytes().all(|byte| CODE_ALPHABET.contains(&byte)) {
-            return Err(format!(
-                "AUTH_REVIEW_CODE must be 6 characters from {}",
-                String::from_utf8_lossy(CODE_ALPHABET)
-            ));
-        }
-        Ok(Some(Self { email, code }))
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -159,17 +120,12 @@ impl AuthVerifier {
             return Err("AUTH_SECRET must contain at least 32 bytes".into());
         }
         let limits = AuthLimits::from_env(environment)?;
-        let review = ReviewAccount::from_env(environment)?;
-        if review.is_some() {
-            tracing::info!("app review sign-in account configured");
-        }
         let sender = email::SesEmailSender::from_env(environment).await?;
         Ok(Self {
             enabled: Some(EnabledAuth {
                 secret: Arc::from(secret.into_bytes()),
                 sender: Arc::new(sender),
                 limits,
-                review,
             }),
             #[cfg(test)]
             bypass: false,
@@ -250,11 +206,6 @@ impl AuthVerifier {
             .map_err(database_unavailable)?;
 
         let id = Uuid::new_v4();
-        let review_code = auth
-            .review
-            .as_ref()
-            .filter(|review| review.email == email)
-            .map(|review| review.code.clone());
         if email_recent >= auth.limits.email_15m
             || email_daily >= auth.limits.email_daily
             || ip_hourly >= auth.limits.ip_hourly
@@ -264,8 +215,7 @@ impl AuthVerifier {
             return Ok(id);
         }
 
-        let is_review = review_code.is_some();
-        let code = review_code.unwrap_or_else(random_code);
+        let code = random_code();
         let code_hash = code_hash(&auth.secret, id, &email, &code);
         sqlx::query(
             "UPDATE public.auth_email_challenges SET consumed_at = now()
@@ -291,10 +241,6 @@ impl AuthVerifier {
         .map_err(database_unavailable)?;
         transaction.commit().await.map_err(database_unavailable)?;
 
-        if is_review {
-            tracing::info!("app review sign-in code requested");
-            return Ok(id);
-        }
         if auth.sender.send_login_code(&email, &code).await.is_err() {
             let _ = sqlx::query(
                 "UPDATE public.auth_email_challenges SET consumed_at = now() WHERE id = $1",
@@ -688,7 +634,6 @@ mod tests {
                 secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
                 sender: sender.clone(),
                 limits: AuthLimits::default(),
-                review: None,
             }),
             bypass: false,
         };
@@ -704,34 +649,6 @@ mod tests {
             .unwrap_err();
         assert_eq!(reserved.status, axum::http::StatusCode::BAD_REQUEST);
         assert!(sender.deliveries.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn review_account_requires_both_settings_and_a_valid_code() {
-        assert!(ReviewAccount::parse(None, None).unwrap().is_none());
-        assert!(
-            ReviewAccount::parse(Some(" ".into()), Some("".into()))
-                .unwrap()
-                .is_none()
-        );
-        let review =
-            ReviewAccount::parse(Some(" Review@Caper.CHAT ".into()), Some("K7MP3Q".into()))
-                .unwrap()
-                .unwrap();
-        assert_eq!(review.email, "review@caper.chat");
-        assert_eq!(review.code, "K7MP3Q");
-        assert!(ReviewAccount::parse(Some("review@caper.chat".into()), None).is_err());
-        assert!(ReviewAccount::parse(None, Some("K7MP3Q".into())).is_err());
-        assert!(
-            ReviewAccount::parse(Some("review@example.com".into()), Some("K7MP3Q".into())).is_err()
-        );
-        // Lowercase, ambiguous characters (0/O, 1/I/L, U/V) and wrong lengths are refused.
-        for code in ["k7mp3q", "K7MP3O", "K7MP31", "K7MP3", "K7MP3QQ"] {
-            assert!(
-                ReviewAccount::parse(Some("review@caper.chat".into()), Some(code.into())).is_err(),
-                "{code}"
-            );
-        }
     }
 
     #[test]
@@ -775,7 +692,6 @@ mod tests {
                 secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
                 sender: sender.clone(),
                 limits: AuthLimits::default(),
-                review: None,
             }),
             bypass: false,
         };
@@ -926,86 +842,5 @@ mod tests {
             .verify_code(Some(&pool), replacement, &replacement_code)
             .await
             .unwrap();
-    }
-
-    #[sqlx::test(migrations = "./migrations")]
-    #[ignore = "requires disposable Postgres DATABASE_URL"]
-    async fn review_account_signs_in_with_its_fixed_code_without_email(pool: PgPool) {
-        let sender = Arc::new(RecordingSender {
-            deliveries: std::sync::Mutex::new(vec![]),
-        });
-        let verifier = AuthVerifier {
-            enabled: Some(EnabledAuth {
-                secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
-                sender: sender.clone(),
-                limits: AuthLimits::default(),
-                review: ReviewAccount::parse(
-                    Some("review@caper.chat".into()),
-                    Some("K7MP3Q".into()),
-                )
-                .unwrap(),
-            }),
-            bypass: false,
-        };
-        let ip = "192.0.2.10".parse().unwrap();
-
-        let challenge = verifier
-            .request_code(Some(&pool), " Review@Caper.chat ", ip)
-            .await
-            .unwrap();
-        assert!(sender.deliveries.lock().unwrap().is_empty());
-        let wrong = verifier
-            .verify_code(Some(&pool), challenge, "AAAAAA")
-            .await
-            .unwrap_err();
-        assert_eq!(wrong.attempts_remaining, Some(2));
-        let session = verifier
-            .verify_code(Some(&pool), challenge, "K7MP3Q")
-            .await
-            .unwrap();
-        assert_eq!(session.user.email.as_deref(), Some("review@caper.chat"));
-        // Each challenge is still single use.
-        assert!(
-            verifier
-                .verify_code(Some(&pool), challenge, "K7MP3Q")
-                .await
-                .is_err()
-        );
-
-        // Everyone else keeps random, emailed codes; the fixed code is not theirs.
-        let other = verifier
-            .request_code(Some(&pool), "person@caper.chat", ip)
-            .await
-            .unwrap();
-        let delivered = sender.deliveries.lock().unwrap().clone();
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].0, "person@caper.chat");
-        if delivered[0].1 != "K7MP3Q" {
-            assert!(
-                verifier
-                    .verify_code(Some(&pool), other, "K7MP3Q")
-                    .await
-                    .is_err()
-            );
-        }
-
-        // The review account is rate limited like any other address.
-        for _ in 0..2 {
-            verifier
-                .request_code(Some(&pool), "review@caper.chat", ip)
-                .await
-                .unwrap();
-        }
-        let throttled = verifier
-            .request_code(Some(&pool), "review@caper.chat", ip)
-            .await
-            .unwrap();
-        assert!(
-            verifier
-                .verify_code(Some(&pool), throttled, "K7MP3Q")
-                .await
-                .is_err(),
-            "the fourth request in 15 minutes must not create a challenge"
-        );
     }
 }
