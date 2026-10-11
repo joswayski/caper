@@ -61,6 +61,18 @@ pub enum Command {
         id: String,
         seq: String,
     },
+    LoadUnread {
+        epoch: u64,
+        revision: u64,
+        token: String,
+    },
+    ReadChannel {
+        epoch: u64,
+        token: String,
+        space: String,
+        channel: String,
+        seq: String,
+    },
     Restore {
         generation: u64,
     },
@@ -465,6 +477,18 @@ pub enum Event {
     DirectsLoaded {
         generation: u64,
         result: Result<Vec<DirectConversation>, String>,
+    },
+    UnreadLoaded {
+        epoch: u64,
+        revision: u64,
+        result: Result<Vec<crate::model::UnreadSpace>, String>,
+    },
+    ChannelRead {
+        epoch: u64,
+        space: String,
+        channel: String,
+        seq: String,
+        result: Result<(), String>,
     },
     MembershipRefreshed {
         epoch: u64,
@@ -1229,6 +1253,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             let _ = api.read_direct(&token, &id, &seq);
             return;
         }
+        Command::LoadUnread {
+            epoch,
+            revision,
+            token,
+        } => Event::UnreadLoaded {
+            epoch,
+            revision,
+            result: api
+                .unread_spaces(&token)
+                .map(|value| value.spaces)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReadChannel {
+            epoch,
+            token,
+            space,
+            channel,
+            seq,
+        } => Event::ChannelRead {
+            epoch,
+            result: api
+                .read_channel(&token, &space, &channel, &seq)
+                .map_err(|error| error.to_string()),
+            space,
+            channel,
+            seq,
+        },
         Command::PrepareVoice { token, channel } => {
             api.prepare_voice(&token, &channel);
             return;

@@ -5,8 +5,12 @@ notification and mute controls, and an account-wide gateway feed for local OS
 notifications in open web tabs and running macOS/Windows/Linux apps. Phone
 delivery alone is gated by `NOTIFICATIONS_ENABLED` and validated provider
 credentials. Desktop delivery needs no provider credentials. Closed-browser Web
-Push, notifications after desktop quit, invitations and channel unread remain
-unimplemented. [The built contract](#phase-1-as-built) below takes precedence
+Push, notifications after desktop quit and invitation alerts remain unimplemented.
+Space/channel unread dots are implemented (October 11) on all clients; see
+[the unread contract and rollout](media.md#space-and-channel-unread-indicators-october-11-2026).
+These dots are independent of notification levels, OS permission and mutes;
+the proposal below to hide unread on mute has not been adopted.
+[The built contract](#phase-1-as-built) below takes precedence
 over the original October 6 proposal and phased roadmap. Implementation is not
 production/device acceptance; see the validation boundary and rollout below and
 [media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm).

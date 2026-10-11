@@ -97,7 +97,12 @@ public final class AppModel {
     public private(set) var restoringWorkspace = false
     static let restoreLimit: Duration = .seconds(5)
     public var spacesError: String?
-    public var navigationOpen = false
+    public var navigationOpen = false {
+        didSet { if !navigationOpen { markSelectedDirectRead() } }
+    }
+    public private(set) var unreadSpaces: [UnreadSpace] = []
+    @ObservationIgnored private var unreadRevision = 0
+    @ObservationIgnored private var channelReads: [String: String] = [:]
     public var openingSpaceID: String?
     public var openingChannelID: String?
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
@@ -678,7 +683,7 @@ public final class AppModel {
         if active, account != nil {
             markSelectedDirectRead()
             removeShownNotifications()
-            Task { await refreshDirectMessages() }
+            Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
             refreshNotificationSettingsIfStale()
             refreshMembership()
         }
@@ -691,6 +696,7 @@ public final class AppModel {
     }
 
     private func markSelectedDirectRead() {
+        markSelectedChannelRead()
         guard foreground, account != nil, let id = selectedDirectMessageID, selectedDirectMessage?.status != .incoming,
               let history = chat.currentSnapshot(), history.channel?.id == id,
               let index = directMessages.firstIndex(where: { $0.id == id }),
@@ -704,6 +710,38 @@ public final class AppModel {
                 let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
                 directMessages[current] = old.with(readSeq: seq)
             } catch { /* A later foreground refresh retries the read cursor. */ }
+        }
+    }
+
+    public func refreshUnreadSpaces() async {
+        guard account != nil else { return }
+        unreadRevision += 1
+        let attempt = generation, revision = unreadRevision
+        guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
+        unreadSpaces = snapshot
+        markSelectedChannelRead()
+    }
+
+    private func markSelectedChannelRead() {
+        guard foreground, !navigationOpen, account != nil, selectedDirectMessageID == nil,
+              let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
+              let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
+              (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
+        let attempt = generation, cursor = history.cursor
+        Task {
+            do {
+                try await api.markChannelRead(spaceID: spaceID, channelID: id, seq: cursor)
+                guard generation == attempt else { return }
+                unreadRevision += 1
+                if (try? Sequence.compare(cursor, channelReads[id] ?? "0")) == .orderedDescending { channelReads[id] = cursor }
+                unreadSpaces = unreadSpaces.compactMap { space in
+                    var next = space
+                    if space.id == spaceID {
+                        next.channels.removeAll { $0.id == id && (try? Sequence.compare($0.lastSeq, cursor)) != .orderedDescending }
+                    }
+                    return next.channels.isEmpty ? nil : next
+                }
+            } catch { /* Retry on the next foreground poll or committed cursor. */ }
         }
     }
 
@@ -730,6 +768,7 @@ public final class AppModel {
             var reconcile = false
             while !Task.isCancelled {
                 await self?.refreshDirectMessages()
+                await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
                 reconcile = true
                 try? await Task.sleep(for: .seconds(15))
@@ -1622,6 +1661,7 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        unreadSpaces = []; channelReads = [:]; unreadRevision += 1
         #if os(macOS)
         desktopNotifications.stop()
         #endif

@@ -44,7 +44,11 @@ export function notificationLocation(event: MessageNotification) {
 }
 
 /** Account-wide, not tied to the current channel's chat subscription. */
-export function watchBrowserNotifications(accountId: string, showing: () => string | undefined) {
+export function watchBrowserNotifications(
+  accountId: string,
+  showing: () => string | undefined,
+  onActivity?: () => void,
+) {
   let active = true;
   const displayed = new Set<Notification>();
   const visibleKey = `caper.notificationVisible.${accountId}`;
@@ -76,6 +80,7 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
       typeof event.body !== "string"
     )
       return;
+    onActivity?.();
     const location = notificationLocation(event);
     const age = Date.now() - Date.parse(event.createdAt);
     if (!location || !Number.isFinite(age) || age < -30_000 || age > 120_000) return;

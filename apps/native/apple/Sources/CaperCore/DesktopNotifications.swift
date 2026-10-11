@@ -57,6 +57,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
               let messageID = event["messageId"] as? String,
               let title = event["title"] as? String, let body = event["body"] as? String,
               let timestamp = event["createdAt"] as? String else { return }
+        Task { await model.refreshUnreadSpaces() }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)

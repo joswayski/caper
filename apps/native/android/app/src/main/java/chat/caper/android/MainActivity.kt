@@ -16,6 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -447,6 +448,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
+            LaunchedEffect(narrow, navigationOpen) { viewModel.setConversationVisible(!narrow || !navigationOpen) }
             // 60 rail + 280 channels + 320 minimum chat + 220 members.
             val medium = maxWidth < 880.dp
             var membersVisible by remember { mutableStateOf(false) }
@@ -551,11 +553,21 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
     }
 
     /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float = 0f) {
+    fun settle(open: Boolean, velocity: Float? = null) {
         val target = if (open) 1f else 0f
         if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), velocity)
+            if (velocity == null) {
+                progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
+            } else {
+                val remaining = target - progress.value
+                val distance = abs(remaining)
+                val speed = if (remaining > 0f) velocity else -velocity
+                // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
+                val duration = if (speed > 0f) (3000f * distance / speed).coerceIn(160f, 320f).toInt() else 320
+                val slope = if (distance > 0f) (speed * duration / 1000f / distance).coerceIn(0f, 3f) else 0f
+                progress.animateTo(target, tween(duration, easing = CubicBezierEasing(0.2f, 0.2f * slope, 0.35f, 1f)))
+            }
         }
     }
 }
@@ -675,6 +687,7 @@ private fun Modifier.browseDrag(
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
+            val unread = state.unreadSpaces.any { it.id == space.id }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
@@ -682,11 +695,12 @@ private fun Modifier.browseDrag(
                     Surface(
                         // Clipped first, so the press ripple keeps the tile's corners.
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; if (muted) stateDescription = "Muted" },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                     ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(space.name), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
+                    if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }
@@ -875,6 +889,7 @@ private fun Modifier.browseDrag(
                             .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                             Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (state.unreadSpaces.any { it.channels.any { it.id == channel.id } }) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
                             if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
                             sessionStartedAt?.let { VoiceSessionTimer(it) }
                         }

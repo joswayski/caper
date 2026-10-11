@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
-import { BLOCKING, OWN_GESTURES, RELEASE_EASING, SETTLE } from "./browseTransition";
+import { BLOCKING, OWN_GESTURES, releaseTiming, SETTLE } from "./browseTransition";
 
 // On phones the member list is a drawer over the conversation. Like Browse, it
 // slides in and out with the same timing and follows a finger: left on the
@@ -51,7 +51,7 @@ export function useMembersDrawer(
   latest.current = { enabled, open, setOpen };
   const animations = useRef<Animation[]>([]);
   /** Where the next slide starts (0 hidden, 1 shown) and its speed toward its end, in progress per millisecond. */
-  const start = useRef({ from: 0, velocity: 0 });
+  const start = useRef({ from: 0, velocity: 0, interactive: false });
   /** Set while a finger poses the panel, so state changes do not also animate it. */
   const dragging = useRef(false);
   const stop = useRef<() => void>(undefined);
@@ -91,8 +91,8 @@ export function useMembersDrawer(
 
   /** Slides to shown or hidden from `start`; resolves false when a newer slide or drag takes over. */
   const slide = (show: boolean) => {
-    const { from, velocity } = start.current;
-    start.current = { from: 0, velocity: 0 };
+    const { from, velocity, interactive } = start.current;
+    start.current = { from: 0, velocity: 0, interactive: false };
     reset();
     const { room, panel, backdrop } = parts();
     if (!room || !panel) return Promise.resolve(true);
@@ -103,10 +103,9 @@ export function useMembersDrawer(
     const distance = Math.abs(to - from);
     if (still() || distance === 0) return Promise.resolve(true);
     // Browse's timing: a release carries on at the finger's speed.
-    const timing =
-      velocity > 0
-        ? { duration: Math.min(SETTLE.duration, Math.max(160, (3 * distance) / velocity)), easing: RELEASE_EASING }
-        : { duration: Math.max(160, SETTLE.duration * distance), easing: SETTLE.easing };
+    const timing = interactive
+      ? releaseTiming(distance, velocity)
+      : { ...SETTLE, duration: Math.max(160, SETTLE.duration * distance) };
     const length = travel(room, panel);
     const place = (progress: number) => ({ transform: `translateX(${(1 - progress) * length}px)` });
     const current = [panel.animate([place(from), place(to)], { ...timing, fill: "both" })];
@@ -131,7 +130,7 @@ export function useMembersDrawer(
     if (next === open) return;
     const { panel } = parts();
     const slides = enabled && !still();
-    start.current = { from: slides && panel ? shown() : 0, velocity: 0 };
+    start.current = { from: slides && panel ? shown() : 0, velocity: 0, interactive: false };
     setClosing(!next && slides && !!panel);
     setOpen(next);
   };
@@ -209,6 +208,7 @@ export function useMembersDrawer(
           start.current = {
             from: shown(),
             velocity: (commit ? velocity : -velocity) / length,
+            interactive: true,
           };
           if (show === latest.current.open) settle(show);
           else {

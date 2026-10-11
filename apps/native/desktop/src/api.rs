@@ -276,6 +276,27 @@ impl Api {
         .map(|_| ())
     }
 
+    pub fn unread_spaces(&self, token: &str) -> Result<crate::model::UnreadSpaces, ApiError> {
+        self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
+    }
+
+    pub fn read_channel(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/read"),
+            Some(token),
+            None,
+            Some(json!({"seq":seq})),
+        )?)
+        .map(|_| ())
+    }
+
     pub fn general_history(&self, token: Option<&str>) -> Result<History, ApiError> {
         self.request(Method::GET, "api/chat/general", token, None, None)
     }

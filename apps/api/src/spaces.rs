@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
 mod joining;
+mod unread;
 pub(crate) use joining::channel_participation;
 use joining::{add_channel_member, remove_channel_member};
 #[cfg(test)]
@@ -235,6 +236,11 @@ struct MemberInput {
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/spaces", get(list_spaces).post(create_space))
+        .route("/api/spaces/unread", get(unread::list))
+        .route(
+            "/api/spaces/{space}/channels/{channel}/read",
+            post(unread::read),
+        )
         .route(
             "/api/spaces/{space}",
             get(get_space).patch(rename_space).delete(delete_space),

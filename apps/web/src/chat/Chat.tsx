@@ -164,6 +164,7 @@ export default function Chat({
   direct = false,
   directPeerId,
   onReadCursor,
+  readActive = true,
   initialHistory,
   initialHistoryError,
   showTitle = false,
@@ -195,6 +196,7 @@ export default function Chat({
   direct?: boolean;
   directPeerId?: string;
   onReadCursor?: (seq: string) => void;
+  readActive?: boolean;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
   showTitle?: boolean;
@@ -537,12 +539,18 @@ export default function Chat({
   readCallback.current = onReadCursor;
   useEffect(() => {
     const read = () => {
-      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(readCursor);
+      if (readActive && state.phase === "ready" && !state.hasNewer && document.visibilityState === "visible")
+        readCallback.current?.(readCursor);
     };
     read();
     document.addEventListener("visibilitychange", read);
-    return () => document.removeEventListener("visibilitychange", read);
-  }, [state.phase, readCursor, channelId]);
+    // Retry a failed acknowledgement even if no new message arrives.
+    const timer = setInterval(read, 15_000);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
 
   // The composer resizes itself; keep the conversation pinned to the newest
   // message when it already was. Read the position before resizing, not a

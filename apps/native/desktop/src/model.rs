@@ -22,6 +22,24 @@ pub struct Inviter {
     pub display_name: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadChannel {
+    pub id: String,
+    pub last_seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct UnreadSpace {
+    pub id: String,
+    pub channels: Vec<UnreadChannel>,
+}
+
+#[derive(Deserialize)]
+pub struct UnreadSpaces {
+    pub spaces: Vec<UnreadSpace>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Space {
