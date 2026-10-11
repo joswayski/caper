@@ -102,6 +102,28 @@ private struct LoadingView: View {
     }
 }
 
+/// Static placeholders keep the message layout visible without introducing motion.
+private struct MessageSkeleton: View {
+    var rows = 5
+    var label = "Loading messages"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<rows, id: \.self) { index in
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
+                    VStack(alignment: .leading, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
+                        RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border)
+                            .frame(width: index.isMultiple(of: 2) ? 180 : 128, height: 10)
+                    }
+                    Spacer(minLength: 0)
+                }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
+            }
+        }.accessibilityElement(children: .ignore).accessibilityLabel(label)
+    }
+}
+
 /// Web's first-space page: an account with no spaces names one here.
 private struct FirstSpaceView: View {
     @Bindable var model: AppModel
@@ -2265,7 +2287,7 @@ private struct ChatView: View {
                                 else { Text("Beginning of conversation") }
                             }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
                             if chat.loading && chat.messages.isEmpty {
-                                Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
+                                MessageSkeleton()
                             }
                             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 VStack(spacing: 0) {
@@ -2445,7 +2467,7 @@ private struct ChatView: View {
                     }
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     HStack(alignment: .bottom, spacing: 0) {
-                        if chat.canAttach { AttachmentPickerButton(chat: chat).padding(.leading, 4) }
+                        AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
                             if chat.draft.isEmpty {
                                 Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
@@ -2713,18 +2735,7 @@ private struct NativeThreadView: View {
                             }
                         }
                         if chat.threadLoading && replies.isEmpty {
-                            VStack(spacing: 0) {
-                                ForEach(0..<2) { index in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Circle().fill(CaperTheme.border).frame(width: 34, height: 34)
-                                        VStack(alignment: .leading, spacing: 12) {
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: 96, height: 12)
-                                            RoundedRectangle(cornerRadius: 4).fill(CaperTheme.border).frame(width: index == 0 ? 180 : 128, height: 10)
-                                        }
-                                        Spacer(minLength: 0)
-                                    }.frame(height: 50, alignment: .top).padding(.horizontal, 18).padding(.vertical, 10)
-                                }
-                            }.accessibilityElement(children: .ignore).accessibilityLabel("Loading thread replies")
+                            MessageSkeleton(rows: 2, label: "Loading thread replies")
                         }
                         // Styled like the channel's "Load older messages" row.
                         if let error = chat.threadError {
