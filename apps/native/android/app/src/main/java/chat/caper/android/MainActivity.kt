@@ -1571,11 +1571,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                    // Shown only when the server accepts uploads; read-only previews have no composer.
-                    if (state.uploadsEnabled) AttachButton(state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null, viewModel::addAttachments)
                     OutlinedTextField(
                         draft, change, modifier = Modifier.weight(1f).then(field),
                         placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                        // Share the field's outline; read-only previews have no composer.
+                        leadingIcon = if (state.uploadsEnabled) ({
+                            AttachButton(
+                                state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null,
+                                viewModel::addAttachments,
+                            )
+                        }) else null,
                         enabled = !state.messagesLoading && state.messagesError == null,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
                         colors = composerFieldColors(),
