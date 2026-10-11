@@ -1133,13 +1133,11 @@ export default function Chat({
                 {compactTime(message.createdAt)}
               </div>
             ) : (
-              <div className="chat-avatar">
-                <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />
-              </div>
+              authorAvatar(author)
             )}
             <div>
               <header className={grouped ? "sr-only" : undefined}>
-                <strong>{author?.name ?? name}</strong>
+                {grouped ? <strong>{author?.name ?? name}</strong> : authorName(author)}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}
@@ -1338,14 +1336,45 @@ export default function Chat({
       <Pin size={18} aria-hidden="true" />
     </button>
   );
-  const openPinner = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+  const openAuthor = (author: ChatAuthor, anchor: HTMLElement, focusOnOpen = true) => {
+    setActionTarget(undefined);
     setMentionCard({
-      person: mentionCardPerson(author, mentionDirectory, state.author?.id),
+      person: mentionCardPerson(author, mentionDirectory, viewerId),
       anchor,
       drawer: isTouchLayout(),
       focusOnOpen,
     });
   };
+  const authorAvatar = (author: ChatAuthor | undefined) => {
+    const image = <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />;
+    return author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-avatar chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        {image}
+      </button>
+    ) : (
+      <div className="chat-avatar">{image}</div>
+    );
+  };
+  const authorName = (author: ChatAuthor | undefined) =>
+    author && !author.isGuest ? (
+      <button
+        type="button"
+        className="chat-author-name chat-author-profile"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+      >
+        <strong>{author.name}</strong>
+      </button>
+    ) : (
+      <strong>{author?.name ?? name}</strong>
+    );
 
   const pinsOpen = showPins && state.phase === "ready";
   // Opened from pins, the viewer renders inside that dialog, which then treats it as its own layer.
@@ -1453,10 +1482,10 @@ export default function Chat({
                             className="chat-pin-author"
                             aria-label={`Open profile for ${message.pin.author.name}`}
                             aria-haspopup="dialog"
-                            onClick={(event) => openPinner(message.pin!.author, event.currentTarget)}
+                            onClick={(event) => openAuthor(message.pin!.author, event.currentTarget)}
                             onPointerEnter={(event) => {
                               if (event.pointerType === "mouse")
-                                openPinner(message.pin!.author, event.currentTarget, false);
+                                openAuthor(message.pin!.author, event.currentTarget, false);
                             }}
                             onPointerDown={(event) => {
                               cancelPress();
@@ -1468,7 +1497,7 @@ export default function Chat({
                                 pointerId: event.pointerId,
                                 timer: setTimeout(() => {
                                   suppressClick.current = true;
-                                  openPinner(message.pin!.author, anchor);
+                                  openAuthor(message.pin!.author, anchor);
                                 }, 500),
                               };
                             }}
@@ -1491,11 +1520,9 @@ export default function Chat({
                           </button>
                         </small>
                       )}
-                      <div className="chat-avatar chat-pinned-avatar">
-                        <Avatar avatarId={message.author.avatarId} name={message.author.name} />
-                      </div>
+                      {authorAvatar(message.author)}
                       <header>
-                        <strong>{message.author.name}</strong>
+                        {authorName(message.author)}
                         <time dateTime={message.createdAt}>
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>

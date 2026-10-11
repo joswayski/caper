@@ -61,11 +61,15 @@ never the internal sequence key.
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
 pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
 that opens the existing DM or starts one through `POST /api/dms`, then navigates
-there. Your own card says "You" and has no button. Card data comes only from what
+there. Message-author avatars/names (channels, DMs, threads and Pins) and member-list
+rows open the same card on every client; guest authors stay inert. Your own card
+says "You" and has no button. Card data comes only from what
 the client already loaded: space members, then `GET /api/people`, then DM peers;
 someone you share nothing with shows `@username` and the generic avatar, and
-Message still works. Wide layouts (web desktop, macOS, Rust desktop) show a popover
-by the pill; web narrow/touch, Android and iPhone show a bottom sheet. DM errors
+Message still works. Authors absent from that directory retain their message name
+and avatar, without a guessed username or Message action. Wide layouts (web desktop,
+macOS, Rust desktop) show a popover by the clicked identity; web narrow/touch,
+Android and iPhone show a bottom sheet. DM errors
 stay inline in the card. No API change. Mentions drive phone push kinds
 (`mention.user`, `mention.everyone`); see [notifications.md](notifications.md).
 

@@ -82,6 +82,84 @@ try {
   await control({ reset: true });
   const initial = await history();
   const root = initial.messages[0];
+
+  browser("open", "about:blank");
+  browser("set", "viewport", "1280", "900", "2");
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  browser("open", `${web}/spaces`);
+  wait('!!document.querySelector(".chat-author-name") && !document.querySelector(".chat-initial-messages")');
+  const mayaRow = `.chat-message[data-message-id="${initial.messages[1].id}"]`;
+  const mayaAvatar = `${mayaRow} .chat-avatar`;
+  const mayaName = `${mayaRow} .chat-author-name`;
+  const memberMaya = '.member-profile-trigger[aria-label="Open profile for Maya"]';
+  const checkProfile = (title, username) => {
+    wait('!!document.querySelector(".chat-mention-card")');
+    assert.equal(evaluate('document.querySelector(".chat-mention-card").getAttribute("role")'), "dialog");
+    assert.equal(evaluate('document.querySelector(".chat-mention-card strong").textContent'), title);
+    assert.equal(
+      evaluate('document.querySelector(".chat-mention-card-identity > div > span").textContent'),
+      `@${username}`,
+    );
+  };
+  const closeProfile = () => {
+    browser("press", "Escape");
+    wait('!document.querySelector(".chat-mention-card")');
+  };
+  browser("hover", mayaName);
+  assert.equal(evaluate(`getComputedStyle(document.querySelector('${mayaName}')).cursor`), "pointer");
+  if (process.env.MESSAGE_TEST_CHROME)
+    assert.equal(evaluate(`getComputedStyle(document.querySelector('${mayaName}')).textDecorationLine`), "underline");
+  browser("click", mayaAvatar);
+  checkProfile("Maya", "maya");
+  screenshot("profile-author-desktop");
+  closeProfile();
+  assert.equal(evaluate(`document.activeElement === document.querySelector('${mayaAvatar}')`), true);
+  evaluate(`document.querySelector('${mayaName}').focus()`);
+  browser("press", "Enter");
+  checkProfile("Maya", "maya");
+  closeProfile();
+  browser("click", `.chat-message[data-message-id="${root.id}"] .chat-author-name`);
+  checkProfile("Fixture Owner", "fixture_owner");
+  assert.equal(evaluate('document.querySelector(".chat-mention-card-self").textContent'), "You");
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card-message")'), false);
+  closeProfile();
+  action("Show member list");
+  browser("click", memberMaya);
+  checkProfile("Maya", "maya");
+  screenshot("profile-member-desktop");
+  closeProfile();
+  // The disposable fixture's DM-creation endpoint supports Alex, not Maya.
+  browser("click", '.member-profile-trigger[aria-label="Open profile for Alex"]');
+  checkProfile("Alex", "alex");
+  action("Message");
+  wait('document.querySelector("#chat-heading")?.textContent.includes("Alex")');
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card")'), false);
+  assert.equal(evaluate('!!document.querySelector("#space-member-list")'), false);
+  action("general");
+  wait(`!!document.querySelector('${mayaName}') && !document.querySelector('.chat-initial-messages')`);
+  browser("set", "viewport", "390", "844", "2");
+  evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+  browser("click", mayaName);
+  checkProfile("Maya", "maya");
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card-drawer")'), true);
+  screenshot("profile-author-narrow");
+  closeProfile();
+  action("Show member list");
+  wait('document.querySelector("#space-member-list")?.getAnimations().every(a => a.playState !== "running")');
+  browser("click", memberMaya);
+  checkProfile("Maya", "maya");
+  assert.equal(evaluate('!!document.querySelector(".chat-mention-card-drawer")'), true);
+  screenshot("profile-member-narrow");
+  closeProfile();
+  assert.equal(
+    evaluate('!!document.querySelector("#space-member-list")'),
+    true,
+    "profile dismissal keeps Members open",
+  );
+  // The backdrop has the same accessible name; click the visible close button.
+  browser("click", ".member-list-close");
+  wait('!document.querySelector("#space-member-list")');
+
   let old;
   for (let i = 0; i < 160; i++) {
     await control({ incomingMessage: { channelId: "chan00000001", text: `Context message ${i}` } });
@@ -114,6 +192,9 @@ try {
   assert.equal(evaluate('!!document.querySelector(".chat-message .chat-pin-marker")'), false);
   openPins();
   assert.equal(evaluate('document.querySelector(".chat-pins-dialog").getAttribute("role")'), "dialog");
+  browser("click", ".chat-pinned-message .chat-author-name");
+  checkProfile("Alex", "alex");
+  closeProfile();
   assert.equal(evaluate('!!document.querySelector(".chat-history")'), true, "timeline remains mounted behind Pins");
   assert.equal(evaluate('document.querySelector(".chat-pinned-message p").textContent'), old.content.text);
   assert.equal(evaluate('document.querySelector(".chat-pins-dialog").textContent.includes("Unpin")'), false);
@@ -291,7 +372,7 @@ try {
     `document.querySelector('.chat-thread-panel')?.textContent.includes('Sent from pinned thread context') && !document.querySelector('.chat-thread-panel')?.textContent.includes('Load newer replies')`,
   );
   console.log(
-    "PASS: icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu optimistic unpin before server echo; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
+    "PASS: author avatars/names and member rows open profiles; keyboard activation/focus return; self profile; member Message opens the correct DM; desktop popovers/narrow sheets; pinned author distinct from pinner; icon-only Pins; quiet Go link; pinner hover profile by ID; profile outside/Escape dismissal; synthetic touch hold/release guard; no timeline pin notice/count; hover-menu optimistic unpin before server echo; outside/Escape dismissal; nested menu; failed jump retry; old-message context (30 before/30 after); centered target; back to newest message; sending from channel/thread context; narrow layout/unpin; pinned thread reply navigation.",
   );
 } catch (error) {
   console.error(browser("snapshot", "-i").snapshot);
