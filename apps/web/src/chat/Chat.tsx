@@ -40,6 +40,7 @@ import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandid
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
+import type { Space } from "../spaces/client.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -179,6 +180,7 @@ export default function Chat({
   mentionMembers,
   mentionDirectory = [],
   onMessagePerson,
+  profileSpaces,
   onOpenForward,
   focusMessage,
 }: {
@@ -209,6 +211,7 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
+  profileSpaces?: Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
 }) {
@@ -1697,6 +1700,15 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
+            spaces={profileSpaces}
+            onBlock={
+              onBlockAuthor &&
+              ((author) => {
+                setMentionCard(undefined);
+                setShowPins(false);
+                onBlockAuthor(author);
+              })
+            }
           />
         )}
 

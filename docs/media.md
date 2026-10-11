@@ -6032,3 +6032,69 @@ uses a resizable egui thread SidePanel (300–480) and is unchanged.
    browser reload and desktop/mobile transitions. Roll back web by deploying the
    previous known-good image SHA with the command above. For native clients, ship
    a corrected higher-build-number release. No data rollback is required.
+
+### Profile-card actions (October 11, 2026)
+
+Web (desktop and narrow), Android, iOS/macOS and Rust desktop offer **Block**
+with the existing confirmation and **Unblock** on other people's profile cards.
+Blocked cards hide Message and Invite; your own card only says You. Historical
+authors with an account ID but no known username can still be blocked, but cannot
+be messaged or invited by an invented username.
+
+**Invite to space** lists non-demo spaces owned by the account, using the existing
+owner-only invitation API. Choosing one sends a seven-day pending invitation;
+the person must accept before joining. It does not switch the current space/DM
+or insert a member locally. Failures remain inline and retryable; success names
+the destination and disables it for this card session. Existing members, pending
+invitations, recipient privacy/blocks and server limits retain their API rules.
+
+Blocking retains the existing semantics described under Message requests,
+blocking and privacy: it prevents DMs/requests and invitations from the blocked
+person and collapses their text. It does not remove membership or mute voice
+in shared spaces. No API, database or permission change is included.
+
+Validation: `npm run check` and `npm test` (561 tests) pass. The Chromium
+`scripts/test-message-pins.mjs` fixture run checks invitation refusal/retry,
+pending-not-member state, unchanged navigation, Block cancel/confirm, collapsed
+text, Unblock failure/retry and restored actions, plus the existing profile/Pins
+flows. Desktop and 390px sheet default/picker/error/success/blocked captures were
+inspected; narrow Chromium is not a native phone test. Rust workspace tests,
+fmt and the debug build cover Linux (403 application tests pass, 12 existing
+tests ignored); loopback profile regressions check ownership/demo filtering,
+off-current invitation isolation and Block/Unblock. Linux 2x Xvfb default-card
+and expanded-picker renders were inspected.
+Application-package Clippy (`--no-deps -D warnings`) passes; dependency-inclusive
+workspace Clippy fails on 34 existing vendored `webrtc-sys` missing-safety-doc
+errors. Those dependencies are not changed here.
+Android Gradle compilation/tests are blocked by the missing Android SDK; Apple
+has no Swift/Xcode toolchain here. Neither has native rendering or device
+validation. Browser/loopback fixtures are not deployed-API, physical-device or
+live-SFU acceptance. No Docker daemon is available; the web build stage passed
+directly, but no container image was built in this orb.
+
+**Deployment order.**
+
+1. Land the preceding profile-entry-point fix first. No infrastructure,
+   secrets/configuration, database migration, API or gateway rollout is needed.
+   After both changes land, web and all native clients can release independently;
+   merging alone does not deploy them.
+2. After merge, wait for the immutable web image for the merged revision. From an
+   authenticated infrastructure checkout with the production Kubernetes context,
+   set `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for that deployment workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/test on supported hosts with `bash apps/native/android/build.sh`,
+   `bash apps/native/apple/build.sh ios`, `bash apps/native/apple/build.sh macos`
+   and `bash apps/native/desktop/build.sh`. Verify profile entry points, Block
+   cancel/confirm/Unblock, errors and invitation acceptance on real clients
+   before the existing signed/store release process. Check that shared-space
+   membership and voice remain unchanged. Build output is not a store release.
+4. Verify those same cases on deployed web at desktop/mobile widths. Roll back
+   web with the previous known-good image SHA using step 2; ship a corrected
+   higher-build-number native release. Existing invitations/blocks remain valid;
+   no data rollback is required.

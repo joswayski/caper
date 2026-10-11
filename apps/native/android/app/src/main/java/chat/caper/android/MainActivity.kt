@@ -1225,7 +1225,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
         key(card.id) {
             MentionCardSheet(card, { done, failed -> card.username?.let { username ->
                 viewModel.messageMentioned(card.id, username, { profile = null; close?.invoke(); done() }, failed)
-            } }) { profile = null }
+            } }, state = state, viewModel = viewModel) { profile = null }
         }
     }
 }
@@ -1960,7 +1960,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     mentionTarget?.let { card ->
         key(card.id) {
-            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }) { mentionTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, done, failed) } }, state = state, viewModel = viewModel) { mentionTarget = null }
         }
     }
     pickerTarget?.let { target ->
@@ -2325,7 +2325,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     pinnerTarget?.let { author ->
         val card = authorCard(author, state)
         key(author.id) {
-            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }) { pinnerTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }, state = state, viewModel = viewModel) { pinnerTarget = null }
         }
     }
     actionTarget?.let { target ->
