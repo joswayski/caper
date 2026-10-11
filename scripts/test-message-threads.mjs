@@ -106,6 +106,62 @@ const reply = (text) => {
   );
 };
 
+const checkThreadResize = (rootID) => {
+  const handle = ".chat-thread-resize";
+  const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
+  const drag = (delta) => {
+    const point = evaluate(
+      `(() => { const r = document.querySelector('${handle}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + 120 }; })()`,
+    );
+    browser("mouse", "move", String(point.x), String(point.y));
+    browser("mouse", "down", "left");
+    browser("mouse", "move", String(point.x + delta), String(point.y));
+    browser("mouse", "up", "left");
+  };
+  browser("dblclick", handle);
+  assert.equal(width(), 340);
+  browser("fill", "#chat-thread-reply", "TEST FIXTURE — resizing keeps the draft");
+  drag(-83);
+  assert.equal(width(), 423, "Dragging the left edge left widens the actual thread");
+  assert.equal(evaluate(`document.querySelector('${handle}').getAttribute('aria-valuenow')`), "423");
+  assert.equal(
+    evaluate('document.querySelector("#chat-thread-reply").value'),
+    "TEST FIXTURE — resizing keeps the draft",
+  );
+  browser("mouse", "move", "1400", "30");
+  screenshot("threads-desktop-resized");
+  drag(600);
+  assert.equal(width(), 300, "Pointer capture works outside the moving handle and clamps at minimum");
+  browser("focus", handle);
+  browser("press", "ArrowLeft");
+  assert.equal(width(), 310);
+  browser("press", "ArrowRight");
+  assert.equal(width(), 300);
+  browser("press", "ArrowLeft");
+  browser("press", "Home");
+  assert.equal(width(), 300, "Home selects the minimum");
+  browser("press", "End");
+  assert.equal(width(), 600);
+  browser("press", "ArrowLeft");
+  assert.equal(width(), 600, "Keyboard cannot exceed the maximum");
+  browser("set", "viewport", "1024", "900", "2");
+  wait('Number(document.querySelector(".chat-thread-resize").getAttribute("aria-valuemax")) < 600');
+  const room = evaluate('document.querySelector(".chat-layout").clientWidth');
+  assert.equal(width(), Math.floor(room - 300), "A smaller window reserves 300px for the channel");
+  assert.ok(evaluate('document.querySelector(".chat-panel").getBoundingClientRect().width') >= 300);
+  screenshot("threads-desktop-constrained");
+  browser("set", "viewport", "1440", "900", "2");
+  wait('document.querySelector(".chat-thread-panel").getBoundingClientRect().width === 600');
+  close();
+  open(rootID);
+  assert.equal(width(), 600, "Reopening and temporary window constraints preserve the preferred width");
+  browser("dblclick", handle);
+  assert.equal(width(), 340);
+  drag(-83);
+  assert.equal(width(), 423);
+  browser("fill", "#chat-thread-reply", "");
+};
+
 const checkReplyDelivery = async (root, other, layout) => {
   // Hold before fixture delivery so neither HTTP nor gateway can confirm the reply.
   evaluate(`(() => {
@@ -228,6 +284,8 @@ try {
   browser("set", "viewport", "1440", "900", "2");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
+  evaluate('localStorage.removeItem("caper:thread-panel-width")');
+  browser("open", `${web}/spaces`);
   wait(
     `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
   );
@@ -334,7 +392,10 @@ try {
   wait(
     `document.querySelector('${thread(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true' && document.querySelector('${channel(broadcast.clientMessageId)} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`,
   );
+  browser("focus", "#chat-thread-reply");
+  browser("mouse", "move", "1400", "30");
   screenshot("threads-desktop");
+  checkThreadResize(root.clientMessageId);
   browser("fill", "#chat-thread-reply", "Saved draft for Alex");
   const requestCount = evaluate("window.threadRequests.length");
   const positions = () =>
@@ -507,6 +568,7 @@ try {
     [0, 0, 390, 844],
   );
   alignedHeaders(390);
+  assert.equal(evaluate('document.querySelector(".chat-thread-resize").checkVisibility()'), false);
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
   browser("set", "viewport", "320", "844", "2");
@@ -534,8 +596,19 @@ try {
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
   await checkReplyDelivery(root, other, "mobile");
+  browser("set", "viewport", "1440", "900", "2");
+  browser("open", `${web}/spaces`);
+  wait(
+    `!!document.querySelector('${channel(root.clientMessageId)}') && !document.querySelector('.chat-initial-messages')`,
+  );
+  open(root.clientMessageId);
+  assert.equal(
+    evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width'),
+    423,
+    "Preferred width survives a page reload and mobile layout",
+  );
   console.log(
-    "PASS: repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

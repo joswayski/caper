@@ -738,7 +738,7 @@ private struct SpaceRailButton: View {
     let narrow: Bool
     private var selected: Bool { model.selectedSpaceID == space.id }
     private var name: String { space.demo == true ? "Caper" : space.name }
-    private var corner: CGFloat { selected ? 8 : 12 }
+    private let corner: CGFloat = 12
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
@@ -975,6 +975,9 @@ private struct ChannelSidebar: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                         .contentShape(Rectangle())
                                 }.buttonStyle(.plain).modifier(ControlHover()).disabled(model.busy)
+                                    .modifier(NavigationPrefetchModifier {
+                                        if let selfConversation { model.prefetch(directMessage: selfConversation) }
+                                    })
                                     .accessibilityIdentifier("dm-self")
                             }
                             ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
@@ -1051,6 +1054,7 @@ private struct DirectMessageSidebarRow: View {
         Button { Task { await model.select(directMessage: conversation) } } label: { rowLabel }
             .buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
             .modifier(ControlHover())
+            .modifier(NavigationPrefetchModifier { model.prefetch(directMessage: conversation) })
             .accessibilityValue(rowState)
     }
 
@@ -1981,6 +1985,10 @@ private struct ChatView: View {
     let browse: () -> Void
     let membersVisible: Bool
     let toggleMembers: () -> Void
+    @AppStorage("caper.threadPanelWidth") private var threadWidth = 340.0
+    @State private var threadDragStart: Double?
+    @State private var threadDragWidth: Double?
+    @FocusState private var threadResizeFocused: Bool
     /// Web shows Connecting…/Offline only after a second without the gateway.
     @State private var showConnectionStatus = false
     @State private var joining = false
@@ -2087,18 +2095,28 @@ private struct ChatView: View {
     }
     var body: some View {
         Group {
+        GeometryReader { geometry in
+            let maximum = Double(min(600, geometry.size.width - min(300, geometry.size.width / 2)))
+            HStack(spacing: 0) {
+                #if os(iOS)
+                channelBody
+                #else
+                if !narrow || chat.threadRootID == nil { channelBody }
+                #endif
+                if chat.threadRootID != nil {
+                    if narrow {
+                        #if os(macOS)
+                        threadContent.frame(maxWidth: .infinity)
+                        #endif
+                    } else { resizableThread(maximum: maximum) }
+                }
+            }
+        }
         #if os(iOS)
-        HStack(spacing: 0) {
-            channelBody
-            if !narrow, chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(width: 340) }
-        }.fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource)
+        .fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
+            threadContent
         }
         #else
-        HStack(spacing: 0) {
-            if !narrow || chat.threadRootID == nil { channelBody }
-            if chat.threadRootID != nil { NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource).frame(maxWidth: narrow ? .infinity : 380) }
-        }
         // Web: Escape closes the thread unless a picker or dialog is open. Sheets,
         // popovers (Pins included) and menus are their own windows and keep
         // Escape; the composer keeps it for its suggestions.
@@ -2110,6 +2128,59 @@ private struct ChatView: View {
         }
         .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
         .sheet(item: $chat.forwardConversationTarget) { message in ForwardConversationView(chat: chat, messageID: message.id) }
+    }
+    private var threadContent: some View {
+        NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource)
+    }
+    private func resizableThread(maximum: Double) -> some View {
+        let minimum = min(300, maximum)
+        let width = min(maximum, max(minimum, threadDragWidth ?? threadWidth))
+        func resize(_ value: Double) {
+            threadWidth = max(300, min(maximum, max(minimum, value)))
+        }
+        return threadContent.frame(width: width)
+            .overlay(alignment: .leading) {
+                Color.clear.frame(width: 8).frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .overlay(alignment: .leading) {
+                        if threadResizeFocused { Rectangle().fill(CaperTheme.terracotta).frame(width: 2) }
+                    }
+                    .onHover { hovering in
+                        #if os(macOS)
+                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                        #endif
+                    }
+                    .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
+                        threadResizeFocused = true
+                        if threadDragStart == nil { threadDragStart = width }
+                        threadDragWidth = min(maximum, max(minimum, (threadDragStart ?? width) - Double(value.translation.width)))
+                    }.onEnded { _ in
+                        if let value = threadDragWidth { resize(value) }
+                        threadDragWidth = nil; threadDragStart = nil
+                    })
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { resize(340); threadResizeFocused = true })
+                    .onTapGesture { threadResizeFocused = true }
+                    .focusable().focusEffectDisabled().focused($threadResizeFocused)
+                    .accessibilityRepresentation {
+                        if maximum > minimum {
+                            Slider(value: Binding(get: { width }, set: { resize($0) }), in: minimum...maximum, step: 10)
+                        } else { Text("\(Int(width)) pixels") }
+                    }
+                    .accessibilityLabel("Thread width")
+                    .accessibilityIdentifier("thread-panel-resize")
+                    .accessibilityValue("\(Int(width)) pixels")
+                    .accessibilityHint("Drag to resize. Left widens and Right narrows by 10 pixels; Home and End select the bounds. Double-click resets.")
+                    .onKeyPress { press in
+                        switch press.key {
+                        case .leftArrow: resize(width + 10)
+                        case .rightArrow: resize(width - 10)
+                        case .home: resize(minimum)
+                        case .end: resize(maximum)
+                        default: return .ignored
+                        }
+                        return .handled
+                    }
+            }
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -4352,6 +4423,7 @@ private struct MessageRequestsList: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).modifier(ControlHover())
+                    .modifier(NavigationPrefetchModifier { model.prefetch(directMessage: request) })
                     .accessibilityLabel("\(request.peer.displayName), @\(request.peer.username)")
                     .accessibilityValue(selected ? "Selected" : "")
                     .accessibilityIdentifier("message-request-\(request.id)")

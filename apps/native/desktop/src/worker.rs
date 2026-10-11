@@ -747,6 +747,21 @@ fn prepare_navigation(
             Some(history) => Some(history),
             None => Some(api.history(token, &selected.id, None)?),
         }
+    } else if let Some(id) = channel.filter(|_| space.is_none()) {
+        let history = match cached
+            .filter(|history| history.space.id.is_empty() && history.channel.id == id)
+        {
+            Some(history) => history,
+            None => api.history(token, id, None)?,
+        };
+        if !history.space.id.is_empty() || history.channel.id != id {
+            return Err(LoadError {
+                message: "Caper returned another conversation.".into(),
+                access_denied: false,
+                space_access_denied: false,
+            });
+        }
+        Some(history)
     } else {
         None
     };
@@ -785,7 +800,8 @@ fn prepare_navigation(
                 code: None,
             })?;
     }
-    let joined = selected.is_some_and(|channel| channel.joined);
+    let joined =
+        selected.is_some_and(|channel| channel.joined) || space.is_none() && channel.is_some();
     let conversation = history
         .map(|history| {
             if joined {
@@ -845,6 +861,16 @@ fn prepare_navigation_read(
     }
     let history = if let Some(selected) = selected {
         Some(api.history(token, &selected.id, None)?)
+    } else if let Some(id) = channel.filter(|_| space.is_none()) {
+        let history = api.history(token, id, None)?;
+        if !history.space.id.is_empty() || history.channel.id != id {
+            return Err(LoadError {
+                message: "Caper returned another conversation.".into(),
+                access_denied: false,
+                space_access_denied: false,
+            });
+        }
+        Some(history)
     } else {
         None
     };
@@ -1941,6 +1967,72 @@ mod tests {
         });
         let read = super::prefetch_navigation(&api, Some("account"), Some("s"), Some("c")).unwrap();
         assert_eq!(read.history.unwrap().cursor, "7");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn direct_prefetch_is_read_only_and_cached_navigation_does_not_read_history_again() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (path, body) in [
+                (
+                    "GET /api/chat/channels/dm0000000001/messages",
+                    r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Alpha","direct":true},"messages":[],"cursor":"9007199254740993","hasMore":true}"#,
+                ),
+                (
+                    "POST /api/chat/session",
+                    r#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#,
+                ),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let read =
+            super::prefetch_navigation(&api, Some("account"), None, Some("dm0000000001")).unwrap();
+        assert!(read.detail.is_none());
+        let first = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("dm0000000001"),
+            "User",
+            read.history,
+        )
+        .unwrap();
+        let mut retained = first.conversation.unwrap().0;
+        retained.cursor = "9007199254740994".into();
+        let revisited = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("dm0000000001"),
+            "User",
+            Some(retained),
+        )
+        .unwrap();
+        assert!(revisited.detail.is_none());
+        let history = revisited.conversation.unwrap().0;
+        assert_eq!(history.channel.id, "dm0000000001");
+        assert_eq!(history.cursor, "9007199254740994");
+        assert!(history.has_more);
         worker.join().unwrap();
     }
 

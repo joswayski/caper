@@ -290,26 +290,42 @@ same space's member page/presence subscription. Rust desktop retains member
 statuses and pagination, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
-Web direct-message history is loaded only by `ChatClient`; opening a conversation
-does not issue a second page-level read. Switching away aborts its in-flight
-history and the previous channel's voice-availability request. Loading failures
-remain visible with an explicit Retry; cancellation does not become a UI error.
-`scripts/test-direct-messages.mjs` checks request counts, rapid switches and
-failure/retry at desktop/390px using the disposable native parity fixture beside
-Vite. `scripts/test-channel-joining.mjs` checks voice-status cancellation with its
-own browser mocks; run it without the parity API/gateway listening. Native request
-lifetimes are independent implementations and are unchanged by these web-only
-fixes. No API, gateway, migration, infrastructure, secret or native release is
-required; deploy web independently through the existing web deployment workflow.
+Web direct messages use page-scoped prepared histories like channels. Hover/focus
+speculates only history reads (never a session, read receipt, request acceptance
+or voice join); clicking shares that request and commits the title and messages
+together. Cold loads retain the displayed conversation. Visited DMs retain their
+latest timeline and replay cursor, then catch up through the authorized gateway
+without refetching the first page. The cache keeps at most 20 visited DMs and four
+five-second speculative reads, and disappears when the Spaces page unmounts.
+DM-only switches do not reload the selected space or dim its rail icon; icons
+retain the same corners when hovered or selected. Switching away aborts a pending
+DM history read and the previous channel's voice-availability request. Loading
+failures remain visible with an explicit Retry; cancellation is not a UI error.
+`node scripts/test-direct-messages.mjs --navigation` checks shared hover/click reads, cold-load
+cancellation, cached switches, stable message/rail frames, replay and failure/retry
+at desktop/390px using the disposable native parity fixture beside Vite.
+`scripts/test-channel-joining.mjs` checks voice-status cancellation with its
+own browser mocks; run it without the parity API/gateway listening.
+
+Android and Apple retain DM snapshots and replay cursors in their account-scoped
+navigation state; Rust desktop uses its existing bounded navigation cache for
+global DM targets. Native cold DM loads retain the current conversation, and
+superseded results cannot replace a newer selection. macOS and Rust desktop DM
+rows prefetch on hover/focus; iOS and Android have no hover requirement. Apple and
+Rust desktop rail icons also keep fixed corners. Native clients are independent
+implementations: browser fixture results do not prove their rendering or gateway
+behavior. Apple tests/rendering require Xcode; Android requires its SDK and device
+checks; Rust desktop tests and rendering use its Linux build prerequisites.
+No API, gateway, migration, infrastructure or secret change is required. Web,
+Android, Apple and Rust desktop releases can deploy independently.
 
 Run `NAVIGATION_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-desktop-navigation.mjs`
 against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancellation
 and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
-the Linux orb; Apple regressions require Xcode CI and macOS/iOS render validation.
+the Linux orb; Apple regressions require Xcode and macOS/iOS render validation.
 iOS shares the Apple repeat-click/presence fixes without hover speculation.
-Android navigation is unchanged and does not preload channels on hover; physical
-device and live-network checks remain separate. No API, infrastructure, secret or
-database rollout is needed; web and affected native releases are independent.
+Android channel navigation remains unchanged and does not preload on hover;
+physical device and live-network checks remain separate.
 
 ### Application gateway and account presence
 
@@ -1256,6 +1272,15 @@ npx wrangler deploy --env staging
 | Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
+Composer thumbnails and filenames are clickable before sending, including while
+preparing/uploading or after an upload fails. Web images and videos use the
+in-app viewer with local object URLs; audio, PDFs and plain text open in the
+browser, and unsupported/active document formats download instead. Apple uses
+Quick Look for the staged local file. Android grants the selected content URI
+to a system preview app; Rust desktop opens the selected file in the system
+browser. Native format support depends on the installed system handlers.
+Remove remains a separate control and never opens a preview.
+
 Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
 Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
 within an hour, or after a 403/404, at most once per stale URL; decoded images
@@ -1394,11 +1419,13 @@ native phone, macOS, multi-client production or physical-device acceptance.
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
-emoji-CDN requests. Writable web chat warms the code/data chunk after one second;
-it does not mount the picker or fetch the artwork catalog. Hovering or focusing
-**Add reaction** also warms the code and preloads/decodes the first 128 Emoji 15.0
-smileys/people images, generated from the picker catalog at build time. This
-covers the opening grid, not the full catalog, and does not open the picker.
+emoji-CDN requests. Signed-in writable web chat immediately warms the code/data
+chunk and preloads/decodes the first 128 Emoji 15.0 smileys/people images when
+chat mounts, without waiting for a sending session. This covers the opening grid,
+not the full catalog, and does not mount or open the picker. Hovering or focusing
+**Add reaction** reuses that preload, or retries failed image preparation.
+The evaluated picker component is retained across messages and action menus;
+warm openings render it directly, without an intermediate loading panel.
 Hovering or keyboard-focusing a category tab preloads/decodes its first 128
 Emoji 15.0 images (or the full category when smaller), without selecting it or
 scrolling the grid. Category manifests are also generated at build time.
@@ -1412,8 +1439,9 @@ category jumps. Versioned
 changed artwork must use a new path. Web category tabs sit above search, brighten
 on hover/selection, and underline the selected category in terracotta. Pointer
 clicks have no circular ring; keyboard focus retains a separate outline.
-`node scripts/test-message-actions.mjs` checks warmup without artwork requests,
-hover/focus preloading without opening or duplicate image requests,
+`node scripts/test-message-actions.mjs` checks startup code/opening-grid preparation
+without opening, warm openings/reopenings without loading-panel flashes,
+hover/focus reuse without opening or duplicate image requests,
 all seven non-opening category preloads without selection/scrolling, cache reuse
 across reopening, populated category jumps, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
@@ -5947,3 +5975,48 @@ does not deploy. Before distributing, build Apple in Xcode and check the items
 above, and check Android's keyboard and system bars on a phone. Roll back native
 clients with a corrected higher-build-number release; no data rollback is
 required.
+
+### Resizable thread panes (October 11, 2026)
+
+Web, wide Android and Apple layouts allow dragging the thread's leading divider.
+Dragging left widens the thread; Left/Right adjust by 10, Home/End select the
+bounds, and double-click/tap resets to 340px/pt/dp. The preferred width persists
+locally, including across closing/reopening and application/browser restarts.
+Preferred widths range from 300 to 600. The actual pane reserves 300 for the main
+conversation, or splits the available conversation area equally when it is less
+than 600; shrinking the window does not overwrite the preference. Phone layouts
+keep their full-screen threads without a resize handle. Rust desktop already
+uses a resizable egui thread SidePanel (300–480) and is unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` passes; `npm test` passes all 558 tests. `MESSAGE_TEST_ARTIFACTS=/tmp/thread-screenshots node scripts/test-message-threads.mjs` passes against the disposable loopback fixture: exact 83px drag, pointer capture, keyboard/bounds/reset, retained draft, preferred width after reopen/reload/mobile and temporary constraints, and existing reply/navigation checks. Inspected default, resized, constrained desktop and full-screen 390px Chromium touch-emulated captures. Not Safari, Firefox or physical-device acceptance. |
+| Android | Wide layouts implement dragging, hardware keys, reset, TalkBack adjustment and SharedPreferences persistence; narrow dialogs remain unchanged. `./gradlew --no-daemon --max-workers=2 compileDebugKotlin testDebugUnitTest lintDebug` cannot configure the project because this orb has no Android SDK. No Kotlin compilation, emulator/device or native render validation. |
+| iOS/macOS | Wide layouts implement dragging, keyboard/reset, accessibility adjustment and AppStorage persistence. A macOS parity UI regression covers drag direction/geometry, keyboard bounds/reset and saved width. No Swift compiler or Xcode in this Linux orb: no parse/typecheck, XCTest, simulator/device or native rendering validation. |
+| Containers/services | No Docker daemon for an image build; Vite production build/typecheck pass. No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration or backend service
+   rollout is required. Web, Android and Apple can deploy independently. Rust
+   desktop needs no release for this change. Merging does not deploy components.
+2. After merge, wait for the immutable web image for that revision. From an
+   authenticated infrastructure checkout with the production Kubernetes context,
+   set `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the deployment workflow for this SHA to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Before native distribution, build/test on supported hosts using
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios` and
+   `bash apps/native/apple/build.sh macos`. Check wide dragging, bounds, keyboard
+   and accessibility adjustment, reopen/restart persistence, and unchanged phone
+   threads on real clients. Build output is not a signed/store release; use the
+   existing release process after validation.
+4. Verify resizing and reply/draft/navigation behavior in production web, including
+   browser reload and desktop/mobile transitions. Roll back web by deploying the
+   previous known-good image SHA with the command above. For native clients, ship
+   a corrected higher-build-number release. No data rollback is required.

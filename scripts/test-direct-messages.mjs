@@ -2,8 +2,9 @@
 // Start native-parity-fixture.mjs and Vite first. Never target a real account/API.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const web = process.env.DM_TEST_WEB_URL ?? "http://127.0.0.1:5174";
 const api = process.env.DM_TEST_API_URL ?? "http://127.0.0.1:3001";
@@ -11,7 +12,11 @@ for (const url of [web, api])
   assert.ok(["localhost", "127.0.0.1"].includes(new URL(url).hostname), "Use a disposable loopback fixture");
 const artifacts = process.env.DM_TEST_ARTIFACTS && resolve(process.env.DM_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
-const args = ["--session", "direct-message-test"];
+const scratch = mkdtempSync(join(tmpdir(), "caper-dms-"));
+const init = join(scratch, "timings.js");
+// Vite's module requests can fill the default resource buffer before the API reads.
+writeFileSync(init, "performance.setResourceTimingBufferSize(5000)");
+const args = ["--session", "direct-message-test", "--init-script", init];
 function browser(...command) {
   const result = JSON.parse(
     execFileSync("agent-browser", [...args, ...command, "--json"], { encoding: "utf8", timeout: 60_000 }),
@@ -87,16 +92,10 @@ async function conversations() {
     await fetch(`${api}/api/dms`, { headers: { authorization: "Bearer fixture-owner-token", connection: "close" } })
   ).json();
 }
-try {
-  assert.equal((await (await fetch(`${api}/health`, { headers: { connection: "close" } })).json()).fixture, true);
-  await control({ reset: true });
-  browser("open", "about:blank");
-  browser("set", "viewport", "1440", "900", "2");
-  // The phone Browse slide is covered by test-desktop-navigation; settle it here.
-  browser("set", "media", "reduced-motion");
-  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+async function testDirectMessages() {
   browser("open", `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
+  wait("performance.getEntriesByType('resource').some(entry => new URL(entry.name).pathname === '/api/dms')");
   const initialReads = evaluate(`performance.getEntriesByType('resource')
     .filter(entry => new URL(entry.name).pathname === '/api/dms').map(entry => entry.startTime)`);
   assert.equal(
@@ -498,13 +497,44 @@ try {
   browser("fill", ".chat-composer textarea", "");
   browser("click", ".direct-self");
   wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
-  // Instrument only history reads; the real local fixture still supplies data.
-  evaluate(`(() => {
+  console.log(
+    "PASS: self notes lazy creation/error/reuse/send/persistence/isolation/navigation race, full-width dividers, real space invitation action, DM start/error/reopen/unsent drafts/live replies/reactions/read receipts, space independence, and desktop/narrow navigation (disposable fixture).",
+  );
+}
+
+async function testNavigation() {
+  // Restore two disposable spaces so DM switching also exercises the rail.
+  const navigationSpaces = [];
+  for (const name of ["TEST FIXTURE Navigation", "TEST FIXTURE Other space"]) {
+    const response = await fetch(`${api}/api/spaces`, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-owner-token", "content-type": "application/json", connection: "close" },
+      body: JSON.stringify({ name }),
+    });
+    assert.equal(response.status, 201);
+    navigationSpaces.push(await response.json());
+  }
+  const installHistoryMonitor = () =>
+    evaluate(`(() => {
     const fetch = window.fetch.bind(window);
-    const f = window.historyFixture = { requests: [], hold: false, fail: false };
+    const f = window.historyFixture = { requests: [], spaceReads: 0, hold: false, fail: false, frames: [], watching: false };
+    const rail = document.querySelector('.space-rail');
+    const tile = rail.querySelector('[aria-current=page]');
+    const spacePath = '/api/spaces/' + new URL(location.href).searchParams.get('space');
+    f.sample = () => {
+      if (!f.watching) return;
+      f.frames.push({
+        railConnected: rail.isConnected, busy: tile.getAttribute('aria-busy'), opacity: getComputedStyle(tile).opacity,
+        messages: !!document.querySelector('.chat-message'), loading: !!document.querySelector('.chat-state[role=status]'),
+      });
+      requestAnimationFrame(f.sample);
+    };
     window.fetch = async (input, options = {}) => {
       const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
-      if (options.method || !/^\\/api\\/chat\\/channels\\/[^/]+\\/messages$/.test(path)) return fetch(input, options);
+      if (!options.method && path === spacePath) f.spaceReads++;
+      // These fixture DM IDs are distinct from channels that the mouse may
+      // legitimately prefetch while opening Browse in a narrow desktop window.
+      if (options.method || !/^\\/api\\/chat\\/channels\\/dm[0-9]+\\/messages$/.test(path)) return fetch(input, options);
       const request = { path, aborted: false };
       f.requests.push(request);
       options.signal?.addEventListener('abort', () => { request.aborted = true; request.reason = options.signal.reason.name; }, { once: true });
@@ -518,59 +548,109 @@ try {
   })()`);
   for (const width of [1440, 390]) {
     browser("set", "viewport", String(width), "844", "2");
+    const notesUrl = `${web}/spaces?space=${navigationSpaces[0].id}&dm=dm0000000002`;
+    browser("open", notesUrl);
+    wait(
+      'document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.") && !!document.querySelector(".space-rail [aria-current=page]")',
+    );
+    installHistoryMonitor();
     const select = (selector) => {
-      if (width === 390) {
+      if (width === 390 && !evaluate('!!document.querySelector(".spaces-room.navigation-open")')) {
         browser("click", ".navigation-toggle");
         wait('!!document.querySelector(".spaces-room.navigation-open")');
       }
       browser("click", selector);
     };
-    evaluate("historyFixture.requests = []");
+    evaluate("historyFixture.hold = true");
+    if (width === 390) browser("click", ".navigation-toggle");
+    browser(width === 1440 ? "hover" : "focus", ".direct-select:not(.direct-self)");
+    wait("historyFixture.requests.length === 1");
     select(".direct-select:not(.direct-self)");
-    wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
-    // Development StrictMode replays mount effects; its abandoned read must be
-    // cancelled. Production has exactly one read, with no replay to ignore.
+    assert.equal(evaluate("historyFixture.requests.length"), 1, "Hover/focus and click share the pending GET");
     assert.equal(
-      evaluate("historyFixture.requests.filter(r => !r.aborted).length"),
-      1,
-      "Opening a DM leaves only one history read",
+      evaluate('document.querySelector(".chat-messages").textContent.includes("private notes that survive a reload.")'),
+      true,
+      "A cold DM load retains the current title and messages instead of a blank list",
     );
-    evaluate("historyFixture.requests = []; historyFixture.hold = true");
+    assert.equal(evaluate('document.querySelector(".chat-heading").textContent.includes("Fixture Owner")'), true);
+    screenshot(`dm-cold-load-${width}`);
     select(".direct-self");
-    wait(
-      'historyFixture.requests.length > 0 && document.querySelector(".chat-messages [role=status]")?.textContent === "Loading messages…"',
-    );
+    wait("historyFixture.requests[0].aborted");
+    assert.equal(evaluate("historyFixture.requests[0].reason"), "AbortError");
+    evaluate("historyFixture.requests[0].release(); historyFixture.requests = []");
     evaluate("historyFixture.hold = false");
     select(".direct-select:not(.direct-self)");
     wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
     assert.equal(
-      evaluate(
-        'historyFixture.requests.filter(r => r.path.includes("dm0000000002")).every(r => r.aborted && r.reason === "AbortError")',
-      ),
-      true,
-      "All abandoned history reads are cancelled by navigation, not timeout",
+      evaluate("historyFixture.requests.length"),
+      1,
+      "Prepared history is passed to ChatClient without a second GET",
     );
+    evaluate("historyFixture.requests = []; historyFixture.watching = true; historyFixture.sample()");
+    for (let repeat = 0; repeat < 3; repeat++) {
+      select(".direct-self");
+      wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+      select(".direct-select:not(.direct-self)");
+      wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
+    }
+    evaluate("historyFixture.watching = false");
+    assert.deepEqual(evaluate("historyFixture.requests"), [], "Revisiting DMs must not reload their first page");
+    assert.equal(evaluate("historyFixture.spaceReads"), 0, "DM switches must not reload the selected space");
     assert.deepEqual(
-      evaluate("historyFixture.requests.filter(r => !r.aborted).map(r => r.path)"),
-      ["/api/chat/channels/dm0000000001/messages"],
-      "The current history read stays alive",
+      evaluate(
+        "historyFixture.frames.filter(f => !f.railConnected || f.busy === 'true' || f.opacity !== '1' || !f.messages || f.loading)",
+      ),
+      [],
+      "Every sampled frame keeps messages and the unchanged, undimmed rail visible",
     );
-    evaluate("historyFixture.requests.forEach(r => r.release?.())");
-    assert.equal(
-      evaluate('document.querySelector(".chat-messages").textContent.includes("private notes that survive a reload.")'),
-      false,
-    );
-    evaluate("historyFixture.requests = []; historyFixture.fail = true");
+    // Replay must catch messages/reactions received while this DM was away.
     select(".direct-self");
+    const replayText = `TEST FIXTURE replay while away at ${width}px`;
+    await control({ incomingMessage: { channelId: "dm0000000001", text: replayText } });
+    select(".direct-select:not(.direct-self)");
+    wait(`document.querySelector('.chat-messages')?.textContent.includes(${JSON.stringify(replayText)})`);
+    assert.deepEqual(evaluate("historyFixture.requests"), [], "Live replay catches up without refetching history");
+    screenshot(`dm-cached-${width}`);
+    if (width === 1440 && evaluate('matchMedia("(hover: hover)").matches')) {
+      const tile = ".space-rail-item[data-active=false] button";
+      const radius = () => evaluate(`getComputedStyle(document.querySelector('${tile}')).borderRadius`);
+      const normal = radius();
+      browser("hover", tile);
+      assert.equal(radius(), normal, "Hover highlights the space without changing its corners");
+      assert.equal(
+        evaluate('getComputedStyle(document.querySelector(".space-rail [aria-current=page]")).borderRadius'),
+        normal,
+      );
+      screenshot("dm-space-hover");
+    }
+    select("#space-channel-list .channel-select");
+    wait(
+      'document.querySelector(".chat-heading")?.textContent.includes("general") && !document.querySelector(".direct-select[aria-current=page]")',
+    );
+    assert.equal(
+      evaluate('document.querySelector(".chat-messages").textContent.includes("A live reply from Alex.")'),
+      false,
+      "Leaving a DM restores the channel without mixing private messages into it",
+    );
+    select(".direct-select:not(.direct-self)");
+    wait(`document.querySelector('.chat-messages')?.textContent.includes(${JSON.stringify(replayText)})`);
+    assert.deepEqual(evaluate("historyFixture.requests"), [], "Returning from a channel reuses DM history");
+    // Reload clears page-scoped snapshots, allowing a genuinely cold failure.
+    browser("open", notesUrl);
+    wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+    installHistoryMonitor();
+    evaluate("historyFixture.requests = []; historyFixture.fail = true");
+    select(".direct-select:not(.direct-self)");
     wait('document.querySelector(".chat-state[role=alert]")?.textContent.includes("history unavailable")');
     assert.equal(
       evaluate("historyFixture.requests.filter(r => !r.aborted).length"),
       1,
       "A failed load does not trigger a second implicit history read",
     );
+    screenshot(`dm-load-error-${width}`);
     evaluate("historyFixture.fail = false");
     browser("find", "role", "button", "click", "--name", "Try again", "--exact");
-    wait('document.querySelector(".chat-messages")?.textContent.includes("private notes that survive a reload.")');
+    wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
     assert.equal(
       evaluate("historyFixture.requests.filter(r => !r.aborted).length"),
       2,
@@ -578,7 +658,7 @@ try {
     );
     assert.equal(evaluate('document.querySelector("vite-error-overlay")'), null);
     console.log(
-      `PASS: one uncancelled DM history read per open, cancellation on rapid switch, isolated current history, and explicit failure/retry at ${width}px.`,
+      `PASS: hover/focus + click share one read; cancellation retains current messages; six cached switches make zero history/space reads and zero blank/dimmed frames; replay and explicit failure/retry at ${width}px.`,
     );
   }
   browser("set", "viewport", "390", "844", "2");
@@ -586,9 +666,56 @@ try {
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
   screenshot("dm-self-narrow-browse");
-  console.log(
-    "PASS: self notes lazy creation/error/reuse/send/persistence/isolation/navigation race, full-width dividers, real space invitation action, DM start/error/reopen/unsent drafts/live replies/reactions/read receipts, space independence, and desktop/narrow navigation (disposable fixture).",
+  browser("click", ".direct-select:not(.direct-self)");
+  wait('!document.querySelector(".spaces-room.navigation-open")');
+  browser("fill", ".chat-composer textarea", "TEST FIXTURE global draft survives space removal");
+  await control({ noSpaces: true });
+  evaluate('window.dispatchEvent(new Event("focus"))');
+  wait(
+    '!new URL(location.href).searchParams.has("space") && new URL(location.href).searchParams.get("dm") === "dm0000000001"',
   );
+  assert.ok(evaluate('document.querySelector(".chat-messages").textContent.includes("A live reply from Alex.")'));
+  assert.equal(evaluate('document.querySelector(".chat-composer textarea").disabled'), false);
+  assert.equal(
+    evaluate('document.querySelector(".chat-composer textarea").value'),
+    "TEST FIXTURE global draft survives space removal",
+  );
+  browser("open", `${web}/spaces?dm=dm0000000001`);
+  wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
+  assert.equal(evaluate('document.querySelector(".chat-composer textarea").disabled'), false);
+  console.log(
+    "PASS: DM/channel histories stay isolated; losing every space retains the DM/draft; no-space deep links remain writable.",
+  );
+}
+
+try {
+  assert.equal((await (await fetch(`${api}/health`, { headers: { connection: "close" } })).json()).fixture, true);
+  await control({ reset: true });
+  browser("open", "about:blank");
+  browser("set", "viewport", "1440", "900", "2");
+  // The phone Browse slide is covered by test-desktop-navigation; settle it here.
+  browser("set", "media", "reduced-motion");
+  browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
+  if (process.argv.includes("--navigation")) {
+    // Run switching independently of the longer account/layout walkthrough.
+    for (const username of ["fixture_alex", "fixture_owner"]) {
+      const response = await fetch(`${api}/api/dms`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer fixture-owner-token",
+          "content-type": "application/json",
+          connection: "close",
+        },
+        body: JSON.stringify({ username }),
+      });
+      assert.equal(response.status, 200);
+    }
+    await control({ incomingMessage: { channelId: "dm0000000001", text: "A live reply from Alex." } });
+    await control({ incomingMessage: { channelId: "dm0000000002", text: "private notes that survive a reload." } });
+    await control({ noSpaces: true });
+  } else await testDirectMessages();
+  await testNavigation();
 } finally {
   browser("close");
+  rmSync(scratch, { recursive: true, force: true });
 }

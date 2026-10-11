@@ -7,6 +7,11 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
 
+const DEFAULT_WIDTH = 340;
+const MIN_WIDTH = 300;
+const MAX_WIDTH = 600;
+const WIDTH_KEY = "caper:thread-panel-width";
+
 export default function ThreadPanel({
   state,
   client,
@@ -44,7 +49,50 @@ export default function ThreadPanel({
   const returnFocus = useRef<HTMLElement>(null);
   const panel = useRef<HTMLElement>(null);
   const [mobile, setMobile] = useState(false);
+  const [preferredWidth, setPreferredWidth] = useState(DEFAULT_WIDTH);
+  const [maximumWidth, setMaximumWidth] = useState(MAX_WIDTH);
+  const minimumWidth = Math.min(MIN_WIDTH, maximumWidth);
+  const width = Math.max(minimumWidth, Math.min(maximumWidth, preferredWidth));
+  const drag = useRef<{ x: number; width: number; scale: number; last?: number } | undefined>(undefined);
   const rootId = state.thread?.rootId;
+  const open = !!rootId;
+  useLayoutEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem(WIDTH_KEY));
+      if (saved >= MIN_WIDTH && saved <= MAX_WIDTH) setPreferredWidth(saved);
+    } catch {
+      /* Optional preference; resizing still works when storage is unavailable. */
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (!open || !panel.current) return;
+    const room = panel.current.parentElement!;
+    const measure = () => {
+      // Reserve 300px for the conversation, or half the room in smaller split layouts.
+      setMaximumWidth(Math.floor(Math.min(MAX_WIDTH, room.clientWidth - Math.min(MIN_WIDTH, room.clientWidth / 2))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(room);
+    return () => observer.disconnect();
+  }, [open]);
+  const saveWidth = (value: number) => {
+    try {
+      localStorage.setItem(WIDTH_KEY, String(Math.max(MIN_WIDTH, value)));
+    } catch {
+      /* Optional preference. */
+    }
+  };
+  const resize = (value: number, persist = true) => {
+    const next = Math.round(Math.max(minimumWidth, Math.min(maximumWidth, value)));
+    setPreferredWidth(Math.max(MIN_WIDTH, next));
+    if (persist) saveWidth(next);
+    return next;
+  };
+  const endDrag = () => {
+    if (drag.current?.last !== undefined) saveWidth(drag.current.last);
+    drag.current = undefined;
+  };
   const pending = rootId && state.pendingSend?.threadRootId === rootId ? state.pendingSend : undefined;
   const windowStart = state.thread?.windowStart;
   const windowEnd = state.thread?.windowEnd;
@@ -101,7 +149,6 @@ export default function ThreadPanel({
       for (const [element, inert] of backgrounds) element.inert = inert;
     };
   }, [rootId, mobile]);
-  const open = !!rootId;
   useEffect(() => {
     if (!open || !mobile) return;
     const key = crypto.randomUUID();
@@ -202,10 +249,64 @@ export default function ThreadPanel({
     <aside
       ref={panel}
       className="chat-thread-panel"
+      id="chat-thread-panel"
+      style={{ flexBasis: width }}
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
     >
+      <div
+        className="chat-thread-resize"
+        role="separator"
+        aria-label="Thread width"
+        aria-controls="chat-thread-panel"
+        aria-orientation="vertical"
+        aria-valuemin={minimumWidth}
+        aria-valuemax={maximumWidth}
+        aria-valuenow={width}
+        aria-valuetext={`${width} pixels`}
+        tabIndex={mobile ? -1 : 0}
+        title="Drag to resize. Arrow keys to adjust. Double-click to reset."
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          const element = panel.current!;
+          drag.current = {
+            x: event.clientX,
+            width: element.offsetWidth,
+            scale: element.getBoundingClientRect().width / element.offsetWidth,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (drag.current)
+            drag.current.last = resize(
+              drag.current.width + (drag.current.x - event.clientX) / drag.current.scale,
+              false,
+            );
+        }}
+        onPointerUp={(event) => {
+          endDrag();
+          if (event.currentTarget.hasPointerCapture(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
+        onDoubleClick={() => resize(DEFAULT_WIDTH)}
+        onKeyDown={(event) => {
+          const sizes: Record<string, number> = {
+            ArrowLeft: width + 10,
+            ArrowRight: width - 10,
+            Home: minimumWidth,
+            End: maximumWidth,
+          };
+          const next = sizes[event.key];
+          if (next === undefined) return;
+          event.preventDefault();
+          resize(next);
+        }}
+      />
       <header className="chat-thread-heading">
         <button
           type="button"

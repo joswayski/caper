@@ -47,7 +47,7 @@ import {
   useNotificationSettings,
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
-import { createSpaceNavigation, type PreparedSpace } from "./navigation";
+import { createDirectNavigation, createSpaceNavigation, type PreparedDirect, type PreparedSpace } from "./navigation";
 import { transitionBrowse } from "./browseTransition";
 import {
   acceptChannelInvitation,
@@ -1625,7 +1625,13 @@ export default function Spaces({
         </button>
       </p>
     );
-  const [directView, setDirectView] = useState<{ conversation: DirectConversation }>();
+  const [directView, setDirectView] = useState<PreparedDirect & { conversation: DirectConversation }>();
+  const [pendingDirect, setPendingDirect] = useState<string>();
+  const directCache = useRef(createDirectNavigation());
+  useEffect(() => {
+    const cache = directCache.current;
+    return () => cache.clear();
+  }, [account?.id]);
   // DM `@` suggestions and mention profile cards; the previous list stays while
   // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
   const [people, setPeople] = useState<Person[]>();
@@ -1814,22 +1820,48 @@ export default function Spaces({
     const clearInaccessible = () =>
       setDirectError((current) => (current === INACCESSIBLE_DIRECT ? undefined : current));
     if (loading || !selected.dmId) {
-      setDirectView(undefined);
+      setPendingDirect(undefined);
+      // Space navigation clears the DM when the target channel is ready.
+      if (loading || !selected.spaceId) setDirectView(undefined);
       clearInaccessible();
       return;
     }
     const conversation = directs.find((item) => item.id === selected.dmId);
     if (!conversation) {
+      directCache.current.forget(selected.dmId);
       setDirectView(undefined);
+      setPendingDirect(undefined);
       setDirectError(INACCESSIBLE_DIRECT);
       return;
     }
     // A deep link checks before the list loads; drop that error once it arrives.
     clearInaccessible();
-    // ChatClient owns the history read, its cancellation, and explicit retries.
-    // Mounting it while also fetching here issued two reads for every DM open.
-    setDirectView({ conversation });
-    setNavigationOpen(false);
+    const controller = new AbortController();
+    const cached = directCache.current.peek(conversation.id);
+    if (cached?.history) {
+      setDirectView({ conversation, ...cached });
+      setNavigationOpen(false);
+    }
+    setPendingDirect(conversation.id);
+    void directCache.current
+      .take(conversation.id, controller.signal)
+      .then((next) => {
+        if (controller.signal.aborted) return;
+        directCache.current.remember(conversation.id, next);
+        // Commit the title and messages together; ChatClient receives this
+        // exact snapshot, so it resumes replay without another history GET.
+        setDirectView({ conversation, ...next });
+        setPendingDirect(undefined);
+        setNavigationOpen(false);
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        directCache.current.forget(conversation.id);
+        setPendingDirect(undefined);
+        setDirectView((shown) => (shown?.conversation.id === conversation.id ? undefined : shown));
+        setDirectError(errorMessage(reason));
+      });
+    return () => controller.abort();
   }, [selected.dmId, loading, directAccessible]);
 
   const readDirect = (seq: string) => {
@@ -1857,6 +1889,10 @@ export default function Spaces({
   const prefetch = (spaceId: string, channelId?: string) => {
     if (spaceId === detail?.space.id && (!channelId || channelId === view?.channelId)) return;
     void navigation.current.prepare(spaceId, channelId).catch(() => undefined);
+  };
+  const prefetchDirect = (conversation?: DirectConversation) => {
+    if (conversation && conversation.id !== directId && conversation.id !== pendingDirect)
+      directCache.current.prefetch(conversation.id);
   };
 
   useEffect(() => {
@@ -1922,12 +1958,19 @@ export default function Spaces({
     if (loading || !selected.spaceId) {
       return;
     }
+    // DMs are global conversations. Switching them inside the displayed space
+    // must not reload its channels or flash the rail's busy highlight.
+    if (selected.dmId && selected.spaceId === view?.detail.space.id) {
+      setPending(false);
+      return;
+    }
     let current = true;
     setError(undefined);
     setPending(true);
     const cached = navigation.current.peek(selected.spaceId, selected.channelId);
     if (cached) {
       setView(cached);
+      if (!selected.dmId) setDirectView(undefined);
       setNavigationOpen(false);
     }
     void navigation.current
@@ -1938,6 +1981,7 @@ export default function Spaces({
         // the existing Call (including its draft and live connections) stays put.
         navigation.current.remember(next);
         setView(next);
+        if (!selected.dmId) setDirectView(undefined);
         setPending(false);
         setNavigationOpen(false);
         const query = new URLSearchParams({ space: next.detail.space.id });
@@ -2144,8 +2188,10 @@ export default function Spaces({
   const requestsShown =
     requestsOpen ?? incomingRequests.some((conversation) => conversation.id === directView?.conversation.id);
   const leaveRequest = (request: DirectConversation) => {
+    directCache.current.forget(request.id);
     const next = incomingRequests.find((conversation) => conversation.id !== request.id);
     if (directView?.conversation.id === request.id) {
+      setDirectView(undefined);
       if (next) openDirect(next);
       else choose(detail?.space.id || undefined);
     }
@@ -2176,9 +2222,11 @@ export default function Spaces({
               type="button"
               className="channel-select direct-select direct-self"
               disabled={selfDirectPending}
-              aria-busy={selfDirectPending}
+              aria-busy={selfDirectPending || (!!selfDirect && pendingDirect === selfDirect.id)}
               aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
               title="Your private notes"
+              onMouseEnter={() => prefetchDirect(selfDirect)}
+              onFocus={() => prefetchDirect(selfDirect)}
               onClick={() => void openSelfDirect()}
             >
               <span className="direct-avatar">
@@ -2222,6 +2270,9 @@ export default function Spaces({
                     type="button"
                     className="channel-select direct-select"
                     aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+                    aria-busy={pendingDirect === conversation.id}
+                    onMouseEnter={() => prefetchDirect(conversation)}
+                    onFocus={() => prefetchDirect(conversation)}
                     onClick={() => openDirect(conversation)}
                   >
                     <span className="direct-avatar">
@@ -2248,6 +2299,9 @@ export default function Spaces({
                     className="channel-select direct-select"
                     aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
                     title={`@${conversation.peer.username}`}
+                    aria-busy={pendingDirect === conversation.id}
+                    onMouseEnter={() => prefetchDirect(conversation)}
+                    onFocus={() => prefetchDirect(conversation)}
                     onClick={() => openDirect(conversation)}
                   >
                     <span className="direct-avatar" aria-hidden="true">
@@ -2994,8 +3048,20 @@ export default function Spaces({
           })
         }
         initialAccount={account}
-        initialHistory={!directView && channel && view?.history?.channel.id === channel.id ? view.history : undefined}
-        initialHistoryError={!directView && channel && view?.channelId === channel.id ? view.historyError : undefined}
+        initialHistory={
+          directView
+            ? directView.history
+            : channel && view?.history?.channel.id === channel.id
+              ? view.history
+              : undefined
+        }
+        initialHistoryError={
+          directView
+            ? directView.historyError
+            : channel && view?.channelId === channel.id
+              ? view.historyError
+              : undefined
+        }
         onReadCursor={directView ? readDirect : undefined}
         mentionMembers={
           directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
@@ -3010,7 +3076,10 @@ export default function Spaces({
           setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
           openDirect(conversation);
         }}
-        onHistoryChange={navigation.current.rememberHistory}
+        onHistoryChange={(history) => {
+          navigation.current.rememberHistory(history);
+          directCache.current.rememberHistory(history);
+        }}
         spaceRail={rail}
         channelNavigation={channelNavigation}
         membersPanel={

@@ -345,6 +345,8 @@ struct DraftUpload {
     channel: String,
     name: String,
     kind: model::AttachmentKind,
+    /// The selected original, available for preview before upload completes.
+    local_path: Option<std::path::PathBuf>,
     /// The picked file's size; 0 until the file was read.
     source_size: u64,
     /// What is stored after compression, once prepared.
@@ -1824,6 +1826,7 @@ impl CaperApp {
             channel: channel.clone(),
             name: name.into(),
             kind: model::AttachmentKind::Image,
+            local_path: None,
             source_size: size,
             stored_size: Some(size),
             compressing: None,
@@ -1956,9 +1959,10 @@ impl CaperApp {
                     self.navigation_open = false;
                     if let Some(id) = alert.conversation_id {
                         // A new DM may arrive before the periodic conversation list.
-                        self.remember_conversation();
-                        self.selected_direct = Some(id.clone());
-                        self.reload_selected_channel(id, false);
+                        self.navigate(NavigationTarget {
+                            space: None,
+                            channel: Some(id),
+                        });
                         self.refresh_directs();
                     } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
                     {
@@ -2693,19 +2697,30 @@ impl CaperApp {
     /// Drops a declined or blocked request. If it was open, show the next
     /// request, else the first space (or nothing).
     fn leave_request(&mut self, id: &str) {
+        self.navigation_cache.forget_channel(id);
+        if self
+            .navigation_target
+            .as_ref()
+            .is_some_and(|target| target.space.is_none() && target.channel.as_deref() == Some(id))
+        {
+            self.navigation += 1;
+            self.opening = false;
+            self.navigation_target = None;
+            self.navigation_prefetch = None;
+        }
         self.directs.retain(|direct| direct.id != id);
         if self.selected_direct.as_deref() != Some(id) {
             return;
         }
+        // Declined data must disappear immediately, even while the next
+        // request prepares its history.
+        self.selected_direct = None;
+        self.clear_channel_state();
         if let Some(next) = self.incoming_requests().into_iter().next() {
             self.requests_open = true;
             self.select_direct(next);
         } else if let Some(space) = self.spaces.first().map(|space| space.id.clone()) {
-            self.selected_direct = None;
             self.select_space(space);
-        } else {
-            self.selected_direct = None;
-            self.clear_channel_state();
         }
     }
 
@@ -2992,16 +3007,10 @@ impl CaperApp {
     fn select_direct(&mut self, direct: model::DirectConversation) {
         self.request_busy = false;
         self.request_error = None;
-        self.remember_conversation();
-        self.selected_direct = Some(direct.id.clone());
-        self.reload_selected_channel(direct.id, false);
-        // After the reload's generation bump, so the answer is not discarded.
-        if let Some(token) = self.token.clone() {
-            self.worker.send(Command::LoadPeople {
-                generation: self.generation,
-                token,
-            });
-        }
+        self.navigate(NavigationTarget {
+            space: None,
+            channel: Some(direct.id),
+        });
     }
 
     fn select_or_create_self_direct(&mut self) {
@@ -3356,7 +3365,9 @@ impl CaperApp {
             channel: cache_target.channel.clone(),
         };
         let selected = self.selected_channel.as_ref().is_some_and(|channel| {
-            target.channel.as_ref() == Some(channel) && target.space == self.selected_space
+            target.channel.as_ref() == Some(channel)
+                && (target.space == self.selected_space
+                    || target.space.is_none() && self.selected_direct.as_ref() == Some(channel))
         });
         // Joining the displayed preview still needs a participating session.
         let joined_preview = self.selected_is_joined()
@@ -3431,7 +3442,14 @@ impl CaperApp {
             channel: target.channel,
         });
         if self.selected_channel.as_ref() == target.channel.as_ref()
-            && self.selected_space == target.space
+            && (self.selected_space == target.space
+                || target.space.is_none() && self.selected_direct == target.channel)
+        {
+            return;
+        }
+        if target.space.is_none()
+            && target.channel.is_some()
+            && self.navigation_cache.history(&target).is_some()
         {
             return;
         }
@@ -3451,28 +3469,54 @@ impl CaperApp {
     }
 
     fn remember_conversation(&mut self) {
-        if self.session.is_none() {
+        if self.session.is_none() || self.context_window.is_some() {
             return;
         }
-        let (Some(channel), Some(detail)) = (&self.selected_channel, &self.detail) else {
+        let Some(channel) = &self.selected_channel else {
             return;
         };
-        let Some(item) = detail.channels.iter().find(|item| item.id == *channel) else {
-            return;
+        let (target, space, place) = if self.selected_direct.as_ref() == Some(channel) {
+            let Some(direct) = self.selected_direct_conversation() else {
+                return;
+            };
+            (
+                navigation::Target {
+                    space: None,
+                    channel: Some(channel.clone()),
+                },
+                model::HistoryPlace {
+                    id: String::new(),
+                    name: "Direct messages".into(),
+                },
+                model::HistoryPlace {
+                    id: channel.clone(),
+                    name: direct.peer.display_name.clone(),
+                },
+            )
+        } else {
+            let Some(detail) = &self.detail else {
+                return;
+            };
+            let Some(item) = detail.channels.iter().find(|item| item.id == *channel) else {
+                return;
+            };
+            (
+                navigation::Target {
+                    space: (!detail.space.demo).then(|| detail.space.id.clone()),
+                    channel: (!detail.space.demo).then(|| channel.clone()),
+                },
+                model::HistoryPlace {
+                    id: detail.space.id.clone(),
+                    name: detail.space.name.clone(),
+                },
+                model::HistoryPlace {
+                    id: item.id.clone(),
+                    name: item.name.clone(),
+                },
+            )
         };
         self.navigation_cache.remember(
-            navigation::Target {
-                space: if detail.space.demo {
-                    None
-                } else {
-                    Some(detail.space.id.clone())
-                },
-                channel: if detail.space.demo {
-                    None
-                } else {
-                    Some(channel.clone())
-                },
-            },
+            target,
             model::History {
                 messages: self
                     .timeline
@@ -3485,14 +3529,8 @@ impl CaperApp {
                 pinned_messages: self.timeline.pinned_messages().cloned().collect(),
                 cursor: self.timeline.cursor(),
                 has_more: self.has_more,
-                space: model::HistoryPlace {
-                    id: detail.space.id.clone(),
-                    name: detail.space.name.clone(),
-                },
-                channel: model::HistoryPlace {
-                    id: item.id.clone(),
-                    name: item.name.clone(),
-                },
+                space,
+                channel: place,
             },
         );
     }
@@ -3522,11 +3560,17 @@ impl CaperApp {
         self.restoring = None;
         match result {
             Ok(prepared) => {
-                let space_changed = self.selected_space.as_deref()
-                    != prepared
-                        .detail
-                        .as_ref()
-                        .map(|detail| detail.space.id.as_str());
+                let direct = prepared
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|(history, _)| history.space.id.is_empty());
+                self.remember_conversation();
+                let space_changed = !direct
+                    && self.selected_space.as_deref()
+                        != prepared
+                            .detail
+                            .as_ref()
+                            .map(|detail| detail.space.id.as_str());
                 if space_changed {
                     self.voice_join_request += 1;
                     self.presence.clear();
@@ -3540,14 +3584,25 @@ impl CaperApp {
                 self.navigation_error = None;
                 self.navigation_target = None;
                 self.navigation_open = false;
-                let general = prepared.detail.is_none();
-                self.selected_space = prepared
-                    .detail
-                    .as_ref()
-                    .map(|detail| detail.space.id.clone());
-                self.detail = prepared.detail;
+                let general = !direct && prepared.detail.is_none();
+                if !direct {
+                    self.selected_space = prepared
+                        .detail
+                        .as_ref()
+                        .map(|detail| detail.space.id.clone());
+                    self.detail = prepared.detail;
+                }
                 if let Some((history, session)) = prepared.conversation {
                     let channel = history.channel.id.clone();
+                    if direct {
+                        self.selected_direct = Some(channel.clone());
+                        if let Some(token) = self.token.clone() {
+                            self.worker.send(Command::LoadPeople {
+                                generation: self.generation,
+                                token,
+                            });
+                        }
+                    }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
                 }
@@ -4608,6 +4663,7 @@ impl CaperApp {
                     .file_name()
                     .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
                 kind: model::AttachmentKind::File,
+                local_path: Some(path.clone()),
                 source_size: 0,
                 stored_size: None,
                 compressing: None,
@@ -4642,6 +4698,7 @@ impl CaperApp {
                 channel: channel.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
+                local_path: None,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
                 compressing: None,
@@ -6449,13 +6506,7 @@ impl CaperApp {
                             let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
                             let response = ui
                                 .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                    toned_rounded(
-                                        ui,
-                                        tone,
-                                        if active { 8 } else { 12 },
-                                        true,
-                                        button,
-                                    )
+                                    toned_rounded(ui, tone, 12, true, button)
                                 })
                                 .inner;
                             // A muted space gets a bell-slash badge and says so on hover.
@@ -7174,6 +7225,13 @@ impl CaperApp {
                 }
                 if response.clicked() {
                     self.select_or_create_self_direct();
+                } else if (response.hovered() || response.has_focus())
+                    && let Some(direct) = &self_direct
+                {
+                    self.prefetch(NavigationTarget {
+                        space: None,
+                        channel: Some(direct.id.clone()),
+                    });
                 }
             });
             ui.add_space(2.0);
@@ -7228,6 +7286,11 @@ impl CaperApp {
                         self.load_notifications();
                     } else if response.clicked() {
                         self.select_direct(direct.clone());
+                    } else if response.hovered() || response.has_focus() {
+                        self.prefetch(NavigationTarget {
+                            space: None,
+                            channel: Some(direct.id.clone()),
+                        });
                     }
                 });
                 self.notification_error(ui, &scope);
@@ -7549,6 +7612,11 @@ impl CaperApp {
             );
             if response.clicked() {
                 self.select_direct(request);
+            } else if response.hovered() || response.has_focus() {
+                self.prefetch(NavigationTarget {
+                    space: None,
+                    channel: Some(request.id),
+                });
             }
             ui.add_space(2.0);
         }
@@ -10910,6 +10978,7 @@ impl CaperApp {
     /// File chips above the composer: name, size saving, progress, remove.
     fn draft_chips(&mut self, ui: &mut egui::Ui) {
         let mut remove = None;
+        let mut preview = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             for draft in &mut self.draft_files {
@@ -11020,6 +11089,38 @@ impl CaperApp {
                     egui::pos2(rect.right() - 17.0, rect.center().y),
                     egui::vec2(22.0, 22.0),
                 );
+                let url = draft
+                    .local_path
+                    .as_ref()
+                    .and_then(|path| url::Url::from_file_path(path).ok())
+                    .map(String::from)
+                    .or_else(|| {
+                        draft
+                            .attachment
+                            .as_ref()
+                            .and_then(|attachment| attachment.url.clone())
+                    });
+                if let Some(url) = url {
+                    let response = ui.interact(
+                        egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(close.left() - 4.0, rect.bottom()),
+                        ),
+                        egui::Id::new(("draft-preview", draft.key)),
+                        egui::Sense::click(),
+                    );
+                    let label = format!("Preview {}", draft.name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                    });
+                    if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(label)
+                        .clicked()
+                    {
+                        preview = Some(url);
+                    }
+                }
                 let response = ui.interact(
                     close,
                     egui::Id::new(("draft-remove", draft.key)),
@@ -11045,6 +11146,9 @@ impl CaperApp {
         });
         if let Some(key) = remove {
             self.remove_draft(key);
+        }
+        if let Some(url) = preview {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
 
@@ -16924,6 +17028,16 @@ mod tests {
     fn declining_or_blocking_a_request_drops_it_and_moves_on() {
         let (base, seen) = account_server(vec![
             ("POST /api/dms/dm0000000003/decline", 204, ""),
+            (
+                "GET /api/chat/channels/dm0000000005/messages",
+                200,
+                r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000005","name":"TEST FIXTURE Kim","direct":true},"messages":[],"cursor":"1","hasMore":false}"#,
+            ),
+            (
+                "POST /api/chat/session",
+                200,
+                r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+            ),
             ("PUT /api/blocks/stranger0003", 204, ""),
         ]);
         let context = egui::Context::default();
@@ -16951,6 +17065,7 @@ mod tests {
         click(&mut app, &context, text_position(&output, "Decline"));
         receive_until(&mut app, |app| {
             !app.directs.iter().any(|direct| direct.id == "dm0000000003")
+                && app.selected_direct.as_deref() == Some("dm0000000005")
         });
         assert_eq!(
             app.selected_direct.as_deref(),
@@ -21779,10 +21894,22 @@ mod tests {
 
     #[test]
     fn mention_card_message_opens_an_existing_dm_or_shows_a_creation_error() {
+        let (base, _) = account_server(vec![
+            (
+                "GET /api/chat/channels/dm0000000009/messages",
+                200,
+                r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000009","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
+            ),
+            (
+                "POST /api/chat/session",
+                200,
+                r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+            ),
+        ]);
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            crate::api::Api::new(&base).unwrap(),
             Some("parity-mentions"),
         );
         app.token = Some("account-token".into());
@@ -21810,6 +21937,13 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Message"));
+        assert!(
+            app.selected_direct.is_none(),
+            "keep the channel until the DM is ready"
+        );
+        receive_until(&mut app, |app| {
+            app.selected_direct.as_deref() == Some("dm0000000009")
+        });
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000009"));
         assert!(app.mention_card.is_none(), "opening the DM closes the card");
 
@@ -21861,6 +21995,7 @@ mod tests {
         let api =
             crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
         let requests = std::thread::spawn(move || {
+            let mut creation = None;
             loop {
                 let (stream, _) = server.accept().unwrap();
                 stream
@@ -21884,16 +22019,32 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
+                let reply = match request.as_str() {
+                    "GET /api/chat/channels/dm0000000002/messages HTTP/1.1\r\n" => Some(
+                        r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000002","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
+                    ),
+                    "POST /api/chat/session HTTP/1.1\r\n" => Some(
+                        r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
+                    ),
+                    _ => None,
+                };
+                if let Some(reply) = reply {
+                    write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                    if request.starts_with("POST /api/chat/session ") {
+                        return creation.unwrap();
+                    }
+                    continue;
+                }
                 if request != "POST /api/dms HTTP/1.1\r\n" {
                     write!(reader.get_mut(), "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
                     continue;
                 }
                 let direct = r#"{"id":"dm0000000002","peer":{"id":"fixture-alex","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0"}"#;
                 write!(reader.get_mut(), "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{direct}", direct.len()).unwrap();
-                return (
+                creation = Some((
                     bearer,
                     serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                );
+                ));
             }
         });
         let context = egui::Context::default();
@@ -21909,9 +22060,6 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Message"));
-        let (bearer, body) = requests.join().unwrap();
-        assert!(bearer);
-        assert_eq!(body, serde_json::json!({"username": "alex"}));
         let deadline = Instant::now() + Duration::from_secs(10);
         while app.selected_direct.is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -21920,6 +22068,9 @@ mod tests {
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000002"));
         assert!(app.directs.iter().any(|direct| direct.id == "dm0000000002"));
         assert!(app.mention_card.is_none());
+        let (bearer, body) = requests.join().unwrap();
+        assert!(bearer);
+        assert_eq!(body, serde_json::json!({"username": "alex"}));
     }
 
     #[test]
@@ -23578,6 +23729,21 @@ mod tests {
             Some(SelfDirectTarget::Existing(self_direct.clone()))
         );
         app.select_or_create_self_direct();
+        assert!(
+            app.opening,
+            "the existing chat stays until notes are prepared"
+        );
+        let mut notes = history("self-notes");
+        notes.space.id.clear();
+        notes.space.name = "Direct messages".into();
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((notes, Ok(session()))),
+            }),
+        );
         assert_eq!(app.selected_direct.as_deref(), Some("self-notes"));
         assert_eq!(app.directs, vec![self_direct]);
     }
@@ -23807,6 +23973,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-attachments"),
         );
+        app.draft_files[1].local_path = Some(std::env::temp_dir().join("selected diagram #1.png"));
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -23853,6 +24020,12 @@ mod tests {
             let position = text_position(&output, label);
             assert_eq!(click_opening(&mut app, &context, position), None, "{label}");
         }
+        // An unfinished draft previews its local original without removing it.
+        let draft = text_position(&output, "TEST FIXTURE diagram.png");
+        let url = click_opening(&mut app, &context, draft).expect("draft preview opens");
+        assert!(url.starts_with("file:///"));
+        assert!(url.ends_with("/selected%20diagram%20%231.png"));
+        assert_eq!(app.draft_files.len(), 3);
     }
 
     #[test]

@@ -12,7 +12,7 @@ import {
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
-import MessageActions, { type MessageActionTarget } from "./MessageActions.tsx";
+import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
@@ -209,6 +209,11 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  useEffect(() => {
+    // Start code/data and opening-grid artwork together, without waiting for a
+    // sending session or a pointer hover (which touch clients never provide).
+    if (signedIn && !readOnly) preloadReactionPicker();
+  }, [signedIn, readOnly]);
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -642,13 +647,17 @@ export default function Chat({
     setAttachError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
     for (const file of files.slice(0, room)) {
       const key = crypto.randomUUID();
-      const localKind = file.type.startsWith("image/")
-        ? ("image" as const)
-        : file.type.startsWith("video/")
-          ? ("video" as const)
-          : undefined;
-      const localUrl = localKind ? URL.createObjectURL(file) : undefined;
-      if (localUrl) objectUrls.current.add(localUrl);
+      const localKind =
+        file.type.startsWith("image/") && file.type !== "image/svg+xml"
+          ? ("image" as const)
+          : file.type.startsWith("video/")
+            ? ("video" as const)
+            : undefined;
+      // Keep active document formats from executing on the app's blob origin.
+      const previewable =
+        localKind || file.type.startsWith("audio/") || ["application/pdf", "text/plain"].includes(file.type);
+      const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
+      objectUrls.current.add(localUrl);
       const controller = new AbortController();
       uploads.current.set(key, controller);
       setDrafts((current) => [

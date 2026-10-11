@@ -57,7 +57,6 @@
   text-decoration: none;
   cursor: pointer;
   transition:
-    border-radius 150ms ease,
     border-color 150ms ease,
     color 150ms ease,
     background-color 150ms ease;
@@ -67,14 +66,12 @@
 @media (hover: hover) {
   .space-rail :is(button, a):hover:not(:disabled, [aria-current="page"]) {
     border-color: var(--text-muted);
-    border-radius: 8px;
     color: var(--text);
     background: var(--surface-raised);
   }
 }
 .space-rail button[aria-current="page"] {
   border-color: #805143;
-  border-radius: 8px;
   color: #fff;
   background: #39231e;
 }
