@@ -36,6 +36,7 @@ internal data class PushPayload(
     val senderAvatarId: Int?,
     /** `#channel (Space)` for a channel; null for a DM. */
     val conversationTitle: String?,
+    val attachment: PushAttachment? = null,
 ) {
     val direct: Boolean get() = conversationId != null
 
@@ -78,6 +79,7 @@ internal data class PushPayload(
                 senderId = value("senderId"),
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
+                attachment = PushAttachment.parse(data),
             )
         }
 
@@ -87,5 +89,22 @@ internal data class PushPayload(
         private const val MAX_BODY = 1_000
 
         private fun String.limit(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max)) + "…"
+    }
+}
+
+/** One signed original, not an uploaded thumbnail or a public device file. */
+internal data class PushAttachment(val url: String, val contentType: String, val size: Long) {
+    companion object {
+        const val MAX_BYTES = 10_000_000L
+        fun parse(data: Map<String, String>): PushAttachment? {
+            val raw = data["attachmentUrl"] ?: return null
+            val url = runCatching { java.net.URI(raw) }.getOrNull() ?: return null
+            if (url.scheme != "https" || url.host == null || url.rawUserInfo != null || url.rawFragment != null ||
+                !Regex("^/original/[A-Za-z0-9]{1,64}$").matches(url.path)) return null
+            val type = data["attachmentContentType"] ?: return null
+            if (type !in listOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "video/mp4", "video/webm", "video/quicktime")) return null
+            val size = data["attachmentSize"]?.toLongOrNull()?.takeIf { it in 1..MAX_BYTES } ?: return null
+            return PushAttachment(raw, type, size)
+        }
     }
 }

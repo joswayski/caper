@@ -99,7 +99,9 @@ offers the phone's platform, the app turns push on, unless the account turned
 
 - Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
 - Body: the message text, trimmed, cut to 180 characters including a final `…`;
-  empty text (a forward without text) → `Sent a message`.
+  empty text with attachments → `Sent a photo`, `Sent a video`, `Sent an audio
+  file`, `Sent a file: filename`, or `Sent N files`. Empty text without files
+  (including a forward without text or files) → `Sent a message`.
 - Sender artwork is the current profile's bundled avatar (0–799), not the
   message's historical avatar or a remote image download. Missing/invalid
   artwork retains the OS/app fallback. Android sets both the `MessagingStyle`
@@ -117,6 +119,37 @@ offers the phone's platform, the app turns push on, unless the account turned
   `conversationId` (DMs) or `spaceId` + `channelId`, `title`, `body`, `sender`,
   `senderId`, optional decimal `senderAvatarId`, and `conversationTitle`
   (`#channel (Space)`, channels only).
+
+### Original-file previews
+
+APNs, FCM and the account gateway feed optionally include `attachmentUrl`,
+`attachmentContentType` and `attachmentSize` (decimal string in FCM; number
+elsewhere). The server selects the first available PNG/JPEG/GIF/WebP/AVIF image
+or MP4/WebM/QuickTime video no larger than 10,000,000 bytes, including attachments
+in forwarded snapshots. Multiple files remain supported; each notification
+previews at most one. Captions remain the body. Deleted files are not signed.
+
+The URL grants 15-minute access to the **existing original**, never `/preview`
+or a new stored rendition. API and gateway reuse `ASSET_CDN_ORIGIN` and
+`ASSET_CDN_SIGNING_SECRET`. No extra R2 objects, uploads or migrations are needed.
+URLs are bearer capabilities: access is checked before issuing them, but an
+already issued URL cannot be immediately recalled if access is later revoked.
+
+Clients download without account credentials or redirects, cap bytes and allow
+about five seconds for the download. They create a PNG no larger than 1024 px
+on its long edge (a still frame for video), **only on the receiving device**.
+Web uses an in-memory blob; Android uses app-private files retained for the
+notification; Apple hands temporary attachments to UserNotifications; Rust
+desktop uses a private temporary directory until dismissal, expiry or logout.
+These local OS artifacts do not become additional server-side file versions.
+
+iPhone retains its sender communication intent; Android retains MessagingStyle
+and sender artwork. macOS shows the upload instead of its sender image
+attachment. Windows adds a hero image; Linux and browser presentation depend on
+the notification service/browser. Unsupported codecs (including video on
+Android 26), missing FFmpeg on Rust desktop, expiry, a failed download or an OS
+timeout preserve the text notification. The CDN allows credential-free CORS
+reads only after the existing signature check, including cached responses.
 
 ### Local web and desktop notifications
 
@@ -306,6 +339,46 @@ physical Android or signed iOS devices. Keep each platform out of
    number. Leave the additive index and notification data intact; server rollback
    requires a reviewed build retaining the applied SQLx migration ledger (a
    pre-migration image rejects that ledger). No deployment was performed here.
+
+### Original-file preview deployment order
+
+1. No new infrastructure, secrets, database migrations or storage variants are
+   required. Existing uploads, CDN signing configuration and phone credentials
+   must already work. Keep the current API replica/shared-state policy and iOS
+   extension provisioning. Merging does not deploy any component.
+2. Deploy the CDN Worker first for browser CORS. From `apps/cdn`, authenticate
+   Wrangler with the existing account and run `npx wrangler deploy --env staging`;
+   after staging verification, use `npx wrangler deploy --env production`. Do not
+   rotate the existing signing secret. Native previews do not depend on CORS.
+3. After merge and main image builds, set `MERGED_SHA` to the full merged commit.
+   Roll out the API and gateway (they can deploy independently; clients tolerate
+   omitted media fields). Wait for each deployment workflow before checking:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+4. Release web and native clients independently after the relevant server role
+   is updated. Native builds and physical Android/signed-iOS preview acceptance
+   remain prerequisites for releasing those clients:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+5. With separate accounts, send a captioned photo, a video, multiple files and a
+   document. Check one visual preview, intact caption/file fallback, tap routing,
+   focused reading and logout, then an expired URL/offline download. Check iOS
+   expanded notifications and Android MessagingStyle on real devices. R2 must
+   contain no notification-created objects. Roll back server/web images to the
+   previous migration-compatible build; native rollback needs a corrected higher
+   build number. The previous Worker remains usable for native clients but web
+   previews fall back to text without CORS. Leave all user data intact.
 
 ## Recommendation in one screen
 

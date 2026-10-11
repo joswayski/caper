@@ -1,5 +1,6 @@
 import { appGateway } from "../gateway/client";
 import { avatarUrl } from "./avatar";
+import { notificationImage } from "./notification-image";
 
 const CHOICE = "caper.browserNotifications";
 
@@ -31,6 +32,9 @@ export interface MessageNotification {
   body: string;
   createdAt: string;
   senderAvatarId?: number | null;
+  attachmentUrl?: string;
+  attachmentContentType?: string;
+  attachmentSize?: number;
   conversationId?: string;
   spaceId?: string;
   channelId?: string;
@@ -46,7 +50,8 @@ export function notificationLocation(event: MessageNotification) {
 /** Account-wide, not tied to the current channel's chat subscription. */
 export function watchBrowserNotifications(accountId: string, showing: () => string | undefined) {
   let active = true;
-  const displayed = new Set<Notification>();
+  const downloads = new AbortController();
+  const displayed = new Map<Notification, string | undefined>();
   const visibleKey = `caper.notificationVisible.${accountId}`;
   const tab = crypto.randomUUID();
   // A background tab must also suppress the conversation visible in another tab.
@@ -79,7 +84,7 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
     const location = notificationLocation(event);
     const age = Date.now() - Date.parse(event.createdAt);
     if (!location || !Number.isFinite(age) || age < -30_000 || age > 120_000) return;
-    const present = () => {
+    const present = async () => {
       if (!active || browserNotificationPermission() !== "granted" || !browserNotificationsEnabled()) return;
       visibility();
       let visible =
@@ -99,14 +104,35 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
         /* Private browsing may disallow storage; the OS tag still groups duplicates. */
       }
       if (visible) return;
+      const image = event.attachmentUrl ? await notificationImage(event, downloads.signal) : undefined;
+      visibility();
+      let reading =
+        document.visibilityState === "visible" &&
+        document.hasFocus() &&
+        showing() === (event.conversationId ?? event.channelId);
       try {
-        const notification = new Notification(event.title, {
+        const other = JSON.parse(localStorage.getItem(visibleKey) ?? "null");
+        reading ||= other?.conversation === (event.conversationId ?? event.channelId) && Date.now() - other.at < 3_000;
+      } catch {
+        /* Storage may be unavailable. */
+      }
+      if (!active || browserNotificationPermission() !== "granted" || !browserNotificationsEnabled() || reading) {
+        if (image) URL.revokeObjectURL(image);
+        return;
+      }
+      try {
+        const options: NotificationOptions & { image?: string } = {
           body: event.body,
           icon: avatarUrl(event.senderAvatarId),
           tag: `caper:${accountId}:${event.messageId}`,
-        });
-        displayed.add(notification);
-        notification.onclose = () => displayed.delete(notification);
+          ...(image ? { image } : {}),
+        };
+        const notification = new Notification(event.title, options);
+        displayed.set(notification, image);
+        notification.onclose = () => {
+          displayed.delete(notification);
+          if (image) URL.revokeObjectURL(image);
+        };
         notification.onclick = () => {
           notification.close();
           if (!active) return;
@@ -114,11 +140,12 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
           window.location.assign(location);
         };
       } catch {
+        if (image) URL.revokeObjectURL(image);
         /* Some mobile browsers require a service worker; no closed-browser push yet. */
       }
     };
     if (navigator.locks) await navigator.locks.request(`caper.notifications.${accountId}`, present);
-    else present();
+    else await present();
   };
   const subscription = appGateway().subscribe(
     { kind: "notifications" },
@@ -131,6 +158,7 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
   void subscription.ready.catch(() => undefined);
   return () => {
     active = false;
+    downloads.abort();
     subscription.unsubscribe();
     clearInterval(visibleTimer);
     window.removeEventListener("focus", visibility);
@@ -141,6 +169,9 @@ export function watchBrowserNotifications(accountId: string, showing: () => stri
     } catch {
       /* Storage may be unavailable. */
     }
-    for (const notification of displayed) notification.close();
+    for (const [notification, image] of displayed) {
+      notification.close();
+      if (image) URL.revokeObjectURL(image);
+    }
   };
 }

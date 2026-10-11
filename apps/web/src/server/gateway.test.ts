@@ -750,7 +750,7 @@ test("notification handoff replays sparse account IDs once and waits for a real 
   assert.equal(f.subscribe(2).after, "9007199254741005");
 });
 
-test("browser alerts show the sender avatar, suppress reading/disabled/stale messages and fence clicks on logout", (t) => {
+test("browser alerts show the sender avatar, suppress reading/disabled/stale messages and fence clicks on logout", async (t) => {
   const f = setup(t);
   setAppGatewayForTests(f.gateway);
   let focused = true;
@@ -841,7 +841,27 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   shown[1].onclick?.();
   assert.equal(destination, "/spaces?dm=dm0000000001");
   emit(9);
+  const media = {
+    attachmentUrl: "https://cdn.test/original/photo1?exp=123&sig=test",
+    attachmentContentType: "image/png",
+    attachmentSize: 3,
+  };
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("too many bytes"));
+  emit(10, media);
+  await vi.waitFor(() => assert.equal(shown.length, 4));
+  assert.equal(shown[3].options.body, "A new sketch", "a rejected original preserves the notification text");
+  let complete!: (response: Response) => void;
+  vi.mocked(fetch).mockImplementationOnce(
+    () =>
+      new Promise<Response>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  emit(11, media);
   stop();
+  complete(new Response("png"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(shown.length, 4, "an original finishing after logout cannot create another notification");
   destination = undefined;
   shown[2].onclick?.();
   assert.equal(destination, undefined, "old-account notifications cannot navigate after logout");

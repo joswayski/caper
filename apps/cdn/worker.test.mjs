@@ -69,6 +69,7 @@ test("valid URLs stream allowlisted media inline", async () => {
   assert.equal(response.headers.get("content-disposition"), "inline");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("cache-control"), "private, max-age=86400, immutable");
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
   assert.equal(await response.text(), "0123456789");
 });
 

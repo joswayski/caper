@@ -5439,8 +5439,16 @@ payloads, routes, retries and configuration.
   notifications from an account-wide gateway feed, independently of the current
   channel. They include sender artwork, focused-conversation suppression,
   reconnect deduplication, click navigation and logout cleanup. macOS uses an
-  avatar attachment rather than replacing the app icon. Closed-browser Web Push,
-  macOS APNs and keep-running-in-tray behavior remain unimplemented.
+  upload or sender-avatar attachment rather than replacing the app icon.
+  Closed-browser Web Push, macOS APNs and keep-running-in-tray behavior remain
+  unimplemented.
+- Phone and local desktop/browser notifications can preview one image or video
+  from a 15-minute signed **original** URL. The receiving device creates its own
+  temporary PNG; notifications never upload or store another R2 rendition.
+  Captions survive; documents, oversized/expired media and decoder/download
+  failures fall back to descriptive text. Multiple message attachments remain
+  supported. See [limits and client behavior](notifications.md#original-file-previews)
+  and [the CDN/server/client deployment order](notifications.md#original-file-preview-deployment-order).
 
 The additive `202610090002_live_notifications.sql` index supports account
 notification cursors. Deploy API/migration, then gateway, then independent web
@@ -5459,6 +5467,17 @@ Sender-avatar/local-notification validation (October 9, 2026):
 | Android | Avatar parser regression added; no Android SDK/build/device available in this orb. FCM physical receipt and rendered MessagingStyle remain unverified. |
 | iOS/macOS | Extension/bundle/entitlement changes and macOS local delivery implemented; no Swift/Xcode build, XCTest, signed provisioning or OS banner inspection available in this orb. Signed iOS communication banners, extension fallback, macOS attachments and minimized activation require native acceptance. |
 | Containers | No Docker daemon in this orb. Web production build and Rust compilation checked directly; images not built or executed. |
+
+Original-file preview validation (October 11, 2026):
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/gateway/CDN | Workspace tests and Clippy pass; all 46 disposable API Postgres/Valkey tests and two account integration tests pass. Mock APNs/FCM and the gateway receive original URLs, captions, MIME and byte sizes; deletion removes media fields. Unit cases cover the 10,000,000-byte boundary, documents, multiple files and forwarded snapshots. CDN tests retain signature/expiry protection and assert CORS. No live R2 or provider sends. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (565 tests). A Chromium local HTTPS original-file fixture exercises actual PNG and MP4 decoding to 1024 × 576 PNG blobs, malformed-media fallback and oversized rejection. Gateway tests check text fallback and logout during a download. Browser OS presentation, Safari and physical mobile browsers remain unverified. |
+| Rust desktop | 403 libwebrtc-linked Linux tests pass (12 existing opt-in tests ignored); application Clippy and format checks pass. A removed temporary probe downloads original photo/video fixtures over locally trusted HTTPS, decodes 1024 × 576 PNGs, renders the real Linux/Dunst backend and checks all three Open callbacks. Photo, video still and document fallback captures inspected. Video uses the installed development FFmpeg: the packaged Linux FFmpeg requires newer glibc than this orb. Windows runtime, packaged FFmpeg and minimized-window activation remain unverified. |
+| Android | Original-media parser regression and private FileProvider added. XML parses, but no Android SDK build/JUnit run, device or real FCM MessagingStyle preview validation in this orb. |
+| iOS/macOS | Shared bounded original downloader included directly in the service extension and CaperCore; image/video API availability and system attachment ownership checked against Apple documentation. No Swift/Xcode build, XCTest, signed iOS push, extension expiry or macOS banner validation. |
+| Containers | No Docker daemon; application builds/compilation checked directly. No image builds or deployment performed. |
 
 `202610080002_notifications.sql` drops the unused SNS-era `push_devices`,
 `push_notifications` and `push_deliveries` tables; `202610030002_push.sql` stays

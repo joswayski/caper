@@ -364,6 +364,15 @@ impl CdnSigner {
 
     pub(crate) fn url(&self, key: &str, now: i64) -> String {
         let expires = (now.div_euclid(DAY) + 2) * DAY;
+        self.signed_url(key, expires)
+    }
+
+    /// Short-lived access to an existing original for notification rendering.
+    pub(crate) fn notification_url(&self, id: &str, now: i64) -> String {
+        self.signed_url(&original_key(id), now + 15 * 60)
+    }
+
+    fn signed_url(&self, key: &str, expires: i64) -> String {
         let signature =
             URL_SAFE_NO_PAD.encode(hmac(&self.secret, format!("{key}\n{expires}").as_bytes()));
         format!("{}/{key}?exp={expires}&sig={signature}", self.origin)

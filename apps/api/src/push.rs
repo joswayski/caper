@@ -7,7 +7,8 @@
 //! delivery per registered device, then send deliveries without holding a
 //! database connection. Never log tokens, key material or message text.
 use crate::{
-    ApiError, AppState, RuntimeEnvironment, auth::Principal, chat::Chat, presence::Presence,
+    ApiError, AppState, RuntimeEnvironment, assets::CdnSigner, auth::Principal, chat::Chat,
+    presence::Presence,
 };
 use axum::{
     Extension, Json, Router,
@@ -124,7 +125,18 @@ pub(crate) struct Alert {
     pub sender: String,
     pub sender_id: String,
     pub sender_avatar_id: Option<i16>,
+    pub attachment: Option<Attachment>,
 }
+
+/// One existing original, never a notification-specific stored rendition.
+#[derive(Clone, Debug)]
+pub(crate) struct Attachment {
+    pub url: String,
+    pub content_type: String,
+    pub size: u64,
+}
+
+const MAX_NOTIFICATION_ATTACHMENT_BYTES: u64 = 10_000_000;
 
 impl Alert {
     pub(crate) fn new(
@@ -149,7 +161,73 @@ impl Alert {
             sender: sender.to_owned(),
             sender_id: sender_id.to_owned(),
             sender_avatar_id: sender_avatar_id.filter(|id| (0..800).contains(id)),
+            attachment: None,
         }
+    }
+
+    /// Call only after recipient authorization and marking deleted assets.
+    pub(crate) fn with_content(mut self, message: &Value, cdn: Option<&CdnSigner>) -> Self {
+        let files: Vec<&Value> = [
+            "/content/attachments",
+            "/forward/message/content/attachments",
+        ]
+        .into_iter()
+        .filter_map(|path| message.pointer(path).and_then(Value::as_array))
+        .flatten()
+        .collect();
+        if message
+            .pointer("/content/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+            && !files.is_empty()
+        {
+            self.body = if files.len() > 1 {
+                format!("Sent {} files", files.len())
+            } else {
+                match files[0]["kind"].as_str() {
+                    Some("image") => "Sent a photo".into(),
+                    Some("video") => "Sent a video".into(),
+                    Some("audio") => "Sent an audio file".into(),
+                    _ => preview(&format!(
+                        "Sent a file: {}",
+                        files[0]["name"].as_str().unwrap_or("attachment")
+                    )),
+                }
+            };
+        }
+        if let Some(cdn) = cdn {
+            self.attachment = files.into_iter().find_map(|file| {
+                if file["unavailable"] == true {
+                    return None;
+                }
+                let content_type = file["contentType"].as_str()?;
+                if !matches!(
+                    content_type,
+                    "image/png"
+                        | "image/jpeg"
+                        | "image/gif"
+                        | "image/webp"
+                        | "image/avif"
+                        | "video/mp4"
+                        | "video/webm"
+                        | "video/quicktime"
+                ) {
+                    return None;
+                }
+                let size = file["size"].as_u64()?;
+                if !(1..=MAX_NOTIFICATION_ATTACHMENT_BYTES).contains(&size) {
+                    return None;
+                }
+                Some(Attachment {
+                    url: cdn.notification_url(file["id"].as_str()?, chrono::Utc::now().timestamp()),
+                    content_type: content_type.into(),
+                    size,
+                })
+            });
+        }
+        self
     }
 
     /// The conversation or channel ID: APNs `thread-id`, FCM `collapse_key`.
@@ -334,6 +412,7 @@ fn apns_from_env(
 pub(crate) struct Workers {
     pool: PgPool,
     push: Push,
+    cdn: Option<Arc<CdnSigner>>,
     broker: Option<redis::Client>,
     presence: Arc<tokio::sync::Mutex<Option<Presence>>>,
     idle_timeout: Duration,
@@ -350,6 +429,7 @@ impl Workers {
         Self {
             pool,
             push,
+            cdn: None,
             broker,
             presence: Arc::new(tokio::sync::Mutex::new(None)),
             idle_timeout,
@@ -401,12 +481,13 @@ pub(crate) fn start(
             Ok(())
         };
     };
-    let workers = Workers::new(
+    let mut workers = Workers::new(
         chat.pool.clone(),
         push.clone(),
         Some(chat.broker.clone()),
         idle_timeout(environment)?,
     );
+    workers.cdn = chat.cdn.clone();
     tracing::info!(
         event_name = "notifications_enabled",
         platforms = ?push.platforms().iter().map(|p| p.name()).collect::<Vec<_>>(),

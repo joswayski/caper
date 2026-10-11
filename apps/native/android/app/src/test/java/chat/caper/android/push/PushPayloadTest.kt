@@ -101,4 +101,22 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(direct - "senderAvatarId")?.senderAvatarId)
         for (index in listOf(0, 799)) assertEquals(index, PushPayload.parse(channel + ("senderAvatarId" to "$index"))?.senderAvatarId)
     }
+
+    @Test fun `one bounded original is optional and invalid media preserves the message`() {
+        val media = mapOf("attachmentUrl" to "https://cdn.caper.chat/original/photo1?exp=123&sig=test",
+            "attachmentContentType" to "image/webp", "attachmentSize" to "10000000")
+        assertEquals(10_000_000L, PushPayload.parse(direct + media)?.attachment?.size)
+        assertNull(PushPayload.parse(direct)?.attachment)
+        for (bad in listOf(
+            media + ("attachmentSize" to "10000001"), media + ("attachmentSize" to "0"),
+            media + ("attachmentUrl" to "http://cdn.caper.chat/original/photo1"),
+            media + ("attachmentUrl" to "https://cdn.caper.chat/preview/photo1"),
+            media + ("attachmentUrl" to "https://user:password@cdn.caper.chat/original/photo1"),
+            media + ("attachmentContentType" to "application/pdf"), media - "attachmentSize",
+        )) {
+            val payload = requireNotNull(PushPayload.parse(direct + bad))
+            assertNull(payload.attachment)
+            assertEquals("Are you around?", payload.body)
+        }
+    }
 }

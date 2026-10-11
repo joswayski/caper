@@ -590,9 +590,15 @@ async fn notification_subscription(
         let head = (*heads.borrow_and_update()).max(initial);
         while after < head {
             identity.check(state).await?;
-            let rows = crate::push::live::read(&state.chat.pool, user, after, head)
-                .await
-                .map_err(|_| chat::unavailable())?;
+            let rows = crate::push::live::read(
+                &state.chat.pool,
+                user,
+                after,
+                head,
+                state.chat.cdn.as_deref(),
+            )
+            .await
+            .map_err(|_| chat::unavailable())?;
             if rows.is_empty() {
                 return Err(chat::unavailable());
             }
