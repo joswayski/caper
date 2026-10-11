@@ -244,6 +244,7 @@ private protocol SlideDrawer: AnyObject {
     var travel: CGFloat = 1
     static let opening: CGFloat = 1
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
+    static let tap = Animation.interpolatingSpring(duration: 0.22, bounce: 0)
 }
 
 /// Marks a Browse/conversation switch. Only the conversation layer moves with
@@ -296,7 +297,7 @@ private struct BrowseLayer: ViewModifier {
         }
         .transaction { transaction in
             if drag != nil || reduceMotion { transaction.animation = nil }
-            else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
+            else if transaction.animation == nil { transaction.animation = BrowseDrawer.tap }
         } body: { layer in
             layer.offset(pose(uncovered)).opacity(hidesCovered && uncovered == 0 ? 0 : 1)
         }
@@ -604,9 +605,11 @@ private struct WorkspaceView: View {
         }
     }
 
-    /// Buttons switch with the same slide as a finger.
+    /// Buttons switch with a quicker version of the finger's slide.
     private func slide(open: Bool) {
-        withTransaction(\.browseSlide, true) { model.navigationOpen = open }
+        var transaction = Transaction(animation: BrowseDrawer.tap)
+        transaction.browseSlide = true
+        withTransaction(transaction) { model.navigationOpen = open }
     }
 
     /// The hidden view stays in place to slide back, so it must not keep the keyboard.

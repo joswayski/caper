@@ -199,7 +199,7 @@ class Slide implements BrowseDrag {
     const { commit, velocity } = this.released!;
     const distance = Math.abs((commit ? 1 : 0) - this.progress),
       speed = commit ? velocity : -velocity;
-    const timing = this.interactive ? releaseTiming(distance, speed) : SETTLE;
+    const timing = this.interactive ? releaseTiming(distance, speed) : { duration: 220, easing: SETTLE.easing };
     try {
       // Settled poses would end the transition before a cancelled swipe
       // restores its view; this keeps it alive until that update is in.

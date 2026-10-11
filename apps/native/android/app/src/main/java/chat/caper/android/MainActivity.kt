@@ -463,7 +463,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 if (narrow) {
                     val drawer = rememberBrowseDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
-                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen, quick = true) }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
@@ -552,13 +552,15 @@ private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
     }
 
-    /** Animates to Browse or the conversation, carrying on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float? = null) {
+    /** Buttons use a quick slide; swipes carry on at `velocity` (progress per second). */
+    fun settle(open: Boolean, velocity: Float? = null, quick: Boolean = false) {
         val target = if (open) 1f else 0f
         if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             if (velocity == null) {
-                progress.animateTo(target, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
+                progress.animateTo(target,
+                    if (quick) tween(220, easing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f))
+                    else spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
             } else {
                 val remaining = target - progress.value
                 val distance = abs(remaining)
