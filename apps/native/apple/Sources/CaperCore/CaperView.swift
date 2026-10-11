@@ -2537,14 +2537,16 @@ private struct ChatView: View {
             }
             }
             }.padding(.horizontal, 18).padding(.top, 12)
-            #if os(macOS)
+            // Keep breathing room above the keyboard/home-indicator safe area.
             .padding(.bottom, 12)
-            #endif
-            // iOS already avoids the keyboard/home indicator through the safe area.
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
-        }.background(CaperTheme.conversation)
+        }.background {
+            // Paint behind iOS's rounded keyboard corners; only the background
+            // ignores the safe area, so the controls still avoid the keyboard.
+            CaperTheme.conversation.ignoresSafeArea()
+        }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
             #if os(macOS)
@@ -2852,11 +2854,9 @@ private struct NativeThreadView: View {
                     Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
                 }
             }.padding(.horizontal, 12).padding(.top, 12)
-            #if os(macOS)
             .padding(.bottom, 12)
-            #endif
             }
-        }.background(CaperTheme.conversation)
+        }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
