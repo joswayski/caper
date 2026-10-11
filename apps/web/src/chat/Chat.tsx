@@ -179,6 +179,8 @@ export default function Chat({
   mentionMembers,
   mentionDirectory = [],
   onMessagePerson,
+  onOpenForward,
+  focusMessage,
 }: {
   name: string;
   signedIn: boolean;
@@ -207,6 +209,8 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
+  onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
+  focusMessage?: GeneralChatHistory["messages"][number];
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   useEffect(() => {
@@ -225,6 +229,7 @@ export default function Chat({
   const [reactorsTarget, setReactorsTarget] = useState<ReactorsTarget>();
   const [forwardTarget, setForwardTarget] = useState<ForwardTarget>();
   const [conversationTarget, setConversationTarget] = useState<ForwardTarget>();
+  const openingForward = useRef(false);
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
   const [viewerTarget, setViewerTarget] = useState<ViewerTarget>();
@@ -390,6 +395,19 @@ export default function Chat({
     : undefined;
   const closeForward = useCallback(() => setForwardTarget(undefined), []);
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
+  const openConversation = async (message: GeneralChatHistory["messages"][number], anchor: HTMLElement) => {
+    if (openingForward.current) return;
+    openingForward.current = true;
+    const client = clientRef.current;
+    try {
+      const navigated = await onOpenForward?.(message);
+      if (!navigated && clientRef.current === client) setConversationTarget({ messageId: message.id, anchor });
+    } catch {
+      if (clientRef.current === client) setActionStatus("Couldn’t open the conversation. Try again.");
+    } finally {
+      openingForward.current = false;
+    }
+  };
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
   // Forwarded originals live on the forwarding message; the viewer closes if either goes.
@@ -575,6 +593,27 @@ export default function Chat({
       clientRef.current = undefined;
     };
   }, [channelId]);
+
+  const handledFocus = useRef<{ client: ChatClient; message: GeneralChatHistory["messages"][number] } | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!focusMessage) {
+      handledFocus.current = undefined;
+      return;
+    }
+    const client = clientRef.current;
+    if (
+      !client ||
+      state.phase !== "ready" ||
+      jumping ||
+      focusMessage.channelId !== state.channelId ||
+      (handledFocus.current?.message === focusMessage && handledFocus.current.client === client)
+    )
+      return;
+    handledFocus.current = { client, message: focusMessage };
+    void goToMessage(focusMessage);
+  }, [focusMessage, state.phase, state.channelId, jumping]);
 
   const blockedIdsRef = useRef(blockedIds);
   useEffect(() => {
@@ -1166,7 +1205,7 @@ export default function Chat({
                 <>
                   <ForwardCard
                     message={message}
-                    onOpen={(anchor) => setConversationTarget({ messageId: message.id, anchor })}
+                    onOpen={(anchor) => void openConversation(message, anchor)}
                     onView={viewFile(message.id, true)}
                   />
                   <button
@@ -1475,12 +1514,7 @@ export default function Chat({
                       />
                       <ForwardCard
                         message={message}
-                        onOpen={(anchor) =>
-                          setConversationTarget({
-                            messageId: message.id,
-                            anchor,
-                          })
-                        }
+                        onOpen={(anchor) => void openConversation(message, anchor)}
                         onView={viewFile(message.id, true)}
                       />
                       <div className="chat-pinned-navigation">

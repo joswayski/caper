@@ -218,9 +218,17 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     );
     let (status, view) = request(&app, "GET", &path, "carol", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(
+        view["source"],
+        Value::Null,
+        "An excerpt does not grant navigation into its source"
+    );
     assert_eq!(view["messages"].as_array().unwrap().len(), 1);
     assert_eq!(view["messages"][0]["content"]["text"], "First reply");
     assert!(!view.to_string().contains("Unrelated private history"));
+    let accessible = request(&app, "GET", &path, "alice", Value::Null).await.1;
+    assert_eq!(accessible["source"]["spaceId"], "source");
+    assert_eq!(accessible["source"]["message"]["id"], original["id"]);
     assert_eq!(
         request(
             &app,
@@ -632,6 +640,28 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     let (status, wrapper) = request(&app, "GET", &single, "alice", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{wrapper}");
     assert!(wrapper["forward"]["message"].is_object(), "{wrapper}");
+    // A shared reply still hides its parent, but source members can navigate
+    // to that exact reply in its real thread. Losing access clears this grant.
+    let (status, reply_forward) = request(&app, "POST", "/api/chat/channels/destination/forwards", "alice",
+        json!({"sourceChannelId":"source","sourceMessageId":first_reply["id"],"clientMessageId":Uuid::new_v4()})).await;
+    assert_eq!(status, StatusCode::OK, "{reply_forward}");
+    let reply_path = format!(
+        "/api/chat/channels/destination/forwards/{}/thread",
+        reply_forward["id"].as_str().unwrap()
+    );
+    let view = request(&app, "GET", &reply_path, "alice", Value::Null)
+        .await
+        .1;
+    assert_eq!(view["root"]["threadRootId"], Value::Null);
+    assert_eq!(view["source"]["message"]["id"], first_reply["id"]);
+    assert_eq!(view["source"]["message"]["threadRootId"], original["id"]);
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE user_id=$1 AND space_id=(SELECT space_id FROM public.channels WHERE external_id='source')")
+        .bind(users[0]).execute(&pool).await.unwrap();
+    let (status, revoked) = request(&app, "GET", &reply_path, "alice", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(revoked["source"], Value::Null);
+    assert_eq!(revoked["root"]["id"], first_reply["id"]);
+    assert_eq!(revoked["root"]["threadRootId"], Value::Null);
     sqlx::query("UPDATE public.channels SET deleted_at=now() WHERE external_id='source'")
         .execute(&pool)
         .await

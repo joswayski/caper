@@ -1847,7 +1847,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                         openMention = { mentionTarget = it },
                         openActions = { actionTarget = it },
-                        openConversation = { conversationTarget = it },
+                        openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
@@ -2293,7 +2293,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
-                    openConversation = { conversationTarget = it }, openHistory = { historyTarget = it },
+                    openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
