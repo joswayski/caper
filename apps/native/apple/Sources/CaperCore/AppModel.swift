@@ -1761,7 +1761,8 @@ public final class ChatModel {
     @ObservationIgnored public var onDirectMessageBlocked: (() -> Void)?
     public var viewerID: String? { session?.author.id ?? viewerAccountID() }
     private let api: APIClient
-    private var channelID: String?
+    /// Read by AppModel to follow a forwarded message to its conversation.
+    private(set) var channelID: String?
     private var spaceID: String?
     private var session: ChatSession?
     private var subscriptionID: String?
