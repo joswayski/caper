@@ -6412,7 +6412,7 @@ Follow-ups to full-surface swipes and swipe release timing:
 | Web | `npm run typecheck`, Oxlint and Oxfmt on the changed files. No browser regression run; no Safari or physical-device acceptance. |
 | Android | Implementation only; no Android SDK here, so no Kotlin compilation, tests or device acceptance. |
 | iOS/macOS | Implementation only; no Swift compiler or Xcode, so no build, XCTest, simulator or device acceptance. |
-| Rust desktop | Formatting checked with rustfmt; new unit tests cover the release curve and a same-frame flick. Not compiled, tested or linted here (memory-constrained machine). No physical touchscreen acceptance. |
+| Rust desktop | `cargo test` (all 409 tests, including new release-curve and same-frame-flick tests) and `cargo clippy --all-targets -D warnings` pass on Linux. No physical touchscreen acceptance. |
 | Services | No API, gateway, infrastructure, secrets/configuration or database change. |
 
 **Deployment order.**
