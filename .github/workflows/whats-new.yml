@@ -1,0 +1,83 @@
+name: Publish What’s new
+run-name: What’s new ${{ inputs.audience }} ${{ inputs.git_sha }}
+
+# Native calls this only after distribution succeeds. Infrastructure dispatches
+# it with the exact confirmed web image SHA after its rollout wait succeeds.
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: Successfully shipped clients
+        required: true
+        type: choice
+        options: [web, native]
+      git_sha:
+        description: Exact successfully shipped source revision
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      audience:
+        required: true
+        type: string
+      git_sha:
+        required: true
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'joswayski/caper' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: caper-whats-new-${{ inputs.audience }}
+      cancel-in-progress: false
+    steps:
+      # Tooling comes from main, including when an older app revision ships.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate the shipped revision
+        env:
+          RELEASE_SHA: ${{ inputs.git_sha }}
+          AUDIENCE: ${{ inputs.audience }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$AUDIENCE" == web || "$AUDIENCE" == native ]]
+          git merge-base --is-ancestor "$RELEASE_SHA" HEAD
+      - name: Generate and publish user-facing highlights
+        id: notes
+        # An unavailable editorial service must not fail a shipped app or replace
+        # its last good notes with technical commit titles.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL || 'claude-haiku-5-5' }}
+          RELEASE_SHA: ${{ inputs.git_sha }}
+          AUDIENCE: ${{ inputs.audience }}
+        run: |
+          python scripts/whats_new.py --revision "$RELEASE_SHA" --audience "$AUDIENCE" \
+            --output-dir "$RUNNER_TEMP/whats-new" --publish
+      - name: Record the notes outcome
+        if: always()
+        env:
+          OUTCOME: ${{ steps.notes.outcome }}
+        run: |
+          if [[ "$OUTCOME" == success ]]; then
+            echo 'Release highlights published or reused. First publication establishes a quiet baseline.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning::Release highlights were not published. Existing notes remain unchanged; the app release is unaffected.'
+            echo 'Release highlights unavailable. Check the generator step and credentials, then rerun this workflow for the same shipped SHA.' >> "$GITHUB_STEP_SUMMARY"
+          fi

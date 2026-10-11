@@ -74,6 +74,7 @@ mod presence;
 mod push;
 mod spaces;
 mod updates;
+mod whats_new;
 use media_store::Timestamp;
 
 pub use db::{connect_database, connect_runtime_database, migrate_database};
@@ -752,6 +753,7 @@ pub struct AppState {
     reserved_usernames: accounts::ReservedUsernames,
     notifications_webhook: notifications::NotificationsWebhook,
     updates: Arc<updates::Updates>,
+    whats_new: Arc<whats_new::WhatsNew>,
     push: push::Push,
 }
 impl AppState {
@@ -798,6 +800,7 @@ impl AppState {
                 &RuntimeEnvironment::default(),
             ),
             updates: Arc::new(updates::Updates::new()),
+            whats_new: Arc::new(whats_new::WhatsNew::new()),
             push: push::Push::default(),
         }
     }
@@ -1128,6 +1131,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(account_login)
         .route("/api/invites/{code}", get(spaces::preview_invite_link))
         .merge(updates::routes())
+        .merge(whats_new::routes())
         .merge(protected)
         .merge(channel_media::routes())
         .merge(chat::routes())
@@ -1162,7 +1166,9 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
                 let update_metadata = request
                     .extensions()
                     .get::<axum::extract::MatchedPath>()
-                    .is_some_and(|path| path.as_str() == "/api/updates/native");
+                    .is_some_and(|path| {
+                        matches!(path.as_str(), "/api/updates/native" | "/api/whats-new")
+                    });
                 let mut response = if request
                     .headers()
                     .get("sec-fetch-site")

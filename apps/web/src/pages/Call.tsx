@@ -29,6 +29,7 @@ import {
 import ProfileForm from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
+import WhatsNew from "../updates/WhatsNew";
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
 import { rosterChanges } from "../audio/roster";
@@ -525,6 +526,7 @@ export default function Call({
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection" | "debug">();
   const [audioMenu, setAudioMenu] = useState<"input" | "output" | "settings">();
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const audioMenuRef = useRef<HTMLDivElement>(null);
   const audioDialog = useRef<HTMLDialogElement>(null);
   const audioReturnFocus = useRef<HTMLElement | null>(null);
@@ -1695,6 +1697,17 @@ export default function Call({
                 onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)}
                 menuRef={audioMenu === "settings" ? audioMenuRef : undefined}
               >
+                {!embedded && signedIn && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioMenu(undefined);
+                      setWhatsNewOpen(true);
+                    }}
+                  >
+                    What’s new
+                  </button>
+                )}
                 <strong>Audio settings</strong>
                 <fieldset className="device-options">
                   <label>
@@ -1929,6 +1942,14 @@ export default function Call({
           {profileOpen && account?.username && <PrivacySettings />}
         </div>
       </dialog>
+      {!embedded && (
+        <WhatsNew
+          ready={signedIn && identityReady}
+          blocked={(state.phase !== "idle" && state.phase !== "failed") || !!audioPanel || !!audioMenu || profileOpen}
+          manualOpen={whatsNewOpen}
+          onManualClose={() => setWhatsNewOpen(false)}
+        />
+      )}
       <dialog
         ref={audioDialog}
         className="audio-dialog"

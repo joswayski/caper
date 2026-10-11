@@ -7,3 +7,4 @@ interface LatestChange {
 }
 
 declare const __LATEST_CHANGES__: LatestChange[];
+declare const __SOURCE_REVISION__: string;
