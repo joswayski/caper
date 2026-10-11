@@ -1902,8 +1902,18 @@ a.chat-draft-preview:focus-visible strong {
   font-size: 0.85rem;
 }
 .chat-viewer-title small {
+  display: flex;
   color: var(--text-muted);
   font-size: 0.72rem;
+}
+.chat-viewer-title small > span:not(.chat-viewer-size) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-viewer-size {
+  flex: none;
+  white-space: pre;
 }
 .chat-viewer-counter {
   margin-right: 8px;

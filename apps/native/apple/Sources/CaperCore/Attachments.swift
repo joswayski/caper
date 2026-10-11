@@ -593,6 +593,11 @@ public enum MediaViewerPolicy {
         count > 1 ? "\(position + 1) / \(count)" : nil
     }
 
+    /// The stored size, which is what saving or opening downloads.
+    public static func size(_ attachment: ChatAttachment) -> String? {
+        attachment.size > 0 ? AttachmentPolicy.formatBytes(attachment.size) : nil
+    }
+
     /// Where Previous (-1) or Next (+1) moves, stopping at either end.
     public static func step(_ position: Int, by delta: Int, count: Int) -> Int {
         min(max(0, position + delta), max(0, count - 1))

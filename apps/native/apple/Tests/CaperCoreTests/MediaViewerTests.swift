@@ -4,8 +4,9 @@ import XCTest
 
 final class MediaViewerTests: XCTestCase {
     private func file(_ id: String, _ kind: AttachmentKind, status: AttachmentStatus = .ready, animated: Bool = false,
-                      url: String? = "https://cdn.caper.chat/original/A?exp=4102444800&sig=a", unavailable: Bool = false) -> ChatAttachment {
-        ChatAttachment(id: id, kind: kind, contentType: kind == .video ? "video/mp4" : "image/webp", name: "\(id).bin", size: 1,
+                      url: String? = "https://cdn.caper.chat/original/A?exp=4102444800&sig=a", unavailable: Bool = false,
+                      size: Int = 1) -> ChatAttachment {
+        ChatAttachment(id: id, kind: kind, contentType: kind == .video ? "video/mp4" : "image/webp", name: "\(id).bin", size: size,
                        status: status, animated: animated, url: url, unavailable: unavailable)
     }
 
@@ -31,6 +32,8 @@ final class MediaViewerTests: XCTestCase {
     func testCounterAndStepping() {
         XCTAssertNil(MediaViewerPolicy.counter(position: 0, count: 1), "one file shows no counter")
         XCTAssertEqual(MediaViewerPolicy.counter(position: 1, count: 5), "2 / 5")
+        XCTAssertEqual(MediaViewerPolicy.size(file("A", .image, size: 1_258_291)), "1.2 MB", "the stored size")
+        XCTAssertNil(MediaViewerPolicy.size(file("B", .image, size: 0)))
         XCTAssertEqual(MediaViewerPolicy.step(0, by: -1, count: 3), 0, "Previous stops at the first file")
         XCTAssertEqual(MediaViewerPolicy.step(0, by: 1, count: 3), 1)
         XCTAssertEqual(MediaViewerPolicy.step(2, by: 1, count: 3), 2, "Next stops at the last file")

@@ -892,10 +892,19 @@ private struct MediaViewer: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .lineLimit(1).truncationMode(.middle)
-                    if let counter = MediaViewerPolicy.counter(position: position, count: count) {
-                        Text(counter).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).monospacedDigit()
-                            .accessibilityLabel("\(position + 1) of \(count)")
-                            .accessibilityIdentifier("media-viewer-counter")
+                    let counter = MediaViewerPolicy.counter(position: position, count: count)
+                    let size = MediaViewerPolicy.size(item)
+                    if counter != nil || size != nil {
+                        HStack(spacing: 0) {
+                            if let counter {
+                                Text(counter).monospacedDigit()
+                                    .accessibilityLabel("\(position + 1) of \(count)")
+                                    .accessibilityIdentifier("media-viewer-counter")
+                            }
+                            if counter != nil, size != nil { Text(" · ").accessibilityHidden(true) }
+                            if let size { Text(size).accessibilityIdentifier("media-viewer-size") }
+                        }
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)
