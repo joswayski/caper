@@ -55,7 +55,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   reactions. Signed URLs are
   refreshed (`POST /api/assets/urls`) before they expire and once after a
   403/404 image load, so a window left open for days keeps working.
-- Sending up to 10 files per message from the paperclip file dialog (Win32 on
+- Sending up to 10 files per message from the + attachment picker (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
   window. Files are compressed on the device, off the UI thread, with the

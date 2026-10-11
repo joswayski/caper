@@ -94,7 +94,6 @@ enum NavIcon {
     HeadphoneOff,
     AudioLines,
     BellOff,
-    Paperclip,
     FileText,
     Play,
     Pause,
@@ -9572,7 +9571,7 @@ impl CaperApp {
                                         ui.add_space(7.0);
                                         let enabled = !full && self.file_picker.is_none();
                                         let button = ui
-                                            .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                            .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
                                             .inner;
                                         pick = button.clicked();
                                     });
@@ -13902,7 +13901,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
         NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
         NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
-        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
     };
