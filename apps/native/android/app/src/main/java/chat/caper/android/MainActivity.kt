@@ -26,7 +26,13 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.background
@@ -87,6 +93,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -1286,10 +1295,55 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openNavigation: () -> Unit,
 ) {
     val threadDrafts = rememberSaveableStateHolder()
-    Row(modifier) {
-        ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
-        if (!narrow && state.thread != null) threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            ThreadConversation(state, viewModel, Modifier.width(340.dp).fillMaxHeight())
+    val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("layout", android.content.Context.MODE_PRIVATE) }
+    var preferredWidth by rememberSaveable { mutableFloatStateOf(preferences.getFloat("threadWidth", 340f).coerceIn(300f, 600f)) }
+    val density = LocalDensity.current.density
+    val resizeFocus = remember { FocusRequester() }
+    var resizeFocused by remember { mutableStateOf(false) }
+    BoxWithConstraints(modifier) {
+        val maximum = minOf(600f, maxWidth.value - minOf(300f, maxWidth.value / 2))
+        val minimum = minOf(300f, maximum)
+        val width = preferredWidth.coerceIn(minimum, maximum)
+        fun saveWidth() { preferences.edit().putFloat("threadWidth", preferredWidth.coerceIn(300f, 600f)).apply() }
+        fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
+        Row(Modifier.fillMaxSize()) {
+            ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, Modifier.weight(1f), openNavigation)
+            if (!narrow && state.thread != null) Box(Modifier.width(width.dp).fillMaxHeight()) {
+                threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
+                    ThreadConversation(state, viewModel, Modifier.fillMaxSize())
+                }
+                Box(Modifier.align(Alignment.CenterStart).width(12.dp).fillMaxHeight()
+                    .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)))
+                    .drawBehind { if (resizeFocused) drawRect(Terracotta, size = Size(2.dp.toPx(), size.height)) }
+                    .focusRequester(resizeFocus).onFocusChanged { resizeFocused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) false else {
+                            val next = when (event.key) {
+                                Key.DirectionLeft -> width + 10f
+                                Key.DirectionRight -> width - 10f
+                                Key.MoveHome -> minimum
+                                Key.MoveEnd -> maximum
+                                else -> null
+                            }
+                            if (next == null) false else { resize(next); true }
+                        }
+                    }
+                    .focusable()
+                    .semantics {
+                        contentDescription = "Thread width"
+                        stateDescription = "${width.toInt()} dp"
+                        progressBarRangeInfo = ProgressBarRangeInfo(width, minimum..maximum)
+                        setProgress { resize(it); true }
+                        customActions = listOf(CustomAccessibilityAction("Reset thread width") { resize(340f); true })
+                    }
+                    .draggable(rememberDraggableState { delta ->
+                        preferredWidth = (preferredWidth.coerceIn(minimum, maximum) - delta / density).coerceIn(minimum, maximum).coerceAtLeast(300f)
+                    }, Orientation.Horizontal, onDragStarted = { resizeFocus.requestFocus() }, onDragStopped = { saveWidth() })
+                    .pointerInput(maximum) {
+                        detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resize(340f); resizeFocus.requestFocus() })
+                    })
+            }
         }
     }
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,

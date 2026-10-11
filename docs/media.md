@@ -5956,3 +5956,48 @@ does not deploy. Before distributing, build Apple in Xcode and check the items
 above, and check Android's keyboard and system bars on a phone. Roll back native
 clients with a corrected higher-build-number release; no data rollback is
 required.
+
+### Resizable thread panes (October 11, 2026)
+
+Web, wide Android and Apple layouts allow dragging the thread's leading divider.
+Dragging left widens the thread; Left/Right adjust by 10, Home/End select the
+bounds, and double-click/tap resets to 340px/pt/dp. The preferred width persists
+locally, including across closing/reopening and application/browser restarts.
+Preferred widths range from 300 to 600. The actual pane reserves 300 for the main
+conversation, or splits the available conversation area equally when it is less
+than 600; shrinking the window does not overwrite the preference. Phone layouts
+keep their full-screen threads without a resize handle. Rust desktop already
+uses a resizable egui thread SidePanel (300–480) and is unchanged.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` passes; `npm test` passes all 558 tests. `MESSAGE_TEST_ARTIFACTS=/tmp/thread-screenshots node scripts/test-message-threads.mjs` passes against the disposable loopback fixture: exact 83px drag, pointer capture, keyboard/bounds/reset, retained draft, preferred width after reopen/reload/mobile and temporary constraints, and existing reply/navigation checks. Inspected default, resized, constrained desktop and full-screen 390px Chromium touch-emulated captures. Not Safari, Firefox or physical-device acceptance. |
+| Android | Wide layouts implement dragging, hardware keys, reset, TalkBack adjustment and SharedPreferences persistence; narrow dialogs remain unchanged. `./gradlew --no-daemon --max-workers=2 compileDebugKotlin testDebugUnitTest lintDebug` cannot configure the project because this orb has no Android SDK. No Kotlin compilation, emulator/device or native render validation. |
+| iOS/macOS | Wide layouts implement dragging, keyboard/reset, accessibility adjustment and AppStorage persistence. A macOS parity UI regression covers drag direction/geometry, keyboard bounds/reset and saved width. No Swift compiler or Xcode in this Linux orb: no parse/typecheck, XCTest, simulator/device or native rendering validation. |
+| Containers/services | No Docker daemon for an image build; Vite production build/typecheck pass. No API, gateway, infrastructure, secret/configuration or database change. No deployment performed. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration or backend service
+   rollout is required. Web, Android and Apple can deploy independently. Rust
+   desktop needs no release for this change. Merging does not deploy components.
+2. After merge, wait for the immutable web image for that revision. From an
+   authenticated infrastructure checkout with the production Kubernetes context,
+   set `MERGED_SHA` to the full merged SHA and run:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the deployment workflow for this SHA to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Before native distribution, build/test on supported hosts using
+   `bash apps/native/android/build.sh`, `bash apps/native/apple/build.sh ios` and
+   `bash apps/native/apple/build.sh macos`. Check wide dragging, bounds, keyboard
+   and accessibility adjustment, reopen/restart persistence, and unchanged phone
+   threads on real clients. Build output is not a signed/store release; use the
+   existing release process after validation.
+4. Verify resizing and reply/draft/navigation behavior in production web, including
+   browser reload and desktop/mobile transitions. Roll back web by deploying the
+   previous known-good image SHA with the command above. For native clients, ship
+   a corrected higher-build-number release. No data rollback is required.

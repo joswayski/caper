@@ -2199,15 +2199,31 @@ a.chat-file:hover {
   }
 }
 .chat-thread-panel {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  flex: 0 0 clamp(300px, 38%, 400px);
-  max-width: 48%;
+  flex: 0 0 340px;
+  max-width: min(600px, max(50%, calc(100% - 300px)));
   min-width: 0;
   min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--surface-conversation);
+}
+.chat-thread-resize {
+  position: absolute;
+  z-index: 7;
+  inset: 0 auto 0 -1px;
+  width: 8px;
+  touch-action: none;
+  cursor: col-resize;
+}
+.chat-thread-resize:hover,
+.chat-thread-resize:focus-visible {
+  border-left: 2px solid var(--terracotta);
+}
+.chat-thread-panel .chat-thread-resize:focus-visible {
+  outline: none;
 }
 .chat-thread-heading {
   display: flex;
@@ -2392,6 +2408,9 @@ a.chat-file:hover {
     border: 0;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+  .chat-thread-resize {
+    display: none;
   }
   .chat-thread-heading {
     padding: 4px 12px;
