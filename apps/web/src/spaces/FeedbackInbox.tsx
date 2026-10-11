@@ -88,7 +88,7 @@ export default function FeedbackInbox({
               const rowVoice = current === key ? voice : undefined;
               return (
                 <li key={key} data-voice={rowVoice ? "" : undefined}>
-                  <div className="channel-line">
+                  <div className="feedback-line">
                     <button
                       type="button"
                       className="channel-select direct-select feedback-select"

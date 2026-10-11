@@ -583,12 +583,9 @@ export default function Chat({
     const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
     if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
   }, []);
-  const setTyping = useCallback(
-    (active: boolean) => {
-      clientRef.current?.setTyping(active);
-    },
-    [],
-  );
+  const setTyping = useCallback((active: boolean) => {
+    clientRef.current?.setTyping(active);
+  }, []);
 
   useEffect(() => {
     let firstMessageId: string | undefined;

@@ -2658,3 +2658,18 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   color: var(--text-muted);
   font-size: 0.74rem;
 }
+/* Like a channel row: voice in the visited channel sits under its report. */
+.feedback-line {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  border-radius: var(--radius-control);
+}
+.feedback-line:has(.feedback-select[aria-current="page"]) {
+  background: rgb(182 77 50 / 0.16);
+}
+.feedback-line .feedback-select[aria-current="page"] {
+  background: transparent;
+}
