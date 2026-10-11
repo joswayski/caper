@@ -769,10 +769,10 @@ private struct SpaceRailButton: View {
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
+    private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        guard muted else { return base }
-        return base.isEmpty ? "Muted" : base + ", Muted"
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -785,6 +785,13 @@ private struct SpaceRailButton: View {
                 .clipShape(RoundedRectangle(cornerRadius: corner))
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
+                .overlay(alignment: .topTrailing) {
+                    if unread {
+                        Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                    }
+                }
         }
         .buttonStyle(.plain).help(name)
         .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
@@ -1144,9 +1151,9 @@ private struct ChannelSidebarItem: View {
     private var nameOpacity: Double { muted ? 0.55 : 1 }
     private var rowState: String {
         let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
-        guard muted else { return base }
-        return base.isEmpty ? "Muted" : base + ", Muted"
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
+    private var unread: Bool { model.unreadSpaces.contains { $0.channels.contains { $0.id == channel.id } } }
 
     @ViewBuilder private var optionsMenuItems: some View {
         if model.isOwner {
@@ -1171,6 +1178,7 @@ private struct ChannelSidebarItem: View {
                         Text(channel.name).lineLimit(1).opacity(nameOpacity)
                         if muted { MutedBell() }
                         Spacer(minLength: 0)
+                        if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))

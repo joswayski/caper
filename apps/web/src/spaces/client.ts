@@ -77,6 +77,22 @@ export function readDirectConversation(id: string, seq: string) {
   return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
 }
 
+export interface UnreadSpace {
+  id: string;
+  channels: { id: string; lastSeq: string }[];
+}
+
+export function listUnreadSpaces() {
+  return request<{ spaces: UnreadSpace[] }>("/api/spaces/unread");
+}
+
+export function readChannel(spaceId: string, channelId: string, seq: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
+    method: "POST",
+    body: JSON.stringify({ seq }),
+  });
+}
+
 export function acceptDirectRequest(id: string) {
   return request<DirectConversation>(`/api/dms/${pathId(id)}/accept`, { method: "POST" });
 }

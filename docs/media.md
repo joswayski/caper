@@ -6204,3 +6204,84 @@ distribution, verify slow/held/fast drags at 51%, 70% and near the edge in both
 directions, below-halfway cancellation, Members and Reduce Motion on supported
 devices. Roll back web to its previous image; native rollback requires a corrected
 higher-build-number release. No data rollback is needed.
+
+## Space and channel unread indicators (October 11, 2026)
+
+Web (desktop/mobile), Android, iOS/macOS and Rust desktop show a light dot on
+spaces with unread messages or direct mentions. A selected space keeps its dot
+until its other unread channels are viewed. Joined channel rows also show dots.
+The top-right unread dot and bottom-right mute badge can coexist: notification
+levels, pauses, OS permission and mutes do not hide space/channel unread activity.
+DM behavior is unchanged. This is message activity, not a new invitation alert,
+mention counter or notification inbox.
+
+`GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
+`lastSeq` values. Joined channels count other unblocked, active authors' main
+messages and broadcast replies. Accessible unjoined channels and non-broadcast
+thread replies count direct personal mentions only; forwarded mention metadata
+does not notify. Space membership, private grants and soft removals constrain
+every result. Edits, reactions and pins alone do not create unread messages.
+
+`POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`.
+Read positions are saved per account/channel, advance monotonically, and are
+capped to the channel's head. Only a loaded foreground conversation acknowledges
+its committed cursor; prefetch, background views, mobile Browse and older search
+windows do not read newer messages. Reading one channel never clears another.
+Snapshots refresh on launch/foreground and every 15 seconds; web and macOS also
+refresh when their notification feed delivers activity. Failed reads retry;
+account/request revisions fence late responses. Reads from another client appear
+on the next refresh. Historical messages start unread until viewed: there is no
+backfill asserting that existing users have seen them.
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres test exercises the actual unread/read routes: own/blocked authors, private grants, unjoined and thread mentions, broadcast replies, forwarded mention exclusion, channel-specific clearing, monotonic reads, future-cursor clamping and revoked membership. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass. Inspected labelled local-fixture desktop/mobile Browse and all-read renders. Browser checks cover prefetch, stale snapshots, newer messages during pending reads, denied OS permission, hidden mobile chat, failed-read retry and older search windows. Fixtures are not multi-device or production acceptance. |
+| Rust desktop | 405 tests pass (12 device/audio tests ignored), formatting/Clippy and debug build pass. Inspected the labelled Linux unread fixture: selected space, muted space and muted channel dots remain separate from selection/mute badges. This is not Windows, live account or physical-device acceptance. |
+| Android | Implementation updated; Gradle compile/tests/lint stop at project configuration because Android SDK location is missing. No Kotlin compilation, native render or device acceptance. |
+| iOS/macOS | Implementation updated; no Swift compiler or Xcode in this orb. No Swift typecheck, XCTest, native render or device acceptance. |
+| Containers/services | Docker daemon unavailable; web production build validated directly. No shared database writes, deployment, release or live SFU/device validation. Initial overlapping checks exhausted orb memory and timed out; isolated reruns passed. |
+
+**Deployment order.**
+
+1. No infrastructure apply, new secret/configuration, Valkey or SFU state change
+   is needed. Keep existing database/migration credentials and the established
+   single API replica. Merging does not deploy anything. Wait for immutable
+   images for the merged revision and set `MERGED_SHA` to that full revision.
+2. Deploy API first. Normal startup applies
+   `202610110001_channel_reads.sql` with `MIGRATION_DATABASE_URL` and grants
+   SELECT/INSERT/UPDATE on the retained `channel_reads` table to the runtime
+   role. No manual shared SQL, backfill or migration job is required:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+3. The gateway protocol and queries are unchanged; no gateway rollout is needed.
+   Old clients remain compatible. After API readiness, web and native releases
+   can deploy independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+4. Compile/test Apple and Android on supported hosts before distributing the
+   clients. Verify multi-account and multi-device reads, desktop/phone navigation,
+   muted spaces, denied OS permission, offline/reconnect, private access removal
+   and another unread channel in the selected space. After native acceptance:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+5. Verify new messages add a dot and opening the last unread channel removes it
+   on another client within 15 seconds. Roll back web to the previous known-good
+   image using the same deployment command; native rollback requires a corrected
+   higher-build-number release. Prefer a forward API fix. Any API rollback build
+   must retain the applied migration ledger; do not roll SQLx images back across
+   this migration or delete read positions. No shared migration, deployment,
+   provider change or release was executed during development.

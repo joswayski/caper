@@ -85,6 +85,24 @@
   background: var(--terracotta-bright);
   content: "";
 }
+.space-rail .space-unread {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--blackout);
+  border-radius: 50%;
+  background: var(--text);
+}
+.channel-select .channel-unread {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--text);
+}
 .spaces-loading .stage {
   background: var(--surface-conversation);
 }
