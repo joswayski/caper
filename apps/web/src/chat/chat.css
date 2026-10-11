@@ -1494,12 +1494,13 @@ a.chat-draft-preview {
   cursor: pointer;
 }
 button.chat-draft-preview:hover strong,
-a.chat-draft-preview:hover strong {
+a.chat-draft-preview:hover strong,
+button.chat-draft-preview:focus-visible strong,
+a.chat-draft-preview:focus-visible strong {
   text-decoration: underline;
 }
 .chat-draft-preview:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 2px;
+  outline: none;
 }
 .chat-draft-preview > img,
 .chat-draft-preview > svg {
