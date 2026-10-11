@@ -1620,16 +1620,18 @@ private extension View {
 
 private struct VoiceRoster: View {
     @Bindable var voice: VoiceClient
+    let model: AppModel
     @State private var audioParticipantID: String? = nil
-    init(model: AppModel) { voice = model.voice }
+    init(model: AppModel) { voice = model.voice; self.model = model }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
+                let name = voice.isSelf(participantID: participant.id) ? (model.account?.displayName ?? participant.name) : participant.name
                 HStack(spacing: 8) {
-                    Avatar(name: participant.name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
+                    Avatar(name: name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
                         .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                        Text(name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
                             .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
                         if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
                             HStack(spacing: 4) {
