@@ -4806,7 +4806,7 @@ private struct BlockConfirmation: ViewModifier {
     }
 }
 
-/// Account privacy: who can start a DM with you, and blocked accounts.
+/// Account privacy: who can start a DM with you, blocked accounts, and how to delete your account.
 private struct PrivacySheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
@@ -4878,6 +4878,14 @@ private struct PrivacySheet: View {
                     if let unblockError {
                         Text(unblockError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                     }
+                    Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
+                    Text("Delete account").font(CaperTheme.font(13, weight: .bold))
+                    Link(destination: PrivacySettings.deleteAccountURL) {
+                        Text("How to delete your account").font(CaperTheme.font(13)).underline()
+                            .foregroundStyle(CaperTheme.text)
+                    }
+                    .frame(minHeight: 44).modifier(ControlPointer())
+                    .accessibilityIdentifier("delete-account-link")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
