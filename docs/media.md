@@ -6655,3 +6655,48 @@ behavior; this change adds no realtime profile event.
    active call without losing conversation state. Roll back web to its previous
    image; native rollback requires a corrected higher-build-number release. No
    data rollback is needed.
+
+## Eggshell primary actions and entrance motion (October 11, 2026)
+
+Primary actions (sign-in, dialog confirmations, Join channel, Accept, Send/Save,
+Forward, the thread Send and Test microphone) now use an eggshell fill
+(`--action` `#F1EDE4`) with blackout labels on web, Android, iOS/macOS and Rust
+desktop, matching the homepage download button. Hover brightens and press
+deepens the fill; disabled primaries step back to neutral chrome (raised
+surface, border, muted label) instead of a faded fill. Terracotta remains for
+selection, focus, mentions and unread state. Destructive buttons are unchanged.
+Sign-in fields use the dialog fields' focus treatment: a terracotta border with
+a soft 2px ring instead of a 4px-offset outline.
+
+Things that appear now arrive instead of teleporting, using shared tokens
+(`--ease-out` `cubic-bezier(0.16, 1, 0.3, 1)`, `--motion-fast` 140ms,
+`--motion-base` 200ms, `--motion-slow` 260ms):
+
+- Messages you send, and live messages from others, fade in with a 6px settle in
+  channels, DMs and threads. Only rows that arrive while the reader is at the
+  live end animate (`Arrivals` on every client): not first loads, channel
+  switches, older pages, jumps, or newer pages loaded while catching up. A
+  pending send animates once, and recycled rows do not replay after one second.
+- Dialogs rise 8px from 98% while their scrim fades; anchored menus, cards and
+  tooltips rise 4px; touch sheets rise from the bottom; the thread panel slides
+  in 12px.
+- Attached files pop into the composer, and upload progress glides between
+  updates.
+- Closing stays instant. Reduced-motion settings (web `prefers-reduced-motion`,
+  Android animator scale 0, Apple Reduce Motion) turn entrances off. Rust desktop
+  has no OS reduced-motion signal; its headless tests draw final states.
+
+No API, gateway, database, infrastructure, secret or configuration change is
+needed. Web and native clients can release independently.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (584 tests, including `chat/arrivals.test.ts`). Chromium against the disposable fixture at 1440px (fine pointer) and 390px: sign-in, disabled Continue, dialogs and Manage space inspected; DOM checks confirm no arrival animation on load or channel switch, one for a sent message (not replayed on confirmation) and one for a live incoming message; dialog/backdrop, message actions, mention card, thread panel and space menu entrances ran. Draft-tile entrance is CSS-only and unexercised (the fixture disables uploads). Not Safari or a physical phone. |
+| Android | `compileDebugKotlin`, `testDebugUnitTest` (317 tests, including `ArrivalsTest`) and `lintDebug` pass with SDK 36/NDK 27 installed in the orb. No emulator or device rendering. |
+| Apple iOS/macOS | Primary-button styles, arrivals (`MessageArrivals` with tests), entrances and Reduce Motion handling implemented. No Swift compiler or Xcode in this orb: not built, tests not run, no simulator or device rendering. |
+| Rust desktop | `cargo fmt --check`, scoped clippy (`--package caper-desktop --no-deps -D warnings`) and `cargo test` pass (425 passed, 12 ignored, including arrival and entrance-timing tests). Linux Xvfb renders of `login`, `parity-requests` and `parity-attachments` inspected. Not Windows; motion itself not recorded. |
+
+Before native distribution, check on devices: send and receive at the live end
+(one entrance each, none on channel switch or history), dialogs/menus/thread
+opening, attaching files, upload progress, primary/disabled/pressed/focus button
+states, and Reduce Motion / Remove animations.

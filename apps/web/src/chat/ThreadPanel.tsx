@@ -5,6 +5,7 @@ import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import type { Arrivals } from "./arrivals.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
 
@@ -22,6 +23,7 @@ export default function ThreadPanel({
   mentionPeople,
   specialMentions,
   renderMessage,
+  arrivals,
   onClose,
 }: {
   state: ChatViewState;
@@ -39,6 +41,8 @@ export default function ThreadPanel({
     previous?: ChatMessage,
     next?: ChatMessage,
   ) => ReactNode;
+  /** Shared with the channel list, whose rows render through `renderMessage`. */
+  arrivals: Arrivals;
   onClose: () => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
@@ -235,6 +239,14 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
+  arrivals.observe(
+    "thread",
+    rootId ?? "",
+    pending
+      ? [...replies.map((message) => message.clientMessageId), pending.clientMessageId]
+      : replies.map((message) => message.clientMessageId),
+    !!state.thread && !state.thread.loading && !state.thread.hasNewer,
+  );
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
@@ -399,7 +411,7 @@ export default function ThreadPanel({
           </button>
         )}
         {pending && (
-          <article className="chat-message chat-message-pending">
+          <article className="chat-message chat-message-pending chat-message-arrive">
             <div className="chat-avatar">
               <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
             </div>

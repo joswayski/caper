@@ -356,6 +356,7 @@ targets:
       - Tests/CaperCoreTests/MessageLinksTests.swift
       - Tests/CaperCoreTests/FileDropTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift
+      - Tests/CaperCoreTests/MessageArrivalsTests.swift
       - Tests/CaperCoreTests/CodeResendTests.swift
       - Tests/CaperCoreTests/MediaViewerTests.swift
     dependencies:

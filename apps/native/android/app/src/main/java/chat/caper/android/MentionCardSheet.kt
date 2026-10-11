@@ -71,7 +71,7 @@ import kotlinx.coroutines.launch
                         error = null
                         message({ pending = null; onDismiss() }, { pending = null; error = it })
                     },
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small,
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
                 ) { Text(if (pending == "message") "Opening…" else "Message") }
                 if (!blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null) {
                     OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),

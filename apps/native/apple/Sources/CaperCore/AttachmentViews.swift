@@ -1437,6 +1437,7 @@ struct AttachmentDraftsView: View {
                         AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
                             chat.removeAttachmentDraft(id: draft.id)
                         }
+                        .modifier(Entrance.chip)
                     }
                 }
             }
@@ -1454,6 +1455,7 @@ private struct AttachmentDraftChip: View {
     let preview: () -> Void
     let retry: () -> Void
     let remove: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var thumbnail: CGImage?
 
     var body: some View {
@@ -1476,6 +1478,8 @@ private struct AttachmentDraftChip: View {
                             .foregroundStyle(draft.error == nil ? CaperTheme.muted : CaperTheme.terracottaBright).lineLimit(2)
                         if draft.attachment == nil && draft.error == nil {
                             ProgressView(value: draft.progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
+                                // Glides between progress events instead of jumping.
+                                .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: draft.progress)
                                 .accessibilityLabel("Uploading \(draft.name)")
                         }
                     }

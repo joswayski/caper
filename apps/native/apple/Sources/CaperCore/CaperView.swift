@@ -19,6 +19,12 @@ public enum CaperTheme {
     public static let muted = Color(red: 185/255, green: 188/255, blue: 190/255)
     public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
+    /// Primary actions are eggshell with blackout labels (shared/design.css --action);
+    /// terracotta stays for selection and focus.
+    public static let action = Color(red: 241/255, green: 237/255, blue: 228/255)
+    public static let actionHover = Color(red: 251/255, green: 249/255, blue: 244/255)
+    public static let actionPress = Color(red: 221/255, green: 215/255, blue: 203/255)
+    public static let onAction = blackout
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
     public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
     public static let pinGold = Color(red: 228/255, green: 199/255, blue: 106/255)
@@ -649,6 +655,7 @@ private struct WorkspaceView: View {
                         Color.black.opacity(0.55).ignoresSafeArea()
                             .onTapGesture { if !modalDismissDisabled { sheet = nil } }
                             .accessibilityHidden(true)
+                            .modifier(Entrance.scrim)
                         DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
                             WorkspaceSheetView(item: item, model: model) { sheet = nil }
                                 .id(item.id)
@@ -658,6 +665,7 @@ private struct WorkspaceView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                             .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
+                            .modifier(Entrance.dialog)
                             .padding(.top, top)
                             .accessibilityAddTraits(.isModal)
                             .onPreferenceChange(DialogDismissDisabled.self) { modalDismissDisabled = $0 }
@@ -2118,6 +2126,7 @@ private struct ChatView: View {
     /// The row that was first before older history loaded: kept in place once it arrives.
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
+    @State private var arrivals = MessageArrivals()
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
     /// Blocked runs shown in place (in memory only).
@@ -2143,6 +2152,7 @@ private struct ChatView: View {
             showingEmojiPicker = false
             reactionMessage = message
         }
+        .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
     }
     @ViewBuilder private func blockMenuItem(_ conversation: DirectMessageConversation) -> some View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
@@ -2209,7 +2219,7 @@ private struct ChatView: View {
                 if chat.threadRootID != nil {
                     if narrow {
                         #if os(macOS)
-                        threadContent.frame(maxWidth: .infinity)
+                        threadContent.frame(maxWidth: .infinity).modifier(Entrance.panel)
                         #endif
                     } else { resizableThread(maximum: maximum) }
                 }
@@ -2284,6 +2294,7 @@ private struct ChatView: View {
                         return .handled
                     }
             }
+            .modifier(Entrance.panel)
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -2353,6 +2364,10 @@ private struct ChatView: View {
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
                     let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
+                    // Before any row is built, so rows see this render's arrivals.
+                    let _ = arrivals.observe("channel", key: chat.channelID ?? "",
+                                             ids: chat.channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
+                                             live: !chat.loading && !chat.loadFailed && !chat.hasNewer && !chat.loadingNewer)
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
                             if !chat.loadFailed { HStack(spacing: 6) {
@@ -2402,6 +2417,7 @@ private struct ChatView: View {
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
+                                    .modifier(Entrance.message(arrivals.claim(pending.id)))
                             }.id("pending-\(pending.id)")
                                 .onAppear { revealPending(proxy) }
                         }
@@ -2630,6 +2646,7 @@ private struct ChatView: View {
                     if let tooltip {
                         let chip = proxy[tooltip.anchor]
                         ReactionTooltipBubble(emoji: tooltip.emoji, text: tooltip.text)
+                            .modifier(Entrance.anchored)
                             // Start at the chip, kept 8 points inside the conversation.
                             .alignmentGuide(.leading) { size in
                                 let rightmost: CGFloat = max(8, proxy.size.width - size.width - 8)
@@ -2764,6 +2781,7 @@ private struct NativeThreadView: View {
     /// As in the channel: the first reply before older ones load stays in place.
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
+    @State private var arrivals = MessageArrivals()
     private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
@@ -2771,6 +2789,7 @@ private struct NativeThreadView: View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
+            .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
     /// Replies group among themselves; the root never groups (empty `grouping`).
@@ -2832,6 +2851,10 @@ private struct NativeThreadView: View {
                     LazyVStack(spacing: 0) {
                         let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
                         let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
+                        // Before any row is built, so rows see this render's arrivals. The root is never one.
+                        let _ = arrivals.observe("thread", key: chat.threadRootID ?? "",
+                                                 ids: chat.threadMessages.map(\.clientMessageId) + (threadPending.map { [$0.id] } ?? []),
+                                                 live: chat.threadRootID != nil && !chat.threadLoading && !chat.threadHasNewer)
                         if let root {
                             threadEntries(entries([root]))
                             if let summary = root.thread, summary.replyCount > 0 {
@@ -2863,6 +2886,7 @@ private struct NativeThreadView: View {
                                 uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
+                                .modifier(Entrance.message(arrivals.claim(pending.id)))
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
@@ -3007,13 +3031,8 @@ private struct TypingDots: View {
 }
 
 private struct PrimaryIconButton: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.foregroundStyle(CaperTheme.text)
-            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta, ignoresSafeAreaEdges: [])
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.45)
-            .modifier(ControlHover())
+        configuration.label.modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
 }
 
@@ -5280,13 +5299,10 @@ private struct LoginError: View {
 /// right-aligned, at least `minWidth` wide so a pending label never resizes it.
 private struct LoginActionButton: ButtonStyle {
     var minWidth: CGFloat? = nil
-    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(16, weight: .bold)).foregroundStyle(CaperTheme.text)
+        configuration.label.font(CaperTheme.font(16, weight: .bold))
             .padding(.horizontal, 20).frame(minWidth: minWidth).frame(height: 58)
-            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.45).modifier(ControlHover())
+            .modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
 }
 
@@ -5299,7 +5315,8 @@ private struct LoginActionLabel: View {
     var body: some View {
         HStack(spacing: 12) {
             if busy {
-                ProgressView().controlSize(.small).tint(CaperTheme.text)
+                // Busy buttons are disabled, so the spinner sits on neutral chrome.
+                ProgressView().controlSize(.small).tint(CaperTheme.muted)
                 Text(busyTitle)
             } else {
                 Text(title)
@@ -5760,8 +5777,33 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 }
 
 struct CaperPrimaryButton: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45).modifier(ControlHover()) }
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).frame(maxWidth: .infinity).frame(height: 42).modifier(PrimaryActionFill(pressed: configuration.isPressed)) }
+}
+
+/// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
+/// deepens on press. A white hover wash would vanish on eggshell, so focus is a terracotta ring.
+/// Disabled, it steps back to neutral chrome rather than a faded fill.
+private struct PrimaryActionFill: ViewModifier {
+    let pressed: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content.foregroundStyle(enabled ? CaperTheme.onAction : CaperTheme.muted)
+            .background(
+                !enabled ? CaperTheme.raised : pressed ? CaperTheme.actionPress : hovered ? CaperTheme.actionHover : CaperTheme.action,
+                ignoresSafeAreaEdges: []
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(!enabled ? CaperTheme.border : focused ? CaperTheme.terracottaBright : .clear, lineWidth: focused && enabled ? 2 : 1)
+                    .allowsHitTesting(false)
+            }
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
+    }
 }
 
 /// Profile entry points keep their content's size and use the common control feedback.
