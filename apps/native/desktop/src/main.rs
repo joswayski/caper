@@ -16389,6 +16389,83 @@ mod tests {
     }
 
     #[test]
+    fn last_message_reactions_stay_visible_without_pulling_a_history_reader() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.reactions.clear();
+        }
+        app.timeline.reset(messages, "40").unwrap();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let newest = "Scroll fixture message 40";
+        let before = text_position(&render(&mut app, &context, vec![]), newest);
+        let reaction = crate::model::Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["fixture-peer".into()],
+        };
+        let update = |seq, reactions| crate::model::ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: app.selected_channel.clone().unwrap(),
+            seq,
+            message_id: "scroll-40".into(),
+            reactions,
+        };
+        let first = update("41".into(), vec![reaction]);
+        let removed = update("42".into(), vec![]);
+        app.timeline.apply_reactions(first).unwrap();
+        let reacted = render(&mut app, &context, vec![]);
+        assert!(text_position(&reacted, newest).y < before.y);
+        let chip = reacted
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "1" => {
+                    Some((text.pos.y + text.galley.size().y, shape.clip_rect.bottom()))
+                }
+                _ => None,
+            })
+            .expect("the reaction count is painted");
+        assert!(chip.0 <= chip.1, "the chip is not clipped by the timeline");
+        // Wheel input releases egui's bottom stickiness, as a real reader does.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 450.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        let reading = render(&mut app, &context, vec![]);
+        let anchor = reading
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Scroll fixture message ") =>
+                {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .expect("a history message is visible");
+        let position = text_position(&reading, &anchor);
+        app.timeline.apply_reactions(removed).unwrap();
+        let changed = render(&mut app, &context, vec![]);
+        assert_eq!(text_position(&changed, &anchor), position);
+    }
+
+    #[test]
     fn pins_use_normal_hover_actions_and_a_dismissible_navigation_dialog() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(

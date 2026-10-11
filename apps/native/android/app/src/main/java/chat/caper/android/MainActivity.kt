@@ -1818,6 +1818,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
+        reactions = messages.lastOrNull()?.reactions.orEmpty(),
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -2009,6 +2010,7 @@ internal class TimelineFollow(var settled: Boolean = false) {
 internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
+    val reactions: List<MessageReaction> = emptyList(),
 )
 
 /**
@@ -2033,7 +2035,9 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
         now.pendingId != null && now.pendingId != last.pendingId -> latest.also { follow.sent = now.historical }
         last.historical && !now.historical -> if (last.loadingNewer && !follow.sent) null else latest.also { follow.sent = false }
         else -> (if (last.loadingOlder && !now.loadingOlder) anchor() else null)
-            ?: latest.takeIf { !now.historical && !last.historical && now.keys.lastOrNull() != last.keys.lastOrNull() && near() }
+            // Reaction chips can add/wrap a row without changing its key.
+            ?: latest.takeIf { !now.historical && !last.historical &&
+                (now.keys.lastOrNull() != last.keys.lastOrNull() || now.reactions != last.reactions) && near() }
     }
 }
 

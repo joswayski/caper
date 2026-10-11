@@ -57,8 +57,32 @@ function fixture() {
     initialPositions: [],
     initialPaintDone: false,
     latestKey: messages.at(-1)?.clientMessageId,
+    reactionRevision: 0,
+    react(emoji, active = true, sender = author, target = messages.at(-1)) {
+      const reactions = target.reactions ?? [];
+      const reaction = reactions.find((entry) => entry.emoji === emoji) ?? { emoji, authorIds: [] };
+      reaction.authorIds = reaction.authorIds.filter((id) => id !== sender.id);
+      if (active) reaction.authorIds.push(sender.id);
+      target.reactions = [...reactions.filter((entry) => entry.emoji !== emoji), reaction].filter(
+        (entry) => entry.authorIds.length,
+      );
+      const event = {
+        type: "message.reactions",
+        schemaVersion: 1,
+        channelId: channel.id,
+        messageId: target.id,
+        seq: String(base + BigInt(messages.length + ++control.reactionRevision)),
+        reactions: target.reactions,
+      };
+      target.reactionSeq = event.seq;
+      for (const socket of sockets)
+        for (const request of socket.subscriptions.values())
+          if (request.kind === "chat") socket.frame({ type: "event", id: request.id, event });
+      return event;
+    },
     append(text = "Fixture live arrival", id, sender) {
       const next = message(messages.length + 1, text, id, sender);
+      next.seq = String(base + BigInt(messages.length + 1 + control.reactionRevision));
       messages.push(next);
       control.latestKey = next.clientMessageId;
       for (const socket of sockets)
@@ -76,7 +100,11 @@ function fixture() {
   const page = (before = messages.length + 1) => {
     const end = before - 1,
       start = Math.max(0, end - 50);
-    return { messages: messages.slice(start, end), cursor: String(base + BigInt(messages.length)), hasMore: start > 0 };
+    return {
+      messages: messages.slice(start, end),
+      cursor: String(base + BigInt(messages.length + control.reactionRevision)),
+      hasMore: start > 0,
+    };
   };
   const originalFetch = window.fetch;
   window.fetch = async (input, options) => {
@@ -90,6 +118,18 @@ function fixture() {
     if (path.pathname.endsWith("/media/status")) return Response.json({ enabled: false });
     if (path.pathname === "/api/chat/session") return Response.json({ token: "local-test-only", author: ownAuthor });
     if (path.pathname.endsWith("/typing")) return new Response(null, { status: 204 });
+    if (path.pathname.endsWith("/reactions") && options?.method === "PUT") {
+      const body = JSON.parse(options.body);
+      const target = messages.find((message) => path.pathname.includes(`/messages/${message.id}/`));
+      if (control.holdReaction) {
+        control.holdReaction = false;
+        await new Promise((resolve) => {
+          control.releaseReaction = resolve;
+        });
+        control.releaseReaction = undefined;
+      }
+      return Response.json(control.react(body.emoji, body.active, ownAuthor, target));
+    }
     if (path.pathname === `/api/chat/channels/${channel.id}/messages`) {
       if (options?.method === "POST") {
         const body = JSON.parse(options.body);
@@ -373,8 +413,77 @@ function initialPosition(layout) {
   console.log(`PASS: ${layout}: preview-to-scroller handoff and one settled second: ${initialShift.toFixed(3)}px.`);
 }
 
+function reactionTimeline(layout) {
+  browser("open", url);
+  wait(latestVisibleExpression);
+  settle();
+  evaluate(
+    `chatHistoryFixture.append(${JSON.stringify("TEST FIXTURE last post\n" + "A tall message with room for reactions.\n".repeat(7))})`,
+  );
+  settle();
+  const row = '[data-message-key="command-3001"]';
+  const reactionsVisible = `(() => {
+    const scroller = document.querySelector('.chat-scroller').getBoundingClientRect();
+    const chips = [...document.querySelectorAll('${row} .chat-reaction')];
+    return chips.length > 0 && chips.every(chip => {
+      const rect = chip.getBoundingClientRect();
+      return rect.top >= scroller.top && rect.bottom <= scroller.bottom;
+    });
+  })()`;
+  evaluate('chatHistoryFixture.react("👍")');
+  settle();
+  assert.ok(
+    evaluate(reactionsVisible),
+    `${layout}: first reaction must be fully visible: ${JSON.stringify(metrics())}`,
+  );
+  screenshot(`chat-reaction-${layout}-first`);
+  // Remove the remote chip, then add the first local reaction while its PUT is held.
+  evaluate('chatHistoryFixture.react("👍", false); chatHistoryFixture.holdReaction = true');
+  wait(`!document.querySelector('${row} .chat-reaction')`);
+  browser("click", `${row} .chat-message-actions-trigger`);
+  browser("find", "role", "button", "click", "--name", "React with 👍", "--exact");
+  wait('typeof chatHistoryFixture.releaseReaction === "function"');
+  settle();
+  assert.ok(
+    evaluate(reactionsVisible),
+    `${layout}: optimistic first reaction must be fully visible before acknowledgement`,
+  );
+  evaluate("chatHistoryFixture.releaseReaction()");
+  wait(`document.querySelector('${row} .chat-reaction')?.getAttribute('aria-pressed') === 'true'`);
+  for (const emoji of ["🎉", "🚀", "❤️", "😂", "🔥", "👏", "👀", "✅", "💯", "🙌", "🤔", "⭐"])
+    evaluate(`chatHistoryFixture.react(${JSON.stringify(emoji)})`);
+  settle();
+  assert.ok(evaluate(reactionsVisible), `${layout}: wrapped reactions must be fully visible`);
+  screenshot(`chat-reaction-${layout}-latest`);
+  browser("focus", ".chat-scroller");
+  browser("press", "PageUp");
+  settle();
+  const before = anchor();
+  evaluate('chatHistoryFixture.react("🦀")');
+  settle();
+  assert.ok(
+    Math.abs(anchorOffset(before.key) - before.offset) < 2,
+    `${layout}: reactions must not pull a reader to latest`,
+  );
+  browser("focus", ".chat-scroller");
+  browser("press", "End");
+  settle();
+  browser("click", `${row} .chat-reaction[aria-pressed="true"]`);
+  wait(`document.querySelectorAll('${row} .chat-reaction[aria-pressed="true"]').length === 0`);
+  settle();
+  assert.ok(evaluate(reactionsVisible), `${layout}: removing a reaction retains the bottom`);
+  console.log(`PASS: ${layout}: first/wrapped reactions visible, local toggle, removal and preserved history anchor.`);
+}
+
 try {
   browser("open", "about:blank");
+  for (const [layout, width, height] of [
+    ["desktop", 1280, 800],
+    ["narrow", 390, 844],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    reactionTimeline(layout);
+  }
   const shortUrl = new URL(url);
   shortUrl.searchParams.set("fixtureCount", "12");
   shortUrl.searchParams.set("fixtureAlternate", "1");

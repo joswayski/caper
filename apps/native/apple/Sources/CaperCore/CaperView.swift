@@ -1982,15 +1982,19 @@ private struct ConversationStage: View {
     }
 }
 
-/// Whether a timeline is scrolled to its end, and its viewport's height.
+/// The timeline's content/viewport heights and whether its end is visible.
 private struct TimelinePin: Equatable {
     var height: CGFloat
+    var contentHeight: CGFloat
     var atBottom: Bool
+    var firstID: String?
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
-    init(_ geometry: GeometryProxy, viewport: String) {
+    init(_ geometry: GeometryProxy, viewport: String, firstID: String?) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
+        contentHeight = geometry.size.height
         atBottom = visible.maxY >= geometry.size.height - 24
+        self.firstID = firstID
     }
 }
 
@@ -1998,11 +2002,13 @@ private struct TimelinePin: Equatable {
 /// never re-renders the conversation.
 private final class TimelinePinBox {
     private var last: TimelinePin?
-    /// Records `pin`; true when the viewport just got shorter while scrolled to the end.
-    func shortened(to pin: TimelinePin) -> Bool {
+    /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
+    /// A changed first row means history was prepended/replaced, not tail growth.
+    func needsReveal(to pin: TimelinePin) -> Bool {
         defer { last = pin }
         guard let last else { return false }
-        return pin.height < last.height && last.atBottom
+        return last.atBottom && last.firstID == pin.firstID &&
+            (pin.height < last.height || pin.contentHeight > last.contentHeight)
     }
 }
 
@@ -2105,7 +2111,7 @@ private struct ChatView: View {
     /// The newest message (or the pending send) at the bottom, as when one arrives.
     private func revealLatest(_ proxy: ScrollViewProxy) {
         if chat.pendingMessage != nil { revealPending(proxy) }
-        else if chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+        else if !chat.hasNewer, chat.focusedMessageID == nil, let id = chat.channelMessages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
     }
     /// Older history goes above the reader's place. Remember the first row so
     /// the page that arrives cannot push it (and what they were reading) away.
@@ -2350,10 +2356,10 @@ private struct ChatView: View {
                     // Preceding history can move the pending row without
                     // changing that row's own height; observe the whole extent.
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
-                    // A growing draft, suggestions or the keyboard shorten the timeline
-                    // from below: keep the newest message in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin) { revealLatest(proxy) }
+                    // Reactions grow existing rows; a draft or keyboard shrinks
+                    // the viewport. Both retain a reader already at the bottom.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
@@ -2765,10 +2771,9 @@ private struct NativeThreadView: View {
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
                         }
                     }
-                    // A growing reply, suggestions or the keyboard shorten the panel
-                    // from below: keep the newest reply in view if it was.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace) } action: { pin in
-                        if timelinePin.shortened(to: pin), chat.focusedMessageID == nil, let id = replies.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    // Follow reaction height changes as well as a shorter viewport.
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id) } action: { pin in
+                        if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
                 .coordinateSpace(.named(MentionCard.timelineSpace))

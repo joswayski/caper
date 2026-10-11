@@ -207,9 +207,12 @@ export default function ThreadPanel({
   useEffect(() => {
     if (!state.thread?.focusMessageId) follow.current = true;
   }, [state.thread?.focusMessageId]);
-  useEffect(() => {
-    if (scroll.current && follow.current) scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [rootId, replies.at(-1)?.id, pending?.clientMessageId, state.thread?.loading]);
+  // Reactions grow an existing reply (or the root) without changing its ID.
+  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  useLayoutEffect(() => {
+    if (scroll.current && follow.current && !state.thread?.hasNewer && !state.thread?.focusMessageId)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
   useEffect(() => {
     const id = state.thread?.focusMessageId;
     if (!id || state.thread?.loading) return;
@@ -224,7 +227,6 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
-  const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
