@@ -13,6 +13,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -1027,15 +1028,17 @@ pub(crate) async fn link(
     ids: &[String],
     message_id: i64,
 ) -> Result<(), ApiError> {
-    for (position, id) in ids.iter().enumerate() {
-        sqlx::query("UPDATE public.assets SET message_id=$2, position=$3 WHERE external_id=$1")
-            .bind(id)
-            .bind(message_id)
-            .bind(i16::try_from(position).unwrap_or(i16::MAX))
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| crate::chat::unavailable())?;
-    }
+    // One statement, positions in request order (ORDINALITY counts from 1).
+    sqlx::query(
+        "UPDATE public.assets a SET message_id=$2, position=u.position-1
+         FROM unnest($1::text[]) WITH ORDINALITY AS u(external_id, position)
+         WHERE a.external_id=u.external_id",
+    )
+    .bind(ids)
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| crate::chat::unavailable())?;
     Ok(())
 }
 
@@ -1162,33 +1165,40 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     .execute(&assets.pool)
     .await
     .map_err(|_| ())?;
-    let mut tx = assets.pool.begin().await.map_err(|_| ())?;
+    // Don't hold a transaction or row locks across object-store calls. Purges
+    // are idempotent, so a replica repeating one only repeats its deletes.
     let rows: Vec<(i64, String, bool)> = sqlx::query_as(
         "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
          WHERE deleted_at IS NOT NULL AND purged_at IS NULL
            AND (message_id IS NULL OR deleted_at < now() - make_interval(hours => $1))
-         ORDER BY deleted_at LIMIT 25 FOR UPDATE SKIP LOCKED",
+         ORDER BY deleted_at LIMIT 25",
     )
     .bind(PURGE_DELAY_HOURS)
-    .fetch_all(&mut *tx)
+    .fetch_all(&assets.pool)
     .await
     .map_err(|_| ())?;
-    let mut purged = 0;
-    for (id, external, preview) in rows {
-        let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
-        if preview {
-            ok &= assets.r2.delete(&preview_key(&external)).await.is_ok();
-        }
-        if ok {
-            sqlx::query("UPDATE public.assets SET purged_at=now() WHERE id=$1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| ())?;
-            purged += 1;
-        }
+    let done: Vec<i64> = futures_util::stream::iter(rows)
+        .map(|(id, external, preview)| async move {
+            let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
+            if preview {
+                ok &= assets.r2.delete(&preview_key(&external)).await.is_ok();
+            }
+            ok.then_some(id)
+        })
+        .buffer_unordered(8)
+        .filter_map(std::future::ready)
+        .collect()
+        .await;
+    let purged = done.len();
+    if purged > 0 {
+        sqlx::query(
+            "UPDATE public.assets SET purged_at=now() WHERE id = ANY($1) AND purged_at IS NULL",
+        )
+        .bind(&done)
+        .execute(&assets.pool)
+        .await
+        .map_err(|_| ())?;
     }
-    tx.commit().await.map_err(|_| ())?;
     if purged > 0 {
         tracing::info!(
             event_name = "assets_purged",

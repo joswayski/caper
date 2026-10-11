@@ -678,6 +678,9 @@ async fn replay(
     .await
 }
 
+/// How long a channel access check covers typing and upload progress.
+const EPHEMERAL_RECHECK: Duration = Duration::from_secs(1);
+
 async fn chat_subscription(
     state: &Gateway,
     identity: &Identity,
@@ -695,6 +698,7 @@ async fn chat_subscription(
         .map_err(|_| chat::unavailable())?
         .map_err(|_| chat::unavailable())?;
     let mut check = tokio::time::interval(Duration::from_secs(10));
+    let mut checked = tokio::time::Instant::now();
     let mut after = chat::cursor(sub.after.as_deref().unwrap_or("0"))?;
     replay(state, identity, sub, out, &mut after).await?;
     subscribed(out, &sub.id).await?;
@@ -702,8 +706,15 @@ async fn chat_subscription(
         tokio::select! {
             incoming = events.recv() => match incoming {
                 Ok(payload) => {
-                    identity.check_channel(state, channel).await?;
-                    if chat::ephemeral(&payload) { event(out, &sub.id, payload).await?; }
+                    // Durable events always recheck access. Typing and upload
+                    // progress can arrive many times a second per subscriber,
+                    // so they reuse a check from the last second.
+                    let ephemeral = chat::ephemeral(&payload);
+                    if !ephemeral || checked.elapsed() >= EPHEMERAL_RECHECK {
+                        identity.check_channel(state, channel).await?;
+                        checked = tokio::time::Instant::now();
+                    }
+                    if ephemeral { event(out, &sub.id, payload).await?; }
                     else if let Some(seq) = payload["seq"].as_str().and_then(|s| s.parse::<i64>().ok()) {
                         if seq == after + 1 { event(out, &sub.id, crate::assets::sign_attachments(payload, state.chat.cdn.as_deref())).await?; after = seq; }
                         else if seq > after { replay(state, identity, sub, out, &mut after).await?; }
@@ -716,7 +727,10 @@ async fn chat_subscription(
                 let head = *heads.borrow_and_update();
                 if head > after { replay(state, identity, sub, out, &mut after).await?; }
             }
-            _ = check.tick() => identity.check_channel(state, channel).await?,
+            _ = check.tick() => {
+                identity.check_channel(state, channel).await?;
+                checked = tokio::time::Instant::now();
+            }
         }
     }
 }
