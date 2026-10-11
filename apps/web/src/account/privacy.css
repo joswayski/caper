@@ -154,7 +154,7 @@
 }
 .privacy-settings .privacy-error {
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 .privacy-error button {

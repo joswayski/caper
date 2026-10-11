@@ -1187,7 +1187,7 @@ try {
         wait(`getComputedStyle(document.querySelector('[aria-label="Join voice"]')).color === 'rgb(243, 244, 245)'`);
         assert.ok(
           evaluate(
-            `const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgb(28, 31, 33)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`,
+            `const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgba(255, 255, 255, 0.06)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`,
           ),
           "Hover gives neutral feedback, not a primary-action fill",
         );
