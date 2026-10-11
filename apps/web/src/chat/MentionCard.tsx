@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   autoUpdate,
   flip,
@@ -18,6 +18,7 @@ import type { ChatAuthor } from "./types.ts";
 import { addSpaceMember, type Space } from "../spaces/client.ts";
 import { friendlyError } from "../spaces/errors.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
+import { getRememberedAccount, subscribeAccount, withAccountProfile } from "../account/client.ts";
 
 export interface MentionCardTarget {
   person: MentionCardPerson;
@@ -49,7 +50,9 @@ export default function MentionCard({
   /** Only non-demo spaces owned by the signed-in account. */
   spaces?: Space[];
 }) {
-  const { person, anchor, drawer } = target;
+  const { person: snapshot, anchor, drawer } = target;
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const person = withAccountProfile(snapshot, account);
   const blocked = useBlockedIds().has(person.id);
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState<string>();

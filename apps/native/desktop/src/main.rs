@@ -2773,6 +2773,57 @@ impl CaperApp {
                 }
                 _ => {}
             }
+            self.refresh_profile_snapshots();
+        }
+    }
+
+    fn refresh_profile_snapshots(&mut self) {
+        let Some(account) = &self.account else { return };
+        let (Some(username), Some(name)) = (&account.username, &account.display_name) else {
+            return;
+        };
+        for member in self
+            .detail
+            .iter_mut()
+            .flat_map(|detail| &mut detail.members)
+            .chain(self.managed_members.iter_mut())
+            .chain(self.managed_invitations.iter_mut())
+        {
+            if member.id == account.id {
+                member.username.clone_from(username);
+                member.display_name.clone_from(name);
+            }
+        }
+        for direct in &mut self.directs {
+            if direct.peer.id == account.id {
+                direct.peer.username.clone_from(username);
+                direct.peer.display_name.clone_from(name);
+            }
+        }
+        for person in self
+            .reactors
+            .values_mut()
+            .flat_map(|cached| &mut cached.groups)
+            .flat_map(|group| &mut group.authors)
+        {
+            if person.id == account.id {
+                person.username = Some(username.clone());
+                person.display_name = Some(name.clone());
+            }
+        }
+        if let Some(session) = &mut self.session
+            && session.author.id == account.id
+        {
+            session.author.name.clone_from(name);
+        }
+        self.timeline.refresh_profile(account);
+        for (message, pin) in self.mutations.pins.values_mut() {
+            message.refresh_profile(account);
+            if let Some(pin) = pin
+                && pin.author.id == account.id
+            {
+                pin.author.name.clone_from(name);
+            }
         }
     }
 
@@ -2817,11 +2868,19 @@ impl CaperApp {
     }
 
     fn profiled(&mut self, account: Account, spaces: Spaces) {
-        self.invalidate_navigation_cache();
+        let onboarding = self
+            .account
+            .as_ref()
+            .is_none_or(|account| account.username.is_none() || account.display_name.is_none());
         self.account = Some(account);
         self.set_spaces(spaces);
         self.refresh_directs();
+        self.refresh_profile_snapshots();
         self.dialog = None;
+        if !onboarding {
+            return;
+        }
+        self.invalidate_navigation_cache();
         if let Some(space) = self.spaces.first() {
             self.select_space(space.id.clone());
         } else {
@@ -8785,8 +8844,16 @@ impl CaperApp {
 
     fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
         let now = Instant::now();
-        for participant in people {
+        for mut participant in people {
             let is_self = own && participant.id == self.voice.self_id;
+            if is_self
+                && let Some(name) = self
+                    .account
+                    .as_ref()
+                    .and_then(|account| account.display_name.as_ref())
+            {
+                participant.name.clone_from(name);
+            }
             let muted = if is_self {
                 self.voice.state.audio.muted
             } else {
@@ -13177,10 +13244,16 @@ impl CaperApp {
                 )
             })
             .or_else(|| self.mention_profile(&card.pill.entry));
-        let Some(profile) = profile else {
+        let Some(mut profile) = profile else {
             self.mention_card = None;
             return;
         };
+        if profile.me
+            && let Some(account) = &self.account
+        {
+            profile.username.clone_from(&account.username);
+            profile.display_name.clone_from(&account.display_name);
+        }
         let id = egui::Id::new("mention-card");
         let height = context
             .memory(|memory| memory.area_rect(id))

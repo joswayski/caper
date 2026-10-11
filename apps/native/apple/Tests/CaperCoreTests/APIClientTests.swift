@@ -478,6 +478,20 @@ final class APIClientTests: XCTestCase {
         await model.chat.send()
         let pending = try XCTUnwrap(model.chat.pendingMessage)
         model.chat.draft = "successor draft"
+        let own = Member(id: "self", username: "old_user", displayName: "Old Name", owner: true)
+        let other = Member(id: "other", username: "other_user", displayName: "Old Name", owner: false)
+        let detail = SpaceDetail(space: Space(id: "Space1234567", name: "Space", ownerId: "self"), channels: [], members: [own, other])
+        model.detail = detail
+        let author = ChatAuthor(id: "self", name: "Old Name", isGuest: false)
+        let original = ChatMessage(id: "original", channelId: "Design123456", seq: "1", author: author,
+            content: ChatContent(version: 1, type: "text", text: "Keep @old_user"), createdAt: "now", clientMessageId: "original-client")
+        var message = original
+        message.author = ChatAuthor(id: "other", name: "Old Name", isGuest: false)
+        message.pin = MessagePin(author: author, createdAt: "now")
+        message.thread = ThreadSummary(replyCount: 1, participants: [author, message.author], seq: "1")
+        message.forward = MessageForward(message: original, seq: "1")
+        model.chat.messages = [message]
+        model.chat.pinnedMessages = [message]
         await model.saveProfile(username: "new_user", displayName: "New Name")
         XCTAssertNil(model.error)
         XCTAssertEqual(model.selectedChannelID, "Design123456")
@@ -485,6 +499,18 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(model.chat.pendingMessage?.id, pending.id)
         XCTAssertTrue(model.chat.sendRejected)
         XCTAssertEqual(model.chat.currentAuthor?.name, "New Name")
+        XCTAssertEqual(model.detail?.members.map(\.displayName), ["New Name", "Old Name"])
+        XCTAssertEqual(model.detail?.members.first?.username, "new_user")
+        XCTAssertEqual(model.chat.messages.first?.author.name, "Old Name")
+        XCTAssertEqual(model.chat.messages.first?.pin?.author.name, "New Name")
+        XCTAssertEqual(model.chat.messages.first?.thread?.participants.map(\.name), ["New Name", "Old Name"])
+        XCTAssertEqual(model.chat.messages.first?.forward?.message?.author.name, "New Name")
+        XCTAssertEqual(model.chat.displayedPins.first?.pin?.author.name, "New Name")
+        XCTAssertEqual(model.chat.messages.first?.content.text, "Keep @old_user")
+        model.detail = detail // A late read cannot restore the old self identity.
+        model.chat.messages = [message]
+        XCTAssertEqual(model.detail?.members.first?.username, "new_user")
+        XCTAssertEqual(model.chat.messages.first?.pin?.author.name, "New Name")
         XCTAssertEqual(historyRequests, 1)
         XCTAssertEqual(sessionRequests, 1)
         await model.chat.stop()

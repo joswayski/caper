@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   autoUpdate,
   flip,
@@ -14,6 +14,7 @@ import {
 } from "@floating-ui/react";
 import { X } from "lucide-react";
 import Avatar from "../components/Avatar";
+import { getRememberedAccount, subscribeAccount, withAccountProfile } from "../account/client";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { cachedReactors, emojiLabel, emojiName, loadReactors, reactorName, type ReactionList } from "./reactors.ts";
@@ -37,6 +38,7 @@ export default function ReactorsPanel({
   target: ReactorsTarget;
   onClose: () => void;
 }) {
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const reactions = message.reactions ?? [];
   const [selected, setSelected] = useState(target.emoji);
   const [list, setList] = useState<ReactionList | undefined>(() =>
@@ -99,7 +101,9 @@ export default function ReactorsPanel({
   }, [current]);
 
   if (!current) return null;
-  const authors = list?.reactions.find((reaction) => reaction.emoji === current)?.authors;
+  const authors = list?.reactions
+    .find((reaction) => reaction.emoji === current)
+    ?.authors.map((author) => withAccountProfile(author, account));
   const panel = (
     <FloatingFocusManager context={context} returnFocus={returnFocus}>
       <div

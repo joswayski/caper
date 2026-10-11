@@ -6651,8 +6651,8 @@ push rules are unchanged.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, Unicode truncation and transactional outbox snapshots. Low-memory builds use one job and zero debug information. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 577 tests across 55 files after merging current main. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Upload-recovery regression retains the original quote despite a changed next-draft target. Extended `scripts/test-message-threads.mjs` passes, including channel/thread quick Reply, source jumps and touch long-press Reply selection. Inspected desktop, 390px and 320px Chromium renders of the updated source rows, composer, Pins, thread and action sheet. Coarse pointer, 44px source targets, non-overlapping desktop actions, zero horizontal overflow and stronger source-jump styling verified; not Safari or physical-device acceptance. |
-| Rust desktop | 416 tests pass after merging current main; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture, right-facing source arrows, source-view labels and hovered controls; clicking quick Reply selects the source while retaining the existing draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files after merging current main. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Upload-recovery regression retains the original quote despite a changed next-draft target. Extended `scripts/test-message-threads.mjs` passes, including channel/thread quick Reply, source jumps and touch long-press Reply selection. Inspected desktop, 390px and 320px Chromium renders of the updated source rows, composer, Pins, thread and action sheet. Coarse pointer, 44px source targets, non-overlapping desktop actions, zero horizontal overflow and stronger source-jump styling verified; not Safari or physical-device acceptance. |
+| Rust desktop | 417 tests pass after merging current main; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture, right-facing source arrows, source-view labels and hovered controls; clicking quick Reply selects the source while retaining the existing draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |
@@ -6699,3 +6699,41 @@ push rules are unchanged.
    remain installed: older APIs ignore `replyToId` and lose quote context on new
    sends. Prefer a forward API fix. Do not delete persisted quotes or messages;
    no data rollback is required.
+
+## Own profile refresh (October 11, 2026)
+
+A successful display-name/username save updates retained self identities by
+account ID in the editing client: members, invitations, self-DMs, chat authors,
+pins, thread participants, forwarded authors, reaction lists and profile cards.
+The local voice roster uses the saved display name without leaving the call.
+Conversation selection, drafts, rejected sends, historical text and replay
+cursors stay intact. Other open sessions still use their existing refresh
+behavior; this change adds no realtime profile event.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 578 `npm test` tests pass after rebasing onto current main. `node scripts/test-profile-refresh.mjs` passes against labelled loopback API mocks at 1280px and 390px: space/private-channel settings, stale snapshots, failed save, same-name peer, cached navigation and retained draft/history. Inspected 2x Chromium settings captures; narrow Chromium is not a physical phone. No live SFU/profile-change acceptance. |
+| Android | Implementation and regression test added. Gradle `testDebugUnitTest --tests '*ProfileValidationTest'` stops at missing Android SDK; no Kotlin compilation or device acceptance. |
+| iOS/macOS | Implementation and regression test added. No Swift compiler or Xcode here; no build, XCTest, simulator or device acceptance. |
+| Rust desktop | Formatting passes. All 45 actual `model.rs` tests and Clippy pass through a disposable model-only Cargo harness, including the profile/history/cursor regression. Full desktop application build and UI/device acceptance were not run. |
+| Services | Root workspace formatting, tests (159 passed, 60 existing ignored) and Clippy pass. No API/gateway changes; ignored database/Valkey tests were not run. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is needed. Merging deploys nothing.
+2. Release web from the merged revision through the usual web deployment. Verify
+   profile save followed by space/private-channel settings and cached navigation.
+   Set `MERGED_SHA` to this PR's merge commit and confirm its web image exists:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/test Android, Apple and desktop on supported hosts before distributing
+   their independent client releases. Verify the same identity update during an
+   active call without losing conversation state. Roll back web to its previous
+   image; native rollback requires a corrected higher-build-number release. No
+   data rollback is needed.

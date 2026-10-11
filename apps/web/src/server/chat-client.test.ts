@@ -292,6 +292,63 @@ test("public history loads before identity and remains visible while the send se
   assert.deepEqual(requests, ["/api/chat/general", "/api/chat/session"]);
 });
 
+test("renaming an account refreshes retained message identities without reloading history", async (t) => {
+  installBrowser(t);
+  const own = { id: "self", name: "Old Name", isGuest: false };
+  const other = { ...own, id: "other" };
+  const original: ChatMessage = {
+    id: "original",
+    channelId: "general",
+    seq: "1",
+    author: own,
+    content: { version: 1, type: "text", text: "Keep @old_user as written" },
+    createdAt: "2026-10-11T12:00:00Z",
+    clientMessageId: "original-client",
+  };
+  const message: ChatMessage = {
+    ...original,
+    id: "wrapper",
+    seq: "2",
+    author: other,
+    pin: { author: own, createdAt: original.createdAt },
+    pinSeq: "2",
+    thread: { replyCount: 1, participants: [own, other], seq: "2" },
+    forward: { message: original, seq: "2" },
+  };
+  let name = "Old Name";
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    Response.json({ token: "account-chat", author: { ...own, name } }),
+  );
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => {
+    state = next;
+  });
+  t.onTestFinished(() => client.stop());
+  client.start({
+    space: { id: "space", name: "Space" },
+    channel: { id: "general", name: "general" },
+    messages: [original, message],
+    pinnedMessages: [message],
+    cursor: "2",
+    hasMore: false,
+  });
+  client.identify(name, true, own.id);
+  await tick();
+  name = "New Name";
+  client.identify(name, true, own.id);
+  assert.equal(state.messages[0].author.name, name);
+  assert.equal(state.messages[1].author.name, other.name);
+  assert.equal(state.messages[1].pin?.author.name, name);
+  assert.deepEqual(
+    state.messages[1].thread?.participants.map((author) => author.name),
+    [name, other.name],
+  );
+  assert.equal(state.messages[1].forward?.message?.author.name, name);
+  assert.equal(state.pinnedMessages[0].pin?.author.name, name);
+  assert.equal(state.messages[0].content.text, original.content.text);
+  assert.equal(client.snapshotHistory()?.cursor, "2");
+});
+
 interface SendBody {
   clientMessageId: string;
   text: string;
