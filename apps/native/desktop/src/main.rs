@@ -20445,7 +20445,7 @@ mod tests {
                     force: None,
                 })
                 .collect();
-            context.run(
+            let _ = context.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
