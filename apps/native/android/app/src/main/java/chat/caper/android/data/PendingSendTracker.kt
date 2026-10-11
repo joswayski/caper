@@ -41,5 +41,10 @@ internal class PendingSendTracker {
         if (pending?.id == id) pending = null
     }
 
+    /** Only before HTTP, or after a definitive attachment refusal, never after a timeout. */
+    fun replaceAttachments(id: UUID, attachmentIds: List<String>): PendingSend? =
+        pending?.takeIf { it.id == id }?.copy(id = UUID.randomUUID(), attachmentIds = attachmentIds)
+            ?.also { pending = it }
+
     fun clear() { pending = null }
 }

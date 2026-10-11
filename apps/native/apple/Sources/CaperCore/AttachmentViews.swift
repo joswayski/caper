@@ -1434,7 +1434,7 @@ struct AttachmentDraftsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(chat.attachmentDrafts) { draft in
-                        AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }) {
+                        AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
                             chat.removeAttachmentDraft(id: draft.id)
                         }
                     }
@@ -1452,6 +1452,7 @@ struct AttachmentDraftsView: View {
 private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
     let preview: () -> Void
+    let retry: () -> Void
     let remove: () -> Void
     @State private var thumbnail: CGImage?
 
@@ -1484,6 +1485,10 @@ private struct AttachmentDraftChip: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Preview \(draft.name)")
+            if draft.error != nil {
+                Button("Retry", action: retry).buttonStyle(.plain)
+                    .accessibilityLabel("Retry uploading \(draft.name)")
+            }
             Button(action: remove) {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 24, height: 24)
                     #if os(iOS)

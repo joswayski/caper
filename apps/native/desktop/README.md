@@ -341,8 +341,8 @@ exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
 mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.
-`parity-direct-no-spaces` previews the first-space page's Direct messages entry
-and the global list without any space membership.
+`parity-direct-no-spaces` previews first-space setup without DM navigation,
+even when the account has an existing conversation.
 `parity-attachments` previews ready, processing (with poster and percent, and
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or

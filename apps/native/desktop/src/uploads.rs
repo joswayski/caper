@@ -48,8 +48,9 @@ impl UploadError {
     }
 }
 
+#[derive(Clone)]
 pub enum Body {
-    Memory(Vec<u8>),
+    Memory(Arc<[u8]>),
     /// Streamed from disk so large files never sit in memory, with metadata
     /// boxes blanked on the way.
     File {
@@ -57,7 +58,7 @@ pub enum Body {
         patches: Vec<crate::metadata::Patch>,
     },
     /// A compressed copy in the temp directory, removed once uploaded or dropped.
-    Scratch(Scratch),
+    Scratch(Arc<Scratch>),
 }
 
 /// A file this app wrote and owns; deleted on drop.
@@ -86,7 +87,7 @@ impl Drop for Scratch {
 /// Reads a scratch file, keeping it until the upload has read it.
 struct ScratchReader {
     file: std::io::Take<std::fs::File>,
-    _scratch: Scratch,
+    _scratch: Arc<Scratch>,
 }
 
 impl Read for ScratchReader {
@@ -95,6 +96,7 @@ impl Read for ScratchReader {
     }
 }
 
+#[derive(Clone)]
 pub struct Prepared {
     pub name: String,
     pub content_type: String,
@@ -110,6 +112,29 @@ pub struct Prepared {
     /// Always JPEG, at most 512 KiB.
     pub preview: Option<Vec<u8>>,
     pub thumbnail: Option<image::RgbaImage>,
+}
+
+impl Prepared {
+    /// Own the exact uploaded bytes until delivery: the picked path may change
+    /// or disappear while the composer is idle. Large files stay on disk.
+    pub fn retain_file(&mut self) -> Result<(), String> {
+        if let Body::File { path, patches } = &self.body {
+            let scratch = Scratch::new("draft");
+            let copy = || -> std::io::Result<u64> {
+                let mut source = crate::metadata::Patched::new(
+                    std::fs::File::open(path)?.take(self.size),
+                    patches.clone(),
+                );
+                let mut target = std::fs::File::create(scratch.path())?;
+                std::io::copy(&mut source, &mut target)
+            };
+            if copy().map_err(|_| "Failed to upload.")? != self.size {
+                return Err("Failed to upload.".into());
+            }
+            self.body = Body::Scratch(Arc::new(scratch));
+        }
+        Ok(())
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -252,7 +277,7 @@ fn prepare_video(
                 duration_ms: result
                     .and_then(|result| result.duration_ms)
                     .or(probe.duration_ms),
-                body: Body::Scratch(scratch),
+                body: Body::Scratch(Arc::new(scratch)),
                 preview: None,
                 thumbnail: None,
             }
@@ -311,7 +336,7 @@ pub fn prepare_bytes(name: &str, bytes: Vec<u8>, settings: &Compression) -> Prep
             content_type: image.content_type,
             source_size,
             size: image.bytes.len() as u64,
-            body: Body::Memory(image.bytes),
+            body: Body::Memory(image.bytes.into()),
             width: image.width,
             height: image.height,
             duration_ms: None,
@@ -325,7 +350,7 @@ pub fn prepare_bytes(name: &str, bytes: Vec<u8>, settings: &Compression) -> Prep
         content_type,
         source_size,
         size: source_size,
-        body: Body::Memory(bytes),
+        body: Body::Memory(bytes.into()),
         width: None,
         height: None,
         duration_ms: None,
@@ -485,61 +510,68 @@ fn upload_with_delays(
         })
         .ok_or_else(invalid)?
         .to_owned();
-    let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
-    let preview_size = preview.as_ref().map_or(0, Vec::len) as u64;
-    let total = (size + preview_size).max(1) as f32;
-    if let Some(preview) = preview {
-        // The reservation counted the preview, so it must arrive.
-        let put = presigned(&reserved["previewUpload"]).ok_or_else(invalid)?;
-        cancelled(&cancel)?;
-        let body = Progress {
-            inner: std::io::Cursor::new(preview),
-            sent: 0,
-            report: {
-                let progress = progress.clone();
-                Arc::new(move |sent| progress(sent as f32 / total))
-            },
-            cancel: cancel.clone(),
-        };
-        api.put_presigned(
-            &put.url,
-            &put.headers,
-            reqwest::blocking::Body::sized(body, preview_size),
-        )
-        .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
-    }
-    cancelled(&cancel)?;
-    let report: Arc<dyn Fn(u64) + Send + Sync> = {
-        let progress = progress.clone();
-        Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
-    };
-    let body = reqwest::blocking::Body::sized(
-        Progress {
-            inner: source,
-            sent: 0,
-            report,
-            cancel: cancel.clone(),
-        },
-        size,
-    );
-    api.put_presigned(&upload.url, &upload.headers, body)
-        .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
-    let mut delays = delays.iter();
-    let completed = loop {
-        cancelled(&cancel)?;
-        match api.complete_asset(token, &id) {
-            Err(error) if error.status == Some(409) => match delays.next() {
-                Some(delay) => std::thread::sleep(*delay),
-                None => return Err(error),
-            },
-            result => break result?,
+    let result = (|| {
+        let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
+        let preview_size = preview.as_ref().map_or(0, Vec::len) as u64;
+        let total = (size + preview_size).max(1) as f32;
+        if let Some(preview) = preview {
+            // The reservation counted the preview, so it must arrive.
+            let put = presigned(&reserved["previewUpload"]).ok_or_else(invalid)?;
+            cancelled(&cancel)?;
+            let body = Progress {
+                inner: std::io::Cursor::new(preview),
+                sent: 0,
+                report: {
+                    let progress = progress.clone();
+                    Arc::new(move |sent| progress(sent as f32 / total))
+                },
+                cancel: cancel.clone(),
+            };
+            api.put_presigned(
+                &put.url,
+                &put.headers,
+                reqwest::blocking::Body::sized(body, preview_size),
+            )
+            .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
         }
-    };
-    let attachment = Attachment::parse(&completed)
-        .filter(|attachment| attachment.id == id)
-        .ok_or_else(invalid)?;
-    progress(1.0);
-    Ok(attachment)
+        cancelled(&cancel)?;
+        let report: Arc<dyn Fn(u64) + Send + Sync> = {
+            let progress = progress.clone();
+            Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
+        };
+        let body = reqwest::blocking::Body::sized(
+            Progress {
+                inner: source,
+                sent: 0,
+                report,
+                cancel: cancel.clone(),
+            },
+            size,
+        );
+        api.put_presigned(&upload.url, &upload.headers, body)
+            .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
+        let mut delays = delays.iter();
+        let completed = loop {
+            cancelled(&cancel)?;
+            match api.complete_asset(token, &id) {
+                Err(error) if error.status == Some(409) => match delays.next() {
+                    Some(delay) => std::thread::sleep(*delay),
+                    None => return Err(error),
+                },
+                result => break result?,
+            }
+        };
+        let attachment = Attachment::parse(&completed)
+            .filter(|attachment| attachment.id == id)
+            .ok_or_else(invalid)?;
+        cancelled(&cancel)?;
+        progress(1.0);
+        Ok(attachment)
+    })();
+    if result.is_err() {
+        api.cancel_asset(token, &id);
+    }
+    result
 }
 
 /// "X MB → Y KB" when compression saved space, otherwise the stored size.
@@ -705,6 +737,53 @@ mod tests {
     }
 
     #[test]
+    fn retained_disk_bytes_survive_source_changes_and_repeated_uploads() {
+        let source = Scratch::new("retained");
+        let path = source.file("notes.txt", b"original");
+        let mut prepared = prepare_path(&path, &Compression::default()).unwrap();
+        prepared.retain_file().unwrap();
+        std::fs::write(&path, b"changed!").unwrap();
+        let Body::Scratch(copy) = &prepared.body else {
+            panic!("owned disk copy");
+        };
+        let copy_path = copy.path().to_owned();
+        let (base, server) = serve(|base| {
+            (0..2)
+                .flat_map(|_| {
+                    vec![
+                        (201, reserved(base)),
+                        (200, String::new()),
+                        (200, completed("file", "text/plain", "notes.txt", 8)),
+                    ]
+                })
+                .collect()
+        });
+        for _ in 0..2 {
+            upload(
+                &Api::new(&base).unwrap(),
+                "token",
+                "channel",
+                prepared.clone(),
+                Arc::new(|_| {}),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            assert!(
+                copy_path.exists(),
+                "completion does not release pending bytes"
+            );
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].body, b"original");
+        assert_eq!(requests[4].body, b"original");
+        drop(prepared);
+        assert!(
+            !copy_path.exists(),
+            "the last owner removes its working copy"
+        );
+    }
+
+    #[test]
     fn compressed_still_uploads_preview_then_file_and_retries_complete() {
         // A large few-colour screenshot: lossless WebP (smaller than its
         // exact palette PNG) with a preview.
@@ -817,7 +896,7 @@ mod tests {
             preview.len().to_string()
         );
         let original = &requests[2];
-        assert_eq!(original.body, stored);
+        assert_eq!(original.body.as_slice(), stored.as_ref());
         assert_eq!(original.headers["content-type"], "image/webp");
         assert_eq!(original.headers["content-length"], stored.len().to_string());
         assert_eq!(
@@ -926,12 +1005,14 @@ mod tests {
                 (200, String::new()),
                 (409, r#"{"error":"upload not finished"}"#.into()),
                 (409, r#"{"error":"upload not finished"}"#.into()),
+                (204, String::new()),
                 (201, reserved(base)),
                 (200, String::new()),
                 (
                     422,
                     r#"{"error":"file does not match its declared size or type"}"#.into(),
                 ),
+                (204, String::new()),
             ]
         });
         let api = Api::new(&base).unwrap();
@@ -952,7 +1033,21 @@ mod tests {
         assert_eq!(pending.message, "upload not finished");
         let mismatch = attempt();
         assert_eq!(mismatch.status, Some(422));
-        assert_eq!(server.join().unwrap().len(), 7);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 9);
+        for index in [4, 8] {
+            assert_eq!(
+                requests[index].line,
+                "POST /api/assets/asset0001/cancel HTTP/1.1"
+            );
+            assert_eq!(
+                requests[index]
+                    .headers
+                    .get("authorization")
+                    .map(String::as_str),
+                Some("Bearer token")
+            );
+        }
     }
 
     #[test]

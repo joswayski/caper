@@ -514,6 +514,7 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    val uploadFailed: Boolean = false,
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
     /** Uploaded files with local `file://` copies until the server confirms. */
@@ -540,6 +541,7 @@ data class DraftAttachmentUi(
     val progress: Float = 0f,
     val error: String? = null,
     val attachment: ChatAttachment? = null,
+    val uploadedAt: Long? = null,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

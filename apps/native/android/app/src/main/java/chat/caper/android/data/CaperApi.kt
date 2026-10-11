@@ -6,7 +6,10 @@ import java.io.IOException
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
@@ -203,6 +206,15 @@ class CaperApi(
     /** `409` means storage has not seen the upload yet; [AttachmentUploader] retries a few times. */
     suspend fun completeAsset(token: String, id: String): ChatAttachment =
         post("/api/assets/${id.assetPathId()}/complete", token = token)
+
+    /** Best effort and independent of the cancelled upload job; expiry is the fallback. */
+    suspend fun cancelAsset(token: String, id: String) {
+        withContext(NonCancellable) {
+            withTimeoutOrNull(5_000) {
+                runCatching { post<Unit>("/api/assets/${id.assetPathId()}/cancel", token = token) }
+            }
+        }
+    }
 
     /** Re-signed delivery URLs for attachments this account can still see (at most 100 per call). */
     suspend fun attachmentUrls(token: String, ids: List<String>): Map<String, AttachmentUrls> {

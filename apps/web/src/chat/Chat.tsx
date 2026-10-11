@@ -34,8 +34,8 @@ import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./A
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
-import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
-import { prepareFile, type CompressionSettings } from "./prepare.ts";
+import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
+import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
@@ -509,7 +509,11 @@ export default function Chat({
   }, [state.author?.id, readOnly]);
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const [attachError, setAttachError] = useState<string>();
-  const uploads = useRef(new Map<string, AbortController>());
+  const uploads = useRef(new Map<string, AttachmentUpload>());
+  const abandonUpload = useCallback((key: string) => {
+    uploads.current.get(key)?.release(true);
+    uploads.current.delete(key);
+  }, []);
   const objectUrls = useRef(new Set<string>());
   // undefined is checking; null means unavailable. Neither removes the attach button.
   const [compression, setCompression] = useState<CompressionSettings | null>();
@@ -596,6 +600,14 @@ export default function Chat({
           firstMessageId = next.channelMessages?.[0]?.id;
         }
         // The composer clears the draft a new local send came from.
+        // Transfer ownership synchronously, before focus can renew an uncertain
+        // send or a fast HTTP/gateway confirmation can hide the pending render.
+        const sent = new Set(next.pendingSend?.attachments?.map((file) => file.id));
+        for (const [key, upload] of uploads.current) {
+          if (upload.state.attachment && sent.has(upload.state.attachment.id)) uploads.current.delete(key);
+        }
+        if (sent.size)
+          setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
         setState(next);
       },
       channelId,
@@ -675,11 +687,10 @@ export default function Chat({
   // Uploads belong to one channel; abandon them when it changes or unmounts.
   useEffect(
     () => () => {
-      for (const controller of uploads.current.values()) controller.abort();
-      uploads.current.clear();
+      for (const key of uploads.current.keys()) abandonUpload(key);
       setDrafts([]);
     },
-    [channelId],
+    [channelId, abandonUpload],
   );
   useEffect(
     () => () => {
@@ -691,6 +702,31 @@ export default function Chat({
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+
+  const retryUpload = (key: string) => {
+    void uploads.current
+      .get(key)
+      ?.ensure()
+      .catch(() => {});
+  };
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const upload of uploads.current.values())
+        if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
+      if (state.sendUploadFailed && state.pendingSend)
+        void clientRef.current?.send(state.pendingSend.text, {
+          threadRootId: state.pendingSend.threadRootId,
+          broadcast: state.pendingSend.broadcast,
+        });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [state.sendUploadFailed, state.pendingSend]);
 
   const addFiles = (files: File[]) => {
     const channel = state.channelId;
@@ -715,8 +751,15 @@ export default function Chat({
         localKind || file.type.startsWith("audio/") || ["application/pdf", "text/plain"].includes(file.type);
       const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
       objectUrls.current.add(localUrl);
-      const controller = new AbortController();
-      uploads.current.set(key, controller);
+      const upload = new AttachmentUpload(channel, file, settings, (next) => {
+        updateDraft(key, next);
+        if (next.attachment && localKind)
+          setLocalPreviews((current) => ({
+            ...current,
+            [next.attachment!.id]: { url: localUrl, video: localKind === "video" },
+          }));
+      });
+      uploads.current.set(key, upload);
       setDrafts((current) => [
         ...current,
         {
@@ -728,51 +771,12 @@ export default function Chat({
           progress: 0,
         },
       ]);
-      void (async () => {
-        try {
-          // Compressed in the browser first; the API only verifies what is stored.
-          const prepared = await prepareFile(
-            file,
-            settings,
-            (compressing) => updateDraft(key, { compressing }),
-            controller.signal,
-          );
-          if (controller.signal.aborted) return;
-          updateDraft(key, {
-            name: prepared.name,
-            storedSize: prepared.blob.size,
-          });
-          const attachment = await uploadPrepared(
-            channel,
-            prepared,
-            browserTransport,
-            (progress) => updateDraft(key, { progress }),
-            controller.signal,
-          );
-          updateDraft(key, { attachment, progress: 1 });
-        } catch (error) {
-          if (!controller.signal.aborted)
-            updateDraft(key, {
-              error: error instanceof Error ? error.message : "Upload failed.",
-            });
-        } finally {
-          uploads.current.delete(key);
-        }
-      })();
+      void upload.ensure().catch(() => {});
     }
   };
 
-  // A new local send takes its files out of the tray, as the composer clears its text.
-  const pendingSendId =
-    state.pendingSend && !state.pendingSend.threadRootId ? state.pendingSend.clientMessageId : undefined;
-  useLayoutEffect(() => {
-    const sent = new Set((state.pendingSend?.attachments ?? []).map((attachment) => attachment.id));
-    if (sent.size) setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
-  }, [pendingSendId]);
-
   const removeDraft = (key: string) => {
-    uploads.current.get(key)?.abort();
-    uploads.current.delete(key);
+    abandonUpload(key);
     setDrafts((current) => current.filter((item) => item.key !== key));
   };
 
@@ -976,15 +980,18 @@ export default function Chat({
     return () => clearTimeout(timer);
   }, [typingLabel]);
   const sendDraft = async (text: string) => {
-    if (!state.pendingSend && drafts.some((item) => !item.attachment))
-      throw new Error(
-        drafts.some((item) => item.error)
-          ? "Remove files that failed to upload first."
-          : "Wait for files to finish uploading.",
-      );
+    const client = clientRef.current;
+    const sources = !state.pendingSend ? drafts.map((draft) => uploads.current.get(draft.key)!) : [];
     setAttachError(undefined);
+    let attachments: ChatAttachment[];
+    try {
+      attachments = await Promise.all(sources.map((upload) => upload.ensure()));
+    } catch {
+      return;
+    } // The file chip owns the upload error and its Retry action.
+    if (client !== clientRef.current || sources.some((upload) => ![...uploads.current.values()].includes(upload)))
+      return;
     // Sent files show the sender's local copies until processing finishes.
-    const attachments = drafts.flatMap((item) => (item.attachment ? [item.attachment] : []));
     const local = Object.fromEntries(
       drafts.flatMap((item) =>
         item.attachment && item.localUrl && item.localKind
@@ -993,7 +1000,7 @@ export default function Chat({
       ),
     );
     if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
-    if ((await clientRef.current?.send(text, { attachments })) && state.hasNewer) {
+    if ((await client?.send(text, { attachments, uploads: sources })) && state.hasNewer) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
     }
@@ -1321,7 +1328,8 @@ export default function Chat({
               {pending && state.sendError && (
                 <div className="chat-send-status chat-send-error" role="alert">
                   <span>
-                    {state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}
+                    {!state.sendUploadFailed && (state.sendRejected ? "Not sent. " : "Not confirmed yet. ")}
+                    {state.sendError}
                   </span>
                   {state.sendRejected ? (
                     <>
@@ -1342,7 +1350,7 @@ export default function Chat({
                     </>
                   ) : (
                     <button type="button" onClick={() => composerRef.current?.submit()}>
-                      Retry send
+                      {state.sendUploadFailed ? "Retry" : "Retry send"}
                     </button>
                   )}
                 </div>
@@ -1941,6 +1949,7 @@ export default function Chat({
                       error: attachError,
                       onAdd: addFiles,
                       onRemove: removeDraft,
+                      onRetry: retryUpload,
                     }
                   : undefined
               }

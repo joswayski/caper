@@ -684,6 +684,8 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public var error: String?
     /// The confirmed upload.
     public var attachment: ChatAttachment?
+    public var uploadedAt: Date?
+    public var needsUpload: Bool { attachment == nil || uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true }
 
     public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {
         self.id = id; self.name = name; self.kind = kind; self.localURL = localURL; self.sourceSize = sourceSize

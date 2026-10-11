@@ -92,6 +92,23 @@ async function conversations() {
     await fetch(`${api}/api/dms`, { headers: { authorization: "Bearer fixture-owner-token", connection: "close" } })
   ).json();
 }
+function testFirstSpace() {
+  for (const width of [1440, 390]) {
+    browser("set", "viewport", String(width), "844", "2");
+    browser("open", `${web}/spaces`);
+    wait('document.querySelector(".spaces-empty h1")?.textContent === "Name your space"');
+    assert.equal(
+      evaluate('!!document.querySelector(".direct-section")'),
+      false,
+      "First-space setup must not show DM navigation, even when the account has an existing DM",
+    );
+    assert.equal(evaluate('document.querySelector(".spaces-empty button[type=submit]").disabled'), true);
+    assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
+    screenshot(`first-space-${width}`);
+    browser("fill", ".spaces-empty input", "TEST FIXTURE First space");
+    assert.equal(evaluate('document.querySelector(".spaces-empty button[type=submit]").disabled'), false);
+  }
+}
 async function testDirectMessages() {
   browser("open", `${web}/spaces`);
   wait('!!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")');
@@ -393,25 +410,13 @@ async function testDirectMessages() {
   browser("fill", ".chat-composer textarea", "TEST FIXTURE — still messaging without a space.");
   browser("press", "Enter");
   wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.")');
-  browser("open", `${web}/spaces`);
-  wait('!!document.querySelector(".spaces-empty .direct-select")');
-  assert.equal(
-    evaluate('document.querySelector(".spaces-empty h1").textContent'),
-    "Name your space",
-    "Global DMs must preserve first-space onboarding",
-  );
-  assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
-  screenshot("dm-first-space");
-  browser("click", '[aria-label="New direct message"]');
-  browser("fill", ".space-dialog input", "fixture_alex");
-  browser("click", '.space-dialog button[type="submit"]');
-  wait(
-    'document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.") && !document.querySelector(".space-dialog[open]")',
-  );
+  testFirstSpace();
+  browser("open", `${web}/spaces?dm=dm0000000001`);
+  wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.")');
   assert.equal(
     (await conversations()).conversations.length,
     1,
-    "No-space onboarding can reopen the existing global DM",
+    "No-space deep links still reopen the existing global DM without duplicating it",
   );
   browser("click", ".navigation-toggle");
   wait('!!document.querySelector(".spaces-room.navigation-open")');
@@ -696,8 +701,9 @@ try {
   // The phone Browse slide is covered by test-desktop-navigation; settle it here.
   browser("set", "media", "reduced-motion");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
-  if (process.argv.includes("--navigation")) {
-    // Run switching independently of the longer account/layout walkthrough.
+  const firstSpaceOnly = process.argv.includes("--first-space");
+  if (process.argv.includes("--navigation") || firstSpaceOnly) {
+    // Run setup/switching independently of the longer account/layout walkthrough.
     for (const username of ["fixture_alex", "fixture_owner"]) {
       const response = await fetch(`${api}/api/dms`, {
         method: "POST",
@@ -714,7 +720,20 @@ try {
     await control({ incomingMessage: { channelId: "dm0000000002", text: "private notes that survive a reload." } });
     await control({ noSpaces: true });
   } else await testDirectMessages();
-  await testNavigation();
+  if (firstSpaceOnly) {
+    testFirstSpace();
+    browser("click", ".spaces-empty button[type=submit]");
+    wait(
+      'document.querySelector(".space-menu h1")?.textContent === "TEST FIXTURE First space" && !!document.querySelector(".direct-section") && !!document.querySelector(".chat-composer textarea")',
+    );
+    await control({ noSpaces: true });
+    browser("open", `${web}/spaces?dm=dm0000000001`);
+    wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
+    assert.equal(evaluate('document.querySelector(".chat-composer textarea").disabled'), false);
+    console.log(
+      "PASS: first-space setup omits DMs at 1440px/390px; creation opens workspace DMs; no-space DM deep links remain writable.",
+    );
+  } else await testNavigation();
 } finally {
   browser("close");
   rmSync(scratch, { recursive: true, force: true });
