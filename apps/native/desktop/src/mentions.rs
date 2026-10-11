@@ -1,6 +1,8 @@
 //! `@mention` contract v1, shared with the API and every client: token grammar,
 //! composer suggestions and insertion, which message tokens to highlight, and
-//! what a person pill's card shows. Mentions do not notify anyone yet.
+//! what a person pill's card shows. Mentions do not notify anyone yet. The
+//! username fields (space invite, private channel grant, new DM) rank people
+//! the same way.
 
 use crate::model::{Author, DirectConversation, Member, Mention, Person as KnownPerson};
 use std::ops::Range;
@@ -65,6 +67,26 @@ pub struct Person {
     pub avatar_id: Option<i32>,
 }
 
+impl From<&Member> for Person {
+    fn from(member: &Member) -> Self {
+        Self {
+            username: member.username.clone(),
+            display_name: member.display_name.clone(),
+            avatar_id: member.avatar_id,
+        }
+    }
+}
+
+impl From<&KnownPerson> for Person {
+    fn from(person: &KnownPerson) -> Self {
+        Self {
+            username: person.username.clone(),
+            display_name: person.display_name.clone(),
+            avatar_id: person.avatar_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Candidate {
     Person(Person),
@@ -83,26 +105,24 @@ impl Candidate {
     }
 }
 
-/// Up to six rows: matching people by rank then username, then the matching
-/// specials (`everyone`, `here`), which always keep their slots. Callers pass
-/// people without the current user, and `specials` only in space channels.
-pub fn suggestions(people: &[Person], specials: bool, query: &str) -> Vec<Candidate> {
-    let query = query.to_ascii_lowercase();
-    let specials: Vec<_> = [Candidate::Everyone, Candidate::Here]
-        .into_iter()
-        .filter(|special| specials && special.name().starts_with(&query))
-        .collect();
+/// Up to `limit` people matching `query`, ignoring case: exact username,
+/// then username prefix, then display name or display-name word prefix, then
+/// username substring, each by lowercase username. An empty query matches
+/// everyone alphabetically.
+pub fn rank<'a>(people: &'a [Person], query: &str, limit: usize) -> Vec<&'a Person> {
+    let query = query.to_lowercase();
     let mut ranked: Vec<_> = people
         .iter()
         .filter_map(|person| {
             let username = person.username.to_lowercase();
             let display_name = person.display_name.to_lowercase();
-            // The query has no spaces, so the first word covers "starts with".
             let rank = if username == query {
                 0
             } else if username.starts_with(&query) {
                 1
-            } else if display_name.split(' ').any(|word| word.starts_with(&query)) {
+            } else if display_name.starts_with(&query)
+                || display_name.split(' ').any(|word| word.starts_with(&query))
+            {
                 2
             } else if username.contains(&query) {
                 3
@@ -115,9 +135,72 @@ pub fn suggestions(people: &[Person], specials: bool, query: &str) -> Vec<Candid
     ranked.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
     ranked
         .into_iter()
-        .take(MAX_SUGGESTIONS - specials.len())
-        .map(|(_, _, person)| Candidate::Person(person.clone()))
+        .take(limit)
+        .map(|(_, _, person)| person)
+        .collect()
+}
+
+/// Up to six rows: matching people by rank then username, then the matching
+/// specials (`everyone`, `here`), which always keep their slots. Callers pass
+/// people without the current user, and `specials` only in space channels.
+pub fn suggestions(people: &[Person], specials: bool, query: &str) -> Vec<Candidate> {
+    let query = query.to_ascii_lowercase();
+    let specials: Vec<_> = [Candidate::Everyone, Candidate::Here]
+        .into_iter()
+        .filter(|special| specials && special.name().starts_with(&query))
+        .collect();
+    rank(people, &query, MAX_SUGGESTIONS - specials.len())
+        .into_iter()
+        .map(|person| Candidate::Person(person.clone()))
         .chain(specials)
+        .collect()
+}
+
+/// A username field's rows, ranked as `@` suggestions are: the text trimmed,
+/// without one leading `@`. Nothing to match lists nobody.
+pub fn field_suggestions<'a>(people: &'a [Person], text: &str) -> Vec<&'a Person> {
+    let text = text.trim();
+    let query = text.strip_prefix('@').unwrap_or(text);
+    if query.is_empty() {
+        return Vec::new();
+    }
+    rank(people, query, MAX_SUGGESTIONS)
+}
+
+/// Whom a space invitation can suggest: known people (`GET /api/people`)
+/// neither in the space nor invited to it, by account id.
+pub fn invitees(people: &[KnownPerson], members: &[Member], invited: &[Member]) -> Vec<Person> {
+    people
+        .iter()
+        .filter(|person| {
+            !members
+                .iter()
+                .chain(invited)
+                .any(|other| other.id == person.id)
+        })
+        .map(Person::from)
+        .collect()
+}
+
+/// Whom a private channel can be granted to: space members, never `me`,
+/// without access to it or an invitation to it, by account id. The server
+/// only grants space members, so known people outside it never apply.
+pub fn grantees(
+    space: &[Member],
+    me: Option<&str>,
+    access: &[Member],
+    invited: &[Member],
+) -> Vec<Person> {
+    space
+        .iter()
+        .filter(|member| {
+            Some(member.id.as_str()) != me
+                && !access
+                    .iter()
+                    .chain(invited)
+                    .any(|other| other.id == member.id)
+        })
+        .map(Person::from)
         .collect()
 }
 
@@ -438,6 +521,137 @@ mod tests {
         );
         assert!(suggestions(&[], false, "").is_empty());
         assert_eq!(names(&suggestions(&[], true, "")), ["everyone", "here"]);
+    }
+
+    fn usernames<'a>(people: impl IntoIterator<Item = &'a Person>) -> Vec<&'a str> {
+        people
+            .into_iter()
+            .map(|person| person.username.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn rank_orders_by_match_then_lowercase_username_and_limits() {
+        let people = [
+            person("bob", "Robert Alexson"),
+            person("Bea", "Bea"),
+            person("bad", "Zed"),
+            person("abby", "Carol Ann"),
+        ];
+        assert_eq!(
+            usernames(rank(&people, "B", 6)),
+            ["bad", "Bea", "bob", "abby"],
+            "prefix ties by lowercase username, then contains"
+        );
+        assert_eq!(usernames(rank(&people, "carol a", 6)), ["abby"]);
+        assert_eq!(usernames(rank(&people, "ann", 6)), ["abby"]);
+        assert_eq!(usernames(rank(&people, "", 2)), ["abby", "bad"]);
+        assert!(rank(&people, "b", 0).is_empty());
+        assert!(rank(&people, "zzz", 6).is_empty());
+    }
+
+    #[test]
+    fn field_suggestions_trim_one_leading_at_and_rank_like_mentions() {
+        let people = [
+            person("alexander", "Zed Q"),
+            person("alex", "Alex Rivera"),
+            person("bob", "Robert Alexson"),
+            person("malex", "Mal"),
+            person("carol", "Carol"),
+        ];
+        let rows = |text| usernames(field_suggestions(&people, text));
+        assert_eq!(
+            rows("  @ALEX "),
+            ["alex", "alexander", "bob", "malex"],
+            "exact, prefix, display-name word, contains"
+        );
+        assert_eq!(rows("alex"), rows("@alex"));
+        assert_eq!(rows("alex rivera"), ["alex"], "whole display-name prefix");
+        assert!(rows("@@alex").is_empty(), "only one @ is dropped");
+        for empty in ["", "   ", "@", " @ "] {
+            assert!(rows(empty).is_empty(), "{empty:?} lists nobody");
+        }
+        assert!(rows("zzz").is_empty());
+        let many: Vec<_> = (0..10)
+            .rev()
+            .map(|index| person(&format!("user{index}"), "Member"))
+            .collect();
+        assert_eq!(
+            usernames(field_suggestions(&many, "user")),
+            ["user0", "user1", "user2", "user3", "user4", "user5"]
+        );
+    }
+
+    fn known(id: &str, username: &str) -> KnownPerson {
+        KnownPerson {
+            id: id.into(),
+            username: username.into(),
+            display_name: username.to_uppercase(),
+            avatar_id: Some(4),
+        }
+    }
+
+    fn member(id: &str, username: &str) -> Member {
+        Member {
+            id: id.into(),
+            avatar_id: Some(5),
+            username: username.into(),
+            display_name: username.to_uppercase(),
+            owner: false,
+        }
+    }
+
+    #[test]
+    fn invitees_skip_space_members_and_pending_invitations_by_account_id() {
+        let people = [
+            known("u1", "alex"),
+            known("u2", "maya"),
+            known("u3", "sam"),
+            known("u4", "zed"),
+        ];
+        // By id: a renamed member is still in the space, and someone else
+        // with a member's old username can still be invited.
+        let members = [member("u1", "alex_renamed"), member("u9", "sam")];
+        let invited = [member("u2", "maya")];
+        let rows = invitees(&people, &members, &invited);
+        assert_eq!(usernames(&rows), ["sam", "zed"]);
+        assert_eq!(
+            rows[0],
+            Person {
+                username: "sam".into(),
+                display_name: "SAM".into(),
+                avatar_id: Some(4),
+            }
+        );
+        assert_eq!(invitees(&people, &[], &[]).len(), 4);
+        assert!(invitees(&[], &members, &invited).is_empty());
+    }
+
+    #[test]
+    fn grantees_are_space_members_without_me_access_or_invitations() {
+        let space = [
+            member("me", "fixture_owner"),
+            member("u1", "alex"),
+            member("u2", "maya"),
+            member("u3", "sam"),
+            member("u4", "zed"),
+        ];
+        let access = [
+            member("me", "fixture_owner"),
+            member("u1", "alex_renamed"),
+            member("u8", "outsider"),
+        ];
+        let invited = [member("u2", "maya")];
+        let rows = grantees(&space, Some("me"), &access, &invited);
+        assert_eq!(usernames(&rows), ["sam", "zed"]);
+        assert_eq!(rows[0].avatar_id, Some(5), "members keep their avatar");
+        assert_eq!(
+            usernames(&grantees(&space, Some("me"), &[], &[])),
+            ["alex", "maya", "sam", "zed"],
+            "never yourself, even before access loads"
+        );
+        assert_eq!(grantees(&space, None, &[], &[]).len(), 5);
+        assert!(grantees(&[], Some("me"), &access, &invited).is_empty());
     }
 
     #[test]

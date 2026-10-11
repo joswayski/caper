@@ -2201,6 +2201,22 @@ final class CaperParityUITests: XCTestCase {
                        "The refusal must not leak into the sidebar after closing")
     }
 
+    func testNewDirectMessageSuggestionFillsUsernameWithoutOpening() throws {
+        let app = launch(fixture: "new-direct-message")
+        let username = try require(app.textFields["dm-username"], timeout: 30, "The new-DM dialog must open")
+        type("ma", into: username)
+        // GET /api/people: the fixture space's Maya and Alex, never you.
+        let maya = try require(app.buttons["person-suggestion-maya"], timeout: 5, "Typing ma must suggest maya")
+        XCTAssertFalse(app.buttons["person-suggestion-alex"].exists, "Only matching people are suggested")
+        capture("new-dm-suggestions", app: app)
+        maya.tap()
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "maya"), object: username)
+        XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 3), .completed, "Picking fills in the exact username")
+        XCTAssertFalse(app.buttons["person-suggestion-maya"].exists, "The list closes after a pick")
+        XCTAssertTrue(app.buttons["dm-create-submit"].isEnabled, "Picking must not open the conversation")
+        XCTAssertTrue(username.exists)
+    }
+
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)

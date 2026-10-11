@@ -15,7 +15,7 @@ internal const val MENTION_NAME_LIMIT = 32
 
 internal data class MentionToken(val start: Int, val end: Int, val query: String)
 
-/** A person or special name the composer can suggest after `@`. */
+/** A person or special name the composer can suggest after `@` (people also fill username fields). */
 internal data class MentionCandidate(
     val username: String,
     /** The display name for people; the muted description for `@everyone`/`@here`. */
@@ -69,14 +69,23 @@ internal fun mentionSource(state: AppUiState): MentionSource {
 }
 
 /**
- * Members ranked exact username, username prefix, display-name word prefix,
- * then username substring (ties by username), followed by matching specials.
+ * Members ranked by [rankPeople], followed by matching specials.
  * Specials keep their slots within [limit].
  */
 internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int = 6): List<MentionCandidate> {
     val needle = query.lowercase(Locale.ROOT)
     val specials = if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) }.take(limit) else emptyList()
-    val people = source.people.mapNotNull { person ->
+    return rankPeople(source.people, needle).take((limit - specials.size).coerceAtLeast(0)) + specials
+}
+
+/**
+ * People matching [query] case-insensitively, ranked exact username, username prefix,
+ * display-name (or display-name word) prefix, then username substring, ties by username.
+ * An empty query keeps everyone (a bare `@`); username fields never ask with one.
+ */
+internal fun rankPeople(people: List<MentionCandidate>, query: String): List<MentionCandidate> {
+    val needle = query.lowercase(Locale.ROOT)
+    return people.mapNotNull { person ->
         val username = person.username.lowercase(Locale.ROOT)
         val display = person.label.lowercase(Locale.ROOT)
         val rank = when {
@@ -89,7 +98,6 @@ internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int
         }
         Triple(rank, username, person)
     }.sortedWith(compareBy({ it.first }, { it.second })).map { it.third }
-    return people.take((limit - specials.size).coerceAtLeast(0)) + specials
 }
 
 /** Replaces the token with `@username ` and leaves the caret after the space. */
