@@ -16629,10 +16629,9 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, Dialog, GatewayEvent,
         MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend, Phase,
         RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
-        TERRACOTTA_BRIGHT, TEXT, cubic_bezier, display_time, endpoint, media, member_page_ids,
-        message_runs, normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
-        release_timing, resend_countdown, resend_wait, short_time, take_date_divider,
-        timestamp_parts, voice,
+        TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
+        normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
+        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation};
     use std::time::{Duration, Instant};
@@ -20474,23 +20473,23 @@ mod tests {
     fn swipe_releases_settle_with_the_webs_speed_matched_curve() {
         // A held finger gets the full finish from rest; a fling is quicker and
         // starts at up to three times the average speed.
-        assert_eq!(release_timing(0.5, 0.0), (0.32_f32.into(), 0.0));
-        let (duration, slope) = release_timing(0.5, 10.0);
+        assert_eq!(super::release_timing(0.5, 0.0), (0.32_f32.into(), 0.0));
+        let (duration, slope) = super::release_timing(0.5, 10.0);
         assert!((duration - 0.16).abs() < 1e-6);
         assert!((slope - 3.0).abs() < 1e-6);
-        let (duration, slope) = release_timing(0.5, 2.0);
+        let (duration, slope) = super::release_timing(0.5, 2.0);
         assert!((duration - 0.32).abs() < 1e-6);
         assert!((slope - 1.28).abs() < 1e-4);
-        assert_eq!(cubic_bezier(0.2, 0.6, 0.35, 1.0, 0.0), 0.0);
-        assert_eq!(cubic_bezier(0.2, 0.6, 0.35, 1.0, 1.0), 1.0);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 0.0), 0.0);
+        assert_eq!(super::cubic_bezier(0.2, 0.6, 0.35, 1.0, 1.0), 1.0);
         let mut last = 0.0;
         for step in 1..20 {
-            let eased = cubic_bezier(0.2, 0.6, 0.35, 1.0, step as f32 / 20.0);
+            let eased = super::cubic_bezier(0.2, 0.6, 0.35, 1.0, step as f32 / 20.0);
             assert!(eased > last && eased < 1.0);
             last = eased;
         }
         // `linear` is the identity.
-        assert!((cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-4);
+        assert!((super::cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-4);
     }
 
     #[test]
