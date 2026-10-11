@@ -734,7 +734,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (visible && !mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
     }
 
-    private fun markConversationRead(id: String, seq: String) {
+    private fun markConversationRead(id: String, seq: String?) {
+        if (seq == null) return
         val current = mutable.value
         if (!foreground || !conversationVisible || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
         if (current.selectedDirectId == id) { markDirectRead(id, seq); return }

@@ -44,7 +44,7 @@ function fixture() {
       if (request.type !== "subscribe") return;
       if (request.kind === "presence") control.presenceSubscribes++;
       const event =
-        request.kind === "chat"
+        request.kind === "chat" || request.kind === "notifications"
           ? { type: "ready", cursor: request.after ?? "1" }
           : request.kind === "presence"
             ? { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status: "online" })) }
@@ -355,11 +355,17 @@ try {
   const composer = point("#chat-message");
   await swipe(composer.x - 50, composer.y, 100);
   assert.equal(browsing(), false, "Editing/text selection in the composer must not navigate");
+  for (const selector of [".voice-panel .voice-icon-button", ".chat-composer .chat-attach"]) {
+    const control = point(selector);
+    await swipe(control.x, control.y, 100);
+    settled();
+    assert.equal(browsing(), false, "Audio and composer buttons keep their own gestures");
+  }
   evaluate("window.getSelection()?.removeAllRanges(); document.activeElement.blur()");
   screenshot("mobile-chat");
-  await swipe(p.x - 60, p.y, 68);
+  await swipe(p.x, p.y, 100);
   settled();
-  assert.equal(browsing(), true, "A quick right flick reveals Browse");
+  assert.equal(browsing(), true, "A right flick starting at the screen center reveals Browse");
   // Browse takes the room; the conversation is hidden entirely, not kept at the edge.
   const hidden = evaluate(`(() => {
     const room = document.querySelector(".spaces-room").getBoundingClientRect();
@@ -375,9 +381,17 @@ try {
   assert.equal(hidden.inert, true, "The hidden conversation is not interactive");
   screenshot("mobile-browse");
   const row = point('.channel-select:not([aria-current="page"])');
-  await swipe(row.x + 60, row.y, -110);
+  await swipe(row.x, row.y, -110);
   settled();
-  assert.equal(browsing(), false, "Left swipe on a channel row must return to the current chat, not select that row");
+  assert.equal(browsing(), false, "A center-start left swipe on a channel row returns to chat without selecting it");
+  const pinsButton = point(".chat-pins-toggle");
+  await swipe(pinsButton.x, pinsButton.y, 64);
+  settled();
+  assert.equal(browsing(), true, "Header buttons can start navigation swipes");
+  assert.equal(evaluate('!!document.querySelector(".chat-pins")'), false, "A swipe must not click its start button");
+  await swipe(row.x, row.y, -110);
+  settled();
+  assert.equal(browsing(), false);
   await swipe(p.x - 100, p.y, 220, 0, "touchEnd", 1200);
   settled();
   assert.equal(browsing(), true, "A slow drag past halfway reveals Browse");
@@ -412,7 +426,7 @@ try {
     "Pins must preserve the conversation draft",
   );
   // Members slides over the conversation like Browse and follows a finger both
-  // ways: left from the conversation opens it, right on the panel closes it.
+  // ways: left from the conversation opens it, right on the panel or backdrop closes it.
   const drawer = ".space-member-presence";
   const drawerOpen = () => evaluate(`!!document.querySelector("${drawer}:not([inert])")`);
   const drawerSettled = () => wait(`!document.querySelector("${drawer}")?.getAnimations().length`);
@@ -432,9 +446,15 @@ try {
     "true",
   );
   screenshot("mobile-members");
+  await swipe(20, p.y, 0, -100);
+  assert.equal(drawerOpen(), true, "A vertical gesture on the backdrop must not close Members");
   await swipe(20, p.y, 100);
+  drawerGone();
   assert.equal(browsing(), false, "The member backdrop must not pass swipes through");
-  assert.equal(drawerOpen(), true, "Swiping the backdrop leaves Members open");
+  assert.equal(drawerOpen(), false, "A right swipe on the backdrop closes Members");
+  await swipe(p.x, p.y, -100);
+  drawerSettled();
+  assert.equal(drawerOpen(), true, "A center-start left swipe opens Members");
   const memberRow = point(`${drawer} li`);
   await swipe(memberRow.x, memberRow.y, 60, 0, "touchEnd", 800);
   drawerSettled();
@@ -444,6 +464,8 @@ try {
   assert.equal(browsing(), false, "A right flick on the panel closes Members without opening Browse");
   await touch("touchStart", p.x + 100, p.y);
   for (let step = 1; step <= 10; step++) await touch("touchMove", p.x + 100 - step * 10, p.y);
+  // CDP acknowledges a move before Chromium delivers its final pointer frame.
+  evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   const [offset, drawerTravel] = evaluate(`(() => {
     const room = document.querySelector(".spaces-room"), panel = document.querySelector("${drawer}");
     return [new DOMMatrixReadOnly(getComputedStyle(panel).transform).m41, room.clientWidth - panel.offsetLeft + 48];
@@ -587,7 +609,7 @@ try {
     "PASS: New-DM refusals stay inline; loading, refusal and editing preserve modal, input, button and sidebar bounds at 1280px, 390px and 320px.",
   );
   console.log(
-    "PASS: desktop navigation/presence; Chromium touch: finger-tracked bidirectional Browse slides over a still Browse with the conversation's edge kept in view (tap/drag back), fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, row release-click protection, draft/history retention, Back button, Members header button and finger-tracked drawer, empty Pins and 320px layout.",
+    "PASS: desktop navigation/presence; Chromium touch: center-start Browse and Members swipes, header-button and backdrop swipes, finger tracking, fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, release-click protection, draft/history retention, Back button, empty Pins and 320px layout.",
   );
 } finally {
   socket?.close();

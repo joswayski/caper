@@ -74,6 +74,61 @@ const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;
 
 #[derive(Clone, Copy)]
+enum NavigationSlide {
+    Browse(bool),
+    Members(bool),
+}
+
+impl NavigationSlide {
+    fn members(self) -> bool {
+        matches!(self, Self::Members(_))
+    }
+
+    fn open(self) -> bool {
+        match self {
+            Self::Browse(open) | Self::Members(open) => open,
+        }
+    }
+
+    fn direction(self) -> f32 {
+        if self.open() != self.members() {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+}
+
+struct NavigationTouch {
+    device: egui::TouchDeviceId,
+    id: egui::TouchId,
+    origin: egui::Pos2,
+    started: f64,
+    slide: Option<NavigationSlide>,
+    travel: f32,
+    distance: f32,
+    samples: Vec<(f64, f32)>,
+}
+
+impl NavigationTouch {
+    fn progress(&self) -> f32 {
+        let fraction = (self.distance / self.travel).clamp(0.0, 1.0);
+        if self.slide.is_some_and(NavigationSlide::open) {
+            fraction
+        } else {
+            1.0 - fraction
+        }
+    }
+}
+
+struct NavigationSettle {
+    slide: NavigationSlide,
+    from: f32,
+    to: f32,
+    started: f64,
+}
+
+#[derive(Clone, Copy)]
 enum NavIcon {
     Chevron,
     Close,
@@ -600,6 +655,12 @@ struct CaperApp {
     member_page: usize,
     members_visible: bool,
     narrow_members_visible: bool,
+    navigation_touch: Option<NavigationTouch>,
+    navigation_settle: Option<NavigationSettle>,
+    /// The top of the composer, measured while laying out the conversation.
+    navigation_swipe_bottom: f32,
+    /// Browse's search editor keeps text selection, just like the composer.
+    navigation_search_rect: egui::Rect,
     /// Height of narrow Browse's account bar, which the conversation's edge stops above.
     browse_bar: f32,
     channels_expanded: bool,
@@ -801,6 +862,10 @@ impl CaperApp {
             member_page: 0,
             members_visible: false,
             narrow_members_visible: false,
+            navigation_touch: None,
+            navigation_settle: None,
+            navigation_swipe_bottom: 0.0,
+            navigation_search_rect: egui::Rect::NOTHING,
             browse_bar: 0.0,
             channels_expanded: true,
             browse_channels: false,
@@ -6375,7 +6440,211 @@ impl CaperApp {
             });
     }
 
+    /// One-finger navigation starts across the narrow content, never in an
+    /// editor, audio dock or modal. Mouse drags retain text selection.
+    fn navigation_swipe(&mut self, context: &egui::Context) {
+        let screen = context.viewport_rect();
+        let blocked = screen.width() > 760.0
+            || self.dialog.is_some()
+            || self.showing_pins
+            || self.thread_view.is_some()
+            || self.viewer.is_some()
+            || self.message_editor.is_some()
+            || self.edit_history.is_some()
+            || self.forwarding.is_open()
+            || self.mention_card.is_some()
+            || self.reactors_view.is_some()
+            || self.reaction_picker.is_some()
+            || egui::Popup::is_any_open(context)
+            || context.input(|input| !input.focused || input.multi_touch().is_some());
+        let now = context.input(|input| input.time);
+        if blocked {
+            self.finish_navigation_touch(context, now, false);
+            return;
+        }
+        let members_available = self.selected_direct.is_none()
+            && self.selected_is_joined()
+            && !self.no_accessible_channels();
+        for event in context.input(|input| input.events.clone()) {
+            let egui::Event::Touch {
+                device_id,
+                id,
+                phase,
+                pos,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if phase == egui::TouchPhase::Start {
+                if self.navigation_touch.is_some() {
+                    self.finish_navigation_touch(context, now, false);
+                    return;
+                }
+                let bottom = if self.navigation_open {
+                    screen.bottom() - self.browse_bar
+                } else if self.narrow_members_visible {
+                    screen.bottom()
+                } else {
+                    self.navigation_swipe_bottom
+                };
+                if screen.contains(pos)
+                    && pos.y < bottom
+                    && !self.navigation_search_rect.contains(pos)
+                {
+                    self.navigation_touch = Some(NavigationTouch {
+                        device: device_id,
+                        id,
+                        origin: pos,
+                        started: now,
+                        slide: None,
+                        travel: 1.0,
+                        distance: 0.0,
+                        samples: Vec::new(),
+                    });
+                }
+                continue;
+            }
+            let Some(touch) = self.navigation_touch.as_mut() else {
+                continue;
+            };
+            if touch.device != device_id || touch.id != id {
+                continue;
+            }
+            if phase == egui::TouchPhase::Cancel {
+                self.finish_navigation_touch(context, now, false);
+                continue;
+            }
+            if phase == egui::TouchPhase::End && touch.slide.is_none() {
+                self.navigation_touch = None;
+                continue;
+            }
+            let delta = pos - touch.origin;
+            if touch.slide.is_none() {
+                if delta.y.abs() > delta.x.abs().max(12.0) || now - touch.started > 0.5 {
+                    self.navigation_touch = None;
+                    continue;
+                }
+                if delta.x.abs() < 12.0 {
+                    continue;
+                }
+                if delta.x.abs() < delta.y.abs() * 1.5 {
+                    self.navigation_touch = None;
+                    continue;
+                }
+                touch.slide = match (
+                    self.navigation_open,
+                    self.narrow_members_visible,
+                    delta.x > 0.0,
+                ) {
+                    (true, _, false) => Some(NavigationSlide::Browse(false)),
+                    (false, true, true) => Some(NavigationSlide::Members(false)),
+                    (false, false, true) => Some(NavigationSlide::Browse(true)),
+                    (false, false, false) if members_available => {
+                        Some(NavigationSlide::Members(true))
+                    }
+                    _ => None,
+                };
+                let Some(slide) = touch.slide else {
+                    self.navigation_touch = None;
+                    continue;
+                };
+                touch.travel = if slide.members() {
+                    280.0_f32.min(screen.width() - 64.0) + 32.0
+                } else {
+                    screen.width() + 16.0
+                };
+            }
+            touch.distance = delta.x * touch.slide.unwrap().direction();
+            touch.samples.retain(|(time, _)| now - time <= 0.1);
+            touch.samples.push((now, touch.distance));
+            // Own the horizontal drag before a scrolling list or selectable
+            // message can consume it, including its release click.
+            context.set_dragged_id(egui::Id::new("navigation-swipe"));
+            if phase == egui::TouchPhase::End {
+                let velocity = touch.samples.first().map_or(0.0, |(time, distance)| {
+                    if now - time >= 0.008 {
+                        (touch.distance - distance) / (now - time) as f32
+                    } else {
+                        0.0
+                    }
+                });
+                let commit = velocity > -300.0
+                    && (touch.distance >= touch.travel / 2.0
+                        || (velocity >= 300.0 && touch.distance >= 40.0));
+                self.finish_navigation_touch(context, now, commit);
+            }
+        }
+    }
+
+    fn finish_navigation_touch(&mut self, context: &egui::Context, now: f64, commit: bool) {
+        let Some(touch) = self.navigation_touch.take() else {
+            return;
+        };
+        let Some(slide) = touch.slide else { return };
+        let open = if commit { slide.open() } else { !slide.open() };
+        self.navigation_settle = Some(NavigationSettle {
+            slide,
+            from: touch.progress(),
+            to: if open { 1.0 } else { 0.0 },
+            started: now,
+        });
+        match slide {
+            NavigationSlide::Browse(_) => self.navigation_open = open,
+            NavigationSlide::Members(_) => self.narrow_members_visible = open,
+        }
+        context.stop_dragging();
+        context.request_repaint();
+    }
+
+    /// Finger poses override the existing button animations until settled.
+    fn navigation_pose(&mut self, context: &egui::Context, members: bool, normal: f32) -> f32 {
+        if let Some(touch) = &self.navigation_touch
+            && touch.slide.is_some_and(|slide| slide.members() == members)
+        {
+            return touch.progress();
+        }
+        if let Some(settle) = &self.navigation_settle
+            && settle.slide.members() == members
+        {
+            let open = if members {
+                self.narrow_members_visible
+            } else {
+                self.navigation_open
+            };
+            if open != (settle.to > 0.5) {
+                self.navigation_settle = None;
+                return normal;
+            }
+            let elapsed = ((context.input(|input| input.time) - settle.started) / 0.3) as f32;
+            let progress = settle.from
+                + (settle.to - settle.from)
+                    * egui::emath::easing::cubic_out(elapsed.clamp(0.0, 1.0));
+            if elapsed >= 1.0 {
+                // A throttled/paused frame can outlast the slide. Land the
+                // button animation too, rather than revealing an older pose.
+                context.animate_bool_with_time(
+                    egui::Id::new(if members {
+                        "members-slide"
+                    } else {
+                        "browse-slide"
+                    }),
+                    open,
+                    0.0,
+                );
+                self.navigation_settle = None;
+            } else {
+                context.request_repaint();
+            }
+            return progress;
+        }
+        normal
+    }
+
     fn shell(&mut self, context: &egui::Context) {
+        self.navigation_swipe(context);
+        self.navigation_swipe_bottom = context.viewport_rect().bottom();
+        self.navigation_search_rect = egui::Rect::NOTHING;
         let narrow = context.viewport_rect().width() <= 760.0;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
@@ -6393,6 +6662,7 @@ impl CaperApp {
                         0.22,
                         egui::emath::easing::cubic_out,
                     );
+                    let uncovered = self.navigation_pose(context, false, uncovered);
                     if uncovered > 0.0 {
                         // Browse stops above the account bar, which rises over the
                         // conversation below.
@@ -6439,6 +6709,7 @@ impl CaperApp {
                             0.3,
                             egui::emath::easing::cubic_out,
                         );
+                        let shown = self.navigation_pose(context, true, shown);
                         if shown > 0.0 {
                             let body = egui::Rect::from_min_max(
                                 egui::pos2(stage.left(), stage.top() + 54.0),
@@ -7127,13 +7398,13 @@ impl CaperApp {
                                     self.browse_channels = false;
                                     self.channel_search.clear();
                                 }
-                                ui.add_sized(
+                                self.navigation_search_rect = ui.add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::TextEdit::singleline(&mut self.channel_search)
                                         .vertical_align(egui::Align::Center)
                                         .margin(egui::Margin::symmetric(8, 4))
                                         .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
-                                );
+                                ).rect;
                                 let query = self.channel_search.to_lowercase();
                                 let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
                                     .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
@@ -9791,6 +10062,7 @@ impl CaperApp {
                         );
                     }
                 });
+            self.navigation_swipe_bottom = composer.response.rect.top();
             ui.painter().hline(
                 composer.response.rect.x_range(),
                 composer.response.rect.top(),
@@ -19943,6 +20215,141 @@ mod tests {
             app.members_visible,
             "narrow toggle must preserve wide preference"
         );
+    }
+
+    #[test]
+    fn narrow_center_touch_swipes_navigate_browse_and_members_without_losing_drafts() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        app.draft = "Touch navigation retains this draft".into();
+        let mut time = 0.0;
+        let mut frame =
+            |app: &mut CaperApp, phase: Option<egui::TouchPhase>, pos: egui::Pos2, pause: f64| {
+                time += pause;
+                let mut events = Vec::new();
+                if let Some(phase) = phase {
+                    events.push(egui::Event::Touch {
+                        device_id: egui::TouchDeviceId(0),
+                        id: egui::TouchId(1),
+                        phase,
+                        pos,
+                        force: None,
+                    });
+                    events.push(egui::Event::PointerMoved(pos));
+                    if phase != egui::TouchPhase::Move {
+                        events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: phase == egui::TouchPhase::Start,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(390.0, 844.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.shell(context),
+                )
+            };
+        use egui::TouchPhase::{Cancel, End, Move, Start};
+        let center = egui::pos2(195.0, 422.0);
+        frame(&mut app, None, center, 0.016);
+        let rest = frame(&mut app, None, center, 0.016);
+        let back = node_center(&rest, "Browse");
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(End), center, 0.016);
+        // Vertical and cancelled gestures stay in the conversation.
+        for (destination, ending) in [
+            (egui::pos2(200.0, 300.0), End),
+            (egui::pos2(290.0, 422.0), Cancel),
+        ] {
+            frame(&mut app, Some(Start), center, 0.016);
+            frame(&mut app, Some(Move), destination, 0.016);
+            frame(&mut app, Some(ending), destination, 0.016);
+            let settled = frame(&mut app, None, center, 0.5);
+            assert!(!app.navigation_open);
+            assert_eq!(node_center(&settled, "Browse"), back);
+        }
+        // A pause removes fling velocity; a short drag must snap back.
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(Move), egui::pos2(290.0, 422.0), 0.016);
+        frame(&mut app, Some(End), egui::pos2(290.0, 422.0), 0.2);
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        // The conversation follows a rightward finger from the middle.
+        frame(&mut app, Some(Start), center, 0.016);
+        let moving = frame(&mut app, Some(Move), egui::pos2(290.0, 422.0), 0.016);
+        assert!((node_center(&moving, "Browse").x - back.x - 95.0).abs() < 1.0);
+        frame(&mut app, Some(End), egui::pos2(320.0, 422.0), 0.016);
+        let browse = frame(&mut app, None, center, 0.5);
+        assert!(app.navigation_open);
+        assert!(node_center(&browse, "Close navigation").x < 390.0);
+        // A center-start left flick returns without choosing a channel.
+        frame(&mut app, Some(Start), center, 0.016);
+        frame(&mut app, Some(Move), egui::pos2(110.0, 422.0), 0.016);
+        frame(&mut app, Some(End), egui::pos2(70.0, 422.0), 0.016);
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        // Left opens Members, and right closes it from the backdrop as well
+        // as the panel. Neither gesture opens Browse.
+        for close_x in [30.0, 195.0] {
+            frame(&mut app, Some(Start), center, 0.016);
+            frame(&mut app, Some(Move), egui::pos2(110.0, 422.0), 0.016);
+            frame(&mut app, Some(End), egui::pos2(70.0, 422.0), 0.016);
+            let shown = frame(&mut app, None, center, 0.5);
+            assert!(app.narrow_members_visible);
+            assert!(!app.navigation_open);
+            assert!(shown.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "Members" && text.pos.x < 390.0
+            )));
+            frame(&mut app, Some(Start), egui::pos2(close_x, 422.0), 0.016);
+            frame(
+                &mut app,
+                Some(Move),
+                egui::pos2(close_x + 80.0, 422.0),
+                0.016,
+            );
+            frame(
+                &mut app,
+                Some(End),
+                egui::pos2(close_x + 120.0, 422.0),
+                0.016,
+            );
+            frame(&mut app, None, center, 0.5);
+            assert!(!app.narrow_members_visible);
+            assert!(!app.navigation_open);
+        }
+        // Editing the composer must never become navigation.
+        let composer = egui::pos2(195.0, 820.0);
+        frame(&mut app, Some(Start), composer, 0.016);
+        frame(
+            &mut app,
+            Some(Move),
+            composer + egui::vec2(90.0, 0.0),
+            0.016,
+        );
+        frame(
+            &mut app,
+            Some(End),
+            composer + egui::vec2(120.0, 0.0),
+            0.016,
+        );
+        frame(&mut app, None, center, 0.5);
+        assert!(!app.navigation_open);
+        assert_eq!(app.draft, "Touch navigation retains this draft");
     }
 
     #[test]

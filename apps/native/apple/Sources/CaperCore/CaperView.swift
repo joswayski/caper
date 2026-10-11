@@ -236,7 +236,7 @@ private protocol SlideDrawer: AnyObject {
 
 /// Phones show the conversation or Browse (spaces and channels), never both.
 /// The conversation slides fully off the still Browse, following a finger from
-/// the screen edge. Buttons, Back and channel choices animate the same slide.
+/// anywhere on its surface. Buttons, Back and channel choices animate the same slide.
 @Observable private final class BrowseDrawer: SlideDrawer {
     /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
     var drag: CGFloat?
@@ -259,7 +259,7 @@ private extension Transaction {
 
 /// The member list on phones: a panel that slides in from the trailing edge
 /// over the conversation with Browse's spring, following a finger the same
-/// way. It opens from the conversation's trailing edge and closes from the panel.
+/// way. It opens from the conversation and closes from the panel or backdrop.
 @Observable private final class MembersDrawer: SlideDrawer {
     /// While a finger drags: how much of the panel is in view, from 0 to 1.
     var drag: CGFloat?
@@ -307,17 +307,15 @@ private struct BrowseLayer: ViewModifier {
 private typealias BrowseSwipe = DrawerSwipe<BrowseDrawer>
 private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 
-// Native edge swipes leave text selection and inline controls in the center
-// alone. Attach only to scrolling content, never the composer or account dock.
+// Horizontal swipes start across the content surface. Attach outside text entry
+// and audio controls so those keep their own selection and slider gestures.
 private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
-    /// Starts anywhere on the view, not just at its edge.
-    var anywhere = false
+    var excludedStart: CGRect = .null
     let navigate: () -> Void
     @Environment(Drawer.self) private var drawer: Drawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var frame: CGRect = .zero
     /// Undecided until the first move; then following the finger, or not this gesture's.
     @State private var tracking: Bool?
     @GestureState private var dragging = false
@@ -326,17 +324,14 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
         let opening = Drawer.opening
         // Global coordinates: the view itself moves with the finger. The list
         // stops scrolling while it follows a slide.
-        content.scrollDisabled(tracking == true).onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if tracking != true { frame = $0 } }
+        content.contentShape(Rectangle()).scrollDisabled(tracking == true)
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        // Closed, it opens from the edge it slides in at; open, from the far edge.
-                        let leading = (opening > 0) != open
-                        let edge = anywhere || (leading ? value.startLocation.x <= frame.minX + 24 : value.startLocation.x >= frame.maxX - 24)
-                        tracking = enabled && drawer != nil && edge && abs(dx) > abs(dy) && (open ? dx < 0 : dx > 0)
+                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
                     }
                     guard tracking == true, let drawer else { return }
                     drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
@@ -367,9 +362,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                 guard !active else { return }
                 // After onEnded, if it runs: a cancelled drag (by a scroll, or the system) slides back.
                 DispatchQueue.main.async {
-                    guard tracking == true else { return }
+                    guard let followed = tracking else { return }
                     tracking = nil
-                    withAnimation(reduceMotion ? nil : BrowseDrawer.settle) { drawer?.drag = nil }
+                    if followed {
+                        withAnimation(reduceMotion ? nil : BrowseDrawer.settle) { drawer?.drag = nil }
+                    }
                 }
             }
     }
@@ -468,6 +465,7 @@ private struct WorkspaceView: View {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
+                                .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: { slide(open: false) }))
                             ChannelSidebar(
                                 model: model,
                                 sheet: $sheet,
@@ -825,6 +823,7 @@ private struct ChannelSidebar: View {
     let close: () -> Void
     @State private var channelsExpanded = true
     @State private var channelSearch = ""
+    @State private var searchFrame: CGRect = .null
     @State private var browsing = false
     #if os(macOS)
     @State private var directHeadingHovered = false
@@ -917,6 +916,7 @@ private struct ChannelSidebar: View {
 
                     if browsing {
                     TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
                         HStack(spacing: 4) {
                             Button { Task { await model.select(channel: channel) } } label: {
@@ -1041,13 +1041,13 @@ private struct ChannelSidebar: View {
                 }
                 }
             }
-            .modifier(BrowseSwipe(open: true, enabled: narrow && !browsing && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: close))
             .accessibilityIdentifier("channel-browser")
             if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
                 Divider().overlay(CaperTheme.border)
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
@@ -1544,11 +1544,11 @@ private struct MembersOverlay: View {
                 }
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
-                .modifier(MembersSwipe(open: true, enabled: shows, anywhere: true, navigate: close))
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
+        .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
     }
 }
@@ -2301,6 +2301,8 @@ private struct ChatView: View {
                 }
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
+                .modifier(MembersSwipe(open: membersVisible, enabled: narrow && membersAvailable && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))
                 #if os(macOS)
                 // Use the fixed header as the native anchor. A point inside the
                 // timeline can resolve to a lazy row that live delivery removes.
@@ -2403,7 +2405,7 @@ private struct ChatView: View {
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
-                // As the leading edge opens Browse, the trailing edge opens the member list.
+                // Right opens Browse; left opens Members, from anywhere in the timeline.
                 .modifier(MembersSwipe(open: false, enabled: narrow && membersAvailable && !membersVisible && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))
                 #if os(macOS)
                 // Web: End in the message list jumps to the latest message.
