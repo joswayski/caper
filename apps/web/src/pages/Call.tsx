@@ -1636,6 +1636,7 @@ export default function Call({
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
               onReadCursor={onReadCursor}
+              readActive={engaged && !browsing}
               readOnly={!channelJoined}
               composerNotice={channelActions}
               composerBanner={composerBanner}

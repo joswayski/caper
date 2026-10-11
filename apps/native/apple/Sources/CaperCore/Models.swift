@@ -52,6 +52,20 @@ public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
     public let inviter: Inviter
 }
 
+public struct UnreadChannel: Codable, Equatable, Sendable {
+    public let id: String
+    public let lastSeq: String
+}
+
+public struct UnreadSpace: Codable, Equatable, Sendable {
+    public let id: String
+    public var channels: [UnreadChannel]
+}
+
+public struct UnreadSpacesResponse: Codable, Sendable {
+    public let spaces: [UnreadSpace]
+}
+
 public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public let id: String
     public let username: String
