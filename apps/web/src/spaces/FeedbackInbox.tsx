@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ChevronDown, LifeBuoy } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronDown, Inbox, LifeBuoy } from "lucide-react";
 import Avatar from "../components/Avatar";
+import Tooltip from "../components/Tooltip";
 import type { FeedbackReport } from "./client.ts";
-import type { VoiceSlot } from "../pages/Call";
 
 /** Each thread once, by its newest report: replies to all of them belong in that thread. */
 export function feedbackThreads(reports: FeedbackReport[]) {
@@ -28,8 +28,9 @@ export function feedbackPreview(report: FeedbackReport) {
 const SHOWN = 6;
 
 /**
- * The feedback team's inbox: every conversation where someone wrote @feedback,
- * newest first. Opening one visits it in place, at the report's thread.
+ * The feedback team's inbox: every conversation where someone asked for the
+ * team, newest first. Opening one visits it in place, at the report's thread.
+ * Archived threads (shared by the whole team) are one toggle away.
  */
 export default function FeedbackInbox({
   reports,
@@ -37,7 +38,9 @@ export default function FeedbackInbox({
   loading,
   error,
   current,
-  voice,
+  archived,
+  onShowArchived,
+  onArchive,
   onOpen,
   onMore,
   onRetry,
@@ -49,8 +52,10 @@ export default function FeedbackInbox({
   error?: string;
   /** `channelId:threadRootId` of the visit on screen. */
   current?: string;
-  /** Voice in the visited channel, shown under its row like under a channel's. */
-  voice?: VoiceSlot | null;
+  /** Listing archived threads instead of the inbox. */
+  archived: boolean;
+  onShowArchived: (archived: boolean) => void;
+  onArchive: (report: FeedbackReport, archived: boolean) => void;
   onOpen: (report: FeedbackReport) => void;
   onMore: () => void;
   onRetry: () => void;
@@ -58,7 +63,7 @@ export default function FeedbackInbox({
   const [open, setOpen] = useState(true);
   const [shown, setShown] = useState(SHOWN);
   const threads = feedbackThreads(reports);
-  const waiting = threads.filter((report) => !report.answered).length;
+  const waiting = archived ? 0 : threads.filter((report) => !report.answered).length;
   const visible = threads.slice(0, shown);
   return (
     <section className="direct-section feedback-section" aria-label="Feedback">
@@ -71,7 +76,7 @@ export default function FeedbackInbox({
           onClick={() => setOpen(!open)}
         >
           <LifeBuoy aria-hidden="true" />
-          Feedback
+          {archived ? "Archived feedback" : "Feedback"}
           <ChevronDown className="feedback-chevron" aria-hidden="true" />
         </button>
         {waiting > 0 && (
@@ -85,9 +90,9 @@ export default function FeedbackInbox({
           <ul id="feedback-list">
             {visible.map((report) => {
               const key = `${report.channel.id}:${report.threadRootId}`;
-              const rowVoice = current === key ? voice : undefined;
+              const label = `${archived ? "Restore" : "Archive"} feedback from ${report.reporter.displayName}`;
               return (
-                <li key={key} data-voice={rowVoice ? "" : undefined}>
+                <li key={key}>
                   <div className="feedback-line">
                     <button
                       type="button"
@@ -102,24 +107,35 @@ export default function FeedbackInbox({
                       <span className="feedback-row">
                         <span className="feedback-row-top">
                           <span>{report.reporter.displayName}</span>
-                          <small data-waiting={report.answered ? undefined : ""}>
-                            {report.answered ? "Answered" : "Waiting"}
-                          </small>
+                          {!archived && (
+                            <small data-waiting={report.answered ? undefined : ""}>
+                              {report.answered ? "Answered" : "Waiting"}
+                            </small>
+                          )}
                         </span>
                         <small className="feedback-row-detail">
                           {feedbackPlace(report)} — {feedbackPreview(report)}
                         </small>
                       </span>
-                      {rowVoice?.timer}
                     </button>
-                    {rowVoice?.summary}
+                    <Tooltip content={archived ? "Restore to the inbox" : "Archive"}>
+                      <button
+                        type="button"
+                        className="feedback-archive"
+                        aria-label={label}
+                        onClick={() => onArchive(report, !archived)}
+                      >
+                        {archived ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
+                      </button>
+                    </Tooltip>
                   </div>
-                  {rowVoice?.list}
                 </li>
               );
             })}
           </ul>
-          {!loading && !error && !threads.length && <p className="feedback-empty">No feedback yet.</p>}
+          {!loading && !error && !threads.length && (
+            <p className="feedback-empty">{archived ? "Nothing archived." : "No feedback yet."}</p>
+          )}
           {(threads.length > shown || more) && (
             <button
               type="button"
@@ -134,6 +150,17 @@ export default function FeedbackInbox({
               <span>{loading ? "Loading…" : "Show more"}</span>
             </button>
           )}
+          <button
+            type="button"
+            className="channel-select direct-action feedback-toggle"
+            onClick={() => {
+              setShown(SHOWN);
+              onShowArchived(!archived);
+            }}
+          >
+            {archived ? <Inbox aria-hidden="true" /> : <Archive aria-hidden="true" />}
+            <span>{archived ? "Back to feedback" : "Show archived"}</span>
+          </button>
           {error && (
             <p className="space-sidebar-error" role="alert">
               {error}

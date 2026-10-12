@@ -187,9 +187,9 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!("GRANT SELECT, INSERT, UPDATE ON public.user_blocks TO {role}"),
         // Operators manage the feedback team; the API only reads it. Every
         // access check reads both tables through `feedback_access`. Reports
-        // are kept as the record of what was asked.
+        // are kept as the record of what was asked; archiving updates them.
         format!("GRANT SELECT ON public.feedback_team TO {role}"),
-        format!("GRANT SELECT, INSERT ON public.feedback_reports TO {role}"),
+        format!("GRANT SELECT, INSERT, UPDATE ON public.feedback_reports TO {role}"),
         format!("GRANT USAGE ON SEQUENCE public.feedback_reports_id_seq TO {role}"),
         format!("GRANT EXECUTE ON FUNCTION public.feedback_access(bigint, bigint) TO {role}"),
         // Devices are revoked and preferences updated in place; only finished
@@ -443,6 +443,7 @@ mod tests {
             ("public.feedback_team", "SELECT"),
             ("public.feedback_reports", "SELECT"),
             ("public.feedback_reports", "INSERT"),
+            ("public.feedback_reports", "UPDATE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")

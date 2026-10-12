@@ -89,13 +89,26 @@ export interface FeedbackReport {
   channel: { id: string; name: string; direct: boolean };
   space: { id: string; name: string } | null;
   replyCount: number;
+  /** The newest message in its thread is the team's. */
   answered: boolean;
+  archived?: boolean;
 }
 
-export function listFeedback(before?: string) {
+export function listFeedback(before?: string, archived = false) {
+  const query = new URLSearchParams();
+  if (before) query.set("before", before);
+  if (archived) query.set("archived", "true");
   return request<{ reports: FeedbackReport[]; cursor: string | null }>(
-    `/api/feedback${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+    `/api/feedback${query.size ? `?${query}` : ""}`,
   );
+}
+
+/** Hides a reported thread from the whole team's inbox, or brings it back. */
+export function archiveFeedback(channelId: string, threadRootId: string, archived: boolean) {
+  return request<void>("/api/feedback/archive", {
+    method: "PUT",
+    body: JSON.stringify({ channelId, threadRootId, archived }),
+  });
 }
 
 export interface UnreadSpace {

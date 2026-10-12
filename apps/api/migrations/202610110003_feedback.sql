@@ -22,7 +22,10 @@ CREATE TABLE feedback_reports (
     channel_id bigint NOT NULL REFERENCES channels (id),
     thread_root_id bigint NOT NULL REFERENCES messages (id),
     reporter_id bigint NOT NULL REFERENCES users (id),
-    created_at timestamptz NOT NULL DEFAULT now()
+    created_at timestamptz NOT NULL DEFAULT now(),
+    -- The team hid its thread from the inbox. Archiving marks every report in
+    -- the thread; a later report arrives unarchived, so the thread returns.
+    archived_at timestamptz
 );
 CREATE INDEX feedback_reports_channel ON feedback_reports (channel_id);
 CREATE INDEX feedback_reports_recent ON feedback_reports (id DESC);

@@ -14,7 +14,7 @@ use axum::{
     Extension, Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, put},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,7 +23,9 @@ use sqlx::{PgConnection, PgPool};
 const PAGE: i64 = 50;
 
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/api/feedback", get(list))
+    Router::new()
+        .route("/api/feedback", get(list))
+        .route("/api/feedback/archive", put(archive))
 }
 
 fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
@@ -88,10 +90,14 @@ pub(crate) async fn reported(
 #[serde(deny_unknown_fields)]
 struct ListQuery {
     before: Option<String>,
+    /// The archived threads instead of the inbox.
+    #[serde(default)]
+    archived: bool,
 }
 
-/// Every report, newest first, for team members only. Each opens its
-/// conversation at `messageId`, in the thread `threadRootId`.
+/// Every report, newest first, for team members only (`?archived=true`: the
+/// archived ones). Each opens its conversation at `messageId`, in the thread
+/// `threadRootId`.
 async fn list(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -108,10 +114,57 @@ async fn list(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
     }
     let before = query.before.as_deref().map(chat::cursor).transpose()?;
-    Ok(Json(json!(page(pool, before).await?)))
+    Ok(Json(json!(page(pool, before, query.archived).await?)))
 }
 
-pub(crate) async fn page(pool: &PgPool, before: Option<i64>) -> Result<Value, ApiError> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ArchiveInput {
+    channel_id: String,
+    thread_root_id: String,
+    archived: bool,
+}
+
+/// Hides a reported thread from every team member's inbox, or brings it back.
+/// A later report in the thread arrives unarchived, so the thread returns.
+async fn archive(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(input): Json<ArchiveInput>,
+) -> Result<StatusCode, ApiError> {
+    let pool = pool(&state)?;
+    if !team_member(
+        &mut *pool.acquire().await.map_err(|_| unavailable())?,
+        Some(principal.user.id),
+    )
+    .await?
+    {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not found"));
+    }
+    let updated = sqlx::query(
+        "UPDATE public.feedback_reports r
+         SET archived_at = CASE WHEN $3 THEN COALESCE(r.archived_at, now()) END
+         FROM public.channels c, public.messages root
+         WHERE c.id=r.channel_id AND root.id=r.thread_root_id
+           AND c.external_id=$1 AND root.external_id=$2",
+    )
+    .bind(&input.channel_id)
+    .bind(&input.thread_root_id)
+    .bind(input.archived)
+    .execute(pool)
+    .await
+    .map_err(|_| unavailable())?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "report not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn page(
+    pool: &PgPool,
+    before: Option<i64>,
+    archived: bool,
+) -> Result<Value, ApiError> {
     let mut rows: Vec<(i64, Value)> = sqlx::query_as(
         "SELECT r.id, jsonb_build_object(
                 'id', m.external_id, 'messageId', m.external_id, 'threadRootId', root.external_id,
@@ -126,11 +179,14 @@ pub(crate) async fn page(pool: &PgPool, before: Option<i64>) -> Result<Value, Ap
                                  ELSE lo.display_name || ' & ' || hi.display_name END),
                 'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name) END,
                 'replyCount', COALESCE((root.payload->'thread'->>'replyCount')::bigint, 0),
-                -- Answered once anyone on the team has replied in its thread since.
-                'answered', EXISTS(SELECT 1 FROM public.messages a
-                    JOIN public.chat_sessions cs ON cs.id=a.session_id
-                    JOIN public.feedback_team t ON t.user_id=cs.user_id
-                    WHERE a.thread_root_id=r.thread_root_id AND a.channel_id=r.channel_id AND a.id>r.message_id))
+                'archived', r.archived_at IS NOT NULL,
+                -- Answered while the newest message in its thread is the
+                -- team's; anyone else replying makes it wait again.
+                'answered', COALESCE((SELECT EXISTS(SELECT 1 FROM public.feedback_team t
+                        WHERE t.user_id=cs.user_id AND t.deleted_at IS NULL)
+                    FROM public.messages a JOIN public.chat_sessions cs ON cs.id=a.session_id
+                    WHERE a.channel_id=r.channel_id AND (a.thread_root_id=r.thread_root_id OR a.id=r.thread_root_id)
+                    ORDER BY a.channel_seq DESC LIMIT 1), false))
          FROM public.feedback_reports r
          JOIN public.messages m ON m.id=r.message_id
          JOIN public.messages root ON root.id=r.thread_root_id
@@ -140,13 +196,15 @@ pub(crate) async fn page(pool: &PgPool, before: Option<i64>) -> Result<Value, Ap
          LEFT JOIN public.direct_conversations d ON d.channel_id=c.id
          LEFT JOIN public.users lo ON lo.id=d.low_user_id
          LEFT JOIN public.users hi ON hi.id=d.high_user_id
-         WHERE ($1::bigint IS NULL OR r.id<$1) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
+         WHERE ($1::bigint IS NULL OR r.id<$1) AND (r.archived_at IS NOT NULL) = $3
+           AND c.deleted_at IS NULL AND u.deleted_at IS NULL
            AND (s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
            AND (d.channel_id IS NULL OR (lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
          ORDER BY r.id DESC LIMIT $2",
     )
     .bind(before)
     .bind(PAGE + 1)
+    .bind(archived)
     .fetch_all(pool)
     .await
     .map_err(|_| unavailable())?;

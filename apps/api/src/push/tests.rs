@@ -2531,11 +2531,91 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     assert_eq!(reports[0]["answered"], false);
     assert_eq!(reports[1]["messageId"], report.as_str());
     assert_eq!(reports[1]["threadRootId"], report.as_str());
-    assert_eq!(reports[1]["answered"], true);
+    // Alice spoke last in the thread, so it waits for the team again.
+    assert_eq!(reports[1]["answered"], false);
+    assert_eq!(reports[1]["archived"], false);
     assert_eq!(reports[1]["reporter"]["username"], "alice");
     assert_eq!(reports[1]["channel"]["name"], "plans");
     assert_eq!(reports[1]["channel"]["direct"], false);
     assert_eq!(reports[1]["space"]["name"], "Studio");
+
+    // The team answering last marks the whole thread answered.
+    send(&h, &jose, &private, "Fixed now", Some(&report)).await;
+    let inbox = |query: &'static str| {
+        let app = h.app.clone();
+        let token = jose.token.clone();
+        async move {
+            call(
+                &app,
+                "GET",
+                &format!("/api/feedback{query}"),
+                Some(&token),
+                None,
+                json!(null),
+            )
+            .await
+            .1
+        }
+    };
+    let answered: Vec<Value> = inbox("").await["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["answered"].clone())
+        .collect();
+    assert_eq!(answered, [json!(true), json!(true)]);
+
+    // Archiving hides the whole thread for the team; a new report brings it back.
+    let archive = |archived: bool| {
+        let app = h.app.clone();
+        let token = jose.token.clone();
+        let body = json!({"channelId": private.clone(), "threadRootId": report.clone(), "archived": archived});
+        async move {
+            call(
+                &app,
+                "PUT",
+                "/api/feedback/archive",
+                Some(&token),
+                None,
+                body,
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
+    assert_eq!(
+        inbox("?archived=true").await["reports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        "/api/feedback/archive",
+        Some(&alice.token),
+        None,
+        json!({"channelId": private.clone(), "threadRootId": report.clone(), "archived": false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "only the team archives");
+    let returned = send(
+        &h,
+        &alice,
+        &private,
+        "@feedback it broke again",
+        Some(&report),
+    )
+    .await;
+    let reports = inbox("").await;
+    assert_eq!(reports["reports"].as_array().unwrap().len(), 1);
+    assert_eq!(reports["reports"][0]["messageId"], returned.as_str());
+    assert_eq!(archive(false).await, StatusCode::NO_CONTENT);
+    assert_eq!(inbox("").await["reports"].as_array().unwrap().len(), 3);
+    expand(&h).await;
 
     // Edits and forward notes never report; guests can't either.
     let later = send(&h, &bob, &general, "hello", None).await;

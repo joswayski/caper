@@ -68,6 +68,7 @@ import {
   declineDirectRequest,
   listDirectConversations,
   listFeedback,
+  archiveFeedback,
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
@@ -1762,13 +1763,14 @@ export default function Spaces({
   notificationConversation.current =
     engaged && !navigationOpen ? (visitView?.target.channelId ?? directId ?? view?.channelId) : undefined;
   const feedbackRevision = useRef(0);
+  const [feedbackArchived, setFeedbackArchived] = useState(false);
   const refreshFeedback = useCallback(
     async (before?: string) => {
       if (!feedbackTeam) return;
       const revision = ++feedbackRevision.current;
       setFeedbackLoading(true);
       try {
-        const page = await listFeedback(before);
+        const page = await listFeedback(before, feedbackArchived);
         if (revision !== feedbackRevision.current) return;
         setFeedbackError(undefined);
         // A refresh replaces the newest page; "Show more" appends an older one.
@@ -1781,7 +1783,7 @@ export default function Spaces({
         if (revision === feedbackRevision.current) setFeedbackLoading(false);
       }
     },
-    [feedbackTeam],
+    [feedbackTeam, feedbackArchived],
   );
   useEffect(() => {
     if (!feedbackTeam) return;
@@ -2416,20 +2418,41 @@ export default function Spaces({
     }
     setDirects((current) => current.filter((conversation) => conversation.id !== request.id));
   };
-  const feedbackNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) =>
-    feedbackTeam && (
-      <FeedbackInbox
-        reports={feedback?.reports ?? []}
-        more={!!feedback?.cursor}
-        loading={feedbackLoading}
-        error={feedbackError}
-        current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
-        voice={visitView ? voiceFor(visitView.target.channelId) : undefined}
-        onOpen={openVisit}
-        onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
-        onRetry={() => void refreshFeedback()}
-      />
+  const archiveFeedbackThread = (report: FeedbackReport, archived: boolean) => {
+    // Optimistic: the thread leaves this list at once; a failure reloads it.
+    feedbackRevision.current++;
+    setFeedbackLoading(false);
+    setFeedback(
+      (current) =>
+        current && {
+          ...current,
+          reports: current.reports.filter(
+            (item) => item.channel.id !== report.channel.id || item.threadRootId !== report.threadRootId,
+          ),
+        },
     );
+    void archiveFeedback(report.channel.id, report.threadRootId, archived)
+      .catch((reason) => setFeedbackError(errorMessage(reason)))
+      .finally(() => void refreshFeedback());
+  };
+  const feedbackNavigation = feedbackTeam && (
+    <FeedbackInbox
+      reports={feedback?.reports ?? []}
+      more={!!feedback?.cursor}
+      loading={feedbackLoading}
+      error={feedbackError}
+      current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
+      archived={feedbackArchived}
+      onShowArchived={(archived) => {
+        setFeedback(undefined);
+        setFeedbackArchived(archived);
+      }}
+      onArchive={archiveFeedbackThread}
+      onOpen={openVisit}
+      onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
+      onRetry={() => void refreshFeedback()}
+    />
+  );
   const directNavigation = (
     <section className="direct-section" aria-label="Direct messages">
       <div className="channel-section-heading">
@@ -3167,7 +3190,7 @@ export default function Spaces({
           ))}
         </div>
       )}
-      {feedbackNavigation(voiceFor)}
+      {feedbackNavigation}
       {directNavigation}
       {error && (
         <p className="space-sidebar-error" role="alert">
