@@ -1275,7 +1275,8 @@ final class CaperParityUITests: XCTestCase {
         capture("active-voice-compact-test-fixture", app: app)
         stack.tap()
         XCTAssertEqual(stack.value as? String, "Expanded")
-        assertStaticText("TEST FIXTURE You (you)", in: app)
+        // Your own row shows your saved display name (#527), as on Android and desktop.
+        assertStaticText("Fixture Owner (you)", in: app)
         assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertTrue(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
