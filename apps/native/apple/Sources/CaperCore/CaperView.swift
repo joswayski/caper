@@ -541,7 +541,9 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     drawer.drag = min(1, max(0, grab.position + (dx - grab.offset) / drawer.travel))
                 }
                 .onEnded { value in
-                    let followed = tracking == true && gesture?.endedAt == nil && gesture?.start == value.startLocation
+                    // Only the current gesture's end acts; an earlier one's leaves it alone.
+                    guard gesture?.start == value.startLocation else { return }
+                    let followed = tracking == true && gesture?.endedAt == nil
                     defer { tracking = nil; grab = nil; if gesture?.endedAt == nil { gesture?.endedAt = Date() } }
                     guard followed, let drawer, let position = drawer.drag else { return }
                     let release = DrawerRelease(open: open, position: position, velocity: opening * value.velocity.width,
@@ -565,7 +567,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                 guard !active else { return }
                 // After onEnded, if it runs: whatever ended the gesture, nothing of it
                 // stays. A cancelled drag (by a scroll, or the system) slides back.
+                // Only for that gesture: a newer one that has begun meanwhile keeps its state.
+                let ended = gesture?.start
                 DispatchQueue.main.async {
+                    guard !dragging, gesture?.start == ended else { return }
                     let followed = tracking == true
                     tracking = nil
                     grab = nil
