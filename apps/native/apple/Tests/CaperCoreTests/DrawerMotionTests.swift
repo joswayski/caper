@@ -73,20 +73,18 @@ final class DrawerMotionTests: XCTestCase {
     }
 
     @MainActor func testSwipeKeepsControlsOffThroughItsLift() {
-        let swipe = UUID()
-        SwipeTapGuard.follow(swipe)
+        SwipeTapGuard.follow()
         XCTAssertTrue(SwipeTapGuard.swiping)
-        SwipeTapGuard.release(swipe)
+        SwipeTapGuard.release()
         // The lift's own tap arrives with it.
         XCTAssertTrue(SwipeTapGuard.swiping)
-        // Releasing again (a cancel after onEnded) changes nothing.
-        SwipeTapGuard.release(swipe)
         let skipped = expectation(description: "guarded")
         skipped.isInverted = true
         SwipeTapGuard.unlessSwiping { skipped.fulfill() }()
         wait(for: [skipped], timeout: 0.05)
+        // Only a time window: nothing a lost gesture leaves can keep controls off.
         let ran = expectation(description: "runs once quiet")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             XCTAssertFalse(SwipeTapGuard.swiping)
             SwipeTapGuard.unlessSwiping { ran.fulfill() }()
         }

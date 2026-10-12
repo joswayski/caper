@@ -7297,7 +7297,10 @@ moment it started closing.
   swipe's lift delivers: images, videos, animations, audio and file cards, links,
   mention pills, avatars and names, reactions (and their hold), thread and edit
   links, header voice controls, Back, member rows and the space rail. Apple uses a
-  shared `SwipeTapGuard` (following, plus 0.12s after the lift); Android consumes
+  shared `SwipeTapGuard`: a time window renewed by every move (0.35s) and by the
+  lift (0.12s), so a lost gesture can never keep controls off. Each drawer swipe's
+  state belongs to one gesture: it resets when the gesture ends or a new one
+  starts elsewhere, and the list stops scrolling only while it lasts. Android consumes
   the move once a drag claims it, and a window-level guard cancels presses after
   twice the touch slop when nothing claimed it. Web already suppressed release
   clicks.
