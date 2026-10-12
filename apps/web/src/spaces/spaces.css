@@ -616,7 +616,7 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
-/* Collapsing navigation must not hide the active call's only Leave action. */
+/* Collapsing navigation keeps the active call's channel and roster in view. */
 .spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
   display: grid;
 }
@@ -2306,70 +2306,8 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     max-height: none;
     overflow: visible;
   }
-  /* As in the homepage room on phones, the viewed channel's line (who is in
-     its voice, and Join) and the voice panel sit above the conversation, so
-     joining, muting and leaving never depend on Browse. Browse still opens
-     every space and channel. */
-  .call-room.spaces-room:has(.voice-panel):not(.navigation-open) {
-    grid-template: auto minmax(0, 1fr) / 1fr;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .people-panel {
-    grid-area: 1 / 1;
-    display: flex;
-    border-bottom: 1px solid var(--border);
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .stage {
-    grid-area: 2 / 1;
-  }
-  /* The member list overlays the conversation below its header. */
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .space-member-presence {
-    position: relative;
-    grid-area: 2 / 1;
-    top: auto;
-    right: auto;
-    bottom: auto;
-    justify-self: end;
-    margin: 62px 8px 8px 0;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .member-list-backdrop {
-    position: relative;
-    grid-area: 2 / 1;
-    inset: auto;
-    margin-top: 54px;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) .sidebar-channels {
-    flex: none;
-    padding: 12px 12px 0;
-  }
-  .spaces-room:not(.navigation-open) :is(.direct-section, .pending-channel-invites) {
-    display: none;
-  }
-  .spaces-room[data-direct]:not(.navigation-open) .sidebar-channels {
-    display: none;
-  }
-  .spaces-room:not(.navigation-open) .channel-navigation > :is(header, .channel-section-heading),
-  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])) {
-    display: none;
-  }
-  .spaces-room:not(.navigation-open) .channel-navigation > ul {
-    margin: 0;
-  }
-  /* The one-row channel strip must not clip its row's "…" menu. */
-  .spaces-room:not(.navigation-open) :is(.sidebar-channels, .channel-navigation) {
-    overflow: visible;
-  }
-  .spaces-room:not(.navigation-open) > .people-panel:has(.channel-menu[open]) {
-    z-index: 9;
-  }
-  /* A collapsed channel section still shows the channel being viewed. */
-  .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {
-    display: grid;
-  }
-  .spaces-room:not(.navigation-open)
-    #space-channel-list[data-collapsed]
-    > li:has(.channel-select[aria-current="page"]) {
-    display: flex;
-  }
+  /* Phones show the conversation alone: its header joins, mutes and leaves
+     voice, and Browse holds channels, rosters and the account bar. */
   .navigation-toggle {
     display: inline-flex;
     justify-content: center;

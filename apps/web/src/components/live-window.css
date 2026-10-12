@@ -671,6 +671,9 @@
   gap: 7px;
   min-width: 0;
 }
+.sim-chat > .chat-heading > .header-voice {
+  margin-left: auto;
+}
 .sim-channel-heading > svg {
   width: 14px;
   height: 14px;
@@ -777,9 +780,6 @@
   .sim-direct,
   .sim-sidebar .browse-channels,
   .sim-sidebar .voice-dock {
-    display: none;
-  }
-  .sim-channel-list > li:last-child .channel-voice {
     display: none;
   }
   /* Keep every demo participant visible without taking over the phone card. */

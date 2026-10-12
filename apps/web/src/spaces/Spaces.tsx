@@ -2931,6 +2931,7 @@ export default function Spaces({
                   )}
                   {voice?.timer}
                 </button>
+                {voice?.join}
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"
