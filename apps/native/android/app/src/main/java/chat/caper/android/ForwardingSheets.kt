@@ -10,7 +10,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
@@ -27,6 +26,9 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
 import chat.caper.android.ui.ErrorText
+import chat.caper.android.ui.PinGold
+import chat.caper.android.ui.PinGoldWash
+import chat.caper.android.ui.primaryButtonColors
 import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.TextMuted
 import kotlinx.coroutines.CancellationException
@@ -159,7 +161,7 @@ import java.util.UUID
                         error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
+            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }
@@ -189,8 +191,8 @@ import java.util.UUID
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Surface(color = Color(0xFFE8BD71).copy(alpha = 0.07f), shape = MaterialTheme.shapes.small) {
-                Text("Heads up! New reactions and replies appear here automatically.", Modifier.padding(horizontal = 10.dp, vertical = 8.dp), color = Color(0xFFE8BD71), fontSize = 12.sp)
+            Surface(color = PinGoldWash, shape = MaterialTheme.shapes.small) {
+                Text("Heads up! New reactions and replies appear here automatically.", Modifier.padding(horizontal = 10.dp, vertical = 8.dp), color = PinGold, fontSize = 12.sp)
             }
             val root = if (conversation != null) conversation?.root else if (error == null) message.forward?.message else null
             root?.let { SharedOriginal(it) }

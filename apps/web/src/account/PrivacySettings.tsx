@@ -10,7 +10,9 @@ const choices: Array<{ value: DirectPrivacy; label: string; hint?: string }> = [
   { value: "nobody", label: "No one new", hint: "Conversations you already have stay open." },
 ];
 
-/** "Who can start a DM with you" and the accounts you blocked. Saves as you choose. */
+const deleteAccountUrl = "/privacy#delete-account";
+
+/** "Who can start a DM with you", the accounts you blocked, and how to delete your account. Saves as you choose. */
 export default function PrivacySettings() {
   const [privacy, setPrivacy] = useState<DirectPrivacy>();
   const [saving, setSaving] = useState(false);
@@ -146,6 +148,15 @@ export default function PrivacySettings() {
             )}
           </p>
         )}
+      </section>
+      {/* Google Play requires an in-app path to account deletion; requests go by email. */}
+      <section aria-labelledby={`${name}-delete`}>
+        <h4 id={`${name}-delete`}>Delete account</h4>
+        <p>
+          <a href={deleteAccountUrl} target="_blank" rel="noreferrer">
+            How to delete your account
+          </a>
+        </p>
       </section>
     </section>
   );

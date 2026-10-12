@@ -1,5 +1,7 @@
 // Real homepage UI, local demo state only. No live auth or chat requests are sent.
 // Run against local Vite: node scripts/test-home-demo.mjs http://localhost:30701
+// The join pill's hover feedback is (hover: hover)-only: run with
+// HOME_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh".
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -15,6 +17,13 @@ const initScript = join(fixture, "timing.js");
 writeFileSync(
   initScript,
   `
+  // Instant scrolling, so agent-browser's scroll-then-point commands (hover,
+  // scrollintoview + mouse) use settled coordinates even with full motion.
+  document.addEventListener('DOMContentLoaded', () => {
+    const style = document.createElement('style');
+    style.textContent = 'html { scroll-behavior: auto !important; }';
+    document.head.append(style);
+  });
   Math.random = () => 0.5;
   let time = 1000;
   performance.now = () => time;
@@ -38,9 +47,10 @@ writeFileSync(
   };
 `,
 );
+const chrome = process.env.HOME_TEST_CHROME ? ["--executable-path", process.env.HOME_TEST_CHROME] : [];
 function browser(...args) {
   const result = JSON.parse(
-    execFileSync("agent-browser", ["--session", session, "--init-script", initScript, ...args, "--json"], {
+    execFileSync("agent-browser", ["--session", session, "--init-script", initScript, ...chrome, ...args, "--json"], {
       encoding: "utf8",
       timeout: 60000,
     }),
@@ -172,6 +182,11 @@ const drag = (selector) => {
 
 try {
   browser("open", origin.href);
+  assert.equal(
+    evaluate('return matchMedia("(hover: hover) and (pointer: fine)").matches'),
+    true,
+    "Use a fine-pointer Chromium wrapper (HOME_TEST_CHROME)",
+  );
   browser("network", "route", "**/api/account/me", "--body", "null");
   browser("set", "viewport", "1280", "800", "2");
   browser("set", "media", "dark", "reduced-motion");
@@ -301,7 +316,12 @@ try {
       while (element) { top += element.offsetTop + (element.offsetParent?.clientTop ?? 0); element = element.offsetParent; }
       return [top, height];
     };
-    return [geometry('.sim-account'), geometry('.sim-composer')];
+    // The 40px account row sits between the voice dock divider and the panel
+    // border (#451); with those pixels its outline matches the 42px composer.
+    const [top, height] = geometry('.sim-account');
+    const border = (selector, side) => parseFloat(getComputedStyle(document.querySelector(selector))['border' + side + 'Width']);
+    const above = border('.sim-voice-panel .voice-dock', 'Bottom'), below = border('.sim-voice-panel', 'Bottom');
+    return [[top - above, height + above + below], geometry('.sim-composer')];
   `);
   assert.deepEqual(accountBounds, composerBounds, "Account controls and single-line composer align");
   assert.equal(
@@ -469,7 +489,10 @@ try {
     ["Theo's caper avatar", "June's caper avatar"],
   );
   assert.ok(!voices().includes("Noor"));
-  assert.equal(evaluate('return document.querySelector(".sim-typing").textContent.trim()'), "Noor and Theo are typing");
+  assert.equal(
+    evaluate('return document.querySelector(".sim-typing").textContent.trim()'),
+    "Noor and Theo are typing…",
+  );
   assert.deepEqual(speakers(), ["Maya", "Theo"]);
   nextMoments(2); // 10
   assert.ok(voices().includes("Leo"));
@@ -505,7 +528,7 @@ try {
   browser("scroll", "up", "10000", "--selector", ".sim-messages");
   wait('document.querySelector(".sim-messages").scrollTop === 0');
   nextMoments(2); // 17: a forwarded message arrives before its source replies
-  assert.equal(evaluate('return document.querySelector(".chat-forward-label").textContent'), "Forwarded · live");
+  assert.equal(evaluate('return document.querySelector(".chat-forward-label").textContent'), "Forwarded");
   assert.equal(evaluate('return document.querySelector(".chat-forward-original strong").textContent'), "June");
   assert.deepEqual(
     evaluate(
@@ -612,13 +635,22 @@ try {
     expectedReactions,
     "Only seven standout posts receive reactions, with varied counts; ordinary messages stay unreacted after every delay has elapsed",
   );
-  nextMoments(49); // A second complete loop still cannot erase the original
-  assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 51);
-  assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message")'));
+  // Scrollback keeps exactly one earlier loop (#409): unbounded history made a
+  // long-open homepage heavier. A second loop drops the first one.
+  nextMoments(49);
+  assert.equal(
+    evaluate('return document.querySelectorAll(".sim-message").length'),
+    27,
+    "One full earlier loop (24) plus the current loop's posts so far",
+  );
+  assert.ok(
+    evaluate('return !window.firstDemoMessage.isConnected && document.querySelector(".sim-message") !== null'),
+    "History is bounded to one earlier loop",
+  );
   assert.deepEqual(
     firstCycleReactions(),
     expectedReactions,
-    "Later loops cannot add reactions to ordinary messages or inflate the original counts",
+    "Later loops cannot add reactions to ordinary messages or inflate the retained loop's counts",
   );
   assert.ok(
     evaluate(
@@ -627,7 +659,7 @@ try {
   );
   console.log("PASS: 17 of 24 messages never receive reactions; seven standout posts get 1–3 delayed reactions");
   console.log(
-    "PASS: full message history persists across two loops; auto-follow and reading older messages work; reactions remain delayed and read-only",
+    "PASS: one earlier loop of history persists (bounded after two loops); auto-follow and reading older messages work; reactions remain delayed and read-only",
   );
   console.log(
     "PASS: pinned edits, thread avatars/counts and live-forward replies arrive on schedule and persist across loops; peer DMs and closed members match the app",
@@ -641,6 +673,18 @@ try {
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
     evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
+    browser("scrollintoview", ".live-invite");
+    assert.ok(
+      evaluate(`
+        const pill = document.querySelector('.live-invite').getBoundingClientRect();
+        const stage = document.querySelector('.live-stage').getBoundingClientRect();
+        const x = pill.left + pill.width / 2, y = pill.top + pill.height / 2;
+        return Math.abs(x - (stage.left + stage.width / 2)) < 1
+          && Math.abs(y - (stage.top + stage.height / 2)) < 1
+          && document.elementFromPoint(x, y)?.closest('a')?.getAttribute('href') === '/spaces';
+      `),
+      `The join pill stays centered and tappable above the tilted demo at ${width}px`,
+    );
     checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
     assert.equal(
       evaluate('return getComputedStyle(document.querySelector(".sim-message > .chat-avatar + div")).paddingRight'),

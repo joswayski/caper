@@ -16,6 +16,7 @@ import {
   stillSource,
   videoPlan,
   videoTargetKbps,
+  outputKbps,
   videoTargetSize,
   webpInfo,
   type VideoProbe,
@@ -237,6 +238,13 @@ test("target bitrate scales with pixels from the 1080p setting, with a floor", (
   assert.equal(videoTargetKbps(640, 360, DEFAULT_COMPRESSION), 1500, "floor");
 });
 
+test("output bitrate is the target capped at the source's bitrate, never below the floor", () => {
+  assert.equal(outputKbps(6000, undefined), 6000, "unknown source");
+  assert.equal(outputKbps(6000, 10683), 6000);
+  assert.equal(outputKbps(6000, 2500.4), 2500);
+  assert.equal(outputKbps(6000, 800), 1500, "floor");
+});
+
 test("efficient H.264 uploads unchanged; transcodes happen only for size, codec, container or bitrate", () => {
   const s = DEFAULT_COMPRESSION;
   assert.deepEqual(videoPlan(probe(), s), { action: "keep", reason: "efficient" });
@@ -265,8 +273,13 @@ test("efficient H.264 uploads unchanged; transcodes happen only for size, codec,
   });
   assert.deepEqual(
     videoPlan(probe({ codec: "hevc", bitrateKbps: 4000 }), s),
-    { action: "transcode", reasons: ["codec"], width: 1920, height: 1080, bitrateKbps: 6000 },
-    "HEVC does not play everywhere",
+    { action: "transcode", reasons: ["codec"], width: 1920, height: 1080, bitrateKbps: 4000 },
+    "HEVC does not play everywhere; the H.264 copy never exceeds the source's bitrate",
+  );
+  assert.deepEqual(
+    videoPlan(probe({ codec: "hevc", width: 1440, height: 1920, bitrateKbps: 10683 }), s),
+    { action: "transcode", reasons: ["resolution", "codec", "bitrate"], width: 1080, height: 1440, bitrateKbps: 4500 },
+    "an iPhone 1440×1920 HEVC clip shrinks to 1080 wide at the scaled target",
   );
   assert.deepEqual(videoPlan(probe({ codec: "vp9" }), s).action, "transcode");
   assert.deepEqual(videoPlan(probe({ width: 3840, height: 2160, bitrateKbps: 40000 }), s), {

@@ -7,8 +7,10 @@ import {
   getRememberedAccount,
   logout,
   requestEmailCode,
+  subscribeAccount,
   updateProfile,
   verifyEmailCode,
+  withAccountProfile,
 } from "../account/client.ts";
 
 function mockFetch(t: TestContext, handler: (path: string, init?: RequestInit) => Response) {
@@ -68,6 +70,32 @@ test("logout forgets the chat capability minted from the account session", async
   });
   await logout();
   assert.equal(stored.has(CHAT_SESSION_KEY), false);
+});
+
+test("profile saves refresh retained member identities and win over an older account read", async (t) => {
+  const old = { id: "self", username: "old_user", displayName: "Old Name" };
+  const other = { ...old, id: "other" };
+  const updated = { ...old, username: "new_user", displayName: "New Name" };
+  let finishRead!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+    String(input).endsWith("/profile")
+      ? Response.json(updated)
+      : new Promise<Response>((resolve) => {
+          finishRead = resolve;
+        }),
+  );
+  let displayed = [old, other];
+  const unsubscribe = subscribeAccount(() => {
+    displayed = [old, other].map((person) => withAccountProfile(person, getRememberedAccount()));
+  });
+  t.onTestFinished(unsubscribe);
+  const staleRead = getAccount();
+  await updateProfile(updated.username, updated.displayName);
+  assert.deepEqual(displayed, [updated, other]);
+  finishRead(Response.json(old));
+  assert.deepEqual(await staleRead, updated);
+  assert.deepEqual(getRememberedAccount(), updated);
+  assert.deepEqual(displayed, [updated, other]);
 });
 
 test("missing session is an ordinary signed-out state", async (t) => {

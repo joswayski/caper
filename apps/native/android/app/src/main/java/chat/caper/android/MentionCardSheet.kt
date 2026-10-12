@@ -36,17 +36,21 @@ import kotlinx.coroutines.launch
     var pending by remember(card) { mutableStateOf<String?>(null) }
     var error by remember(card) { mutableStateOf<String?>(null) }
     var choosingSpace by remember(card.id) { mutableStateOf(false) }
-    var invited by remember(card.id) { mutableStateOf(emptySet<String>()) }
+    /** Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried. */
+    var invited by remember(card.id) { mutableStateOf(emptyMap<String, String>()) }
     var status by remember(card.id) { mutableStateOf<String?>(null) }
     var confirmBlock by remember(card.id) { mutableStateOf(false) }
     val id = card.id
     val blocked = id != null && state?.blockedIds?.contains(id) == true
     val accountId = state?.account?.id
+    // Don't offer the open space to someone who is already in it.
+    val openSpace = state?.selectedSpace?.takeIf { detail -> detail.members.any { it.id == id } }?.space?.id
     val ownedSpaces = state?.spaces.orEmpty().filter { space ->
-        accountId != null && space.ownerId == accountId && !space.demo
+        accountId != null && space.ownerId == accountId && !space.demo && space.id != openSpace
     }
     val scope = rememberCoroutineScope()
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
+    // Block closes the card first, as on web: only the confirmation stays.
+    if (!confirmBlock) ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 24.dp).semantics { paneTitle = card.title },
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -67,7 +71,7 @@ import kotlinx.coroutines.launch
                         error = null
                         message({ pending = null; onDismiss() }, { pending = null; error = it })
                     },
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small,
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
                 ) { Text(if (pending == "message") "Opening…" else "Message") }
                 if (!blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null) {
                     OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
@@ -77,11 +81,11 @@ import kotlinx.coroutines.launch
                             OutlinedButton({
                                 pending = space.id; error = null; status = null
                                 viewModel.inviteToSpace(space.id, card.username, {
-                                    pending = null; invited = invited + space.id
+                                    pending = null; invited = invited + (space.id to "Invited")
                                     status = "Invitation sent to ${space.name}."
-                                }, { pending = null; error = it })
+                                }, { already -> invited = invited + (space.id to already) }, { pending = null; error = it })
                             }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null && space.id !in invited,
-                                shape = MaterialTheme.shapes.small) { Text(if (pending == space.id) "Sending…" else space.name + if (space.id in invited) " · Invited" else "") }
+                                shape = MaterialTheme.shapes.small) { Text(if (pending == space.id) "Sending…" else space.name + (invited[space.id]?.let { " · $it" } ?: "")) }
                         }
                     }
                 }
@@ -92,6 +96,8 @@ import kotlinx.coroutines.launch
                         scope.launch {
                             viewModel.unblock(id, failed = { error = it }).join()
                             pending = null
+                            // Unblock keeps the card open and says so, as on web.
+                            if (error == null) status = "Unblocked."
                         }
                     }
                 }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = pending == null, shape = MaterialTheme.shapes.small) {
@@ -104,6 +110,6 @@ import kotlinx.coroutines.launch
     }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
         BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId),
-        viewModel, { confirmBlock = false },
+        viewModel, onDismiss,
     )
 }

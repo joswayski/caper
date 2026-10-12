@@ -18,6 +18,7 @@ export interface ComposerAttachments {
   error?: string;
   onAdd: (files: File[]) => void;
   onRemove: (key: string) => void;
+  onRetry: (key: string) => void;
 }
 
 export interface ComposerHandle {
@@ -105,10 +106,14 @@ export default function Composer({
   }, [hasDraft, onDraftPresence]);
   // A new local send clears the draft it came from, before the next paint.
   const pendingId = pendingSend && !pendingSend.threadRootId ? pendingSend.clientMessageId : undefined;
+  const previousPending = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
-    if (!pendingId || !pendingSend) return;
-    const sent = pendingSend.text;
-    setDraft((current) => (current === sent ? "" : current));
+    if (pendingId && pendingSend && !previousPending.current) {
+      const sent = pendingSend.text;
+      setDraft((current) => (current === sent ? "" : current));
+    }
+    // Renewing a pending upload changes its wire UUID, not the user's next draft.
+    previousPending.current = pendingId;
   }, [pendingId]);
 
   const resize = () =>
@@ -174,7 +179,9 @@ export default function Composer({
           {error}
         </p>
       )}
-      {attachments && <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} />}
+      {attachments && (
+        <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} onRetry={attachments.onRetry} />
+      )}
       <form
         data-attach={!!attachments || undefined}
         onSubmit={(event) => {
@@ -188,7 +195,13 @@ export default function Composer({
               type="button"
               className="chat-attach"
               aria-label="Attach files"
-              title={canAttach ? "Attach files" : (attachments.disabledReason ?? "File uploads are not ready yet")}
+              title={
+                !canAttach
+                  ? (attachments.disabledReason ?? "Checking file uploads…")
+                  : attachments.drafts.length >= MAX_ATTACHMENTS
+                    ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                    : "Attach files"
+              }
               disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
             >

@@ -367,6 +367,8 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
     onClickCapture(event: ReactMouseEvent) {
       if (!suppressClick.current) return;
       suppressClick.current = false;
+      // As in the member drawer: keyboard and assistive activations pass.
+      if (event.detail === 0) return;
       event.preventDefault();
       event.stopPropagation();
     },

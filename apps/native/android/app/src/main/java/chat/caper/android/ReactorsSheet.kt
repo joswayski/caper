@@ -94,6 +94,7 @@ internal const val ShowReactorsLabel = "Show who reacted"
     message: ChatMessage,
     initialEmoji: String,
     selfId: String?,
+    account: Account?,
     load: suspend (ChatMessage) -> ReactorList,
     onDismiss: () -> Unit,
 ) {
@@ -127,7 +128,9 @@ internal const val ShowReactorsLabel = "Show who reacted"
         }
     }
 
-    val authors = list?.reactions?.firstOrNull { it.emoji == current.emoji }?.authors
+    val authors = list?.reactions?.firstOrNull { it.emoji == current.emoji }?.authors?.map { author ->
+        if (account != null && author.id == account.id) author.copy(username = account.username, displayName = account.displayName) else author
+    }
     val name = remember(current.emoji) { EmojiArtwork.name(context, current.emoji) }
     val summary = authors?.let { reactionSummary(it, selfId, name, current.emoji) }
         ?: fallbackReactionSummary(current.authorIds, selfId, name, current.emoji)

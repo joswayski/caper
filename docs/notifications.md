@@ -136,9 +136,11 @@ can have a small notification preview. Multiple files remain supported; each
 message contributes at most one preview. Captions remain the body. Deleted
 files are not signed.
 
-The URL grants 15-minute access to **the existing image original** (`/original`)
+The URL grants 15-minute access to **the existing image original** (`/assets`)
 or **the existing video poster** (`/preview`), never a new notification-specific
-rendition. API and gateway read current poster type/size from the asset row, so
+rendition. `/assets` maps to the unchanged `original/` storage prefix; the CDN
+and updated clients also accept legacy `/original` links. API and gateway read
+current poster type/size from the asset row, so
 older messages with only `preview:{}` still work. No video bytes are downloaded
 for notifications: a video without a usable poster gets text only, not an
 original-video download. API and gateway reuse `ASSET_CDN_ORIGIN` and
@@ -261,8 +263,11 @@ emits a clearly labelled test alert, never a live provider send.
   sandbox use separate keys. FCM uses an OAuth token from the service account's
   RS256 assertion, cached until 5 minutes before it expires. Signing uses
   `aws-lc-rs`, already the process's Rustls crypto provider.
-- Finished deliveries and expanded jobs are pruned after 7 days. Devices are
-  revoked, never deleted; settings and overrides are updated in place.
+- Finished deliveries and expanded jobs are pruned after 7 days. Every 10
+  minutes a separate task deletes them oldest first in 5,000-row batches through
+  partial indexes, up to 100,000 rows per table per pass (about 14 million a
+  day), without delaying delivery. Devices are revoked, never deleted; settings
+  and overrides are updated in place.
 - Expansion/pruning run in every API replica when `CHAT_ENABLED` supplies
   Postgres and Valkey. `NOTIFICATIONS_ENABLED` gates phone delivery and platform
   advertisement only. Bad credentials disable that platform with

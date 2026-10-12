@@ -147,7 +147,7 @@ do not require `npm install`; the website build is not an app-bundling step.
 The **Native release** workflow (`.github/workflows/release.yml`) builds every
 app from one `main` commit:
 - a Developer ID-signed, notarized Mac app for Apple Silicon and Intel,
-- a release-signed Android APK,
+- a release-signed Android APK and Play bundle,
 - Windows and Linux desktop packages (not code-signed yet).
 
 It replaces the `native-latest` pre-release, so these links always point at the
@@ -155,7 +155,7 @@ newest build:
 
 - Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg
 - Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg
-- Android: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+- Android (phones without Google Play only): https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
 - Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 - Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
 
@@ -191,15 +191,28 @@ changes the apps depend on first. The workflow can also be run by hand from the
 Actions tab; a blank `git_sha` releases the newest `main` commit.
 
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
-`docs/release-signing.md` in joswayski/infrastructure. Android testers allow
-installs from their browser once; updates install over the previous APK because
-every release uses the same upload key.
+`docs/release-signing.md` in joswayski/infrastructure.
 
-The same run archives the iPhone app (`chat.caper.ios`) and uploads it to
-TestFlight with `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed
-through the App Store Connect API key, so no distribution certificate or profile is
-stored. Each run's build number is `<run number>.<attempt>`. Testers who join the
-TestFlight public link get new builds automatically.
+**Phone betas.** The homepage's phone buttons are the supported installs; the
+links live in `apps/web/src/downloads.ts` and stay hidden until set.
+- Android: each release goes to Play's internal track (the owner, within minutes)
+  and its closed testing track (`alpha`), which Google reviews first
+  (`scripts/play-upload.py`, `PLAY_TRACK`). The closed test's testers are an
+  open Google Group: people join the group, opt in at
+  https://play.google.com/apps/testing/chat.caper.android, and install from
+  Google Play, which keeps them updated. Play re-signs bundles with Google's app
+  signing key, so the GitHub APK (signed with the upload key) cannot update to or
+  from a Play install; it is only for phones without Google Play and never updates
+  itself.
+- iPhone: the same run archives the app (`chat.caper.ios`) and uploads it to
+  TestFlight with `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed
+  through the App Store Connect API key, so no distribution certificate or profile
+  is stored. Each run's build number is `<run number>.<attempt>`.
+  `scripts/testflight-distribute.py` adds each build to every tester group and
+  submits it for Beta App Review when an external group needs it; people who join
+  the TestFlight public link get new builds automatically.
+- Store reviewers sign in with the API's review account (`AUTH_REVIEW_EMAIL` and
+  `AUTH_REVIEW_CODE`, see `docs/media.md`), because sign-in codes are emailed.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
@@ -228,7 +241,8 @@ That link downloads the matching Mac architecture's DMG, Windows Setup, or Linux
 `.deb` directly; it does not open the GitHub release page. These downloads still
 need manual installation.
 Releases made before the key is stored skip `latest.json`, and apps from before
-this change need one manual reinstall. Android APKs do not self-update yet.
+this change need one manual reinstall. Android updates come from Google Play; the
+GitHub APK does not self-update.
 
 ## Comparing native screens with the web
 

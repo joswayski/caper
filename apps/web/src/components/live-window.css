@@ -9,7 +9,6 @@
 }
 
 .live-stage {
-  --live-green: #8cb262;
   position: relative;
   z-index: 3;
   min-width: 0;
@@ -24,16 +23,6 @@
 .live-stage[data-dragging] {
   cursor: grabbing;
 }
-.live-stage[data-active] {
-  cursor: auto;
-  touch-action: auto;
-  user-select: auto;
-  -webkit-user-select: auto;
-}
-/* perspective makes a containing block for fixed children; drop it for the sheet. */
-.live-stage[data-sheet] {
-  perspective: none;
-}
 
 .live-glow {
   position: absolute;
@@ -43,9 +32,6 @@
   filter: blur(90px);
   pointer-events: none;
   transition: opacity 0.5s ease;
-}
-.live-stage[data-active] .live-glow {
-  opacity: 0;
 }
 
 .live-scene {
@@ -63,19 +49,10 @@
   color: var(--text);
   outline: none;
 }
-.live-stage[data-active] .live-scene {
-  touch-action: auto;
-}
 .live-stage:not([data-ready]) .live-scene {
   visibility: hidden;
 }
 
-/* Raised layers. --z is the resting height in logical pixels. */
-.lz {
-  position: relative;
-  transform: translateZ(calc(var(--z, 0) * var(--depth) * 1px));
-  transform-style: preserve-3d;
-}
 /* Arrival, once, when the window is first shown. It moves the whole scene
    (translate composes with the pose transform), so the solid chassis travels
    with the window and never passes in front of it. */
@@ -237,101 +214,6 @@
   transform-style: flat;
 }
 
-.live-window > .live-status {
-  position: absolute;
-  z-index: 4;
-  top: 12px;
-  right: 12px;
-}
-.live-status {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 7px;
-  margin-left: auto;
-  padding: 4px 10px;
-  border: 1px solid #30373a;
-  border-radius: 999px;
-  background: #171b1d;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-.live-status i {
-  position: relative;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #7d8388;
-}
-.live-status[data-status="live"] {
-  color: var(--text);
-}
-.live-status[data-status="live"] i {
-  background: var(--live-green);
-}
-.live-status[data-status="live"] i::after {
-  position: absolute;
-  inset: -4px;
-  content: "";
-  border: 1.5px solid var(--live-green);
-  border-radius: 50%;
-  animation: live-ping 2s ease-out infinite;
-}
-.live-status[data-status="connecting"] i {
-  background: #d9ab5c;
-}
-@keyframes live-ping {
-  from {
-    opacity: 0.8;
-    transform: scale(0.5);
-  }
-  to {
-    opacity: 0;
-    transform: scale(1.5);
-  }
-}
-.live-window > .live-close {
-  position: absolute;
-  z-index: 4;
-  top: 10px;
-  right: 10px;
-  background: var(--surface);
-}
-.live-stage[data-active] .chat-heading {
-  padding-right: 58px;
-}
-.live-close {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--text-muted);
-  background: transparent;
-  cursor: pointer;
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease,
-    border-color 0.15s ease;
-}
-.live-close:hover {
-  border-color: var(--border);
-  color: var(--text);
-  background: var(--surface-raised);
-}
-.live-close:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 2px;
-}
-.live-close svg {
-  width: 17px;
-  height: 17px;
-}
-
 .live-app {
   position: relative;
   min-width: 0;
@@ -438,12 +320,6 @@
   .live-app .spaces-room:has(> .space-member-presence) > .space-member-presence {
     border-radius: 0 0 6px 0;
   }
-  .live-stage[data-active] .live-app .sidebar-channels {
-    padding-right: 62px;
-  }
-  .live-stage[data-active] .chat-heading {
-    padding-right: 12px;
-  }
   .live-app .space-member-presence {
     padding-top: 0;
   }
@@ -467,7 +343,7 @@
    instead of the control drawn on top). The chassis has no thickness by now,
    so dropping the 3D structure causes no visible change. */
 .live-scene[data-settled],
-.live-scene[data-settled] :is(.lz, .live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel) {
+.live-scene[data-settled] :is(.live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel) {
   transform: none;
   transform-style: flat;
 }
@@ -490,8 +366,10 @@
   border-radius: 0;
 }
 
-/* The centered join link is the demo's only action. */
+/* Keep the only action outside the tilted scene: 3D compositing must not hide
+   the pill, and idle motion must not move its touch target. */
 .live-activator {
+  --counter-scale: 1;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -505,7 +383,6 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
-  transform: translateZ(calc(var(--depth) * 80px));
 }
 .live-invite {
   pointer-events: auto;
@@ -521,7 +398,7 @@
   padding: 10px 18px 10px 14px;
   border-radius: 999px;
   color: #121416;
-  background: #f3f4f5;
+  background: var(--text);
   box-shadow: 0 16px 36px rgb(0 0 0 / 0.5);
   font-size: 15px;
   font-weight: 700;
@@ -554,6 +431,16 @@
   border-radius: 50%;
   animation: live-ping 2s ease-out infinite;
   transition: border-color 0.2s ease;
+}
+@keyframes live-ping {
+  from {
+    opacity: 0.8;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.5);
+  }
 }
 /* Hover only for real pointers: after a tap on touch, and when coming back
    to the page, the pill must not stay terracotta. */
@@ -754,9 +641,10 @@
 .sim-demo .voice-stack-avatar:not(.speaking) {
   border-color: transparent;
 }
-/* Match the single-line composer, including its outer bottom inset. */
+/* Like the app (#451), the 40px account row and its border pixels match the
+   42px single-line composer, so the panel shares the composer's 12px inset. */
 .sim-voice-panel {
-  margin-bottom: 11px;
+  margin-bottom: 12px;
 }
 .sim-voice-avatar > .sim-avatar {
   width: 100%;
@@ -912,56 +800,11 @@
   }
 }
 
-/* Narrow screens open a full-screen sheet. */
-html.live-sheet-open {
-  overflow: hidden;
-}
-.live-scene[data-mode="sheet"][data-active] {
-  position: fixed;
-  z-index: 1000;
-  inset: 0;
-  width: 100%;
-  height: 100dvh;
-  animation: live-sheet-in 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-@keyframes live-sheet-in {
-  from {
-    opacity: 0;
-    transform: translateY(24px) scale(0.97);
-  }
-}
-.live-scene[data-mode="sheet"][data-active] :is(.live-chassis, .live-shadow) {
-  display: none;
-}
-.live-scene[data-mode="sheet"][data-active] .live-window {
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  border: 0;
-  border-radius: 0;
-  background: var(--surface);
-}
-/* Line the close up with the header row beside it: the row starts at the
-   sidebar's 16px padding and the button is as tall as the row, and its right
-   edge shares the room's 12px inset. */
-.live-scene[data-mode="sheet"][data-active] .live-close {
-  top: calc(16px + env(safe-area-inset-top, 0px));
-  right: 12px;
-}
-.live-scene[data-mode="sheet"][data-active] :is(.call-room, .people-panel, .stage) {
-  border-radius: 0;
-}
-.live-scene[data-mode="sheet"] .live-close {
-  width: 40px;
-  height: 40px;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .live-stage[data-ready],
   .live-stage[data-ready] .live-scene,
-  .live-scene[data-mode="sheet"][data-active],
   .live-invite,
   .live-invite i::after,
-  .live-status[data-status="live"] i::after,
   .sim-person,
   .sim-message,
   .sim-typing i {

@@ -96,7 +96,8 @@ try {
     wait('!!document.querySelector("#chat-emoji-1f680")');
     browser("click", "#chat-emoji-1f680");
     assert.equal(value(), "👩‍💻 hi 🚀 suffix 🚀");
-    assert.equal(evaluate('return document.querySelector("#chat-message").selectionStart;'), "👩‍💻 hi 🚀".length);
+    // The caret is restored on the next animation frame, after React commits the value.
+    wait(`document.querySelector("#chat-message").selectionStart === ${"👩‍💻 hi 🚀".length}`);
     assert.equal(messages(), before);
 
     for (const [query, id, emoji, name] of [

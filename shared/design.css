@@ -5,16 +5,33 @@
   --surface-sidebar: #151c1e;
   --surface-conversation: #192123;
   --surface-composer: #283133;
+  /* A neutral wash that stays visible on every dark surface; --surface-raised
+     is too close to the sidebar and conversation backgrounds to read as hover. */
+  --surface-hover: rgb(255 255 255 / 6%);
   --border: #34383b;
   --text: #f3f4f5;
   --text-muted: #b9bcbe;
   --terracotta: #b64d32;
   --terracotta-bright: #db6849;
+  /* Primary actions are eggshell with blackout labels, so one calm, bright
+     fill leads each view; terracotta stays for selection and focus. */
+  --action: #f1ede4;
+  --action-hover: #fbf9f4;
+  --action-press: #ddd7cb;
+  --on-action: #0c0d0f;
   --caper: #637a43;
   --voice-session-green: #4aa86b;
   --pin-gold: #e4c76a;
   --pin-wash: rgb(228 199 106 / 6%);
+  /* Errors and destructive actions: readable on every dark surface. */
+  --error-text: #ff9b82;
   --radius: 8px;
+  /* Motion: things arrive, they never teleport. Short, decelerating and
+     transform/opacity only, so layout never waits on an animation. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-fast: 140ms;
+  --motion-base: 200ms;
+  --motion-slow: 260ms;
   /* Avatars are squircles: rounded squares that match the 8px control corners. */
   --radius-avatar: 30%;
   font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;

@@ -67,6 +67,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.withFreshUrls
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.AttachmentState
@@ -99,6 +100,10 @@ internal fun viewerPages(attachments: List<ChatAttachment>, clicked: String): Vi
 
 /** "2 / 5"; nothing for a single file. */
 internal fun viewerCounter(page: Int, count: Int): String? = if (count > 1) "${page + 1} / $count" else null
+
+/** The stored size, which is what downloading costs; " · " follows a caption before it. */
+internal fun viewerSize(size: Long?, afterCaption: Boolean): String? =
+    size?.takeIf { it > 0 }?.let { (if (afterCaption) " · " else "") + AttachmentPolicy.formatBytes(it) }
 
 /** [width] × [height] scaled to fit the viewport (`ContentScale.Fit`); the viewport when the size is unknown. */
 internal fun fittedSize(width: Float, height: Float, viewportWidth: Float, viewportHeight: Float): Pair<Float, Float> {
@@ -205,7 +210,12 @@ private const val DOUBLE_TAP_ZOOM = 2f
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(names[ids[page]].orEmpty(), Modifier.semantics { heading() }, color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    caption?.let { Text(it, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    val size = viewerSize(current?.size, caption != null)
+                    if (caption != null || size != null) Row {
+                        // The caption truncates first so the size stays whole on narrow screens.
+                        caption?.let { Text(it, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        size?.let { Text(it, color = TextMuted, fontSize = 11.sp, maxLines = 1, softWrap = false) }
+                    }
                 }
                 viewerCounter(page, ids.size)?.let {
                     Text(it, Modifier.padding(horizontal = 8.dp).semantics { contentDescription = "File ${page + 1} of ${ids.size}"; liveRegion = LiveRegionMode.Polite },

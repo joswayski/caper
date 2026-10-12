@@ -24,10 +24,17 @@ import chat.caper.android.caperAvatarResources
 import chat.caper.android.data.TokenStore
 import chat.caper.android.ui.Terracotta
 import java.io.File
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 /** The DM or channel on screen while the app is in the foreground; its pushes show no notification. */
 internal object ForegroundConversation {
     @Volatile var id: String? = null
+}
+
+/** Message pushes received while the app runs, shown or not: the open app refreshes unread state from them. */
+internal object PushActivity {
+    val received = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 }
 
 /** Message notifications: one per DM or channel, tagged with its ID, in MessagingStyle. */
@@ -39,7 +46,9 @@ internal object CaperNotifications {
     private const val MESSAGE_IDS = "chat.caper.android.messageIds"
     private const val MEDIA_FILES = "chat.caper.android.notificationMedia"
     private const val MAX_MESSAGES = 25
-    @Volatile private var generation = 0L
+    // cancelAll (sign-out) invalidates every in-flight notification; cancel(tag) only its own conversation's.
+    private var generation = 0L
+    private val tagGenerations = HashMap<String, Long>()
 
     fun createChannels(context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannels(pushChannels.map { (id, name) ->
@@ -48,11 +57,11 @@ internal object CaperNotifications {
     }
 
     fun show(context: Context, payload: PushPayload) {
-        val epoch = generation
+        val epoch = synchronized(this) { generation to tagGenerations[payload.tag] }
         val session = TokenStore(context).read()
         val prepared = NotificationAttachment.load(context, payload.attachment)
         synchronized(this) {
-            if (epoch != generation || session != TokenStore(context).read() || !PushRegistration.enabled(context) ||
+            if (epoch != (generation to tagGenerations[payload.tag]) || session != TokenStore(context).read() || !PushRegistration.enabled(context) ||
                 ForegroundConversation.id == payload.tag) {
                 prepared?.delete()
                 return
@@ -115,7 +124,7 @@ internal object CaperNotifications {
     /** Clears a conversation's notification once it is on screen. */
     @Synchronized
     fun cancel(context: Context, tag: String) {
-        generation++
+        tagGenerations[tag] = (tagGenerations[tag] ?: 0L) + 1
         context.getSystemService(NotificationManager::class.java).cancel(tag, NOTIFICATION_ID)
         cleanup(context)
     }
@@ -124,6 +133,7 @@ internal object CaperNotifications {
     @Synchronized
     fun cancelAll(context: Context) {
         generation++
+        tagGenerations.clear()
         val manager = context.getSystemService(NotificationManager::class.java)
         val channels = pushChannels.map { it.first }.toSet()
         manager.activeNotifications.filter { it.notification.channelId in channels }.forEach { manager.cancel(it.tag, it.id) }

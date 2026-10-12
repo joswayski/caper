@@ -45,6 +45,10 @@ public enum DirectMessagePrivacy: String, Codable, CaseIterable, Identifiable, S
 
 public struct PrivacySettings: Codable, Equatable, Sendable {
     public var directMessages: DirectMessagePrivacy
+
+    /// How to request account deletion, linked from Privacy settings (Google Play
+    /// and the App Store require an in-app path; requests go by email).
+    public static let deleteAccountURL = URL(string: "https://caper.chat/privacy#delete-account")!
 }
 
 /// The person a Block action targets: a DM peer, a request's sender or a

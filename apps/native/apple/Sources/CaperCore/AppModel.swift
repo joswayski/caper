@@ -8,11 +8,30 @@ public final class AppModel {
     public var account: Account?
     public var spaces: [Space] = []
     public var invitations: [Space] = []
-    public var pendingMembers: [Member] = []
-    public var detail: SpaceDetail?
+    private var pendingMemberSnapshots: [Member] = []
+    public var pendingMembers: [Member] {
+        get { pendingMemberSnapshots.map { $0.withProfile(account) } }
+        set { pendingMemberSnapshots = newValue }
+    }
+    private var detailSnapshot: SpaceDetail?
+    public var detail: SpaceDetail? {
+        get { detailSnapshot?.withProfile(account) }
+        set { detailSnapshot = newValue }
+    }
     public var selectedSpaceID: String?
     public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
-    public var directMessages: [DirectMessageConversation] = []
+    private var directMessageSnapshots: [DirectMessageConversation] = []
+    public var directMessages: [DirectMessageConversation] {
+        get {
+            directMessageSnapshots.map { conversation in
+                guard conversation.peer.id == account?.id, let username = account?.username, let name = account?.displayName else { return conversation }
+                return DirectMessageConversation(id: conversation.id,
+                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId),
+                    lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
+            }
+        }
+        set { directMessageSnapshots = newValue }
+    }
     public private(set) var directMessagesError: String?
     public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { removeShownNotifications() } } }
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
@@ -100,8 +119,16 @@ public final class AppModel {
     public var navigationOpen = false {
         didSet { if !navigationOpen { markSelectedDirectRead() } }
     }
+    /// Phone-width windows slide Browse over the conversation; wider ones show
+    /// both, so an open Browse only hides the conversation on narrow layouts.
+    public var narrowLayout = false {
+        didSet { if narrowLayout != oldValue { markSelectedDirectRead() } }
+    }
+    private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
     public private(set) var unreadSpaces: [UnreadSpace] = []
+    public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
     @ObservationIgnored private var unreadRevision = 0
+    @ObservationIgnored private var unreadRefreshScheduled = false
     @ObservationIgnored private var channelReads: [String: String] = [:]
     public var openingSpaceID: String?
     public var openingChannelID: String?
@@ -163,6 +190,7 @@ public final class AppModel {
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.viewerProfile = { [weak self] in self?.account }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
@@ -268,7 +296,12 @@ public final class AppModel {
             self.account = account
             self.phase = .ready
             if onboarding { await self.loadSpaces(); self.startDirectMessageRefresh() }
-            else { self.chat.updateAuthor(account: account) }
+            else {
+                self.chat.updateAuthor(account: account)
+                if self.selectedDirectMessage?.peer.id == account.id {
+                    self.chat.channelName = account.displayName ?? self.chat.channelName
+                }
+            }
         }
     }
 
@@ -522,9 +555,13 @@ public final class AppModel {
             }
             if chat.channelID != source.message.channelId {
                 if let spaceID = source.spaceId {
-                    let detail = try await api.space(spaceID)
-                    guard generation == attempt, navigationGeneration == navigation else { return false }
-                    await navigate(space: detail.space, channelID: source.message.channelId)
+                    // navigate(space:) rechecks membership itself; fetch only a space this list lacks.
+                    let space: Space
+                    if let known = spaces.first(where: { $0.id == spaceID }) { space = known } else {
+                        space = try await api.space(spaceID).space
+                        guard generation == attempt, navigationGeneration == navigation else { return false }
+                    }
+                    await navigate(space: space, channelID: source.message.channelId)
                 } else {
                     let conversations = try await api.directMessages()
                     guard generation == attempt, navigationGeneration == navigation else { return false }
@@ -681,6 +718,7 @@ public final class AppModel {
     public func applicationActivityChanged(active: Bool) {
         foreground = active
         if active, account != nil {
+            chat.refreshDraftUploads()
             markSelectedDirectRead()
             removeShownNotifications()
             Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
@@ -697,8 +735,9 @@ public final class AppModel {
 
     private func markSelectedDirectRead() {
         markSelectedChannelRead()
-        guard foreground, account != nil, let id = selectedDirectMessageID, selectedDirectMessage?.status != .incoming,
-              let history = chat.currentSnapshot(), history.channel?.id == id,
+        guard foreground, !browseCoversConversation, account != nil, let id = selectedDirectMessageID,
+              selectedDirectMessage?.status != .incoming,
+              let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               let index = directMessages.firstIndex(where: { $0.id == id }),
               (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
         let attempt = generation
@@ -713,6 +752,20 @@ public final class AppModel {
         }
     }
 
+    /// Live notifications refresh unread state between polls; a burst of them
+    /// coalesces into one request about a second after the first.
+    public func scheduleUnreadRefresh() {
+        guard account != nil, !unreadRefreshScheduled else { return }
+        unreadRefreshScheduled = true
+        let attempt = generation
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.unreadRefreshScheduled = false
+            guard self?.generation == attempt else { return }
+            await self?.refreshUnreadSpaces()
+        }
+    }
+
     public func refreshUnreadSpaces() async {
         guard account != nil else { return }
         unreadRevision += 1
@@ -723,7 +776,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard foreground, !navigationOpen, account != nil, selectedDirectMessageID == nil,
+        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
@@ -1228,7 +1281,7 @@ public final class AppModel {
         let attempt = generation
         let members = try await api.channelMembers(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return members
+        return members.map { $0.withProfile(account) }
     }
 
     public func channelInvitations(_ channel: Channel) async throws -> [Member] {
@@ -1236,7 +1289,7 @@ public final class AppModel {
         let attempt = generation
         let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return invitations
+        return invitations.map { $0.withProfile(account) }
     }
 
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
@@ -1688,11 +1741,20 @@ public enum ReactorsState: Equatable, Sendable {
 
 @MainActor @Observable
 public final class ChatModel {
-    public var messages: [ChatMessage] = []
-    public var pinnedMessages: [ChatMessage] = []
+    private var messageSnapshots: [ChatMessage] = []
+    public var messages: [ChatMessage] {
+        get { messageSnapshots.map { $0.withProfile(profileAuthor) } }
+        set { messageSnapshots = newValue }
+    }
+    private var pinnedMessageSnapshots: [ChatMessage] = []
+    public var pinnedMessages: [ChatMessage] {
+        get { pinnedMessageSnapshots.map { $0.withProfile(profileAuthor) } }
+        set { pinnedMessageSnapshots = newValue }
+    }
     private var mutations = MessageMutations()
-    public var displayedMessages: [ChatMessage] { messages.map(mutations.project) }
-    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages) }
+    private func project(_ message: ChatMessage) -> ChatMessage { mutations.project(message).withProfile(profileAuthor) }
+    public var displayedMessages: [ChatMessage] { messages.map(project) }
+    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages).map { $0.withProfile(profileAuthor) } }
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -1716,14 +1778,25 @@ public final class ChatModel {
     public var reactionErrors: [String: String] = [:]
     /// `GET /api/assets/usage` succeeded; otherwise the attach control stays disabled.
     public private(set) var uploadsEnabled = false
+    /// A usage check has answered, so a disabled control is unavailable rather than still checking.
+    public private(set) var uploadsChecked = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
     public private(set) var attachmentDrafts: [AttachmentDraft] = []
+    public private(set) var sendUploadFailed = false
+    private var preparedUploads: [String: PreparedAttachment] = [:]
+    private var pendingDrafts: [AttachmentDraft] = []
+    private var pendingNeedsUpload = false
     /// Latest ephemeral `attachment.progress` percent per processing attachment id.
     public private(set) var attachmentProgress: [String: Int] = [:]
     /// Composer-level attachment message, such as the 10-file limit.
     public var attachmentNotice: String?
     public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
+    /// Every client's wording for a disabled attach control: checking while
+    /// usage or the conversation loads, otherwise unavailable.
+    public var attachUnavailableReason: String {
+        (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
+    }
     /// The send control's enabled state: text or uploaded files, nothing still uploading.
     public var canSubmit: Bool {
         if sending || delivery.rejected { return false }
@@ -1751,9 +1824,9 @@ public final class ChatModel {
     private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
-    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
+    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(project) }
     public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
-    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(mutations.project) }
+    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(project) }
     private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
         (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
         (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)
@@ -1766,7 +1839,15 @@ public final class ChatModel {
         get { threadRootID.flatMap { threadBroadcasts[$0] } ?? false }
         set { if let threadRootID { threadBroadcasts[threadRootID] = newValue } }
     }
-    public var currentAuthor: ChatAuthor? { session?.author }
+    private var profileAuthor: ChatAuthor? {
+        guard let account = viewerProfile(), let name = account.displayName else { return session?.author }
+        return ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId)
+    }
+    public var currentAuthor: ChatAuthor? {
+        guard let author = session?.author else { return nil }
+        guard let profile = profileAuthor, profile.id == author.id else { return author }
+        return profile
+    }
     public private(set) var canForward = false
     public var forwardTarget: ChatMessage?
     public var forwardConversationTarget: ChatMessage?
@@ -1795,6 +1876,7 @@ public final class ChatModel {
     }
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
+    @ObservationIgnored var viewerProfile: () -> Account? = { nil }
     /// Blocks from message actions in panels that only hold the chat model.
     @ObservationIgnored public var blockAccount: ((BlockTarget) async throws -> Void)?
     /// Unblocks from message actions, by account id.
@@ -2305,7 +2387,7 @@ public final class ChatModel {
         let files: [AttachmentDraft] = inThread ? [] : attachmentDrafts
         if delivery.pending == nil {
             if files.contains(where: { $0.attachment == nil }) {
-                error = files.contains { $0.error != nil } ? "Remove files that failed to upload first." : "Wait for files to finish uploading."
+                for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
                 return
             }
             if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
@@ -2322,8 +2404,10 @@ public final class ChatModel {
             attachment.previewUrl = nil
             return attachment
         } : []
-        let command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast)
+        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast)
         if newSubmission {
+            pendingDrafts = files
+            pendingNeedsUpload = files.contains { $0.needsUpload }
             // "Also send to channel" applies to one reply, so it resets with the draft.
             if inThread { threadDraft = ""; threadBroadcast = false } else {
                 // Kept for the pending row and the processing placeholder; removed
@@ -2333,7 +2417,7 @@ public final class ChatModel {
             }
         }
         let requestGeneration = generation
-        sending = true; error = nil
+        sending = true; error = nil; sendUploadFailed = false
         defer {
             sending = false
             if delivery.pending == nil, self.channelID == channelID, generation == requestGeneration {
@@ -2347,19 +2431,53 @@ public final class ChatModel {
         }
         await gateway.reportActivity()
         do {
-            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                             attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast)
+            var recovered = false
+            let message: ChatMessage
+            while true {
+                if pendingNeedsUpload {
+                    guard !pendingDrafts.isEmpty else { throw APIError(status: 502, message: "Failed to upload.") }
+                    var attachments: [ChatAttachment] = []
+                    for file in pendingDrafts {
+                        var attachment = try await uploadAttachmentDraft(id: file.id)
+                        attachment.kind = file.kind; attachment.status = .ready; attachment.animated = false
+                        attachment.url = file.localURL.absoluteString; attachment.previewUrl = nil
+                        attachments.append(attachment)
+                    }
+                    guard self.channelID == channelID,
+                          let refreshed = delivery.replaceAttachments(id: command.id, attachments: attachments) else { return }
+                    for file in pendingDrafts {
+                        if let id = file.attachment?.id { localAttachmentCopies[id] = file.localURL }
+                    }
+                    command = refreshed; pendingNeedsUpload = false
+                }
+                do {
+                    message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
+                                                 attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast)
+                    break
+                } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
+                    guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
+                    pendingNeedsUpload = true
+                    for index in pendingDrafts.indices { pendingDrafts[index].uploadedAt = .distantPast }
+                    if recovered { throw APIError(status: 502, message: "Failed to upload.") }
+                    recovered = true
+                }
+            }
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
                 throw APIError(status: 502, message: "The chat service returned an invalid message.")
             }
             merge([message]); delivery.confirmHTTP(id: command.id)
+            releasePendingUploads()
         } catch {
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             if delivery.pending?.id != command.id {
                 self.error = nil
+                return
+            }
+            if pendingNeedsUpload {
+                sendUploadFailed = true; self.error = "Failed to upload."
                 return
             }
             if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
@@ -2397,7 +2515,13 @@ public final class ChatModel {
         let cached = reactorCache[message.id]
         if let list = cached?.list {
             guard let reaction = message.reactions?.first(where: { $0.emoji == emoji }) else { return .loaded([]) }
-            if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) { return .loaded(people) }
+            if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) {
+                let account = viewerProfile()
+                return .loaded(people.map { person in
+                    guard person.id == account?.id else { return person }
+                    return ReactorPerson(id: person.id, username: account?.username, displayName: account?.displayName, avatarId: person.avatarId)
+                })
+            }
         }
         if reactorRequests[message.id] != nil { return .loading }
         if reactorFailures.contains(message.id) { return .failed }
@@ -2465,7 +2589,7 @@ public final class ChatModel {
     /// reaction not yet in the fetched list still reads as "You".
     private func reactorViewer(_ id: String?) -> ReactorPerson? {
         guard let id else { return nil }
-        guard let author = session?.author, author.id == id else { return ReactorPerson(id: id) }
+        guard let author = profileAuthor, author.id == id else { return ReactorPerson(id: id) }
         return ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId)
     }
 
@@ -2539,7 +2663,15 @@ public final class ChatModel {
 
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
+        let attachments = delivery.pending?.attachmentIDs ?? []
         guard let text = delivery.discardRejected() else { return false }
+        // Only definitively rejected sends may be discarded.
+        for id in attachments {
+            Task { await api.cancelAsset(id: id) }
+            if let local = localAttachmentCopies.removeValue(forKey: id) { AttachmentStaging.remove(local) }
+        }
+        pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+        releasePendingUploads()
         if edit { draft = text }
         error = nil
         return true
@@ -2705,6 +2837,7 @@ public final class ChatModel {
                    (message.broadcast ?? false) == (delivery.pending?.broadcast ?? false),
                    delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
+                    releasePendingUploads()
                 }
                 if let subscriptionID {
                     let cursor = delivery.cursor
@@ -2751,6 +2884,8 @@ public final class ChatModel {
         reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
         if !preservingPending {
             discardAttachmentDrafts()
+            pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+            releasePendingUploads()
             localAttachmentCopies.values.forEach { AttachmentStaging.remove($0) }
             localAttachmentCopies = [:]
         }
@@ -2920,6 +3055,8 @@ public final class ChatModel {
     /// Uploads are optional server configuration; only a successful usage
     /// response enables the attach control.
     public func checkUploadAvailability() async {
+        // A cancelled check (switching conversations) is superseded, not an answer.
+        defer { if !Task.isCancelled { uploadsChecked = true } }
         do {
             let usage = try await api.assetUsage()
             attachmentCompression = usage.compression
@@ -2932,7 +3069,7 @@ public final class ChatModel {
     /// Compresses (with the server's settings) and uploads staged files for
     /// the next message, up to 10.
     public func addAttachments(_ files: [LocalAttachmentFile]) {
-        guard canAttach, let channelID, !files.isEmpty else {
+        guard canAttach, !files.isEmpty else {
             files.forEach { AttachmentStaging.remove($0.url) }
             return
         }
@@ -2951,7 +3088,7 @@ public final class ChatModel {
             let id = UUID().uuidString
             attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
                                                     localURL: file.url, sourceSize: file.size))
-            uploadTasks[id] = Task { [weak self, api] in
+            uploadTasks[id] = Task { [weak self] in
                 let prepared = await AttachmentPreparer.prepare(file, settings: settings)
                 guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
                       self.attachmentDrafts.contains(where: { $0.id == id }) else {
@@ -2961,6 +3098,7 @@ public final class ChatModel {
                     return
                 }
                 if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                self.preparedUploads[id] = prepared
                 self.updateDraft(id) {
                     $0.name = prepared.name
                     $0.kind = AttachmentKind.local(contentType: prepared.contentType)
@@ -2969,17 +3107,10 @@ public final class ChatModel {
                     $0.preparing = false
                 }
                 do {
-                    let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
-                        Task { @MainActor [weak self] in
-                            guard let self, self.uploadGeneration == expectedGeneration else { return }
-                            self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
-                        }
-                    }
-                    guard self.uploadGeneration == expectedGeneration else { return }
-                    self.updateDraft(id) { $0.attachment = attachment; $0.progress = 1; $0.error = nil }
+                    _ = try await self.uploadAttachmentDraft(id: id)
                 } catch {
                     guard self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
-                    self.updateDraft(id) { $0.error = AttachmentPolicy.uploadErrorMessage(error) }
+                    self.updateDraft(id) { $0.error = "Failed to upload." }
                 }
                 self.uploadTasks[id] = nil
             }
@@ -2989,7 +3120,11 @@ public final class ChatModel {
     public func removeAttachmentDraft(id: String) {
         uploadTasks[id]?.cancel()
         uploadTasks[id] = nil
-        if let draft = attachmentDrafts.first(where: { $0.id == id }) { AttachmentStaging.remove(draft.localURL) }
+        preparedUploads[id] = nil
+        if let draft = attachmentDrafts.first(where: { $0.id == id }) {
+            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+            AttachmentStaging.remove(draft.localURL)
+        }
         attachmentDrafts.removeAll { $0.id == id }
         attachmentNotice = nil
     }
@@ -2998,14 +3133,64 @@ public final class ChatModel {
         uploadGeneration += 1
         uploadTasks.values.forEach { $0.cancel() }
         uploadTasks = [:]
-        attachmentDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+        for draft in attachmentDrafts {
+            preparedUploads[draft.id] = nil
+            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+            AttachmentStaging.remove(draft.localURL)
+        }
         attachmentDrafts = []
         attachmentNotice = nil
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
-        guard let index = attachmentDrafts.firstIndex(where: { $0.id == id }) else { return }
-        change(&attachmentDrafts[index])
+        if let index = attachmentDrafts.firstIndex(where: { $0.id == id }) { change(&attachmentDrafts[index]) }
+        if let index = pendingDrafts.firstIndex(where: { $0.id == id }) { change(&pendingDrafts[index]) }
+    }
+
+    public func refreshDraftUploads() {
+        for file in attachmentDrafts where file.needsUpload { retryAttachmentDraft(id: file.id) }
+        if sendUploadFailed { Task { await send(inThread: delivery.pending?.threadRootId != nil) } }
+    }
+
+    public func retryAttachmentDraft(id: String) {
+        guard uploadTasks[id] == nil, attachmentDrafts.contains(where: { $0.id == id }) else { return }
+        uploadTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await uploadAttachmentDraft(id: id) }
+            catch { if !Task.isCancelled { updateDraft(id) { $0.error = "Failed to upload." } } }
+            uploadTasks[id] = nil
+        }
+    }
+
+    private func uploadAttachmentDraft(id: String) async throws -> ChatAttachment {
+        guard let channelID, let file = (attachmentDrafts + pendingDrafts).first(where: { $0.id == id }),
+              let prepared = preparedUploads[id] else { throw CancellationError() }
+        if !file.needsUpload, let attachment = file.attachment { return attachment }
+        let expected = uploadGeneration
+        updateDraft(id) { $0.attachment = nil; $0.error = nil; $0.progress = 0 }
+        if let old = file.attachment?.id {
+            // The bytes remain owned by the draft, not the expired server ID.
+            localAttachmentCopies[old] = nil
+            await api.cancelAsset(id: old)
+        }
+        let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
+            Task { @MainActor [weak self] in
+                guard let self, self.uploadGeneration == expected else { return }
+                self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
+            }
+        }
+        guard uploadGeneration == expected, !Task.isCancelled,
+              (attachmentDrafts + pendingDrafts).contains(where: { $0.id == id }) else {
+            await api.cancelAsset(id: attachment.id)
+            throw CancellationError()
+        }
+        updateDraft(id) { $0.attachment = attachment; $0.uploadedAt = Date(); $0.progress = 1; $0.error = nil }
+        return attachment
+    }
+
+    private func releasePendingUploads() {
+        for file in pendingDrafts { preparedUploads[file.id] = nil }
+        pendingDrafts = []; pendingNeedsUpload = false; sendUploadFailed = false
     }
 
     /// Batches `POST /api/assets/urls` for attachments whose signed URLs are

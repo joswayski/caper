@@ -1,8 +1,3 @@
-:root {
-  /* A neutral wash that stays visible on every dark surface; --surface-raised
-     is too close to the sidebar and conversation backgrounds to read as hover. */
-  --surface-hover: rgb(255 255 255 / 6%);
-}
 .call-room.spaces-room {
   --channel-sidebar-inset: 12px;
   grid-template-columns: 60px auto minmax(0, 1fr);
@@ -95,7 +90,8 @@
   border-radius: 50%;
   background: var(--text);
 }
-.channel-select .channel-unread {
+.channel-select .channel-unread,
+.channel-directory .channel-unread {
   flex: 0 0 6px;
   width: 6px;
   height: 6px;
@@ -481,7 +477,7 @@
   flex: 0 0 auto;
 }
 .space-actions .leave-space {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .channel-navigation > header > button {
   width: 30px;
@@ -499,7 +495,7 @@
 @media (hover: hover) {
   .channel-navigation > header > button:hover {
     color: var(--text);
-    background: var(--border);
+    background: var(--surface-hover);
   }
 }
 .channel-navigation > header > button svg {
@@ -677,10 +673,6 @@
     color: var(--text);
     background: var(--surface-hover);
   }
-  /* Overrides call.css: the raised surface barely differs from the sidebar. */
-  .spaces-room .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
-    background: var(--surface-hover);
-  }
 }
 .channel-select[aria-current="page"] {
   color: var(--text);
@@ -746,7 +738,8 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .channel-section-toggle,
+  /* Outranks the compact `.channel-section-heading button` size. */
+  .channel-section-heading .channel-section-toggle,
   .pending-channel-invite {
     min-height: 44px;
   }
@@ -884,7 +877,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  border-radius: 6px;
+  border-radius: var(--radius);
   transition: background-color 140ms ease;
 }
 .direct-line .direct-select,
@@ -918,14 +911,19 @@
 .call-page :is(.people-panel, .space-rail) :is(button, summary):focus {
   outline: none;
 }
-.call-page :is(.people-panel, .space-rail) :is(button, summary):focus-visible {
+/* :where keeps the specificity unchanged. The fill would hide the selected
+   wash, so the current item keeps its selection and gains a quiet inset line. */
+.call-page :is(.people-panel, .space-rail) :is(button, summary):where(:not([aria-current="page"])):focus-visible {
   color: var(--text);
   background: var(--border);
+}
+.call-page :is(.people-panel, .space-rail) button[aria-current="page"]:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--text-muted);
 }
 .space-sidebar-error {
   /* In line with the rows' leading icons. */
   margin: 14px 9px;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.7rem;
   line-height: 1.4;
 }
@@ -1044,7 +1042,7 @@
 }
 @media (hover: hover) {
   .member-profile-trigger:hover {
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .member-profile-trigger:focus-visible {
@@ -1091,9 +1089,11 @@
   opacity: 0.4;
   cursor: default;
 }
-.member-presence-pages button:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
+@media (hover: hover) {
+  .member-presence-pages button:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
 }
 .space-sidebar-error button {
   display: block;
@@ -1125,7 +1125,7 @@
   width: 15px;
 }
 .navigation-toggle:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
@@ -1154,10 +1154,10 @@
 .spaces-empty .primary {
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
@@ -1175,24 +1175,8 @@
 }
 /* These pages sit outside .call-page and its focus ring. */
 :is(.spaces-state, .spaces-empty) :focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
-}
-/* The first-run page shows the DM list outside the sidebar's list resets.
-   :where() keeps these below the message-request group's own rules. */
-.spaces-empty :where(.direct-section ul) {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-  margin: 2px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.spaces-empty :where(.direct-section li) {
-  position: relative;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .spaces-empty > section > p:not(.eyebrow) {
   color: var(--text-muted);
@@ -1219,13 +1203,6 @@
   display: block;
   margin-top: 10px;
   color: var(--text-muted);
-}
-/* Direct messages sit below the form as a secondary option, not as a sidebar.
-   The rows' padding and centered icon column hang outside the form's edge, so
-   the icons line up with the heading and field above. */
-.spaces-empty .direct-section {
-  margin-top: 40px;
-  margin-left: -16px;
 }
 .empty-channel {
   flex: 1;
@@ -1270,9 +1247,9 @@
   cursor: pointer;
 }
 .empty-channel-actions > .primary {
-  border-color: var(--terracotta);
-  color: #fff;
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 /* On phones the stage has no header; the Browse toggle takes its place. */
 .empty-channel {
@@ -1341,7 +1318,7 @@
   overflow-wrap: anywhere;
 }
 .invitation-consent .space-form-error {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .invitation-consent .space-dialog-actions {
   flex-wrap: wrap;
@@ -1380,8 +1357,10 @@
   text-align: left;
   cursor: pointer;
 }
-.pending-space-invite:hover {
-  border-color: var(--text-muted);
+@media (hover: hover) {
+  .pending-space-invite:hover {
+    border-color: var(--text-muted);
+  }
 }
 .pending-space-invite svg {
   width: 18px;
@@ -1433,12 +1412,14 @@
     background-color 140ms ease,
     color 140ms ease;
 }
-.space-access-notice button:hover {
-  color: var(--text);
-  background: var(--border);
+@media (hover: hover) {
+  .space-access-notice button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
 }
 .space-access-notice button:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 .space-access-notice svg {
@@ -1498,9 +1479,11 @@
   background: transparent;
   cursor: pointer;
 }
-.space-dialog > header > button:hover {
-  color: var(--text);
-  background: var(--border);
+@media (hover: hover) {
+  .space-dialog > header > button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
 }
 .space-dialog > header svg {
   width: 18px;
@@ -1638,8 +1621,8 @@
   }
 }
 .channel-privacy input:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .channel-privacy input,
@@ -1668,8 +1651,9 @@
   cursor: pointer;
 }
 .space-dialog .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .space-dialog .danger {
   border-color: #b93646;
@@ -1686,7 +1670,7 @@
   cursor: not-allowed;
 }
 .space-form-error {
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.72rem;
   line-height: 1.4;
 }
@@ -1793,11 +1777,6 @@
 }
 .member-manager ul + .dialog-section-heading {
   margin-top: 18px;
-}
-.member-manager-empty {
-  margin: 10px 0 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
 }
 .danger-zone {
   margin-bottom: 5px;
@@ -1928,8 +1907,10 @@
   text-align: left;
   cursor: pointer;
 }
-.channel-directory li button:hover {
-  background: var(--surface-hover);
+@media (hover: hover) {
+  .channel-directory li button:hover {
+    background: var(--surface-hover);
+  }
 }
 .channel-directory li svg {
   flex: none;
@@ -1987,18 +1968,20 @@
 .channel-preview .primary {
   min-height: 38px;
   padding: 0 14px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.76rem;
   font-weight: 700;
   cursor: pointer;
 }
-.channel-preview .primary:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
+@media (hover: hover) {
+  .channel-preview .primary:hover:not(:disabled) {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
 }
 .channel-preview .primary:disabled {
   opacity: 0.45;
@@ -2007,7 +1990,7 @@
 .channel-preview [role="alert"] {
   flex-basis: 100%;
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 
@@ -2020,35 +2003,62 @@
     box-shadow 140ms ease,
     opacity 140ms ease;
 }
-.space-dialog .secondary:hover:not(:disabled),
-.member-add button:hover:not(:disabled),
-.empty-channel-actions > .secondary:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
+@media (hover: hover) {
+  .space-dialog .secondary:hover:not(:disabled),
+  .member-add button:hover:not(:disabled),
+  .empty-channel-actions > .secondary:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
+  /* Add keeps its accent border on hover instead of turning gray. */
+  .member-add button:hover:not(:disabled) {
+    border-color: var(--terracotta-bright);
+  }
+  .space-dialog .primary:hover:not(:disabled),
+  .spaces-state button:hover:not(:disabled),
+  .spaces-empty .primary:hover:not(:disabled),
+  .empty-channel-actions > .primary:hover:not(:disabled) {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
+  .space-dialog .danger:hover:not(:disabled) {
+    border-color: #d44355;
+    background: #d44355;
+  }
+  .space-dialog .danger-outline:hover:not(:disabled) {
+    border-color: #d44355;
+    color: #ffabb5;
+    background: rgb(185 54 70 / 0.16);
+  }
+  .member-manager li button:hover:not(:disabled) {
+    color: #ff8c9a;
+    background: rgb(185 54 70 / 0.12);
+  }
 }
-/* Add keeps its accent border on hover instead of turning gray. */
-.member-add button:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
+:is(
+    .space-dialog .primary,
+    .spaces-state button,
+    .spaces-empty .primary,
+    .empty-channel-actions > .primary,
+    .channel-preview .primary,
+    .direct-request-bar .primary
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
 }
-.space-dialog .primary:hover:not(:disabled),
-.spaces-state button:hover:not(:disabled),
-.spaces-empty .primary:hover:not(:disabled),
-.empty-channel-actions > .primary:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-}
-.space-dialog .danger:hover:not(:disabled) {
-  border-color: #d44355;
-  background: #d44355;
-}
-.space-dialog .danger-outline:hover:not(:disabled) {
-  border-color: #d44355;
-  color: #ffabb5;
-  background: rgb(185 54 70 / 0.16);
-}
-.member-manager li button:hover:not(:disabled) {
-  color: #ff8c9a;
-  background: rgb(185 54 70 / 0.12);
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .space-dialog .primary,
+  .spaces-state button,
+  .spaces-empty .primary,
+  .empty-channel-actions > .primary,
+  .channel-preview .primary,
+  .direct-request-bar .primary
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 /* Gated: on touch, Back would keep its hover after the tap that opened Browse. */
 @media (hover: hover) {
@@ -2060,8 +2070,8 @@
 }
 .space-dialog button:focus-visible,
 .delete-confirmation [data-initial-focus]:focus {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .space-dialog :is(.danger, .danger-outline):focus-visible {
   outline-color: #ff8c9a;
@@ -2204,9 +2214,11 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     background: transparent;
     cursor: pointer;
   }
-  .member-list-close:hover {
-    color: var(--text);
-    background: var(--surface-raised);
+  @media (hover: hover) {
+    .member-list-close:hover {
+      color: var(--text);
+      background: var(--surface-hover);
+    }
   }
   .member-list-close svg {
     width: 20px;
@@ -2458,25 +2470,30 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   cursor: pointer;
 }
 .direct-request-bar .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
-.direct-request-bar .primary:hover:not(:disabled) {
-  border-color: var(--terracotta-bright);
-  background: var(--terracotta-bright);
-}
-.direct-request-bar .secondary:hover:not(:disabled) {
-  border-color: var(--text-muted);
-  background: var(--border);
+@media (hover: hover) {
+  .direct-request-bar .primary:hover:not(:disabled) {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
+  .direct-request-bar .secondary:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
 }
 .direct-request-bar .danger-outline {
   border-color: #a33b48;
   color: #ff8c9a;
   background: transparent;
 }
-.direct-request-bar .danger-outline:hover:not(:disabled) {
-  border-color: #d44355;
-  background: rgb(185 54 70 / 0.16);
+@media (hover: hover) {
+  .direct-request-bar .danger-outline:hover:not(:disabled) {
+    border-color: #d44355;
+    background: rgb(185 54 70 / 0.16);
+  }
 }
 .direct-request-bar button:disabled {
   opacity: 0.5;
@@ -2489,7 +2506,7 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
 .direct-request-bar > [role="alert"] {
   flex-basis: 100%;
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 .direct-waiting {

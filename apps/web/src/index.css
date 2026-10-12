@@ -2,6 +2,7 @@
    text-content, disabled:cursor-wait) on the login, profile and privacy pages. */
 @import "../../../shared/design.css" layer(base);
 @import "tailwindcss";
+@import "./motion.css";
 
 @font-face {
   font-family: "Satoshi";
@@ -45,6 +46,10 @@
   --color-terracotta: var(--terracotta);
   --color-terracotta-bright: var(--terracotta-bright);
   --color-caper: var(--caper);
+  --color-action: var(--action);
+  --color-action-hover: var(--action-hover);
+  --color-action-press: var(--action-press);
+  --color-on-action: var(--on-action);
   --font-satoshi: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
   --radius-control: var(--radius);
 }
@@ -79,7 +84,7 @@
 .page {
   min-height: 100vh;
   min-height: 100dvh;
-  background: #0c0d0f;
+  background: var(--blackout);
 }
 .shell {
   width: min(1520px, calc(100% - 80px));
@@ -100,50 +105,6 @@
   display: flex;
   align-items: center;
   gap: 20px;
-}
-.header-github {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--text-muted);
-  transition:
-    color 0.2s ease-out,
-    background-color 0.2s ease-out;
-}
-.header-github:hover {
-  color: var(--text);
-  background: var(--surface);
-}
-.header-github:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 2px;
-}
-.header-github svg {
-  width: 20px;
-  height: 20px;
-  transform: translateY(2px);
-}
-.login-button {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 18px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  font-weight: 700;
-  text-decoration: none;
-}
-.login-button:hover {
-  border-color: var(--terracotta);
-}
-.login-button:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 4px;
 }
 .wordmark {
   position: relative;
@@ -327,12 +288,8 @@
     color 0.2s ease;
 }
 .app-downloads .download-button {
-  color: var(--blackout);
-  background: var(--text);
-}
-.app-downloads .download-button:focus-visible {
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
 }
 .app-downloads .source-button {
   color: var(--text);
@@ -340,11 +297,10 @@
   background: var(--surface);
 }
 /* Hover only where a pointer hovers, so a tapped button doesn't stay lit on
-   touch; a press still shows the same terracotta. */
+   touch; a press still shows the pressed fill. */
 @media (hover: hover) {
   .app-downloads .download-button:hover {
-    color: var(--text);
-    background: var(--terracotta);
+    background: var(--action-hover);
   }
   .app-downloads .source-button:hover {
     color: var(--text);
@@ -352,8 +308,7 @@
   }
 }
 .app-downloads .download-button:active {
-  color: var(--text);
-  background: var(--terracotta);
+  background: var(--action-press);
 }
 .app-downloads .source-button:active {
   color: var(--text);
@@ -379,6 +334,13 @@
     color: var(--text);
     text-decoration: underline;
   }
+}
+/* The Android beta's second step must read as a link, not as muted copy. */
+.app-downloads .download-step {
+  color: var(--text);
+}
+.app-downloads .download-step a {
+  text-decoration: underline;
 }
 .hero-copy > .made-by {
   margin: 20px 0 0;

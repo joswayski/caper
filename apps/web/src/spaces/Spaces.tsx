@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -25,7 +26,15 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
+import {
+  getAccount,
+  getRememberedAccount,
+  normalizeUsername,
+  subscribeAccount,
+  usernameError,
+  withAccountProfile,
+  type Account,
+} from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
@@ -632,8 +641,8 @@ function RemoveMemberDialog({
 }
 
 function MemberManager({
-  members,
-  invitations,
+  members: memberSnapshots,
+  invitations: invitationSnapshots,
   channel = false,
   onCancel,
   onAdd,
@@ -654,6 +663,9 @@ function MemberManager({
   pending: boolean;
   loading?: boolean;
 }) {
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const members = memberSnapshots.map((member) => withAccountProfile(member, account));
+  const invitations = invitationSnapshots?.map((member) => withAccountProfile(member, account));
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -1369,11 +1381,14 @@ function InvitationDialog({
 
 function BrowseChannelsDialog({
   detail,
+  unread,
   onClose,
   onPreview,
   onManage,
 }: {
   detail: SpaceDetail;
+  /** Includes channels you haven't joined, such as one where you were mentioned. */
+  unread: (channelId: string) => boolean;
   onClose: () => void;
   onPreview: (channel: Channel) => void;
   onManage?: (channel: Channel) => void;
@@ -1403,12 +1418,17 @@ function BrowseChannelsDialog({
         <ul>
           {channels.map((item) => (
             <li key={item.id}>
-              <button type="button" aria-label={`Preview #${item.name}`} onClick={() => onPreview(item)}>
+              <button
+                type="button"
+                aria-label={`Preview #${item.name}${unread(item.id) ? ", unread activity" : ""}`}
+                onClick={() => onPreview(item)}
+              >
                 {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
                 <span>
                   {item.name}
                   <small>{item.joined !== false ? "Joined" : "Read-only preview"}</small>
                 </span>
+                {unread(item.id) && <i className="channel-unread" aria-hidden="true" />}
               </button>
               {onManage && (
                 <button
@@ -1580,7 +1600,9 @@ export default function Spaces({
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
-  const [account, setAccount] = useState<Account | undefined>(initialAccount);
+  const [loadedAccount, setAccount] = useState<Account | undefined>(initialAccount);
+  const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const account = rememberedAccount ?? loadedAccount;
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
@@ -1622,7 +1644,11 @@ export default function Spaces({
   const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
-  const [directs, setDirects] = useState<DirectConversation[]>([]);
+  const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
+  const directs = directSnapshots.map((conversation) => ({
+    ...conversation,
+    peer: withAccountProfile(conversation.peer, account),
+  }));
   const [directsLoading, setDirectsLoading] = useState(true);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
@@ -1668,11 +1694,15 @@ export default function Spaces({
       current = false;
     };
   }, [directId, account?.id]);
-  const detail =
+  const detailSnapshot =
     view?.detail ??
     (!spaces.length
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
+  const detail = detailSnapshot && {
+    ...detailSnapshot,
+    members: detailSnapshot.members.map((member) => withAccountProfile(member, account)),
+  };
   const navigation = useRef(createSpaceNavigation());
   // The rendered detail, for the poll below whose effect tracks only the space id.
   const shownDetail = useRef(detail);
@@ -2556,7 +2586,6 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
-          {directNavigation}
         </section>
       </main>
     );
@@ -2580,6 +2609,7 @@ export default function Spaces({
       {browseOpen && (
         <BrowseChannelsDialog
           detail={detail}
+          unread={(channelId) => unreadSpaces.some((space) => space.channels.some((entry) => entry.id === channelId))}
           onClose={() => setBrowseOpen(false)}
           onPreview={(item) => choose(detail.space.id, item.id)}
           onManage={
@@ -3062,7 +3092,12 @@ export default function Spaces({
       displayName: author.name,
       avatarId: author.avatarId ?? undefined,
     });
-  const profileSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
+  const ownedSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
+  // Don't offer the open space to someone who is already in it.
+  const profileSpaces = (personId: string) =>
+    directView || !detail.members.some((member) => member.id === personId)
+      ? ownedSpaces
+      : ownedSpaces.filter((space) => space.id !== detail.space.id);
 
   return (
     <>

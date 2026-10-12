@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -20,10 +21,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import chat.caper.android.data.DELETE_ACCOUNT_URL
 import chat.caper.android.data.blockedRunLabel
 import chat.caper.android.data.directPrivacyOptions
 import chat.caper.android.data.friendlyError
@@ -88,7 +91,7 @@ import kotlinx.coroutines.launch
             append(" (@${peer.username}) wants to message you. You don't share a space.")
         }, color = TextMuted, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Accept") }
+            Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Accept") }
             OutlinedButton({ working = true; error = null; viewModel.declineRequest(request, left) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Decline", color = Text) }
             TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Block", color = ErrorText) }
@@ -149,7 +152,7 @@ import kotlinx.coroutines.launch
     }
 }
 
-/** User settings: who can start a DM with you, and the accounts you blocked. */
+/** User settings: who can start a DM with you, the accounts you blocked, and how to delete your account. */
 @Composable internal fun PrivacySettingsDialog(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) = CaperDialog("Privacy", close) {
     val scope = rememberCoroutineScope()
     var setting by remember { mutableStateOf<String?>(null) }
@@ -221,4 +224,11 @@ import kotlinx.coroutines.launch
     }
     (unblockError ?: state.blocksError?.takeIf { state.blocks.isNotEmpty() })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
     if (state.blocksError != null) TextButton(viewModel::refreshBlocks, shape = MaterialTheme.shapes.small) { Text("Retry") }
+
+    HorizontalDivider(color = Border)
+    SettingLabel("Delete account")
+    val uriHandler = LocalUriHandler.current
+    TextButton({ runCatching { uriHandler.openUri(DELETE_ACCOUNT_URL) } }, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+        Text("How to delete your account", color = Text, fontSize = 13.sp, textDecoration = TextDecoration.Underline)
+    }
 }

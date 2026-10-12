@@ -3,17 +3,6 @@
   min-height: 100dvh;
   background: var(--blackout);
 }
-.call-destination {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-decoration: none;
-}
-@media (hover: hover) {
-  .call-destination:hover {
-    color: var(--text);
-  }
-}
 .voice-panel {
   --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
@@ -35,7 +24,7 @@
   margin: 2px 0 0;
   padding: 7px 4px 3px 8px;
   border-top: 1px solid var(--border);
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.7rem;
   line-height: 1.4;
 }
@@ -57,7 +46,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -65,7 +54,7 @@
 @media (hover: hover) {
   .voice-error button:hover {
     color: var(--text);
-    background: var(--surface-composer);
+    background: var(--surface-hover);
   }
 }
 .voice-error svg {
@@ -118,7 +107,7 @@
   cursor: default;
 }
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) {
-  color: #8cb262;
+  color: var(--voice-session-green);
 }
 .connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) {
   color: #d9ab5c;
@@ -131,7 +120,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: var(--surface-composer);
   cursor: pointer;
@@ -170,7 +159,7 @@
   height: 32px;
   padding: 0 4px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius);
   color: var(--text);
   background: transparent;
   text-align: left;
@@ -217,7 +206,7 @@
   width: 28px;
   height: 32px;
   border: 0;
-  border-radius: 4px 0 0 4px;
+  border-radius: var(--radius) 0 0 var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -232,10 +221,14 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
+}
+/* The layered base disabled cursor (index.css) cannot outrank this unlayered pointer. */
+.call-settings-trigger:is(:disabled, [aria-disabled="true"]) {
+  cursor: default;
 }
 .call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
   background: var(--surface-composer);
@@ -268,7 +261,7 @@
 }
 .device-menu .call-settings-trigger {
   width: 16px;
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
 }
 .device-menu .call-settings-trigger svg {
   width: 12px;
@@ -302,10 +295,9 @@
   text-decoration: none;
   cursor: pointer;
 }
-/* --surface-raised barely differs from the panel; use the app's menu hover wash. */
 @media (hover: hover) {
   .call-settings-panel :is(button:not(:disabled), a):hover {
-    background: var(--surface-hover, rgb(255 255 255 / 6%));
+    background: var(--surface-hover);
   }
 }
 .call-settings-panel button:disabled {
@@ -340,14 +332,6 @@
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
-.eyebrow {
-  margin: 0 0 8px;
-  color: var(--text-muted);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
 .call-room {
   width: min(1400px, calc(100% - 56px));
   min-height: calc(100vh - 104px);
@@ -378,7 +362,9 @@
   touch-action: none;
   cursor: col-resize;
 }
-.channel-sidebar-resize:focus-visible {
+/* No colored line on hover or drag (#265); keyboard focus keeps a neutral
+   outline. The panel scope outranks the later .call-page focus ring. */
+.people-panel > .channel-sidebar-resize:focus-visible {
   outline: 1px solid var(--text-muted);
   outline-offset: -2px;
 }
@@ -387,17 +373,6 @@
   min-height: 0;
   padding: 20px 16px;
   overflow-y: auto;
-}
-.panel-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.panel-heading h1 {
-  margin: 0;
-  letter-spacing: -0.04em;
-  font-size: 1.3rem;
 }
 .channel-link {
   display: flex;
@@ -426,11 +401,6 @@
   .channel-link:hover:not([aria-current]) {
     background: rgb(182 77 50 / 0.22);
   }
-}
-.voice-roster-label {
-  margin: 24px 9px 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
 }
 .voice-actions {
   min-width: 0;
@@ -709,8 +679,8 @@
   cursor: default;
 }
 .range-slider-thumb:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 /* The thumb previously gave no feedback before it moved. */
 @media (hover: hover) {
@@ -739,25 +709,11 @@
   }
 }
 .call-page :focus-visible {
-  outline: 2px solid var(--terracotta-bright);
-  outline-offset: 3px;
-}
-.primary-button {
-  height: 48px;
-  margin-top: 5px;
-  border: 0;
-  border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
-  font-weight: 700;
-  cursor: pointer;
-}
-.primary-button:disabled {
-  opacity: 0.5;
-  cursor: wait;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .call-error {
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.9rem;
 }
 .noise-status {
@@ -996,22 +952,28 @@
 .mic-test-button {
   width: 160px;
   height: 48px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
 .mic-test-button:disabled {
-  opacity: 0.55;
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
   cursor: wait;
 }
 @media (hover: hover) {
   .mic-test-button:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+.mic-test-button:active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
 }
 .mic-comparison {
   display: grid;
@@ -1028,13 +990,23 @@
   background: var(--blackout);
 }
 .mic-comparison article.latest {
+  position: relative;
   border-color: #53633f;
+}
+/* The glow pulses on a composited layer: animating opacity, unlike box-shadow,
+   does not repaint every frame for as long as the dialog stays open. */
+.mic-comparison article.latest::after {
+  position: absolute;
+  inset: -1px;
+  content: "";
+  border-radius: inherit;
   box-shadow: 0 0 18px rgb(99 122 67 / 0.24);
+  pointer-events: none;
   animation: enhanced-glow 2.4s ease-in-out infinite alternate;
 }
 @keyframes enhanced-glow {
   to {
-    box-shadow: 0 0 10px rgb(99 122 67 / 0.12);
+    opacity: 0.45;
   }
 }
 .mic-comparison article > div {
@@ -1054,39 +1026,11 @@
   line-height: 1.45;
 }
 .mic-comparison article p[role="alert"] {
-  color: #ff9b82;
+  color: var(--error-text);
 }
 .mic-comparison audio {
   width: 100%;
   height: 44px;
-}
-.processing-details {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  margin-top: 16px;
-  color: var(--text-muted);
-  font-size: 0.68rem;
-}
-.processing-detail {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.processing-detail > button {
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  color: var(--text-muted);
-  background: transparent;
-  font-size: 0.6rem;
-  font-weight: 700;
-  cursor: help;
 }
 .call-diagnostics {
   color: var(--text-muted);
@@ -1127,7 +1071,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  border-radius: 4px;
+  border-radius: var(--radius);
 }
 .call-account .voice-icon-button.active {
   color: var(--terracotta-bright);
@@ -1278,7 +1222,7 @@
 }
 @media (hover: hover) {
   .device-options label:hover {
-    background: var(--surface-hover, rgb(255 255 255 / 6%));
+    background: var(--surface-hover);
   }
 }
 .device-options input {
@@ -1405,7 +1349,7 @@
   .recording-clock i {
     animation: none;
   }
-  .mic-comparison article.latest {
+  .mic-comparison article.latest::after {
     animation: none;
   }
 }
@@ -1545,7 +1489,7 @@
 }
 @media (hover: hover) {
   .channel-line:hover:not(:has(.channel-select[aria-current="page"])) {
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .channel-line .channel-select,
@@ -1590,7 +1534,7 @@
   margin: 0 -4px;
   padding: 0 4px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font: inherit;
@@ -1796,7 +1740,7 @@
 @media (hover: hover) {
   .voice-stack:hover {
     color: var(--text);
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .voice-stack > svg {
@@ -1808,13 +1752,13 @@
 .voice-stack > .voice-connected-icon {
   width: 16px;
   height: 16px;
-  color: #8cb262;
+  color: var(--voice-session-green);
 }
 .voice-stack[aria-expanded="false"] > .lucide-chevron-down {
   transform: rotate(-90deg);
 }
 .voice-stack:focus-visible {
-  outline: 2px solid var(--terracotta-bright);
+  outline: 2px solid var(--terracotta);
   outline-offset: 1px;
 }
 .voice-stack-avatar {
@@ -1912,11 +1856,11 @@
 .voice-occupants .participant {
   gap: 8px;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 @media (hover: hover) {
   .voice-occupants .participant:hover {
-    background: var(--surface-raised);
+    background: var(--surface-hover);
   }
 }
 .voice-occupants .participant {

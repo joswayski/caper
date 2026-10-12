@@ -130,6 +130,18 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
              UPDATE public.notification_deliveries d SET locked_at=now(), attempts=LEAST(d.attempts+1, 32767)
              FROM due WHERE d.id=due.id
              RETURNING d.id, d.attempts, d.held, d.device_id, d.notification_id
+         ), audience AS (
+             -- One message fans out to a delivery per recipient device: count
+             -- each channel's audience once per batch, not once per delivery.
+             SELECT p.channel_id, p.actor_id,
+                    (SELECT count(*) FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
+                     WHERE sm.space_id=ch.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL AND sm.user_id<>p.actor_id
+                     AND (NOT ch.private OR s.owner_id=sm.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
+                          WHERE cm.channel_id=ch.id AND cm.user_id=sm.user_id AND cm.deleted_at IS NULL))) AS recipient_count
+             FROM (SELECT DISTINCT n.channel_id, n.actor_id FROM claimed c
+                   JOIN public.notifications n ON n.id=c.notification_id) p
+             JOIN public.channels ch ON ch.id=p.channel_id
+             LEFT JOIN public.spaces s ON s.id=ch.space_id
          )
          SELECT c.id, c.attempts, c.held, c.device_id, dev.transport, dev.address,
                 encode(substring(dev.account_session_hash FROM 1 FOR 8), 'hex') AS device_tag,
@@ -163,10 +175,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
                 COALESCE(author.display_name, m.payload->'author'->>'name', '') AS sender,
                 author.avatar_id AS sender_avatar_id,
-                (SELECT count(*) FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
-                 WHERE sm.space_id=ch.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL AND sm.user_id<>n.actor_id
-                 AND (NOT ch.private OR s.owner_id=sm.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
-                      WHERE cm.channel_id=ch.id AND cm.user_id=sm.user_id AND cm.deleted_at IS NULL))) AS recipient_count,
+                COALESCE(rc.recipient_count, 0) AS recipient_count,
                 recipient.external_id AS recipient,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile
          FROM claimed c
@@ -182,6 +191,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          LEFT JOIN public.notification_overrides co ON co.user_id=n.user_id AND co.channel_id=ch.id
          LEFT JOIN public.notification_overrides so ON so.user_id=n.user_id AND so.space_id=ch.space_id
          LEFT JOIN public.direct_reads r ON r.channel_id=n.channel_id AND r.user_id=n.user_id
+         LEFT JOIN audience rc ON rc.channel_id=n.channel_id AND rc.actor_id IS NOT DISTINCT FROM n.actor_id
          ORDER BY c.id",
     )
     .bind(BATCH)
@@ -328,19 +338,63 @@ async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
     }
 }
 
+/// Rows per prune statement: short locks and modest WAL per batch.
+const PRUNE_BATCH: i64 = 5_000;
+/// Batches per table per pass (every 10 minutes): about 14 million rows a day,
+/// far above one delivery per recipient device per message today.
+const PRUNE_BATCHES: usize = 20;
+
 /// Finished deliveries and expanded jobs are operational state: keep a week.
-pub(super) async fn prune(pool: &sqlx::PgPool) {
-    for statement in [
-        "DELETE FROM public.notification_deliveries WHERE id IN (
-             SELECT id FROM public.notification_deliveries
-             WHERE delivered_at < now() - interval '7 days' OR abandoned_at < now() - interval '7 days'
-             LIMIT 1000)",
-        "DELETE FROM public.notification_jobs WHERE id IN (
-             SELECT id FROM public.notification_jobs WHERE expanded_at < now() - interval '7 days'
-             LIMIT 1000)",
+/// Each table is drained in batches until nothing week-old remains or the pass
+/// reaches its cap; the next pass continues. Returns the rows deleted.
+pub(super) async fn prune(pool: &sqlx::PgPool) -> u64 {
+    // Oldest first through the partial indexes notification_deliveries_finished
+    // and notification_jobs_expanded; `= ANY(ARRAY(...))` keeps the delete on
+    // primary-key lookups instead of a hash join over the whole table.
+    let mut total = 0;
+    for (table, statement) in [
+        (
+            "notification_deliveries",
+            "DELETE FROM public.notification_deliveries WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_deliveries
+                 WHERE (delivered_at IS NOT NULL OR abandoned_at IS NOT NULL)
+                   AND LEAST(delivered_at, abandoned_at) < now() - interval '7 days'
+                 ORDER BY LEAST(delivered_at, abandoned_at) LIMIT $1))",
+        ),
+        (
+            "notification_jobs",
+            "DELETE FROM public.notification_jobs WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_jobs
+                 WHERE expanded_at IS NOT NULL AND expanded_at < now() - interval '7 days'
+                 ORDER BY expanded_at LIMIT $1))",
+        ),
     ] {
-        let _ = sqlx::query(statement).execute(pool).await;
+        let mut deleted = 0;
+        let mut drained = false;
+        for _ in 0..PRUNE_BATCHES {
+            let Ok(result) = sqlx::query(statement).bind(PRUNE_BATCH).execute(pool).await else {
+                break;
+            };
+            deleted += result.rows_affected();
+            if result.rows_affected() < PRUNE_BATCH.unsigned_abs() {
+                drained = true;
+                break;
+            }
+            // Let sends and deliveries interleave with a long backlog.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if deleted > 0 {
+            tracing::info!(
+                event_name = "push_pruned",
+                table,
+                deleted,
+                drained,
+                "operational rows pruned"
+            );
+        }
+        total += deleted;
     }
+    total
 }
 
 #[cfg(test)]

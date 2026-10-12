@@ -20,6 +20,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
+import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
 import LinkedText from "./LinkedText.tsx";
@@ -32,8 +33,10 @@ import {
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
-import { MAX_ATTACHMENTS, browserTransport, refreshAttachmentUrls, uploadPrepared, uploadSettings } from "./uploads.ts";
-import { prepareFile, type CompressionSettings } from "./prepare.ts";
+import DropOverlay from "./DropOverlay.tsx";
+import { carriesFiles } from "./drop.ts";
+import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
+import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
@@ -223,7 +226,7 @@ export default function Chat({
   /** People `@` can suggest; undefined until loaded. */ mentionMembers?: MentionCandidate[];
   /** Profile-card lookup, most specific first. */ mentionDirectory?: MentionCandidate[];
   onMessagePerson?: (username: string) => Promise<void>;
-  profileSpaces?: Space[];
+  profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
   focusMessage?: GeneralChatHistory["messages"][number];
 }) {
@@ -471,6 +474,8 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  const arrivals = useRef<Arrivals>(null);
+  arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
   // old first row also changes as an older page lands above it: it can join
   // that page's last group (losing its name and time) and loses its date
@@ -516,9 +521,13 @@ export default function Chat({
   }, [state.author?.id, readOnly]);
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const [attachError, setAttachError] = useState<string>();
-  const uploads = useRef(new Map<string, AbortController>());
+  const uploads = useRef(new Map<string, AttachmentUpload>());
+  const abandonUpload = useCallback((key: string) => {
+    uploads.current.get(key)?.release(true);
+    uploads.current.delete(key);
+  }, []);
   const objectUrls = useRef(new Set<string>());
-  // undefined is checking; null means unavailable. Neither removes the paperclip.
+  // undefined is checking; null means unavailable. Neither removes the attach button.
   const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
@@ -603,6 +612,14 @@ export default function Chat({
           firstMessageId = next.channelMessages?.[0]?.id;
         }
         // The composer clears the draft a new local send came from.
+        // Transfer ownership synchronously, before focus can renew an uncertain
+        // send or a fast HTTP/gateway confirmation can hide the pending render.
+        const sent = new Set(next.pendingSend?.attachments?.map((file) => file.id));
+        for (const [key, upload] of uploads.current) {
+          if (upload.state.attachment && sent.has(upload.state.attachment.id)) uploads.current.delete(key);
+        }
+        if (sent.size)
+          setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
         setState(next);
       },
       channelId,
@@ -682,11 +699,10 @@ export default function Chat({
   // Uploads belong to one channel; abandon them when it changes or unmounts.
   useEffect(
     () => () => {
-      for (const controller of uploads.current.values()) controller.abort();
-      uploads.current.clear();
+      for (const key of uploads.current.keys()) abandonUpload(key);
       setDrafts([]);
     },
-    [channelId],
+    [channelId, abandonUpload],
   );
   useEffect(
     () => () => {
@@ -698,6 +714,31 @@ export default function Chat({
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+
+  const retryUpload = (key: string) => {
+    void uploads.current
+      .get(key)
+      ?.ensure()
+      .catch(() => {});
+  };
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const upload of uploads.current.values())
+        if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
+      if (state.sendUploadFailed && state.pendingSend)
+        void clientRef.current?.send(state.pendingSend.text, {
+          threadRootId: state.pendingSend.threadRootId,
+          broadcast: state.pendingSend.broadcast,
+        });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [state.sendUploadFailed, state.pendingSend]);
 
   const addFiles = (files: File[]) => {
     const channel = state.channelId;
@@ -722,8 +763,15 @@ export default function Chat({
         localKind || file.type.startsWith("audio/") || ["application/pdf", "text/plain"].includes(file.type);
       const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
       objectUrls.current.add(localUrl);
-      const controller = new AbortController();
-      uploads.current.set(key, controller);
+      const upload = new AttachmentUpload(channel, file, settings, (next) => {
+        updateDraft(key, next);
+        if (next.attachment && localKind)
+          setLocalPreviews((current) => ({
+            ...current,
+            [next.attachment!.id]: { url: localUrl, video: localKind === "video" },
+          }));
+      });
+      uploads.current.set(key, upload);
       setDrafts((current) => [
         ...current,
         {
@@ -735,51 +783,12 @@ export default function Chat({
           progress: 0,
         },
       ]);
-      void (async () => {
-        try {
-          // Compressed in the browser first; the API only verifies what is stored.
-          const prepared = await prepareFile(
-            file,
-            settings,
-            (compressing) => updateDraft(key, { compressing }),
-            controller.signal,
-          );
-          if (controller.signal.aborted) return;
-          updateDraft(key, {
-            name: prepared.name,
-            storedSize: prepared.blob.size,
-          });
-          const attachment = await uploadPrepared(
-            channel,
-            prepared,
-            browserTransport,
-            (progress) => updateDraft(key, { progress }),
-            controller.signal,
-          );
-          updateDraft(key, { attachment, progress: 1 });
-        } catch (error) {
-          if (!controller.signal.aborted)
-            updateDraft(key, {
-              error: error instanceof Error ? error.message : "Upload failed.",
-            });
-        } finally {
-          uploads.current.delete(key);
-        }
-      })();
+      void upload.ensure().catch(() => {});
     }
   };
 
-  // A new local send takes its files out of the tray, as the composer clears its text.
-  const pendingSendId =
-    state.pendingSend && !state.pendingSend.threadRootId ? state.pendingSend.clientMessageId : undefined;
-  useLayoutEffect(() => {
-    const sent = new Set((state.pendingSend?.attachments ?? []).map((attachment) => attachment.id));
-    if (sent.size) setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
-  }, [pendingSendId]);
-
   const removeDraft = (key: string) => {
-    uploads.current.get(key)?.abort();
-    uploads.current.delete(key);
+    abandonUpload(key);
     setDrafts((current) => current.filter((item) => item.key !== key));
   };
 
@@ -814,6 +823,19 @@ export default function Chat({
     if (state.pendingSend && !state.pendingSend.threadRootId)
       listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [state.pendingSend?.clientMessageId]);
+
+  // An updated row that keeps the list height never reaches totalListHeightChanged.
+  // Drop the follow intent once Virtuoso has measured it (its ResizeObserver
+  // defers size updates by a frame), so a later scrollbar drag is not snapped back.
+  useLayoutEffect(() => {
+    if (!followUpdatedRows.current) return;
+    let frames = 3;
+    let frame = requestAnimationFrame(function settle() {
+      if (--frames) frame = requestAnimationFrame(settle);
+      else followUpdatedRows.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [state.channelMessages]);
 
   const loadOlder = () => {
     void clientRef.current?.loadOlder();
@@ -899,6 +921,12 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  arrivals.current.observe(
+    "channel",
+    state.channelId ?? "",
+    messages.map((message) => message.clientMessageId),
+    state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
+  );
   const scrollIndex =
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
@@ -970,15 +998,18 @@ export default function Chat({
     return () => clearTimeout(timer);
   }, [typingLabel]);
   const sendDraft = async (text: string) => {
-    if (!state.pendingSend && drafts.some((item) => !item.attachment))
-      throw new Error(
-        drafts.some((item) => item.error)
-          ? "Remove files that failed to upload first."
-          : "Wait for files to finish uploading.",
-      );
+    const client = clientRef.current;
+    const sources = !state.pendingSend ? drafts.map((draft) => uploads.current.get(draft.key)!) : [];
     setAttachError(undefined);
+    let attachments: ChatAttachment[];
+    try {
+      attachments = await Promise.all(sources.map((upload) => upload.ensure()));
+    } catch {
+      return;
+    } // The file chip owns the upload error and its Retry action.
+    if (client !== clientRef.current || sources.some((upload) => ![...uploads.current.values()].includes(upload)))
+      return;
     // Sent files show the sender's local copies until processing finishes.
-    const attachments = drafts.flatMap((item) => (item.attachment ? [item.attachment] : []));
     const local = Object.fromEntries(
       drafts.flatMap((item) =>
         item.attachment && item.localUrl && item.localKind
@@ -987,7 +1018,7 @@ export default function Chat({
       ),
     );
     if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
-    if ((await clientRef.current?.send(text, { attachments })) && state.hasNewer) {
+    if ((await client?.send(text, { attachments, uploads: sources })) && state.hasNewer) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
     }
@@ -1107,7 +1138,7 @@ export default function Chat({
             </div>
           )}
           <article
-            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
             onPointerDown={(event) => {
@@ -1315,7 +1346,8 @@ export default function Chat({
               {pending && state.sendError && (
                 <div className="chat-send-status chat-send-error" role="alert">
                   <span>
-                    {state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}
+                    {!state.sendUploadFailed && (state.sendRejected ? "Not sent. " : "Not confirmed yet. ")}
+                    {state.sendError}
                   </span>
                   {state.sendRejected ? (
                     <>
@@ -1336,7 +1368,7 @@ export default function Chat({
                     </>
                   ) : (
                     <button type="button" onClick={() => composerRef.current?.submit()}>
-                      Retry send
+                      {state.sendUploadFailed ? "Retry" : "Retry send"}
                     </button>
                   )}
                 </div>
@@ -1349,6 +1381,28 @@ export default function Chat({
   };
 
   const canAttach = signedIn && uploadsEnabled && !readOnly && state.phase === "ready" && !!state.channelId;
+  // Child elements fire their own enter/leave pairs; the overlay stays up until the last leave.
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+  const endDrop = () => {
+    dragDepth.current = 0;
+    setDropping(false);
+  };
+  useEffect(() => {
+    // A file dropped beside the conversation would otherwise replace the app with it.
+    const refuse = (event: DragEvent) => {
+      if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.type === "dragover" && event.dataTransfer) event.dataTransfer.dropEffect = "none";
+      if (event.type === "drop") endDrop();
+    };
+    window.addEventListener("dragover", refuse);
+    window.addEventListener("drop", refuse);
+    return () => {
+      window.removeEventListener("dragover", refuse);
+      window.removeEventListener("drop", refuse);
+    };
+  }, []);
   const pinsToggle = state.phase === "ready" && (
     <button
       type="button"
@@ -1421,15 +1475,29 @@ export default function Chat({
       <section
         className="chat-panel"
         aria-labelledby="chat-heading"
+        onDragEnter={(event) => {
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          dragDepth.current += 1;
+          setDropping(true);
+        }}
+        onDragLeave={() => {
+          if (!dragDepth.current) return;
+          dragDepth.current -= 1;
+          if (!dragDepth.current) setDropping(false);
+        }}
         onDragOver={(event) => {
-          if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault();
+          if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
         }}
         onDrop={(event) => {
+          endDrop();
           if (!canAttach || !event.dataTransfer.files.length) return;
           event.preventDefault();
           addFiles([...event.dataTransfer.files]);
         }}
       >
+        {dropping && canAttach && <DropOverlay channelName={channelName} direct={direct} attached={drafts.length} />}
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
@@ -1702,6 +1770,10 @@ export default function Chat({
                 onTouchMove={() => {
                   followUpdatedRows.current = false;
                 }}
+                // Covers scrollbar drags, which send no wheel or touch events.
+                onPointerDown={() => {
+                  followUpdatedRows.current = false;
+                }}
                 onKeyDown={(event) => {
                   followUpdatedRows.current = false;
                   if (event.target === event.currentTarget && event.key === "End") {
@@ -1768,7 +1840,7 @@ export default function Chat({
             target={mentionCard}
             onClose={() => setMentionCard(undefined)}
             onMessage={onMessagePerson}
-            spaces={profileSpaces}
+            spaces={profileSpaces?.(mentionCard.person.id)}
             onBlock={
               onBlockAuthor &&
               ((author) => {
@@ -1924,16 +1996,16 @@ export default function Chat({
                 signedIn || drafts.length
                   ? {
                       enabled: canAttach,
+                      // Like every client: checking while settings or the conversation load, else unavailable.
                       disabledReason:
-                        compression === undefined
-                          ? "Checking file uploads…"
-                          : compression === null
-                            ? "File uploads are unavailable"
-                            : "Waiting for the conversation…",
+                        compression === null || state.phase === "error" || readOnly || !signedIn
+                          ? "File uploads are unavailable"
+                          : "Checking file uploads…",
                       drafts,
                       error: attachError,
                       onAdd: addFiles,
                       onRemove: removeDraft,
+                      onRetry: retryUpload,
                     }
                   : undefined
               }
@@ -1950,6 +2022,7 @@ export default function Chat({
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         renderMessage={renderMessage}
+        arrivals={arrivals.current}
         onClose={closeThread}
       />
       {state.phase === "ready" && !readOnly && editMessage && clientRef.current && (

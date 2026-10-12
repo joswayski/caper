@@ -19,6 +19,12 @@ public enum CaperTheme {
     public static let muted = Color(red: 185/255, green: 188/255, blue: 190/255)
     public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
+    /// Primary actions are eggshell with blackout labels (shared/design.css --action);
+    /// terracotta stays for selection and focus.
+    public static let action = Color(red: 241/255, green: 237/255, blue: 228/255)
+    public static let actionHover = Color(red: 251/255, green: 249/255, blue: 244/255)
+    public static let actionPress = Color(red: 221/255, green: 215/255, blue: 203/255)
+    public static let onAction = blackout
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
     public static let voiceSessionGreen = Color(red: 74/255, green: 168/255, blue: 107/255)
     public static let pinGold = Color(red: 228/255, green: 199/255, blue: 106/255)
@@ -143,8 +149,6 @@ private struct FirstSpaceView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
                     .accessibilityIdentifier("first-space-create")
-                Button("Direct messages") { model.navigationOpen = true }
-                    .accessibilityIdentifier("first-space-direct-messages")
                 if !model.canCreateSpace, model.limits != nil {
                     Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
@@ -245,6 +249,8 @@ private protocol SlideDrawer: AnyObject {
     static let opening: CGFloat = 1
     static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
     static let tap = Animation.interpolatingSpring(duration: 0.22, bounce: 0)
+    /// While a released swipe navigates, which already set its speed-matched curve.
+    @ObservationIgnored var releasing = false
 }
 
 /// Marks a Browse/conversation switch. Only the conversation layer moves with
@@ -309,6 +315,8 @@ private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 
 // Horizontal swipes start across the content surface. Attach outside text entry
 // and audio controls so those keep their own selection and slider gestures.
+// The whole view takes touches even while disabled, so attach it only where
+// the view itself would take them.
 private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
@@ -354,7 +362,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                         drawer.drag = nil
                         if commit {
                             // Only Browse marks its switch; the member list animates inside the conversation.
-                            if Drawer.self == BrowseDrawer.self { withTransaction(\.browseSlide, true, navigate) } else { navigate() }
+                            if let browse = drawer as? BrowseDrawer {
+                                browse.releasing = true
+                                withTransaction(\.browseSlide, true, navigate)
+                                browse.releasing = false
+                            } else { navigate() }
                         }
                     }
                 }, including: enabled ? .all : .subviews)
@@ -596,6 +608,7 @@ private struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(SideClip())
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
+                .onChange(of: narrow, initial: true) { _, narrow in model.narrowLayout = narrow }
                 .onChange(of: showsBrowse) { _, _ in endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -605,8 +618,10 @@ private struct WorkspaceView: View {
         }
     }
 
-    /// Buttons switch with a quicker version of the finger's slide.
+    /// Buttons switch with a quicker version of the finger's slide. A released
+    /// swipe keeps the curve it set to match the finger's speed.
     private func slide(open: Bool) {
+        if browseDrawer.releasing { model.navigationOpen = open; return }
         var transaction = Transaction(animation: BrowseDrawer.tap)
         transaction.browseSlide = true
         withTransaction(transaction) { model.navigationOpen = open }
@@ -640,6 +655,7 @@ private struct WorkspaceView: View {
                         Color.black.opacity(0.55).ignoresSafeArea()
                             .onTapGesture { if !modalDismissDisabled { sheet = nil } }
                             .accessibilityHidden(true)
+                            .modifier(Entrance.scrim)
                         DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
                             WorkspaceSheetView(item: item, model: model) { sheet = nil }
                                 .id(item.id)
@@ -649,6 +665,7 @@ private struct WorkspaceView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                             .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
+                            .modifier(Entrance.dialog)
                             .padding(.top, top)
                             .accessibilityAddTraits(.isModal)
                             .onPreferenceChange(DialogDismissDisabled.self) { modalDismissDisabled = $0 }
@@ -919,15 +936,22 @@ private struct ChannelSidebar: View {
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
                     ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
                         HStack(spacing: 4) {
+                            // Includes unjoined channels, such as one where you were mentioned.
+                            let unread = model.channelUnread(channel.id)
                             Button { Task { await model.select(channel: channel) } } label: {
-                                HStack { CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer(); Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10)) }
-                                    // The whole row is the target, including the gap before Joined/Preview.
-                                    .padding(.vertical, 6)
-                                    #if os(iOS)
-                                    .frame(minHeight: 44)
-                                    #endif
-                                    .contentShape(Rectangle())
+                                HStack {
+                                    CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer()
+                                    if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                                    Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10))
+                                }
+                                // The whole row is the target, including the gap before Joined/Preview.
+                                .padding(.vertical, 6)
+                                #if os(iOS)
+                                .frame(minHeight: 44)
+                                #endif
+                                .contentShape(Rectangle())
                             }.buttonStyle(.plain).modifier(ControlHover())
+                                .accessibilityValue(unread ? "Unread activity" : "")
                             // Web's owner-only Manage button, also for channels you haven't joined.
                             if model.isOwner {
                                 Button { sheet = .manageChannel(channel) } label: { CaperIcon(name: "settings", size: 16) }
@@ -1157,7 +1181,7 @@ private struct ChannelSidebarItem: View {
         let base: String = model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : ""
         return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
-    private var unread: Bool { model.unreadSpaces.contains { $0.channels.contains { $0.id == channel.id } } }
+    private var unread: Bool { model.channelUnread(channel.id) }
 
     @ViewBuilder private var optionsMenuItems: some View {
         if model.isOwner {
@@ -1180,9 +1204,10 @@ private struct ChannelSidebarItem: View {
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
                             .opacity(nameOpacity)
                         Text(channel.name).lineLimit(1).opacity(nameOpacity)
-                        if muted { MutedBell() }
                         Spacer(minLength: 0)
+                        // Web and Android order: the unread dot, then the bell.
                         if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                        if muted { MutedBell() }
                         if let sessionStartedAt {
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
@@ -1784,6 +1809,10 @@ private struct MembersOverlay: View {
             Color.black.opacity(0.25)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: close)
+                // Each layer swipes closed within its own bounds, before its
+                // margins: closed, the overlay must leave the conversation's
+                // header and timeline gestures alone.
+                .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 50)
                 .transaction(settle) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
@@ -1802,13 +1831,13 @@ private struct MembersOverlay: View {
                     RoundedRectangle(cornerRadius: 16).fill(CaperTheme.sidebar)
                         .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
                 }
+                .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
                 .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
-        .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
     }
 }
@@ -1859,16 +1888,18 @@ private extension View {
 
 private struct VoiceRoster: View {
     @Bindable var voice: VoiceClient
+    let model: AppModel
     @State private var audioParticipantID: String? = nil
-    init(model: AppModel) { voice = model.voice }
+    init(model: AppModel) { voice = model.voice; self.model = model }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
+                let name = voice.isSelf(participantID: participant.id) ? (model.account?.displayName ?? participant.name) : participant.name
                 HStack(spacing: 8) {
-                    Avatar(name: participant.name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
+                    Avatar(name: name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
                         .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                        Text(name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
                             .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
                         if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
                             HStack(spacing: 4) {
@@ -2281,13 +2312,18 @@ private struct TimelinePin: Equatable {
     var contentHeight: CGFloat
     var atBottom: Bool
     var firstID: String?
+    /// The last rows, whose reactions, edits and files grow the end in place.
+    var recent: [TimelineEntry]
+    /// More than a screen of short messages.
+    static let recentRows = 20
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
-    init(_ geometry: GeometryProxy, viewport: String, firstID: String?) {
+    init(_ geometry: GeometryProxy, viewport: String, firstID: String?, recent: [TimelineEntry]) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
         contentHeight = geometry.size.height
         atBottom = visible.maxY >= geometry.size.height - 24
         self.firstID = firstID
+        self.recent = recent
     }
 }
 
@@ -2297,11 +2333,13 @@ private final class TimelinePinBox {
     private var last: TimelinePin?
     /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
     /// A changed first row means history was prepended/replaced, not tail growth.
+    /// Growth that leaves the end without any recent row changing is LazyVStack
+    /// measuring rows as the reader starts scrolling up; that must not snap back.
     func needsReveal(to pin: TimelinePin) -> Bool {
         defer { last = pin }
         guard let last else { return false }
         return last.atBottom && last.firstID == pin.firstID &&
-            (pin.height < last.height || pin.contentHeight > last.contentHeight)
+            (pin.height < last.height || (pin.contentHeight > last.contentHeight && (pin.atBottom || pin.recent != last.recent)))
     }
 }
 
@@ -2331,6 +2369,8 @@ private struct ChatView: View {
     /// sheet on iPhone. Opening another pill replaces it.
     @State private var mentionCard: MentionCardTarget?
     @State private var mentionPointer = MentionPointer()
+    /// Files are being dragged over the conversation.
+    @State private var fileDropTargeted = false
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -2346,6 +2386,7 @@ private struct ChatView: View {
     /// The row that was first before older history loaded: kept in place once it arrives.
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
+    @State private var arrivals = MessageArrivals()
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
     /// Blocked runs shown in place (in memory only).
@@ -2444,6 +2485,7 @@ private struct ChatView: View {
             showingEmojiPicker = false
             reactionMessage = message
         }
+        .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
     }
     @ViewBuilder private func blockMenuItem(_ conversation: DirectMessageConversation) -> some View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
@@ -2510,7 +2552,7 @@ private struct ChatView: View {
                 if chat.threadRootID != nil {
                     if narrow {
                         #if os(macOS)
-                        threadContent.frame(maxWidth: .infinity)
+                        threadContent.frame(maxWidth: .infinity).modifier(Entrance.panel)
                         #endif
                     } else { resizableThread(maximum: maximum) }
                 }
@@ -2585,6 +2627,7 @@ private struct ChatView: View {
                         return .handled
                     }
             }
+            .modifier(Entrance.panel)
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -2662,9 +2705,14 @@ private struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     let entries = timelineEntries
+                    let recentRows = Array(entries.suffix(TimelinePin.recentRows))
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
                     let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
+                    // Before any row is built, so rows see this render's arrivals.
+                    let _ = arrivals.observe("channel", key: chat.channelID ?? "",
+                                             ids: chat.channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
+                                             live: !chat.loading && !chat.loadFailed && !chat.hasNewer && !chat.loadingNewer)
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
                             if !chat.loadFailed { HStack(spacing: 6) {
@@ -2710,10 +2758,11 @@ private struct ChatView: View {
                                     ChatDateDivider(createdAt: pending.createdAt)
                                 }
                                 PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, grouped: grouping.pendingGrouped,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
+                                    .modifier(Entrance.message(arrivals.claim(pending.id)))
                             }.id("pending-\(pending.id)")
                                 .onAppear { revealPending(proxy) }
                         }
@@ -2741,7 +2790,7 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                     // Reactions grow existing rows; a draft or keyboard shrinks
                     // the viewport. Both retain a reader already at the bottom.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
@@ -2877,7 +2926,9 @@ private struct ChatView: View {
                             Button("Review reply") { Task { await chat.openThread(root) } }
                         }.font(CaperTheme.font(11))
                     }
+                    #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
+                    #endif
                     HStack(alignment: .bottom, spacing: 0) {
                         AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
@@ -2899,6 +2950,10 @@ private struct ChatView: View {
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    #if os(macOS)
+                    // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
+                    .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
+                    #endif
                 }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
@@ -2929,16 +2984,25 @@ private struct ChatView: View {
         }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
-            #if os(macOS)
-            .dropDestination(for: URL.self) { urls, _ in
-                guard chat.canAttach else { return false }
-                let files = urls.filter(\.isFileURL).prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
-                guard !files.isEmpty else { return false }
-                chat.addAttachments(files)
+            // Finder, Files, Photos and other apps (iPad split view and Slide Over).
+            // addAttachments keeps the first files that fit and removes the rest.
+            .dropDestination(for: DroppedAttachment.self) { items, _ in
+                guard chat.canAttach, !items.isEmpty else {
+                    items.forEach { AttachmentStaging.remove($0.file.url) }
+                    return false
+                }
+                chat.addAttachments(items.map(\.file))
                 return true
+            } isTargeted: { fileDropTargeted = $0 }
+            .overlay {
+                if fileDropTargeted && chat.canAttach {
+                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil,
+                                                         attached: chat.attachmentDrafts.count)
+                    FileDropOverlay(title: text.title, detail: text.detail)
+                }
             }
-            #endif
             #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ChatComposerAnchorKey>(controller: composerAutocomplete))
             // Drawn above the whole conversation so the timeline's clipping
             // and later rows never cover a hovered chip's tooltip.
             .overlayPreferenceValue(ReactionTooltipKey.self) { tooltip in
@@ -2946,6 +3010,7 @@ private struct ChatView: View {
                     if let tooltip {
                         let chip = proxy[tooltip.anchor]
                         ReactionTooltipBubble(emoji: tooltip.emoji, text: tooltip.text)
+                            .modifier(Entrance.anchored)
                             // Start at the chip, kept 8 points inside the conversation.
                             .alignmentGuide(.leading) { size in
                                 let rightmost: CGFloat = max(8, proxy.size.width - size.width - 8)
@@ -3080,6 +3145,7 @@ private struct NativeThreadView: View {
     /// As in the channel: the first reply before older ones load stays in place.
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
+    @State private var arrivals = MessageArrivals()
     private func entries(_ messages: [ChatMessage]) -> [TimelineEntry] {
         BlockedMessages.entries(messages, blocked: chat.blockedAuthorIDs, viewerID: chat.viewerID, revealed: revealedBlocked)
     }
@@ -3087,6 +3153,7 @@ private struct NativeThreadView: View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
+            .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
     /// Replies group among themselves; the root never groups (empty `grouping`).
@@ -3141,11 +3208,18 @@ private struct NativeThreadView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
+                    let replyRows = entries(replies)
+                    let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
+                    // The root's reactions grow the thread as well as its replies'.
+                    let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
                     LazyVStack(spacing: 0) {
-                        let replyRows = entries(replies)
                         let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
                         let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
-                        if let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID }) {
+                        // Before any row is built, so rows see this render's arrivals. The root is never one.
+                        let _ = arrivals.observe("thread", key: chat.threadRootID ?? "",
+                                                 ids: chat.threadMessages.map(\.clientMessageId) + (threadPending.map { [$0.id] } ?? []),
+                                                 live: chat.threadRootID != nil && !chat.threadLoading && !chat.threadHasNewer)
+                        if let root {
                             threadEntries(entries([root]))
                             if let summary = root.thread, summary.replyCount > 0 {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
@@ -3173,16 +3247,20 @@ private struct NativeThreadView: View {
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = threadPending {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty,
-                                grouped: grouping.pendingGrouped,
+                                uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
                                 edit: { if chat.discardRejected() { chat.threadDraft = pending.text } }, dismiss: { _ = chat.discardRejected() })
+                                .modifier(Entrance.message(arrivals.claim(pending.id)))
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
+                #if os(macOS)
+                .accessibilityIdentifier("thread-timeline")
+                #endif
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id) { _, id in if chat.focusedMessageID == nil, let id { proxy.scrollTo(id, anchor: .bottom) } }
@@ -3213,7 +3291,9 @@ private struct NativeThreadView: View {
                             .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
                     }
                 }
+                #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
+                #endif
                 NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
                                       mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
                     .frame(minHeight: 72, maxHeight: 174)
@@ -3223,6 +3303,9 @@ private struct NativeThreadView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     #if os(iOS)
                     .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
+                    #if os(macOS)
+                    .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
@@ -3238,6 +3321,9 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            #if os(macOS)
+            .modifier(ComposerSuggestionsOverlay<ThreadComposerAnchorKey>(controller: composerAutocomplete))
+            #endif
             .sheet(item: $reactionMessage) { message in
                 #if os(iOS)
                 MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $showingEmojiPicker,
@@ -3309,13 +3395,8 @@ private struct TypingDots: View {
 }
 
 private struct PrimaryIconButton: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.foregroundStyle(CaperTheme.text)
-            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta, ignoresSafeAreaEdges: [])
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.45)
-            .modifier(ControlHover())
+        configuration.label.modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
 }
 
@@ -3761,16 +3842,22 @@ private struct MentionCardHost: ViewModifier {
     @Binding var target: MentionCardTarget?
     let model: AppModel
     let viewerID: String?
+    /// Block closes the card first, as on web, so the confirmation belongs to the host.
+    @State private var blockTarget: BlockTarget?
 
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
+                            requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
+        .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #else
         content.sheet(item: $target) { target in
-            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID)) { self.target = nil }
+            MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
+                            requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
+        .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #endif
     }
 
@@ -3829,15 +3916,23 @@ private struct MentionPillInteraction: ViewModifier {
 private struct MentionCardView: View {
     @Bindable var model: AppModel
     let person: MentionCardPerson
+    /// Shows the host's block confirmation once the card has closed.
+    let requestBlock: (BlockTarget) -> Void
     let close: () -> Void
     @State private var pending: String?
     @State private var error: String?
     @State private var status: String?
     @State private var choosingSpace = false
-    @State private var invited: Set<String> = []
-    @State private var blockTarget: BlockTarget?
+    /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
+    @State private var invited: [String: String] = [:]
+    @State private var blockRequested = false
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
-    private var ownedSpaces: [Space] { model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true } }
+    private var ownedSpaces: [Space] {
+        // Don't offer the open space to someone who is already in it.
+        let open: String? = model.detail.flatMap { detail in detail.members.contains(where: { $0.id == person.id }) ? detail.space.id : nil }
+        return model.spaces.filter { $0.ownerId == model.account?.id && $0.demo != true && $0.id != open }
+    }
+    private static let redundantInvitation = ["user already in space": "Member", "user already invited": "Invited"]
 
     var body: some View {
         ScrollView {
@@ -3868,20 +3963,20 @@ private struct MentionCardView: View {
                         if choosingSpace {
                             VStack(spacing: 6) {
                                 ForEach(ownedSpaces) { space in
-                                    Button(pending == space.id ? "Sending…" : space.name + (invited.contains(space.id) ? " · Invited" : "")) {
+                                    Button(pending == space.id ? "Sending…" : space.name + (invited[space.id].map { " · \($0)" } ?? "")) {
                                         Task { await invite(space) }
                                     }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                                        .disabled(pending != nil || invited.contains(space.id))
+                                        .disabled(pending != nil || invited[space.id] != nil)
                                 }
                             }.accessibilityLabel("Spaces you own")
                         }
                     }
                     Button {
-                        if blocked { Task { await changeBlock(false) } }
-                        else { blockTarget = BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId) }
+                        if blocked { Task { await unblock() } }
+                        else { blockRequested = true; close() }
                     } label: {
                         Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
-                            .foregroundStyle(CaperTheme.terracottaBright)
+                            .foregroundStyle(CaperTheme.error)
                     }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
                         .accessibilityIdentifier("mention-card-block")
                     if let status {
@@ -3898,8 +3993,11 @@ private struct MentionCardView: View {
             }.padding(16)
         }
         #if os(macOS)
-        // A fixed width keeps the popover's size independent of its content.
-        .frame(width: 280, height: person.isSelf ? 172 : choosingSpace ? 460 : blocked ? 210 : 320, alignment: .topLeading)
+        // A fixed width keeps text wrapping stable; the height fits the
+        // content, and only a long space list scrolls.
+        .frame(width: 280, alignment: .topLeading)
+        .frame(maxHeight: 460)
+        .fixedSize(horizontal: false, vertical: true)
         .background(CaperTheme.surface)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3907,7 +4005,11 @@ private struct MentionCardView: View {
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
         #endif
-        .modifier(BlockConfirmation(target: $blockTarget, block: { _ in await changeBlock(true) }))
+        .onDisappear {
+            if blockRequested {
+                requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
+            }
+        }
         // Contain, so this identifier does not replace each child's own.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mention-card")
@@ -3924,25 +4026,28 @@ private struct MentionCardView: View {
     }
 
     private func invite(_ space: Space) async {
-        guard pending == nil, !blocked, !invited.contains(space.id), let username = person.username else { return }
+        guard pending == nil, !blocked, invited[space.id] == nil, let username = person.username else { return }
         pending = space.id; error = nil; status = nil
         defer { pending = nil }
         do {
             try await model.addSpaceMember(username: username, spaceID: space.id)
-            invited.insert(space.id)
+            invited[space.id] = "Invited"
             status = "Invitation sent to \(space.name)."
-        } catch { self.error = FriendlyError.message(for: error) }
+        } catch {
+            // Redundant invitations still mark the row so it isn't retried.
+            if let already = (error as? APIError).flatMap({ Self.redundantInvitation[$0.message] }) { invited[space.id] = already }
+            self.error = FriendlyError.message(for: error)
+        }
     }
 
-    private func changeBlock(_ block: Bool) async {
+    /// Unblock keeps the card open and says so, as on web.
+    private func unblock() async {
         guard pending == nil else { return }
-        pending = block ? "block" : "unblock"; error = nil
+        pending = "unblock"; error = nil
         defer { pending = nil }
         do {
-            if block {
-                try await model.block(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
-            } else { try await model.unblock(accountID: person.id) }
-            status = block ? "Blocked." : "Unblocked."
+            try await model.unblock(accountID: person.id)
+            status = "Unblocked."
         } catch { self.error = FriendlyError.message(for: error) }
     }
 }
@@ -4074,6 +4179,41 @@ private struct ReactionTooltip {
     let text: String
     let anchor: Anchor<CGRect>
 }
+
+#if os(macOS)
+/// A composer box whose suggestions the surrounding conversation draws.
+private protocol ComposerAnchorKey: PreferenceKey where Value == Anchor<CGRect>? {}
+extension ComposerAnchorKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
+}
+private enum ChatComposerAnchorKey: ComposerAnchorKey {}
+private enum ThreadComposerAnchorKey: ComposerAnchorKey {}
+
+/// Mac suggestions cover history above the composer without resizing it or
+/// triggering bottom-follow. They are drawn by the whole conversation, not as
+/// an overflowing overlay on the composer: clicks and accessibility hit-testing
+/// only reach views inside their parent's frame.
+private struct ComposerSuggestionsOverlay<Key: ComposerAnchorKey>: ViewModifier {
+    @ObservedObject var controller: ComposerAutocompleteController
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(Key.self) { anchor in
+            // Only while suggestions show, so no layer covers the conversation otherwise.
+            if let anchor, controller.match != nil {
+                GeometryReader { proxy in
+                    let box = proxy[anchor]
+                    ComposerSuggestionsView(controller: controller)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: box.width)
+                        .alignmentGuide(.leading) { _ in -box.minX }
+                        .alignmentGuide(.top) { size in -(box.minY - 6 - size.height) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+}
+#endif
 
 private struct ReactionTooltipKey: PreferenceKey {
     static var defaultValue: ReactionTooltip? { nil }
@@ -4679,6 +4819,7 @@ private struct ReactionPicker: View {
 private struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
     let rejected: Bool; let canEdit: Bool
+    var uploadFailed = false
     /// Under the author's own previous row: no avatar or name, as `MessageRow`.
     var grouped = false
     let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
@@ -4703,13 +4844,13 @@ private struct PendingMessageRow: View {
                 }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
+                        Text(uploadFailed ? error : "\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
                         HStack(spacing: 12) {
                             if rejected {
                                 Button("Edit", action: edit).disabled(!canEdit)
                                     .help(canEdit ? "" : "Clear your current draft to edit this message.")
                                 Button("Dismiss", action: dismiss)
-                            } else { Button("Retry send", action: retry) }
+                            } else { Button(uploadFailed ? "Retry" : "Retry send", action: retry) }
                         }
                     }
                     .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
@@ -5048,7 +5189,7 @@ private struct BlockConfirmation: ViewModifier {
     }
 }
 
-/// Account privacy: who can start a DM with you, and blocked accounts.
+/// Account privacy: who can start a DM with you, blocked accounts, and how to delete your account.
 private struct PrivacySheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
@@ -5120,6 +5261,14 @@ private struct PrivacySheet: View {
                     if let unblockError {
                         Text(unblockError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                     }
+                    Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
+                    Text("Delete account").font(CaperTheme.font(13, weight: .bold))
+                    Link(destination: PrivacySettings.deleteAccountURL) {
+                        Text("How to delete your account").font(CaperTheme.font(13)).underline()
+                            .foregroundStyle(CaperTheme.text)
+                    }
+                    .frame(minHeight: 44).modifier(ControlPointer())
+                    .accessibilityIdentifier("delete-account-link")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -5514,13 +5663,10 @@ private struct LoginError: View {
 /// right-aligned, at least `minWidth` wide so a pending label never resizes it.
 private struct LoginActionButton: ButtonStyle {
     var minWidth: CGFloat? = nil
-    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(16, weight: .bold)).foregroundStyle(CaperTheme.text)
+        configuration.label.font(CaperTheme.font(16, weight: .bold))
             .padding(.horizontal, 20).frame(minWidth: minWidth).frame(height: 58)
-            .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(isEnabled ? 1 : 0.45).modifier(ControlHover())
+            .modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
 }
 
@@ -5533,7 +5679,8 @@ private struct LoginActionLabel: View {
     var body: some View {
         HStack(spacing: 12) {
             if busy {
-                ProgressView().controlSize(.small).tint(CaperTheme.text)
+                // Busy buttons are disabled, so the spinner sits on neutral chrome.
+                ProgressView().controlSize(.small).tint(CaperTheme.muted)
                 Text(busyTitle)
             } else {
                 Text(title)
@@ -5994,8 +6141,33 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 }
 
 struct CaperPrimaryButton: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45).modifier(ControlHover()) }
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).frame(maxWidth: .infinity).frame(height: 42).modifier(PrimaryActionFill(pressed: configuration.isPressed)) }
+}
+
+/// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
+/// deepens on press. A white hover wash would vanish on eggshell, so focus is a terracotta ring.
+/// Disabled, it steps back to neutral chrome rather than a faded fill.
+private struct PrimaryActionFill: ViewModifier {
+    let pressed: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content.foregroundStyle(enabled ? CaperTheme.onAction : CaperTheme.muted)
+            .background(
+                !enabled ? CaperTheme.raised : pressed ? CaperTheme.actionPress : hovered ? CaperTheme.actionHover : CaperTheme.action,
+                ignoresSafeAreaEdges: []
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(!enabled ? CaperTheme.border : focused ? CaperTheme.terracottaBright : .clear, lineWidth: focused && enabled ? 2 : 1)
+                    .allowsHitTesting(false)
+            }
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
+    }
 }
 
 /// Profile entry points keep their content's size and use the common control feedback.

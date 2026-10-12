@@ -412,8 +412,8 @@ impl Forwarding {
                         if self.error.is_some() && destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
-                        egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(232, 189, 113, 18)).corner_radius(8).inner_margin(8).show(ui, |ui| {
-                            ui.label(RichText::new("Heads up! New reactions and replies appear here automatically.").size(12.0).color(egui::Color32::from_rgb(232, 189, 113)));
+                        egui::Frame::new().fill(crate::PIN_WASH).corner_radius(8).inner_margin(8).show(ui, |ui| {
+                            ui.label(RichText::new("Heads up! New reactions and replies appear here automatically.").size(12.0).color(crate::PIN_GOLD));
                         });
                         if let Some(page) = page {
                             if let Some(root) = &page.root { original(ui, root, textures); }

@@ -1061,8 +1061,10 @@ for tabs open longer than a URL's lifetime.
   the whole allowance. Space owners are not charged for members' uploads.
 - Quota counts what is **stored** (after browser compression), and reservations
   count immediately so parallel uploads cannot overshoot.
-- Bytes stay counted until the purge loop removes the objects. That bounds
-  upload/delete/re-upload churn to the allowance.
+- Bytes stay counted until the purge loop successfully deletes the original and
+  preview. Late storage writes may briefly recreate uncharged bytes until the
+  reconciliation sweep removes them; quota is accounting, not a strict ceiling
+  on instantaneous R2 bytes. Reservation rate limits remain in place.
 - Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
   not implemented.
 
@@ -1071,7 +1073,15 @@ for tabs open longer than a URL's lifetime.
 Every response or socket frame that carries a message signs URLs as it leaves:
 history, the send response, and both gateway paths (live and replay, including
 the legacy socket). URLs look like
-`https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+`https://cdn.caper.chat/assets/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+The public `/assets/{id}` path maps to the existing `original/{id}` R2 key;
+the HMAC still signs that storage key. Previews stay at `/preview/{id}`.
+The Worker also accepts already-issued `/original/{id}` links with their
+existing signatures, and both main-file paths share the same edge cache entry.
+No stored objects, upload URLs or database records move. Roll out the updated
+web/native notification downloaders and the CDN Worker before the API and
+gateway begin issuing `/assets` URLs. Older clients can still open files, but
+their notification downloaders reject the new path and show text only.
 Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
 cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
@@ -1129,8 +1139,11 @@ Rules shared by every client:
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
-  never re-compressed. A size-only transcode is kept only when at least 10%
-  smaller; the audio track is never dropped.
+  never re-compressed. The output bitrate is the target at the output size,
+  but never above the source's own bitrate (floor still applies), so a lean
+  HEVC clip converted only for compatibility does not grow. A size-only
+  transcode is kept only when at least 10% smaller; the audio track is never
+  dropped.
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
@@ -1164,7 +1177,7 @@ open-source Chromium builds without H.264 keep the original file.
 | --- | --- | --- | --- | --- |
 | Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
-| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetExportSession H.264 presets; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
+| Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetWriter H.264 at the shared size and bitrate; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
 | Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
 
 ### Server-side processing (parked)
@@ -1217,9 +1230,31 @@ the original loads, zoom with double-click/double-tap, pinch or Ctrl+scroll,
 and pan while zoomed; animated GIF/WebP play. Videos autoplay with sound and
 pause when you move away or close; GIF-style videos (`animated`) loop muted.
 Each viewer has Save/Download, Open in browser and Close (Esc, the dark area,
-or a swipe down on phones). URLs come from each client's existing fresh-URL
-cache, and a refused load asks for one refresh. Audio and other files keep
+or a swipe down on phones). The header shows the current file's stored size
+(`size`, what Save/Download fetches): after the author and time on web and
+Android, after the counter on Apple, and after the name on Rust desktop. Web and
+Android keep the size whole on narrow screens and truncate the author and time
+first; web drafts opened in the viewer show their final upload size once
+prepared. The client-reported pre-compression size (`assets.source_byte_size`)
+stays internal. URLs come from each client's existing fresh-URL cache, and a
+refused load asks for one refresh. Audio and other files keep
 their inline behaviour; pending rows never open the viewer.
+
+The iPhone/iPad swipe-dismiss implementation retains the file's release offset
+while the full-screen cover dismisses. `GestureState` still resets short or
+canceled drags, but cannot snap a successfully dismissed file back to centre.
+The distance/fling thresholds, paging and zoom exclusions are unchanged.
+Validation (October 11, 2026): Swift 6.1.2 syntax parsing passed for iOS 17 and
+macOS 14. A temporary Swift harness executed the production release closure
+and offset expression with a simulated gesture-state reset: the old code
+failed all four successful-dismiss cases; the fix passed all ten cases,
+including threshold boundaries, horizontal/upward drags and cancellation.
+`npm run check` and all 565 repository tests passed. This is not SwiftUI
+typechecking or rendering: no Xcode or connected Apple runner was available.
+Before distributing the iOS update, check slow/held and fast downward releases,
+an already-offscreen file, short/canceled drags, paging, zoomed panning and
+Reduce Motion on iPhone/iPad. Other clients and services need no rollout;
+rollback requires a corrected higher-build-number iOS release.
 
 Desktop has no platform video player or AVIF decoder, so it ships a trimmed,
 static FFmpeg built from pinned sources by
@@ -1254,17 +1289,115 @@ to a full FFmpeg (lavfi test sources, libx265) that makes their inputs.
 
 ### Deletion and purge
 
-An API loop (every minute, `FOR UPDATE SKIP LOCKED`, safe across replicas):
+Selecting a file starts uploading before Send. Removing a composer file cancels
+local work and best-effort calls authenticated `POST /api/assets/{id}/cancel` on
+web, Android, Apple and Rust desktop. The endpoint soft-deletes only the owner's
+unsent asset and returns 204, including repeat requests; missing/foreign files
+return 404 and sent files return 409. Its row lock serializes with Send, so a
+late cancellation cannot delete a successfully sent file. Failed uploads and
+discarded composer files also request cancellation. Moving a file into a pending
+send or cleaning up a confirmed send's local copy must not cancel it. An unknown
+send outcome keeps the original IDs for a safe retry.
+
+An API loop (approximately every minute, idempotent across replicas):
 
 - Marks uploads never completed after 1 hour, or completed but never sent
-  after 24 hours, as deleted.
-- Removes R2 objects for deleted rows: immediately when the file was never
-  sent, 24 hours after deletion when it was (so moderators can still inspect
-  it), then sets `purged_at` and releases quota.
+  after 24 hours, as deleted. This remains the fallback when a client is offline,
+  closes before cancellation completes, or never receives the reservation ID.
+- Removes R2 objects for deleted rows in batches of 25: unsent files are eligible
+  on the next pass (no 24-hour wait after explicit removal), sent files 24 hours
+  after deletion (so moderators can still inspect them). Only successful deletion
+  of both original and preview sets `purged_at` and releases quota. Failures retry.
+- Revisits deleted, unsent rows, including already-purged rows, in a separate
+  25-row batch. Presigned PUT URLs can be reused until expiry and an in-flight PUT
+  can race deletion. Rows remain permanent cleanup records; a cursor with a fixed
+  ceiling per pass prevents new arrivals or failed deletions starving older rows.
+  `purged_at` records the first successful delete pass, not permanent object
+  absence. Full-sweep latency and scan cost grow with retained history; no finite
+  cutoff is safe without a provider-enforced bound on late writes.
+
+An open draft does not extend the server's 24-hour lifetime. All clients retain
+the local prepared file and preview until removal or delivery confirmation.
+On focus/foreground or Send, uploads at least 23 hours old are silently uploaded
+again, leaving a one-hour margin. Desktop retains an owned copy rather than
+re-reading a picked path that may change. Concurrent triggers share the active
+upload; successful files in a partially failed batch are reused on Retry.
+
+Send enforces expiry even before cleanup and returns 409 `attachment_unavailable`.
+Clients treat this as a definitive refusal, silently re-upload and send with a
+new message UUID and attachment IDs. Recovery is bounded to one replacement
+cycle per send attempt. A failed upload shows only **Failed to upload.** with
+**Retry**, preserving the pending message and any newly composed draft; returning
+to the app also retries upload failures. No expiry or reselect explanation is
+shown. A timeout still means an unknown send outcome: retry the original command
+first, never cancel or replace its files until acceptance or a definitive refusal.
+
+This retains bytes only for the current open conversation/session, not durable
+attachment drafts across app restarts, page reloads or conversation switches.
+No new lifetime-renewal endpoint or schema is introduced. Replacement uploads
+reserve quota normally; cancelled bytes remain charged until purge succeeds.
 
 History marks deleted attachments `unavailable` without URLs. No user-facing
-message or file delete exists yet; account deletion should set `deleted_at` on
+sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
+
+#### Cancellation validation and rollout (October 11, 2026)
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | Workspace tests, formatting and Clippy pass. The disposable loopback Postgres attachment test passes with fake S3: owner-only/idempotent cancellation, sent-file protection, Send/removal races, expiry before purge, accepted-send retries after 24 hours, quota held across delete failures, late PUT reconciliation and multi-batch sweep progress. Not live R2 acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass (576 tests after merging current main). Labelled browser fixtures at 1440px and 390px, DPR 2, exercise ready/in-flight/reservation-race removal, synthetic file drop and overlay dismissal, silent focus/Send renewal after 24 hours, failed renewal and chip Retry, preserved same-text newer drafts, identical uploaded bytes and no cancellation of sent files. Ready, pending failure/Retry and chip failure/Retry states inspected; not live R2, Safari or a physical phone. |
+| Rust desktop | 416 tests pass, 12 device/audio tests ignored after merging current main; formatting, Clippy and Linux build pass. Includes silent replacement/Retry, preserved newer drafts and a loopback upload test that changes the picked file between uploads to verify retained bytes. Inspected the labelled Linux `parity-attachments` fixture with ready/uploading/failed chips and Retry. Not Windows or physical-device acceptance. |
+| Android | Implementation and tests updated. Gradle stops at configuration because Android SDK location is missing; no Kotlin compilation, tests, native render or device acceptance. |
+| iOS/macOS | Implementation and XCTest updated; no Swift compiler or Xcode in this orb, so no typecheck, tests, native render or device acceptance. |
+| Containers/services | Docker daemon unavailable; web production build and Rust compilation validated directly. No deployment, shared SQL, live R2 or SFU changes. Initial overlapping builds exhausted orb memory; bounded reruns passed. |
+
+**Deployment order.**
+
+1. No infrastructure apply, secrets/configuration, database migration, CDN Worker,
+   gateway or Valkey change is needed. Retain existing R2 permissions and the
+   established API replica count. Merging does not deploy services. After merge,
+   wait for immutable API/web images for the merged revision and set `MERGED_SHA`
+   to that full revision.
+2. Deploy the API first so clients can cancel reservations:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+   Older clients still use abandonment expiry. The new reconciliation sweep also
+   revisits previously deleted, unsent rows; monitor `asset_delete_retry`,
+   `asset_purge_retry`, `asset_sweep_retry` and R2 request volume as history grows.
+3. After API readiness, web and native clients can release independently:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+   Complete Android/Apple builds and physical-device acceptance before native
+   distribution, then use the existing signed release pipeline:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+4. Verify a removed, unsent file and its preview leave R2 and stop counting toward
+   usage after cleanup (allow for its 25-row batches/retries). Sent files must
+   remain accessible. Leave a draft open for over 24 hours: focus/Send must
+   silently re-upload and send without expiry UI. Interrupt a renewal, verify
+   only Failed to upload/Retry appears, then restore connectivity and Retry.
+   Text, bytes and newer drafts must survive; unknown send retries must retain
+   their original IDs and never cancel accepted attachments. These live/device
+   checks remain outstanding.
+5. Roll back API/web to their prior known-good image SHAs using the same deploy
+   commands; there is no new schema to undo. New clients tolerate a missing cancel
+   route and fall back to expiry. An API rollback loses reconciliation and the
+   typed refusal needed for silent Send recovery; it cannot restore already-purged
+   unsent bytes. Native rollback requires a corrected higher-build-number release.
 
 ### Configuration
 
@@ -1292,10 +1425,55 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Web (desktop and mobile layouts) | Yes: picker and drag and drop with an overlay (no paste) | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop with an overlay on macOS and iPad/iPhone (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop with an overlay, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### File drop overlay
+
+Dragging files over a channel or DM conversation that accepts uploads covers it
+with a drop overlay on every client: today's Caper character (the wordmark's
+daily branding art) hops in front of three neutral file cards (image, document,
+video Lucide glyphs) that fan out behind it, on a surface card with a dashed
+terracotta outline. Its title is `Attach to #channel` (`Attach to Name` in a DM)
+and its detail counts the remaining slots (`Up to 10 files…`, `7 more files…`,
+`10 files attached. Remove one to add another.`). Every client's tests run
+`shared/messages/drop-cases.json`. Dropping adds the files as drafts, exactly
+like the attach button; nothing uploads until the person sends. Only drags
+carrying files open it; text and link drags are ignored. The overlay never takes
+input. Motion is shared: a 140 ms fade, the card rising 10 px, the cards fanning
+from the middle with a 420 ms overshoot, the character rising, then a 1.6 s hop
+and a 2.4 s card sway. Reduced motion (web `prefers-reduced-motion`, Apple
+Reduce Motion, Android "Remove animations") shows the resting pose.
+
+- Web: `DropOverlay.tsx` over `.chat-panel`. A file dropped elsewhere in the app
+  is refused instead of the browser navigating to it. Thread panels do not
+  accept drops (they have no attachments).
+- Rust desktop: `file_drop.rs`, painted from egui's hovered files over the
+  conversation. `--fixture parity-file-drop` (and `-narrow`) hold it open for
+  rendering checks.
+- Apple: `FileDropOverlay` on the conversation's `dropDestination`, now on iOS
+  as well as macOS, taking photos/videos/audio/PDFs as media and other files as
+  file URLs. The macOS composer (`NSTextView`) accepts only text drags, so files
+  dropped on it attach instead of typing their paths.
+- Android: Compose `dragAndDropTarget` on the conversation for drags from other
+  apps (split screen, freeform/desktop windows, ChromeOS), with
+  `requestDragAndDropPermissions` before copying. Android names a drag only by
+  MIME type until the drop, so plain-text files are attached with the attach
+  button rather than by dragging.
+
+Validation: web unit tests plus Chromium with synthetic `DragEvent`s and a
+mocked `/api/assets/usage` at 1280px and 390px (overlay, counts, child
+enter/leave, text drags ignored, drop adds a draft, outside drops refused); not
+a real OS drag. Rust desktop unit tests (shared text, timing, overlay shown
+only while files hover a writable conversation) and the fixture rendered under
+Xvfb at 1440×900 and 390×844; no real Windows/X11 drag. Android compiles with
+the pinned toolchain and its JVM tests cover the shared text, MIME filter and
+timing; the overlay was not rendered on a device or emulator. Swift was written
+without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
+text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
+Windows/X11 drags and physical devices remain to be checked.
 
 Composer thumbnails and filenames are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the
@@ -1328,11 +1506,12 @@ are cached by attachment id. Stills follow the shared rules and encoder table
 above (exact indexed PNG via a Swift encoder over the Compression framework's
 DEFLATE, libwebp lossless, AVIF through the bundled libavif, else WebP/JPEG at
 `imageQuality`), scaled to `imageMaxEdge`; HEIC is never uploaded when
-conversion succeeds. Videos use the largest
-`AVAssetExportSession` size preset whose output short edge stays within
-`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
-Presets choose their own bitrates, so `videoBitrateKbps` and
-`audioBitrateKbps` are not applied. Previews and poster frames use
+conversion succeeds. Videos are re-encoded with `AVAssetReader` and
+`AVAssetWriter` (H.264/AAC MP4) at the shared output size and bitrate, with
+`audioBitrateKbps` for AAC; the original uploads on failure. Export presets
+were dropped because they cannot take a bitrate and the HDR video composition
+overrode their size: an iPhone 1440×1920 HEVC clip was stored unscaled at
+about twice the original's bitrate. Previews and poster frames use
 `previewEdge`. Taps open images and videos in the in-app viewer (below) and
 files at their signed URL in the system browser. Audio plays through `AVPlayer` with the app's existing audio
 session. Unit tests cover decoding, URL refresh decisions, compression
@@ -2853,6 +3032,7 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
 | `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API after changes; open tabs pick it up when refocused or when User Settings opens. |
 | `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be newly assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `administrator`, `administrators`, `mod`, `mods`, `moderator`, `moderators`, `support`, `feedback`, `security`, `staff`, `official`, `system`, `team`, `trust`, `safety`, `caper_support`, `caper_feedback`, `jose`, `caperchat`, `aaron`, `joswayski`, `everyone`, and `here` are always reserved. Existing owners may keep their current reserved username while updating their profile; changing to another reserved username is still blocked. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
+| `AUTH_REVIEW_EMAIL`, `AUTH_REVIEW_CODE` | Optional API-only pair for App Store and Google Play reviewers, who cannot read emailed codes. Set both or neither; startup fails otherwise. Requesting a code for that one address emails nothing, and the fixed 6-character code (letters/digits from the sign-in alphabet, no `0`, `O`, `1`, `I`, `L`, `U` or `V`) completes the normal single-use challenge with the usual attempt and rate limits. Anyone given the pair can use that account, so keep it to demo content and rotate the code after reviews if it leaks. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
 | `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
@@ -4527,18 +4707,14 @@ superseded. Join, Switch here and Leave for the open channel live in the
 conversation header on every client; channel rows show voice only while
 occupied, plus a hover/focus join shortcut on fine-pointer clients (desktop web,
 macOS, Rust desktop). The voice dock with Leave stays visible whenever in voice.
-Validation: web build/typecheck/lint and 565 Vitest tests pass;
-`VOICE_TEST_REDESIGN=1` passes at 1280px/390px in stock and fine-pointer
-Chromium (mocked API/WebRTC). `VOICE_TEST_CHANNEL_ROWS=1` passes the new row,
-shortcut, header Join/Switch/Leave, pending and failed-join checks, then stops at
-an existing "Disabled controls must not advertise a click" assertion that also
-fails on the previous `main`; other modes of that script and
-`test-home-demo.mjs` likewise fail on `main` before reaching voice changes. Rust
-desktop: fmt, clippy and 410 unit tests pass (headless egui renders). Android and
-Apple changes were not compiled or run here (no Android SDK or Xcode); run
-`./gradlew :app:testDebugUnitTest :app:connectedDebugAndroidTest`, `smoke.py`
-and the Apple parity UI tests before release. No live SFU, physical-device or
-touch-hardware validation.
+Validation: web build/typecheck/lint and 584 Vitest tests pass;
+`VOICE_TEST_REDESIGN=1` and `VOICE_TEST_CHANNEL_ROWS=1` pass at 1280px/390px
+(and the 220px sidebar) in stock and fine-pointer Chromium (mocked
+API/WebRTC). Rust desktop: fmt, clippy and 429 unit tests pass (headless egui
+renders). Android and Apple changes were not compiled or run here (no Android
+SDK or Xcode); run `./gradlew :app:testDebugUnitTest
+:app:connectedDebugAndroidTest`, `smoke.py` and the Apple parity UI tests
+before release. No live SFU, physical-device or touch-hardware validation.
 
 **Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
 SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
@@ -5380,6 +5556,11 @@ on Android and Apple, Settings on Rust desktop), list **Blocked accounts** with
 - **Anyone** (default): people outside your spaces send a request.
 - **People in my spaces**: only people who share an active space with you.
 - **No one new**: nobody can start a new conversation. Existing ones stay open.
+
+The same settings end with **Delete account → How to delete your account**,
+which opens `https://caper.chat/privacy#delete-account` (the web uses the
+same-origin `/privacy#delete-account`). Google Play requires this in-app path;
+deletion itself is an emailed request handled by hand, as that page describes.
 
 API contracts (account authentication required):
 
@@ -6362,11 +6543,20 @@ Read positions are saved per account/channel, advance monotonically, and are
 capped to the channel's head. Only a loaded foreground conversation acknowledges
 its committed cursor; prefetch, background views, mobile Browse and older search
 windows do not read newer messages. Reading one channel never clears another.
-Snapshots refresh on launch/foreground and every 15 seconds; web and macOS also
-refresh when their notification feed delivers activity. Failed reads retry;
+Snapshots refresh on launch/foreground and every 15 seconds; every client also
+refreshes about a second after live notification activity (one request per
+burst). Mentions in unjoined channels show a dot in Browse channels lists. Browse
+only stops reads on narrow layouts, for channels and DMs alike. Failed reads retry;
 account/request revisions fence late responses. Reads from another client appear
 on the next refresh. Historical messages start unread until viewed: there is no
 backfill asserting that existing users have seen them.
+
+The list only inspects channels whose stream moved past the reader's position,
+takes each joined channel's newest qualifying message by index, and finds
+mentions through the partial GIN index `messages_mentions` (migration
+`202610110002`, built `CONCURRENTLY` outside a transaction). On 400k seeded
+messages in unjoined, never-read channels this took the poll from about 660ms to
+under 1ms.
 
 | Platform | Validation boundary |
 | --- | --- |
@@ -6420,3 +6610,124 @@ backfill asserting that existing users have seen them.
    must retain the applied migration ledger; do not roll SQLx images back across
    this migration or delete read positions. No shared migration, deployment,
    provider change or release was executed during development.
+
+## Swipe follow-up fixes (October 11, 2026)
+
+Follow-ups to full-surface swipes and swipe release timing:
+
+- iOS: the closed phone member list no longer takes touches over the
+  conversation. Its backdrop and panel each carry their own close swipe, so
+  Back, Pins, Members, the timeline, the composer and timeline swipes work while
+  the list is hidden; swiping either closes it when shown.
+- iOS/macOS: a released Browse swipe keeps its speed-matched curve instead of the
+  220ms button slide. Buttons, Back and channel choices still use the button slide.
+- Android: drags that start on the Browse "Search channels" field stay in the
+  field, as on web, Apple and Rust desktop.
+- Rust desktop: swipe releases settle with the same 160–320ms speed-matched
+  `cubic-bezier(0.2, 0.2·slope, 0.35, 1)` as the other clients, rather than a
+  fixed 0.3s ease. Release speed is measured against an earlier frame, so a
+  flick whose last move and release share a frame still commits. Undecided
+  touches no longer expire after 0.5s.
+- Web: after a touch drag that ends without a click, the next keyboard or
+  assistive activation (click `detail` 0) is no longer swallowed by Browse or
+  the member list. Member-list drags no longer read layout on every move.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run typecheck`, Oxlint and Oxfmt on the changed files. No browser regression run; no Safari or physical-device acceptance. |
+| Android | Implementation only; no Android SDK here, so no Kotlin compilation, tests or device acceptance. |
+| iOS/macOS | Implementation only; no Swift compiler or Xcode, so no build, XCTest, simulator or device acceptance. |
+| Rust desktop | `cargo test` (all 409 tests, including new release-curve and same-frame-flick tests) and `cargo clippy --all-targets -D warnings` pass on Linux. No physical touchscreen acceptance. |
+| Services | No API, gateway, infrastructure, secrets/configuration or database change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is required. Merging deploys nothing.
+2. Web, Android, Apple and Rust desktop can release independently with their
+   usual release commands for the merged revision. Roll back web to the previous
+   image; native rollback requires a corrected higher-build-number release. No
+   data rollback is needed.
+
+## Own profile refresh (October 11, 2026)
+
+A successful display-name/username save updates retained self identities by
+account ID in the editing client: members, invitations, self-DMs, chat authors,
+pins, thread participants, forwarded authors, reaction lists and profile cards.
+The local voice roster uses the saved display name without leaving the call.
+Conversation selection, drafts, rejected sends, historical text and replay
+cursors stay intact. Other open sessions still use their existing refresh
+behavior; this change adds no realtime profile event.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 578 `npm test` tests pass after rebasing onto current main. `node scripts/test-profile-refresh.mjs` passes against labelled loopback API mocks at 1280px and 390px: space/private-channel settings, stale snapshots, failed save, same-name peer, cached navigation and retained draft/history. Inspected 2x Chromium settings captures; narrow Chromium is not a physical phone. No live SFU/profile-change acceptance. |
+| Android | Implementation and regression test added. Gradle `testDebugUnitTest --tests '*ProfileValidationTest'` stops at missing Android SDK; no Kotlin compilation or device acceptance. |
+| iOS/macOS | Implementation and regression test added. No Swift compiler or Xcode here; no build, XCTest, simulator or device acceptance. |
+| Rust desktop | Formatting passes. All 45 actual `model.rs` tests and Clippy pass through a disposable model-only Cargo harness, including the profile/history/cursor regression. Full desktop application build and UI/device acceptance were not run. |
+| Services | Root workspace formatting, tests (159 passed, 60 existing ignored) and Clippy pass. No API/gateway changes; ignored database/Valkey tests were not run. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is needed. Merging deploys nothing.
+2. Release web from the merged revision through the usual web deployment. Verify
+   profile save followed by space/private-channel settings and cached navigation.
+   Set `MERGED_SHA` to this PR's merge commit and confirm its web image exists:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow for this SHA succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Build/test Android, Apple and desktop on supported hosts before distributing
+   their independent client releases. Verify the same identity update during an
+   active call without losing conversation state. Roll back web to its previous
+   image; native rollback requires a corrected higher-build-number release. No
+   data rollback is needed.
+
+## Eggshell primary actions and entrance motion (October 11, 2026)
+
+Primary actions (sign-in, dialog confirmations, Join channel, Accept, Send/Save,
+Forward, the thread Send and Test microphone) now use an eggshell fill
+(`--action` `#F1EDE4`) with blackout labels on web, Android, iOS/macOS and Rust
+desktop, matching the homepage download button. Hover brightens and press
+deepens the fill; disabled primaries step back to neutral chrome (raised
+surface, border, muted label) instead of a faded fill. Terracotta remains for
+selection, focus, mentions and unread state. Destructive buttons are unchanged.
+Sign-in fields use the dialog fields' focus treatment: a terracotta border with
+a soft 2px ring instead of a 4px-offset outline.
+
+Things that appear now arrive instead of teleporting, using shared tokens
+(`--ease-out` `cubic-bezier(0.16, 1, 0.3, 1)`, `--motion-fast` 140ms,
+`--motion-base` 200ms, `--motion-slow` 260ms):
+
+- Messages you send, and live messages from others, fade in with a 6px settle in
+  channels, DMs and threads. Only rows that arrive while the reader is at the
+  live end animate (`Arrivals` on every client): not first loads, channel
+  switches, older pages, jumps, or newer pages loaded while catching up. A
+  pending send animates once, and recycled rows do not replay after one second.
+- Dialogs rise 8px from 98% while their scrim fades; anchored menus, cards and
+  tooltips rise 4px; touch sheets rise from the bottom; the thread panel slides
+  in 12px.
+- Attached files pop into the composer, and upload progress glides between
+  updates.
+- Closing stays instant. Reduced-motion settings (web `prefers-reduced-motion`,
+  Android animator scale 0, Apple Reduce Motion) turn entrances off. Rust desktop
+  has no OS reduced-motion signal; its headless tests draw final states.
+
+No API, gateway, database, infrastructure, secret or configuration change is
+needed. Web and native clients can release independently.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (584 tests, including `chat/arrivals.test.ts`). Chromium against the disposable fixture at 1440px (fine pointer) and 390px: sign-in, disabled Continue, dialogs and Manage space inspected; DOM checks confirm no arrival animation on load or channel switch, one for a sent message (not replayed on confirmation) and one for a live incoming message; dialog/backdrop, message actions, mention card, thread panel and space menu entrances ran. Draft-tile entrance is CSS-only and unexercised (the fixture disables uploads). Not Safari or a physical phone. |
+| Android | `compileDebugKotlin`, `testDebugUnitTest` (317 tests, including `ArrivalsTest`) and `lintDebug` pass with SDK 36/NDK 27 installed in the orb. No emulator or device rendering. |
+| Apple iOS/macOS | Primary-button styles, arrivals (`MessageArrivals` with tests), entrances and Reduce Motion handling implemented. No Swift compiler or Xcode in this orb: not built, tests not run, no simulator or device rendering. |
+| Rust desktop | `cargo fmt --check`, scoped clippy (`--package caper-desktop --no-deps -D warnings`) and `cargo test` pass (425 passed, 12 ignored, including arrival and entrance-timing tests). Linux Xvfb renders of `login`, `parity-requests` and `parity-attachments` inspected. Not Windows; motion itself not recorded. |
+
+Before native distribution, check on devices: send and receive at the live end
+(one entrance each, none on channel switch or history), dialogs/menus/thread
+opening, attaching files, upload progress, primary/disabled/pressed/focus button
+states, and Reduce Motion / Remove animations.

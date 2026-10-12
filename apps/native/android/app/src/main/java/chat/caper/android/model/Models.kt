@@ -448,6 +448,8 @@ data class AppUiState(
     val chatAuthorId: String? = null,
     /** `GET /api/assets/usage` succeeded: show the attach control. */
     val uploadsEnabled: Boolean = false,
+    /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
+    val uploadsChecked: Boolean = false,
     val drafts: List<DraftAttachmentUi> = emptyList(),
     val attachmentError: String? = null,
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
@@ -461,6 +463,36 @@ data class AppUiState(
     val busy: Boolean = false,
     val error: String? = null,
 ) {
+    /** Resolve retained identity snapshots from the account without touching conversation state. */
+    fun withAccountProfile(): AppUiState {
+        val own = account ?: return this
+        val username = own.username ?: return this
+        val name = own.displayName ?: return this
+        fun member(value: Member) = if (value.id == own.id) value.copy(username = username, displayName = name) else value
+        fun author(value: ChatAuthor) = if (value.id == own.id) value.copy(name = name) else value
+        fun message(value: ChatMessage): ChatMessage = value.copy(
+            author = author(value.author),
+            pin = value.pin?.let { it.copy(author = author(it.author)) },
+            thread = value.thread?.let { it.copy(participants = it.participants.map(::author)) },
+            forward = value.forward?.let { it.copy(message = it.message?.let(::message)) },
+        )
+        val directs = directConversations.map { conversation ->
+            if (conversation.peer.id == own.id) conversation.copy(peer = conversation.peer.copy(username = username, displayName = name)) else conversation
+        }
+        return copy(
+            selectedSpace = selectedSpace?.let { it.copy(members = it.members.map(::member)) },
+            channelGrants = channelGrants.map(::member),
+            pendingChannelInvitations = pendingChannelInvitations.map(::member),
+            pendingSpaceInvitations = pendingSpaceInvitations.map(::member),
+            directConversations = directs,
+            selectedChannel = if (selectedDirect?.peer?.id == own.id) selectedChannel?.copy(name = name) else selectedChannel,
+            messages = messages.map(::message),
+            pinnedMessages = pinnedMessages.map(::message),
+            pendingMessage = pendingMessage?.let { it.copy(author = it.author?.let(::author)) },
+            pinIntents = pinIntents.mapValues { (_, intent) -> intent.copy(message = message(intent.message), pin = intent.pin?.let { it.copy(author = author(it.author)) }) },
+        )
+    }
+
     /** Local presentation never enters history, replay cursors or revision caches. */
     private fun project(message: ChatMessage): ChatMessage {
         var result = message
@@ -512,6 +544,7 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    val uploadFailed: Boolean = false,
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
     /** Uploaded files with local `file://` copies until the server confirms. */
@@ -538,6 +571,7 @@ data class DraftAttachmentUi(
     val progress: Float = 0f,
     val error: String? = null,
     val attachment: ChatAttachment? = null,
+    val uploadedAt: Long? = null,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

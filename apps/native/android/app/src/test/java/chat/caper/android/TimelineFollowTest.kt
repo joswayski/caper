@@ -66,14 +66,17 @@ class TimelineFollowTest {
         assertNull(follow.next(FollowFrame(listOf("a", "b", "c"), pendingId = "p1")))
     }
 
-    @Test fun `last row reactions follow only a reader at latest`() {
-        val follow = TimelineFollow().apply { next(FollowFrame(listOf("a", "b"))) }
-        val reacted = FollowFrame(listOf("a", "b"), reactions = listOf(MessageReaction("👍", listOf("peer"))))
+    @Test fun `recent row reactions follow only a reader at latest`() {
+        val follow = TimelineFollow().apply { next(FollowFrame(listOf("a", "b"), reactions = listOf(emptyList(), emptyList()))) }
+        val thumbs = MessageReaction("👍", listOf("peer"))
+        val reacted = FollowFrame(listOf("a", "b"), reactions = listOf(emptyList(), listOf(thumbs)))
         assertEquals(latest, follow.next(reacted, near = true))
         // Same snapshot must not override the reader's position again.
         assertNull(follow.next(reacted, near = true))
-        assertNull(follow.next(reacted.copy(reactions = reacted.reactions + MessageReaction("🎉", listOf("me")))))
+        assertNull(follow.next(reacted.copy(reactions = listOf(emptyList(), listOf(thumbs, MessageReaction("🎉", listOf("me")))))))
         assertEquals(latest, follow.next(reacted, near = true))
+        // Chips wrapping on the row above the last still push the latest message down.
+        assertEquals(latest, follow.next(reacted.copy(reactions = listOf(listOf(thumbs), listOf(thumbs))), near = true))
         assertEquals(latest, follow.next(reacted.copy(reactions = emptyList()), near = true))
         assertNull(follow.next(reacted.copy(historical = true), near = true))
         assertNull(follow.next(reacted.copy(jump = 1), near = true))

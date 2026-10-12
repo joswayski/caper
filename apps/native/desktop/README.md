@@ -58,7 +58,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Sending up to 10 files per message from the + attachment picker (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window. Files are compressed on the device, off the UI thread, with the
+  window, which shows the drop overlay while they hover. Files are compressed on the device, off the UI thread, with the
   server's `GET /api/assets/usage` `compression` settings: lossless stills
   (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
   smaller of an exact-palette indexed PNG (when the colours fit
@@ -341,8 +341,8 @@ exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
 mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.
-`parity-direct-no-spaces` previews the first-space page's Direct messages entry
-and the global list without any space membership.
+`parity-direct-no-spaces` previews first-space setup without DM navigation,
+even when the account has an existing conversation.
 `parity-attachments` previews ready, processing (with poster and percent, and
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   autoUpdate,
   flip,
@@ -16,7 +16,9 @@ import Avatar from "../components/Avatar";
 import type { MentionCardPerson } from "./mentions.ts";
 import type { ChatAuthor } from "./types.ts";
 import { addSpaceMember, type Space } from "../spaces/client.ts";
+import { friendlyError } from "../spaces/errors.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
+import { getRememberedAccount, subscribeAccount, withAccountProfile } from "../account/client.ts";
 
 export interface MentionCardTarget {
   person: MentionCardPerson;
@@ -26,6 +28,11 @@ export interface MentionCardTarget {
   /** A mouse hover preview must not take keyboard focus. */
   focusOnOpen?: boolean;
 }
+
+const redundantInvitation: Record<string, string | undefined> = {
+  "user already in space": "Member",
+  "user already invited": "Invited",
+};
 
 /** Who a mention points at, with Message to open or start a DM. */
 export default function MentionCard({
@@ -43,12 +50,15 @@ export default function MentionCard({
   /** Only non-demo spaces owned by the signed-in account. */
   spaces?: Space[];
 }) {
-  const { person, anchor, drawer } = target;
+  const { person: snapshot, anchor, drawer } = target;
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const person = withAccountProfile(snapshot, account);
   const blocked = useBlockedIds().has(person.id);
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState<string>();
   const [choosingSpace, setChoosingSpace] = useState(false);
-  const [invited, setInvited] = useState<Set<string>>(() => new Set());
+  /** Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried. */
+  const [invited, setInvited] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [status, setStatus] = useState<string>();
   const returnFocus = useRef(anchor);
   const { refs, floatingStyles, context } = useFloating({
@@ -75,7 +85,7 @@ export default function MentionCard({
       await onMessage(person.username);
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn’t open a conversation.");
+      setError(friendlyError(reason));
       setPending(undefined);
     }
   };
@@ -87,10 +97,13 @@ export default function MentionCard({
     setStatus(undefined);
     try {
       await addSpaceMember(space.id, person.username);
-      setInvited((current) => new Set([...current, space.id]));
+      setInvited((current) => new Map(current).set(space.id, "Invited"));
       setStatus(`Invitation sent to ${space.name}.`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn’t send the invitation.");
+      // Redundant invitations still mark the row so it isn't retried.
+      const already = reason instanceof Error ? redundantInvitation[reason.message] : undefined;
+      if (already) setInvited((current) => new Map(current).set(space.id, already));
+      setError(friendlyError(reason));
     } finally {
       setPending(undefined);
     }
@@ -104,7 +117,7 @@ export default function MentionCard({
       await unblock(person.id);
       setStatus("Unblocked.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn’t unblock this person.");
+      setError(friendlyError(reason));
     } finally {
       setPending(undefined);
     }
@@ -172,7 +185,7 @@ export default function MentionCard({
                           {pending === space.id ? (
                             <small>Sending…</small>
                           ) : (
-                            invited.has(space.id) && <small>Invited</small>
+                            invited.has(space.id) && <small>{invited.get(space.id)}</small>
                           )}
                         </button>
                       </li>

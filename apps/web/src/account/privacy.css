@@ -152,9 +152,24 @@
   color: var(--text-muted);
   font-size: 0.78rem;
 }
+.privacy-settings section > p a {
+  border-radius: 2px;
+  color: var(--text);
+  text-underline-offset: 3px;
+  transition: color 140ms ease;
+}
+@media (hover: hover) {
+  .privacy-settings section > p a:hover {
+    color: var(--terracotta-bright);
+  }
+}
+.privacy-settings section > p a:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
 .privacy-settings .privacy-error {
   margin: 0;
-  color: #ff9b82;
+  color: var(--error-text);
   font-size: 0.76rem;
 }
 .privacy-error button {

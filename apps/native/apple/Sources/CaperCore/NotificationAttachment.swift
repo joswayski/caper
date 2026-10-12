@@ -12,7 +12,7 @@ enum NotificationAttachment {
     static func load(_ data: [AnyHashable: Any]) async -> UNNotificationAttachment? {
         guard let raw = data["attachmentUrl"] as? String, let url = URL(string: raw),
               url.scheme == "https", url.host != nil, url.user == nil, url.password == nil,
-              url.path.range(of: "^/(original|preview)/[A-Za-z0-9]{1,64}$", options: .regularExpression) != nil,
+              url.path.range(of: "^/(assets|original|preview)/[A-Za-z0-9]{1,64}$", options: .regularExpression) != nil,
               let type = data["attachmentContentType"] as? String,
               let size = data["attachmentSize"] as? Int, (1...maximumBytes).contains(size),
               ["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"].contains(type) else { return nil }
