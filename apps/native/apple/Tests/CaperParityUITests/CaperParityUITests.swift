@@ -1003,6 +1003,7 @@ final class CaperParityUITests: XCTestCase {
         let generalFrame = general.frame
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
         let voiceFrame = generalVoice.frame
         #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
@@ -1012,6 +1013,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
         XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move the join shortcut")
         #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
@@ -1167,7 +1169,8 @@ final class CaperParityUITests: XCTestCase {
         #endif
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
-        XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists, "Hover reveals the occupied channel's join shortcut")
+        // The shortcut is transparent (absent from accessibility) until SwiftUI applies the hover.
+        XCTAssertTrue(app.buttons["join-voice-chan00000002"].waitForExistence(timeout: 3), "Hover reveals the occupied channel's join shortcut")
         #else
         XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists, "Touch joins from the conversation header")
         #endif
@@ -1194,7 +1197,7 @@ final class CaperParityUITests: XCTestCase {
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
         let deniedAction = app.buttons["join-voice-chan00000002"]
-        XCTAssertTrue(deniedAction.exists, "Revocation keeps the shortcut's slot")
+        XCTAssertTrue(deniedAction.waitForExistence(timeout: 3), "Revocation keeps the shortcut's slot")
         XCTAssertFalse(deniedAction.isEnabled, "A revoked channel cannot be joined")
         #endif
         #if os(iOS)
@@ -2196,6 +2199,22 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", message, message)).firstMatch.exists,
                        "The refusal must not leak into the sidebar after closing")
+    }
+
+    func testNewDirectMessageSuggestionFillsUsernameWithoutOpening() throws {
+        let app = launch(fixture: "new-direct-message")
+        let username = try require(app.textFields["dm-username"], timeout: 30, "The new-DM dialog must open")
+        type("ma", into: username)
+        // GET /api/people: the fixture space's Maya and Alex, never you.
+        let maya = try require(app.buttons["person-suggestion-maya"], timeout: 5, "Typing ma must suggest maya")
+        XCTAssertFalse(app.buttons["person-suggestion-alex"].exists, "Only matching people are suggested")
+        capture("new-dm-suggestions", app: app)
+        maya.tap()
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "maya"), object: username)
+        XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 3), .completed, "Picking fills in the exact username")
+        XCTAssertFalse(app.buttons["person-suggestion-maya"].exists, "The list closes after a pick")
+        XCTAssertTrue(app.buttons["dm-create-submit"].isEnabled, "Picking must not open the conversation")
+        XCTAssertTrue(username.exists)
     }
 
     func testManageSpace() {

@@ -247,8 +247,8 @@
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  margin-top: 8px;
-  padding: 6px 0 4px;
+  margin-top: 16px;
+  padding: 12px 0 4px;
 }
 .spaces-room .direct-section::before,
 .spaces-room .channel-navigation > header::after {
@@ -1638,7 +1638,7 @@
   margin-top: 20px;
 }
 .space-dialog :is(.primary, .secondary, .danger, .danger-outline),
-.member-add button {
+.member-add > button {
   min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border);
@@ -1714,9 +1714,22 @@
   gap: 8px;
   margin-top: 12px;
 }
-.member-add button {
+.member-add > button {
   border-color: #805143;
   color: var(--terracotta-bright);
+}
+/* Username-field matches sit in the dialog's flow: dialogs scroll, which
+   would clip a floating popup. */
+.chat-emoji-suggestions.people-suggestions {
+  position: static;
+  width: auto;
+  max-height: none;
+  margin-top: 6px;
+  box-shadow: none;
+}
+.member-add .people-suggestions {
+  grid-column: 1 / -1;
+  margin-top: 0;
 }
 .member-manager ul {
   max-height: 238px;
@@ -2005,13 +2018,13 @@
 }
 @media (hover: hover) {
   .space-dialog .secondary:hover:not(:disabled),
-  .member-add button:hover:not(:disabled),
+  .member-add > button:hover:not(:disabled),
   .empty-channel-actions > .secondary:hover:not(:disabled) {
     border-color: var(--text-muted);
     background: var(--border);
   }
   /* Add keeps its accent border on hover instead of turning gray. */
-  .member-add button:hover:not(:disabled) {
+  .member-add > button:hover:not(:disabled) {
     border-color: var(--terracotta-bright);
   }
   .space-dialog .primary:hover:not(:disabled),

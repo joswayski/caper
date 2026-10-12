@@ -15,6 +15,8 @@ to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
+The new-message and invite fields suggest people you already share a space or DM
+with (avatar, display name and username); there is no account directory search.
 The Direct messages list is shared across spaces. Phone push is implemented behind
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
 tabs and running desktop apps also implement local OS notifications; alerts after

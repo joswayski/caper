@@ -231,7 +231,6 @@ final class FeedbackTests: XCTestCase {
         let match = try XCTUnwrap(MentionAutocomplete.match(text: "hi @cap", selection: caret("hi @cap"), markedText: false, source: notes))
         XCTAssertEqual(MentionAutocomplete.inserting(match.choices[0], in: "hi @cap", match: match)?.text, "hi @caper ",
                        "the matching team name is inserted")
-        XCTAssertTrue(ComposerAutocompleteMatch.mention(match).offersFeedback)
     }
 
     func testVisitSuggestsTheReporterAndPeopleInTheConversation() {

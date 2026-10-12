@@ -106,11 +106,6 @@ enum ComposerAutocompleteMatch: Equatable {
         if case .mention = self { return true }
         return false
     }
-    /// The `@feedback` row, which is taller and wider than the others.
-    var offersFeedback: Bool {
-        if case let .mention(match) = self { return match.choices.contains { $0.kind == .feedback } }
-        return false
-    }
     /// Row identities for scrolling the selected row into view.
     var ids: [String] {
         switch self {
@@ -179,33 +174,8 @@ struct ComposerSuggestionsView: View {
                 case let .mention(mention):
                     ForEach(Array(mention.choices.enumerated()), id: \.element.id) { index, candidate in
                         Button { controller.accept(index) } label: {
-                            let member = candidate.kind == .member
-                            HStack(spacing: 12) {
-                                if member {
-                                    Avatar(name: candidate.displayName, size: 24, avatarID: candidate.avatarId)
-                                } else {
-                                    Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
-                                        .frame(width: 24, height: 24)
-                                }
-                                // Member: display name, then a muted @username.
-                                // Special: @everyone/@here, then its muted description.
-                                // @feedback's longer description gets its own line.
-                                if candidate.kind == .feedback {
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text("@\(candidate.username)").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
-                                        Text(candidate.displayName).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                                    }.padding(.vertical, 4)
-                                } else {
-                                    HStack(spacing: 6) {
-                                        Text(member ? candidate.displayName : "@\(candidate.username)")
-                                            .font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
-                                        Text(member ? "@\(candidate.username)" : candidate.displayName)
-                                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                            }.modifier(SuggestionRow(selected: index == controller.selected))
+                            MentionSuggestionLabel(candidate: candidate)
+                                .modifier(SuggestionRow(selected: index == controller.selected))
                         }.buttonStyle(.plain)
                             .accessibilityLabel(Self.mentionLabel(candidate))
                             .accessibilityIdentifier("mention-suggestion-\(candidate.username.lowercased())")
@@ -213,11 +183,11 @@ struct ComposerSuggestionsView: View {
                     }
                 }
             }
-            }.frame(height: min(CGFloat(match.count) * 44 + (match.offersFeedback ? 12 : 0), 188))
+            }.frame(height: min(CGFloat(match.count) * 44, 176))
                 .onChange(of: controller.selected) { _, index in
                     if ids.indices.contains(index) { proxy.scrollTo(ids[index], anchor: .center) }
                 }
-            }.frame(maxWidth: match.offersFeedback ? 320 : 260)
+            }.frame(maxWidth: 260)
                 .background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
                 .accessibilityIdentifier(match.isMention ? "mention-suggestions" : "emoji-suggestions")
@@ -232,8 +202,34 @@ extension ComposerSuggestionsView {
     }
 }
 
+/// A suggestion's avatar beside two lines: a person's display name over a
+/// small muted `@username`, or `@everyone`/`@here` over its description.
+/// Shared by the composer's `@` popup and the exact-username fields.
+struct MentionSuggestionLabel: View {
+    let candidate: MentionCandidate
+    var body: some View {
+        // Specials (`@everyone`, `@here`, a team name) stack the name over its description.
+        let member = candidate.kind == .member
+        HStack(spacing: 10) {
+            if member {
+                Avatar(name: candidate.displayName, size: 28, avatarID: candidate.avatarId)
+            } else {
+                Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                    .frame(width: 28, height: 28)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(member ? candidate.displayName : "@\(candidate.username)")
+                    .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                Text(member ? "@\(candidate.username)" : candidate.displayName)
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 /// Flat, borderless 44pt rows; the selected row gets the terracotta tint.
-private struct SuggestionRow: ViewModifier {
+struct SuggestionRow: ViewModifier {
     let selected: Bool
     func body(content: Content) -> some View {
         content.padding(.horizontal, 10).frame(minHeight: 44)

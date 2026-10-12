@@ -39,10 +39,12 @@ import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
+import { excludePeople, type MentionCandidate } from "../chat/mentions";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { FocusTarget } from "../chat/Chat";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
+import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -690,6 +692,7 @@ function MemberManager({
   removalCopy,
   pending,
   loading = false,
+  suggestions,
 }: {
   members: Member[];
   invitations?: Member[];
@@ -702,6 +705,8 @@ function MemberManager({
   removalCopy: (member: Member) => { title: string; description: string };
   pending: boolean;
   loading?: boolean;
+  /** People the field suggests, already without members and pending invitations. */
+  suggestions?: MentionCandidate[];
 }) {
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const members = memberSnapshots.map((member) => withAccountProfile(member, account));
@@ -710,6 +715,15 @@ function MemberManager({
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [removing, setRemoving] = useState<Member>();
+  const matches = usePeopleSuggestions({
+    value: username,
+    people: suggestions,
+    onChoose: (value) => {
+      setUsername(value);
+      setError(undefined);
+      setSuccess(undefined);
+    },
+  });
   const submitting = useRef(false);
   const input = useRef<HTMLInputElement>(null);
   // The input is disabled while a request runs, so it loses focus. Return focus
@@ -771,6 +785,7 @@ function MemberManager({
           required
           disabled={pending}
           placeholder="Exact username"
+          {...matches.input}
           onChange={(event) => {
             setUsername(normalizeUsername(event.target.value));
             setError(undefined);
@@ -780,6 +795,7 @@ function MemberManager({
         <button type="submit" disabled={pending}>
           {invitations ? "Invite" : "Add"}
         </button>
+        {matches.list}
       </form>
       <p className="channel-name-guidance">
         3–32 lowercase letters, numbers, or underscores.{invitations && " Invitations expire after 7 days."}
@@ -866,11 +882,14 @@ function MemberManager({
 
 function ManageSpaceDialog({
   detail,
+  people,
   onClose,
   onChanged,
   onDeleted,
 }: {
   detail: SpaceDetail;
+  /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
+  people?: Person[];
   onClose: () => void;
   onChanged: (detail: SpaceDetail) => void;
   onDeleted: () => void;
@@ -948,6 +967,7 @@ function ManageSpaceDialog({
       <MemberManager
         members={members}
         invitations={invitations}
+        suggestions={people && excludePeople(people, members, invitations)}
         pending={pending}
         onAdd={(username) =>
           run(async () => {
@@ -1087,6 +1107,12 @@ function ManageChannelDialog({
           loading={!membersLoaded}
           members={members}
           invitations={invitations}
+          // Grants require space membership; the owner always has access.
+          suggestions={
+            membersLoaded
+              ? excludePeople(detail.members, members, invitations, [{ id: detail.space.ownerId }])
+              : undefined
+          }
           channel
           pending={pending}
           onAdd={async (username) =>
@@ -1156,15 +1182,26 @@ function ManageChannelDialog({
 }
 
 function StartDirectDialog({
+  people,
   onClose,
   onCreated,
 }: {
+  /** Known accounts (`GET /api/people`) the field suggests; undefined until loaded. */
+  people?: Person[];
   onClose: () => void;
   onCreated: (conversation: DirectConversation) => void;
 }) {
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const matches = usePeopleSuggestions({
+    value: username,
+    people,
+    onChoose: (value) => {
+      setUsername(value);
+      setError(undefined);
+    },
+  });
   return (
     <Dialog
       title="New direct message"
@@ -1197,12 +1234,14 @@ function StartDirectDialog({
             readOnly={pending}
             maxLength={33}
             placeholder="@username"
+            {...matches.input}
             onChange={(event) => {
               setUsername(event.target.value);
               setError(undefined);
             }}
           />
         </label>
+        {matches.list}
         <div className="start-direct-error" aria-live="polite" aria-atomic="true">
           {error && <p className="space-form-error">{error}</p>}
         </div>
@@ -1713,10 +1752,13 @@ export default function Spaces({
     const cache = directCache.current;
     return () => cache.clear();
   }, [account?.id]);
-  // DM `@` suggestions and mention profile cards; the previous list stays while
-  // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
+  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
+  // DM `@` suggestions, mention profile cards, and the invite and new-DM
+  // username fields; the previous list stays while a refresh is in flight.
+  // Loaded once signed in and again whenever a DM or one of those dialogs opens.
   const [people, setPeople] = useState<Person[]>();
   const directId = directView?.conversation.id;
+  const peopleDialog = dialog === "manage-space" || dialog === "direct";
   useEffect(() => {
     if (!account?.id) return;
     let current = true;
@@ -1728,7 +1770,7 @@ export default function Spaces({
     return () => {
       current = false;
     };
-  }, [directId, account?.id]);
+  }, [directId, account?.id, peopleDialog]);
   const detailSnapshot =
     view?.detail ??
     (!spaces.length
@@ -1781,7 +1823,6 @@ export default function Spaces({
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const invitation = invitations.find((item) => item.id === selected.spaceId);
-  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
   const [navigationOpen, showNavigation] = useState(false);
   // Where Browse is headed: it changes inside a slide's view transition, after the request.
@@ -2665,6 +2706,7 @@ export default function Spaces({
       )}
       {dialog === "direct" && (
         <StartDirectDialog
+          people={people}
           onClose={() => setDialog(undefined)}
           onCreated={(conversation) => {
             setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
@@ -3470,6 +3512,7 @@ export default function Spaces({
       {dialog === "manage-space" && (
         <ManageSpaceDialog
           detail={detail}
+          people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}
           onDeleted={forgetSpace}

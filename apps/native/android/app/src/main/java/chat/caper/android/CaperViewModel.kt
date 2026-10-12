@@ -796,8 +796,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Refreshes DM mention candidates; the previous list (or the DM peer) stays until it succeeds. */
-    private fun refreshPeople() {
+    /**
+     * Refreshes `/api/people` for DM mentions and the space-invite and new-DM username
+     * suggestions; the previous list (or the DM peer) stays until it succeeds.
+     */
+    fun refreshPeople() {
         val token = accountToken ?: return
         val request = accountGeneration
         peopleRefresh?.cancel()

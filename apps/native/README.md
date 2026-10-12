@@ -66,6 +66,15 @@ a person's pill opens a profile card with **Message** (a popover on macOS and Ru
 desktop, a bottom sheet on Android and iPhone). Mentions do not notify anyone yet. The grammar and payload are described in
 [docs/media.md](../../docs/media.md#scope-and-architecture).
 
+The space invite, private-channel grant and **New direct message** username
+fields suggest people the app already has while you type: known people
+(`GET /api/people`) minus members and pending invitations for spaces, the space's
+members minus existing grantees for private channels, and known people for DMs.
+Rows match `@` suggestions (avatar, display name, `@username` beneath it).
+Choosing one fills in the exact username without submitting; lookups stay
+exact-username and there is no account directory. See
+[docs/media.md](../../docs/media.md#spaces-and-channel-access) for the shared rules.
+
 First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.
@@ -233,9 +242,12 @@ normally detects a published release within about one to two minutes, allowing
 for the server cache; manual checks also use that cache. Build/signing time and
 download/install time are separate. Existing installs retain their old schedule
 until they update once. Development builds and static fixtures do not check.
-**Restart to update** hands off to the updater, which verifies the download's
-SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
-the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
+**Restart to update** hands off to an independent updater, which waits for Caper
+to quit, verifies the download's SHA-256 (and, on Mac, its Developer ID team),
+swaps in the new copy and reopens it. If downloading, verification or installation
+fails, it reopens the existing copy and records the error in `caper-updater.log`
+in the system temporary directory. Mac reopening uses LaunchServices and checks
+the launch request's result. A copy it cannot replace, such as the Linux `.deb`
 or a Mac app whose folder permissions changed after launch, gets a **Download** link instead.
 That link downloads the matching Mac architecture's DMG, Windows Setup, or Linux
 `.deb` directly; it does not open the GitHub release page. These downloads still

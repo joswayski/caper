@@ -5665,17 +5665,28 @@ private struct NewDirectMessageSheet: View {
     @State private var pending = false
     @State private var error: String?
     @FocusState private var usernameFocused: Bool
+    @State private var suggestions = PeopleSuggestionState()
+    private var candidates: [MentionCandidate] { PeopleSuggestions.directMessage(people: model.people, accountID: model.account?.id) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
-            TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = $0 } })).textFieldStyle(.roundedBorder)
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-                .autocorrectionDisabled()
-                .focused($usernameFocused)
-                .onChange(of: username) { _, _ in error = nil }
-                .accessibilityIdentifier("dm-username")
+            let choices = suggestions.choices(text: username, candidates: candidates, focused: usernameFocused && !pending)
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = $0 } })).textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .autocorrectionDisabled()
+                    .focused($usernameFocused)
+                    .onChange(of: username) { _, _ in error = nil }
+                    // Return only picks a suggestion; the button starts the conversation.
+                    .onSubmit(pickHighlighted)
+                    .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
+                    .accessibilityIdentifier("dm-username")
+                if !choices.isEmpty {
+                    PeopleSuggestionList(choices: choices, state: suggestions, identifier: "dm-username-suggestions", pick: pick)
+                }
+            }
             // The frame keeps the error's space; iOS still exposes a transparent
             // placeholder to accessibility, so the text exists only with an error.
             ZStack(alignment: .leading) {
@@ -5696,7 +5707,20 @@ private struct NewDirectMessageSheet: View {
                 .accessibilityIdentifier("dm-create-submit")
             }
         }.padding(22).onAppear { usernameFocused = true }
+            // Suggestions; a refresh keeps the previous list until it lands.
+            .task { await model.refreshPeople() }
             .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
+    }
+    private func pickHighlighted() {
+        let choices = suggestions.choices(text: username, candidates: candidates, focused: !pending)
+        if let choice = suggestions.highlightedChoice(in: choices) { pick(choice) }
+    }
+    /// Fills in the exact username without opening the conversation; the list
+    /// stays closed until it is edited.
+    private func pick(_ candidate: MentionCandidate) {
+        guard !pending else { return }
+        username = candidate.username
+        suggestions.close(for: username)
     }
     private func start() {
         guard !pending else { return }
@@ -6070,6 +6094,12 @@ private struct SpaceEditor: View {
     /// Web's member form: its confirmation or its error, under the field.
     @State private var memberStatus: String?
     @State private var memberError: String?
+    @State private var suggestions = PeopleSuggestionState()
+    /// People you know who are neither in the space nor invited to it.
+    private var inviteCandidates: [MentionCandidate] {
+        PeopleSuggestions.spaceInvite(people: model.people, members: model.detail?.members ?? [],
+                                      invited: model.pendingMembers, accountID: model.account?.id)
+    }
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
@@ -6083,18 +6113,25 @@ private struct SpaceEditor: View {
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
                             .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
                             .accessibilityIdentifier("space-members-heading")
-                        // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
-                        HStack {
-                            TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
-                                .autocorrectionDisabled()
-                                #if os(iOS)
-                                .textInputAutocapitalization(.never)
-                                #endif
-                                .focused($memberFocused)
-                                .submitLabel(.done).onSubmit(addMember)
-                                .accessibilityLabel("Exact username")
-                            Button("Invite", action: addMember).buttonStyle(CaperSecondaryButton(minHeight: 42))
-                                .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
+                        let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: memberFocused)
+                        VStack(alignment: .leading, spacing: 6) {
+                            // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
+                            HStack {
+                                TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
+                                    .autocorrectionDisabled()
+                                    #if os(iOS)
+                                    .textInputAutocapitalization(.never)
+                                    #endif
+                                    .focused($memberFocused)
+                                    .submitLabel(.done).onSubmit(submitMember)
+                                    .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
+                                    .accessibilityLabel("Exact username")
+                                Button("Invite", action: addMember).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                    .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
+                            }
+                            if !choices.isEmpty {
+                                PeopleSuggestionList(choices: choices, state: suggestions, identifier: "space-invite-suggestions", pick: pickMember)
+                            }
                         }
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
@@ -6117,6 +6154,8 @@ private struct SpaceEditor: View {
         .onChange(of: pending) { _, running in if !running && refocusMember { refocusMember = false; memberFocused = true } }
         .interactiveDismissDisabled(creating).preference(key: DialogDismissDisabled.self, value: creating)
         .task(id: model.detail?.space.id) { if managing { do { try await model.loadSpaceInvitations() } catch { self.error = FriendlyError.message(for: error) } } }
+        // Invite suggestions; a refresh keeps the previous list until it lands.
+        .task { if managing { await model.refreshPeople() } }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
                 try await model.deleteCurrentSpace()
@@ -6140,6 +6179,16 @@ private struct SpaceEditor: View {
             if next != username { memberStatus = nil; memberError = nil }
             username = next
         })
+    }
+    /// Return picks the highlighted suggestion while the list is open; it invites otherwise.
+    private func submitMember() {
+        let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: true)
+        if let choice = suggestions.highlightedChoice(in: choices) { pickMember(choice) } else { addMember() }
+    }
+    /// Fills in the exact username without inviting; the list stays closed until it is edited.
+    private func pickMember(_ candidate: MentionCandidate) {
+        usernameField.wrappedValue = candidate.username
+        suggestions.close(for: username)
     }
     private func addMember() {
         guard !pending, WorkspaceValidation.usernameError(username) == nil else { return }
@@ -6175,6 +6224,14 @@ private struct ChannelEditor: View {
     @FocusState private var memberFocused: Bool
     /// An invite finished: return focus to the field so several people can be invited in a row.
     @State private var refocusMember = false
+    @State private var suggestions = PeopleSuggestionState()
+    /// Space members without access to this channel or an invitation to it;
+    /// none until both lists have loaded.
+    private var grantCandidates: [MentionCandidate] {
+        guard !loadingMembers, membersError == nil else { return [] }
+        return PeopleSuggestions.channelGrant(spaceMembers: model.detail?.members ?? [], channelMembers: members,
+                                              invited: invitations, accountID: model.account?.id)
+    }
     private var dirty: Bool { channel.map { name != $0.name || privateChannel != $0.private } ?? false }
     /// Creating can still navigate when it completes, so the sheet stays until then.
     private var creating: Bool { channel == nil && pending }
@@ -6214,20 +6271,27 @@ private struct ChannelEditor: View {
                             Text(membersError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
-                        // Not disabled while an invite is sent, so the field keeps focus; addMember ignores it until then.
-                        HStack {
-                            TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
-                                .autocorrectionDisabled()
-                                #if os(iOS)
-                                .textInputAutocapitalization(.never)
-                                #endif
-                                .focused($memberFocused)
-                                .submitLabel(.done).onSubmit { addMember(channel) }
-                                .accessibilityLabel("Exact username")
-                            Button("Invite") { addMember(channel) }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                                .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
+                        let choices = suggestions.choices(text: username, candidates: grantCandidates, focused: memberFocused)
+                        VStack(alignment: .leading, spacing: 6) {
+                            // Not disabled while an invite is sent, so the field keeps focus; addMember ignores it until then.
+                            HStack {
+                                TextField("Exact username", text: usernameField).textFieldStyle(CaperTextFieldStyle())
+                                    .autocorrectionDisabled()
+                                    #if os(iOS)
+                                    .textInputAutocapitalization(.never)
+                                    #endif
+                                    .focused($memberFocused)
+                                    .submitLabel(.done).onSubmit { submitMember(channel) }
+                                    .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
+                                    .accessibilityLabel("Exact username")
+                                Button("Invite") { addMember(channel) }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                    .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
+                            }
+                                .disabled(loadingMembers || membersError != nil)
+                            if !choices.isEmpty {
+                                PeopleSuggestionList(choices: choices, state: suggestions, identifier: "channel-member-suggestions", pick: pickMember)
+                            }
                         }
-                            .disabled(loadingMembers || membersError != nil)
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                         ForEach(members) { member in
@@ -6322,6 +6386,16 @@ private struct ChannelEditor: View {
             if next != username { memberStatus = nil; memberError = nil }
             username = next
         })
+    }
+    /// Return picks the highlighted suggestion while the list is open; it invites otherwise.
+    private func submitMember(_ channel: Channel) {
+        let choices = suggestions.choices(text: username, candidates: grantCandidates, focused: true)
+        if let choice = suggestions.highlightedChoice(in: choices) { pickMember(choice) } else { addMember(channel) }
+    }
+    /// Fills in the exact username without inviting; the list stays closed until it is edited.
+    private func pickMember(_ candidate: MentionCandidate) {
+        usernameField.wrappedValue = candidate.username
+        suggestions.close(for: username)
     }
     private func addMember(_ channel: Channel) {
         guard !pending, !loadingMembers, membersError == nil else { return }

@@ -29,6 +29,15 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
     }
 }
 
+extension MentionCandidate {
+    init(_ person: Person) {
+        self = .member(id: person.id, username: person.username, displayName: person.displayName, avatarId: person.avatarId)
+    }
+    init(_ member: Member) {
+        self = .member(id: member.id, username: member.username, displayName: member.displayName, avatarId: member.avatarId)
+    }
+}
+
 /// Who the composer may suggest in the open conversation.
 struct MentionSource: Equatable, Sendable {
     var members: [MentionCandidate]
@@ -43,9 +52,7 @@ struct MentionSource: Equatable, Sendable {
     /// A space channel: the members from `GET /api/spaces/{space}` (empty
     /// until loaded) except the signed-in account, then `everyone`/`here`.
     static func space(members: [Member], excluding accountID: String?) -> MentionSource {
-        MentionSource(members: members.filter { $0.id != accountID }.map {
-            MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
-        }, specials: true)
+        MentionSource(members: members.filter { $0.id != accountID }.map { MentionCandidate($0) }, specials: true)
     }
 
     /// Any DM, self-notes included: everyone from `GET /api/people` once it
@@ -53,9 +60,7 @@ struct MentionSource: Equatable, Sendable {
     /// until then only the other participant, so nobody in self-notes (only
     /// `@feedback` once typed). Never `everyone`/`here`.
     static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?) -> MentionSource {
-        var members = (people ?? []).filter { $0.id != accountID }.map {
-            MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
-        }
+        var members = (people ?? []).filter { $0.id != accountID }.map { MentionCandidate($0) }
         if let peer, peer.id != accountID, !members.contains(where: { $0.id == peer.id }) {
             members.append(.member(id: peer.id, username: peer.username, displayName: peer.displayName))
         }
@@ -182,30 +187,40 @@ enum MentionAutocomplete {
         return MentionQuery(range: NSRange(at..<caret, in: text), query: string(name).lowercased())
     }
 
-    /// Members ranked 0 (exact username), 1 (username prefix), 2 (display name
-    /// or one of its space-separated words starts with the query), 3 (username
-    /// contains it), ties by username; an empty query puts every member at 1.
-    /// Matching specials (`everyone`, `here`, then `feedback`) follow the
-    /// members and keep their slots within the cap of six. The team special
-    /// needs a non-empty query: the first team name it starts, inserted as is
-    /// (`@ad` offers `@admin`).
+    /// A person's rank for a lowercased query: 0 (exact username), 1 (username
+    /// prefix), 2 (display name or one of its space-separated words starts with
+    /// the query), 3 (username contains it), nil otherwise. Shared by `@`
+    /// suggestions and the exact-username fields' people suggestions.
+    static func personRank(query: String, username: String, displayName: String) -> Int? {
+        let username = username.lowercased(), displayName = displayName.lowercased()
+        if username == query { return 0 }
+        if username.hasPrefix(query) { return 1 }
+        if displayName.hasPrefix(query) || displayName.split(separator: " ").contains(where: { $0.hasPrefix(query) }) { return 2 }
+        if username.contains(query) { return 3 }
+        return nil
+    }
+
+    /// The people that match `query`, best `personRank` first, ties by
+    /// lowercased username; an empty query puts everyone at 1. Uncapped.
+    static func rankPeople(query: String, _ people: [MentionCandidate]) -> [MentionCandidate] {
+        let query = query.lowercased()
+        return people.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
+            guard let rank = query.isEmpty ? 1 : personRank(query: query, username: candidate.username,
+                                                            displayName: candidate.displayName) else { return nil }
+            return (rank, candidate.username.lowercased(), candidate)
+        }.sorted { ($0.rank, $0.username) < ($1.rank, $1.username) }.map { $0.candidate }
+    }
+
+    /// Members ranked by `rankPeople`. Matching specials (`everyone`, `here`,
+    /// then the team) follow the members and keep their slots within the cap
+    /// of six. The team special needs a non-empty query: the first team name
+    /// it starts, inserted as is (`@ad` offers `@admin`).
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
         var specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
         // Only once something is typed: a bare `@` stays about people.
         if source.feedback, !query.isEmpty, let name = feedbackAliases.first(where: { $0.hasPrefix(query) }) { specials.append(.team(name)) }
-        let members = source.members.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
-            let username = candidate.username.lowercased()
-            let displayName = candidate.displayName.lowercased()
-            let rank: Int
-            if query.isEmpty { rank = 1 }
-            else if username == query { rank = 0 }
-            else if username.hasPrefix(query) { rank = 1 }
-            else if displayName.hasPrefix(query) || displayName.split(separator: " ").contains(where: { $0.hasPrefix(query) }) { rank = 2 }
-            else if username.contains(query) { rank = 3 }
-            else { return nil }
-            return (rank, username, candidate)
-        }.sorted { ($0.rank, $0.username) < ($1.rank, $1.username) }.map { $0.candidate }
+        let members = rankPeople(query: query, source.members)
         return Array(members.prefix(max(0, maximumChoices - specials.count))) + specials
     }
 

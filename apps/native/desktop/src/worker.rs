@@ -62,7 +62,8 @@ pub enum Command {
         thread_root: String,
         archived: bool,
     },
-    /// `GET /api/people`, for `@` suggestions in DMs.
+    /// `GET /api/people`, for `@` suggestions in DMs and the space invite and
+    /// new DM username fields.
     LoadPeople {
         generation: u64,
         token: String,
