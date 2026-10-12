@@ -1364,6 +1364,37 @@ forward; they refresh when the forward is reloaded, not through
 Thread replies may carry files through the API; the client composers attach
 files only in channels and DMs.
 
+Pasting copied files or images into a channel/DM text box uses the same draft
+attachments as the file picker: preparation/upload starts immediately, but no
+message is sent until Send/Enter. Existing text stays intact, and ordinary text
+and links still paste at the selection. The 10-file limit, upload errors, retry,
+removal and conversation permissions are unchanged. Web accepts the files the
+browser exposes in the paste event (not HTML images or URLs to download); Apple
+accepts native file URLs and image data; Android accepts clipboard content URIs
+through the text box's Paste menu or Ctrl+V; Rust desktop accepts native file
+lists and images with Ctrl+V. Android keeps its value-based composer and adds a
+file-aware text menu/keyboard handler rather than changing selection/mention
+editing. Rust's egui integration suppresses image-only paste key-downs, so its
+key-up supplies the missing event without duplicating text-bearing pastes.
+
+No API, gateway, database, infrastructure or secret change is needed. Clients
+can release independently against the existing upload API; rolling a client
+back only removes its new paste entry point, not sent attachments. Before a
+native release, verify clipboard access on the actual OS, including screenshots,
+copied documents, ordinary text, a full tray and disabled uploads. Browser
+coverage lives in `scripts/test-chat-paste.mjs` against the local
+`native-parity-fixture.mjs`, not real account/storage traffic.
+
+Paste validation (October 12, 2026): `npm run check` and 604 `npm test` tests
+pass. The browser regression passes at 1280px and 390px: real Chromium clipboard
+image/text paste, synthetic multi-file paste, preserved draft text, removal,
+confirmed channel/DM sends, the 10-file boundary and unavailable uploads. Both
+attachment-tray captures were inspected; narrow Chromium is not a phone test.
+Rust desktop fmt, Clippy, Linux build and 484 tests pass (12 existing ignored).
+Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
+toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
+No Docker daemon is available; the web production build was checked directly.
+
 ### In-app viewer
 
 Clicking a sent image or video opens it almost full screen inside the app on
@@ -1571,10 +1602,10 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: picker and drag and drop with an overlay (no paste) | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop with an overlay on macOS and iPad/iPhone (no paste) | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop with an overlay, up to 10. No clipboard image paste. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Web (desktop and mobile layouts) | Yes: picker, clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 #### File drop overlay
 

@@ -298,6 +298,47 @@ impl Send {
     }
 }
 
+/// egui-winit 0.33 consumes the paste key-down even when the clipboard has no
+/// text. Its key-up still arrives. Supply a paste event then, but never duplicate
+/// a text/file-list paste already delivered on key-down.
+#[derive(Default)]
+pub struct PasteShortcut {
+    delivered: bool,
+}
+
+impl PasteShortcut {
+    pub fn update(&mut self, events: &mut Vec<egui::Event>) {
+        let mut paste = false;
+        for event in events.iter() {
+            match event {
+                egui::Event::Paste(_) => self.delivered = true,
+                egui::Event::Key {
+                    key,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if *key == egui::Key::V
+                    || *key == egui::Key::Paste
+                    || *key == egui::Key::Insert =>
+                {
+                    let shortcut = (*key == egui::Key::V && modifiers.command)
+                        || *key == egui::Key::Paste
+                        || (*key == egui::Key::Insert
+                            && modifiers.shift
+                            && cfg!(target_os = "windows"));
+                    paste |= shortcut && !self.delivered;
+                    self.delivered = false;
+                }
+                egui::Event::WindowFocused(false) => self.delivered = false,
+                _ => {}
+            }
+        }
+        if paste {
+            events.push(egui::Event::Paste(String::new()));
+        }
+    }
+}
+
 /// Prefer copied files to an image (file managers may advertise both), and
 /// leave ordinary text pastes to egui. Unsupported clipboard formats are a no-op.
 pub fn paste_files() -> Result<Vec<File>, String> {
@@ -330,6 +371,50 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
 
     const DIRECT: &str = r#"{"id":"dm0000000002","peer":{"id":"alex-id","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0","status":"outgoing"}"#;
+
+    #[test]
+    fn image_only_paste_shortcuts_arrive_once_without_duplicating_text_paste() {
+        let release = |command| egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: Some(egui::Key::V),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command,
+                ctrl: command,
+                ..Default::default()
+            },
+        };
+        let mut shortcut = PasteShortcut::default();
+        // The integration swallowed an image-only key-down. Its release must paste.
+        let mut events = vec![release(true)];
+        shortcut.update(&mut events);
+        assert_eq!(
+            events,
+            vec![release(true), egui::Event::Paste(String::new())]
+        );
+        // A file manager may provide both files and text, delivering Paste on key-down.
+        let mut events = vec![egui::Event::Paste("file:///tmp/notes.txt".into())];
+        shortcut.update(&mut events);
+        assert_eq!(events.len(), 1);
+        let mut events = vec![release(true)];
+        shortcut.update(&mut events);
+        assert_eq!(events, vec![release(true)]);
+        // A subsequent image-only paste still works, including in one frame.
+        let mut events = vec![release(true)];
+        shortcut.update(&mut events);
+        assert_eq!(events.len(), 2);
+        let mut events = vec![egui::Event::Paste("normal text".into()), release(true)];
+        shortcut.update(&mut events);
+        assert_eq!(events.len(), 2);
+        let mut events = vec![release(false)];
+        shortcut.update(&mut events);
+        assert_eq!(
+            events,
+            vec![release(false)],
+            "typing v never reads the clipboard"
+        );
+    }
 
     fn operation(files: Vec<File>) -> Send {
         Send {

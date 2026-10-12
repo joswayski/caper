@@ -214,7 +214,7 @@ import kotlinx.coroutines.launch
                     value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
                 }
                 field = limited; text(limited.text)
-            }, Modifier.weight(1f), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+            }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
             visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
             leadingIcon = {
                 AttachButton(

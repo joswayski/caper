@@ -3209,7 +3209,8 @@ private struct ChatView: View {
                             }
                             NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
                                                   controller: composerAutocomplete, mentions: mentionSource,
-                                                  submit: { Task { await chat.send() } })
+                                                  submit: { Task { await chat.send() } },
+                                                  pasteAttachments: chat.canAttach ? chat.pasteAttachments : nil)
                         }
                         .frame(minHeight: 42, maxHeight: 174)
                         // Measure the text view instead of filling the 174-point maximum.
