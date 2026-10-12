@@ -5,6 +5,7 @@ import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
@@ -45,7 +46,9 @@ export default function ThreadPanel({
   arrivals: Arrivals;
   onClose: () => void;
 }) {
-  const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
+  // Kept in the page-wide store, so switching conversations never drops a reply.
+  const [drafts, setDrafts] = useState<Record<string, ThreadDraft>>(readThreadDrafts);
+  useEffect(() => saveThreadDrafts(drafts), [drafts]);
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
@@ -131,9 +134,6 @@ export default function ThreadPanel({
     onInsert: (text) => update({ text }),
     onTooLong: () => setValidation("Messages must be 4,000 characters or fewer."),
   });
-  useEffect(() => {
-    setDrafts({});
-  }, [state.channelId]);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
     const change = () => setMobile(query.matches);
