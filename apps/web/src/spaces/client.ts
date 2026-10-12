@@ -442,22 +442,42 @@ export interface InviteLinkOptions {
   maxUses: number | null;
 }
 
-/** The API accepts only these. */
-export const INVITE_MAX_AGES: { label: string; value: number | null }[] = [
-  { label: "1 hour", value: 3_600 },
-  { label: "1 day", value: 86_400 },
-  { label: "7 days", value: 604_800 },
-  { label: "30 days", value: 2_592_000 },
-  { label: "Never", value: null },
+export type InviteExpiryUnit = "minutes" | "hours" | "days" | "never";
+export const INVITE_EXPIRY_UNITS: { label: string; value: InviteExpiryUnit; seconds: number }[] = [
+  { label: "minutes", value: "minutes", seconds: 60 },
+  { label: "hours", value: "hours", seconds: 3_600 },
+  { label: "days", value: "days", seconds: 86_400 },
+  { label: "Never", value: "never", seconds: 0 },
 ];
-export const INVITE_MAX_USES: { label: string; value: number | null }[] = [
-  { label: "No limit", value: null },
-  ...[1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000].map((value) => ({
-    label: `${count(value)} ${value === 1 ? "use" : "uses"}`,
-    value,
-  })),
-];
-export const DEFAULT_INVITE_MAX_AGE = 604_800;
+export const DEFAULT_INVITE_EXPIRY = { amount: "7", unit: "days" as InviteExpiryUnit };
+/** The API's bounds: one minute to a year, and at most 10,000 uses. */
+const MAX_AGE_SECONDS = { min: 60, max: 31_536_000 };
+export const MAX_INVITE_USES = 10_000;
+
+type Parsed<T> = { value: T; error?: undefined } | { value?: undefined; error: string };
+
+function wholeNumber(text: string) {
+  const value = text.trim();
+  return /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+/** "Expire after": seconds for the API, or null for Never. */
+export function inviteExpirySeconds(amount: string, unit: InviteExpiryUnit): Parsed<number | null> {
+  if (unit === "never") return { value: null };
+  const seconds = (wholeNumber(amount) ?? 0) * INVITE_EXPIRY_UNITS.find((option) => option.value === unit)!.seconds;
+  return seconds >= MAX_AGE_SECONDS.min && seconds <= MAX_AGE_SECONDS.max
+    ? { value: seconds }
+    : { error: "Expiry must be between 1 minute and 365 days." };
+}
+
+/** "Max uses": empty means no limit. */
+export function inviteMaxUses(text: string): Parsed<number | null> {
+  if (!text.trim()) return { value: null };
+  const uses = wholeNumber(text);
+  return uses !== undefined && uses >= 1 && uses <= MAX_INVITE_USES
+    ? { value: uses }
+    : { error: "Max uses must be a whole number from 1 to 10,000." };
+}
 
 /** "10,000" */
 function count(value: number) {

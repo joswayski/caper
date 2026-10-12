@@ -27,12 +27,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import chat.caper.android.data.DEFAULT_INVITE_MAX_AGE
+import chat.caper.android.data.DEFAULT_INVITE_EXPIRY_NUMBER
+import chat.caper.android.data.DEFAULT_INVITE_EXPIRY_UNIT
 import chat.caper.android.data.INVALID_INVITE_LINK
-import chat.caper.android.data.INVITE_MAX_AGES
-import chat.caper.android.data.INVITE_MAX_USES
+import chat.caper.android.data.InviteExpiryUnit
+import chat.caper.android.data.InviteOption
 import chat.caper.android.data.inviteCode
+import chat.caper.android.data.inviteExpirySeconds
 import chat.caper.android.data.inviteLinkMeta
+import chat.caper.android.data.inviteMaxUses
 import chat.caper.android.data.inviteMemberCount
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.InvitePreview
@@ -50,8 +53,12 @@ import kotlinx.coroutines.delay
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
     // Links can only open public channels.
     val publicChannels = detail.channels.filter { !it.private && !it.direct }
-    var maxAge by remember(detail.space.id) { mutableStateOf<Int?>(DEFAULT_INVITE_MAX_AGE) }
-    var maxUses by remember(detail.space.id) { mutableStateOf<Int?>(null) }
+    // Typed text; parsed and checked on Create link.
+    var expiryNumber by remember(detail.space.id) { mutableStateOf(DEFAULT_INVITE_EXPIRY_NUMBER) }
+    var expiryUnit by remember(detail.space.id) { mutableStateOf(DEFAULT_INVITE_EXPIRY_UNIT) }
+    var maxUsesText by remember(detail.space.id) { mutableStateOf("") }
+    var expiryError by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    var maxUsesError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var channelId by remember(detail.space.id) {
         mutableStateOf(state.selectedChannel?.takeIf { it.spaceId == detail.space.id && !it.private && !it.direct }?.id)
     }
@@ -70,19 +77,43 @@ import kotlinx.coroutines.delay
         clipboard?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(code)))
         copied = code
     }
+    // Out-of-range or malformed fields show their own error and send nothing.
+    fun create() {
+        val expiry = inviteExpirySeconds(expiryNumber, expiryUnit)
+        val uses = inviteMaxUses(maxUsesText)
+        expiryError = (expiry as? InviteOption.Invalid)?.error
+        maxUsesError = (uses as? InviteOption.Invalid)?.error
+        if (expiry !is InviteOption.Valid || uses !is InviteOption.Valid) return
+        error = null; creating = true
+        viewModel.createInviteLink(landing?.id, expiry.value, uses.value, { copy(it.code) }) { error = it }
+    }
 
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text("Anyone with the link can join this space.", color = TextMuted, fontSize = 11.sp)
-    InviteChoice("Expire after", INVITE_MAX_AGES, maxAge, !state.busy) { maxAge = it; error = null }
-    InviteChoice("Max uses", INVITE_MAX_USES, maxUses, !state.busy) { maxUses = it; error = null }
+    InviteRow("Expire after") {
+        // "Never" has no number; the typed one comes back with another unit.
+        if (expiryUnit != InviteExpiryUnit.Never) {
+            InviteNumberField("Expire after", expiryNumber, null, expiryError != null, !state.busy, { create() }) {
+                expiryNumber = it; expiryError = null; error = null
+            }
+            Spacer(Modifier.width(8.dp))
+        }
+        InviteMenu("Expire after unit", InviteExpiryUnit.entries.map { it to it.label }, expiryUnit, !state.busy) {
+            expiryUnit = it; expiryError = null; error = null
+        }
+    }
+    InviteFieldError(expiryError)
+    InviteRow("Max uses") {
+        InviteNumberField("Max uses", maxUsesText, "No limit", maxUsesError != null, !state.busy, { create() }) {
+            maxUsesText = it; maxUsesError = null; error = null
+        }
+    }
+    InviteFieldError(maxUsesError)
     InviteChoice(
         "Opens in", listOf<Pair<String?, String>>(null to "Default channel") + publicChannels.map { it.id to "#${it.name}" },
         landing?.id, !state.busy,
     ) { channelId = it; error = null }
-    Button({
-        error = null; creating = true
-        viewModel.createInviteLink(landing?.id, maxAge, maxUses, { copy(it.code) }) { error = it }
-    }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { PendingLabel("Create link", "Creating…", state.busy && creating) }
+    Button({ create() }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { PendingLabel("Create link", "Creating…", state.busy && creating) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     val now = Instant.now()
     if (loaded && state.inviteLinks.isEmpty()) Text("No active invite links.", color = TextMuted, fontSize = 11.sp)
@@ -107,25 +138,53 @@ import kotlinx.coroutines.delay
 
 /** A labelled picker: the current choice on a quiet button, the options in a menu. */
 @Composable private fun <T> InviteChoice(label: String, options: List<Pair<T, String>>, current: T, enabled: Boolean, choose: (T) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    val shown = options.firstOrNull { it.first == current }?.second ?: options.first().second
+    InviteRow(label) { InviteMenu(label, options, current, enabled, choose) }
+}
+
+/** An option's muted label on the left, its controls on the right. */
+@Composable private fun InviteRow(label: String, controls: @Composable RowScope.() -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f), color = TextMuted, fontSize = 12.sp)
-        Box {
-            OutlinedButton({ open = true }, Modifier.widthIn(max = 240.dp).semantics { contentDescription = "$label, $shown" }, enabled = enabled,
-                shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = ButtonDefaults.outlinedButtonColors(contentColor = Text)) {
-                Text(shown, Modifier.weight(1f, fill = false), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.width(6.dp))
-                Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(14.dp), tint = TextMuted)
-            }
-            DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                options.forEach { (option, text) ->
-                    DropdownMenuItem(
-                        text = { Text(text, fontSize = 13.sp) }, onClick = { open = false; choose(option) },
-                        modifier = Modifier.semantics { selected = option == current },
-                        leadingIcon = { RadioButton(option == current, null) },
-                    )
-                }
+        controls()
+    }
+}
+
+/** A short whole-number field on the number keyboard; Done creates the link. */
+@Composable private fun InviteNumberField(
+    label: String, value: String, placeholder: String?, invalid: Boolean, enabled: Boolean, done: () -> Unit, change: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value, change, Modifier.width(112.dp).semantics { contentDescription = label }, enabled = enabled, singleLine = true,
+        textStyle = LocalTextStyle.current.copy(fontSize = 13.sp), isError = invalid,
+        placeholder = if (placeholder != null) { { Text(placeholder, fontSize = 13.sp, maxLines = 1) } } else null,
+        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { if (enabled) done() }),
+    )
+}
+
+/** A field's inline error, under its row. */
+@Composable private fun InviteFieldError(error: String?) {
+    error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+}
+
+/** The current choice on a quiet button, the options in a menu. */
+@Composable private fun <T> InviteMenu(label: String, options: List<Pair<T, String>>, current: T, enabled: Boolean, choose: (T) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val shown = options.firstOrNull { it.first == current }?.second ?: options.first().second
+    Box {
+        OutlinedButton({ open = true }, Modifier.widthIn(max = 240.dp).semantics { contentDescription = "$label, $shown" }, enabled = enabled,
+            shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = ButtonDefaults.outlinedButtonColors(contentColor = Text)) {
+            Text(shown, Modifier.weight(1f, fill = false), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.width(6.dp))
+            Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(14.dp), tint = TextMuted)
+        }
+        DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            options.forEach { (option, text) ->
+                DropdownMenuItem(
+                    text = { Text(text, fontSize = 13.sp) }, onClick = { open = false; choose(option) },
+                    modifier = Modifier.semantics { selected = option == current },
+                    leadingIcon = { RadioButton(option == current, null) },
+                )
             }
         }
     }

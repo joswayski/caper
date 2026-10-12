@@ -128,24 +128,36 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         async move { preview(State(state), Path(code)).await.map(|json| json.0) }
     };
 
-    // Only owners create links, from Discord's fixed expiry/use choices, and
-    // never into private channels.
+    // Only owners create links, expiring within a minute to a year and capped
+    // at 10,000 uses, and never into private channels.
     assert_eq!(
         create(member, json!({})).await.unwrap_err().status,
         StatusCode::NOT_FOUND
     );
     for body in [
-        json!({"maxAge":60}),
-        json!({"maxAge":1800}),
+        json!({"maxAge":59}),
+        json!({"maxAge":31_536_001}),
         json!({"maxUses":0}),
-        json!({"maxUses":7}),
-        json!({"maxUses":10001}),
+        json!({"maxUses":10_001}),
     ] {
         assert_eq!(
             create(owner, body).await.unwrap_err().status,
             StatusCode::BAD_REQUEST
         );
     }
+    // Any whole value inside those bounds is accepted.
+    let (status, custom) = create(owner, json!({"maxAge":31_536_000,"maxUses":7}))
+        .await
+        .unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(custom["maxUses"], 7);
+    revoke_link(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path((space.clone(), custom["code"].as_str().unwrap().to_owned())),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         create(owner, json!({"channelId":staff}))
             .await
@@ -253,7 +265,7 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         join(late, &revoked).await.unwrap_err().status,
         StatusCode::NOT_FOUND
     );
-    let (_, expired) = create(owner, json!({"maxAge":3600})).await.unwrap();
+    let (_, expired) = create(owner, json!({"maxAge":90})).await.unwrap();
     let expired = expired["code"].as_str().unwrap().to_owned();
     sqlx::query(
         "UPDATE public.space_invite_links SET expires_at=now()-interval '1 second' WHERE code=$1",

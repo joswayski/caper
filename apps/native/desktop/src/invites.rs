@@ -9,32 +9,63 @@ use url::Url;
 /// Codes are exactly ten ASCII letters or digits.
 const CODE_LENGTH: usize = 10;
 
-/// "Expire after" choices in seconds, as the API accepts them; `None` never
-/// expires. Seven days is the default.
-pub const EXPIRY_CHOICES: [(Option<u32>, &str); 5] = [
-    (Some(3_600), "1 hour"),
-    (Some(86_400), "1 day"),
-    (Some(604_800), "7 days"),
-    (Some(2_592_000), "30 days"),
-    (None, "Never"),
-];
-pub const DEFAULT_EXPIRY: Option<u32> = Some(604_800);
+/// "Expire after" units; `Never` sends no expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpiryUnit {
+    Minutes,
+    Hours,
+    Days,
+    Never,
+}
 
-/// "Max uses" choices; `None` (the default) allows unlimited joins. Spaces
-/// have no member cap, so the largest choice is a practical one.
-pub const USE_CHOICES: [(Option<u32>, &str); 11] = [
-    (None, "No limit"),
-    (Some(1), "1 use"),
-    (Some(5), "5 uses"),
-    (Some(10), "10 uses"),
-    (Some(25), "25 uses"),
-    (Some(50), "50 uses"),
-    (Some(100), "100 uses"),
-    (Some(500), "500 uses"),
-    (Some(1_000), "1,000 uses"),
-    (Some(5_000), "5,000 uses"),
-    (Some(10_000), "10,000 uses"),
+pub const EXPIRY_UNITS: [(ExpiryUnit, &str); 4] = [
+    (ExpiryUnit::Minutes, "minutes"),
+    (ExpiryUnit::Hours, "hours"),
+    (ExpiryUnit::Days, "days"),
+    (ExpiryUnit::Never, "Never"),
 ];
+/// Seven days, like web.
+pub const DEFAULT_EXPIRY: (&str, ExpiryUnit) = ("7", ExpiryUnit::Days);
+/// The API's bounds: one minute to a year, and at most 10,000 uses.
+const MAX_AGE_SECONDS: std::ops::RangeInclusive<u64> = 60..=31_536_000;
+const MAX_USES: std::ops::RangeInclusive<u64> = 1..=10_000;
+pub const EXPIRY_ERROR: &str = "Expiry must be between 1 minute and 365 days.";
+pub const USES_ERROR: &str = "Max uses must be a whole number from 1 to 10,000.";
+
+fn whole_number(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    // Saturates: an absurdly long number is simply out of range.
+    Some(text.parse().unwrap_or(u64::MAX))
+}
+
+/// "Expire after" as the API's `maxAge` seconds; `None` never expires.
+pub fn expiry_seconds(amount: &str, unit: ExpiryUnit) -> Result<Option<u32>, &'static str> {
+    let unit_seconds = match unit {
+        ExpiryUnit::Never => return Ok(None),
+        ExpiryUnit::Minutes => 60,
+        ExpiryUnit::Hours => 3_600,
+        ExpiryUnit::Days => 86_400,
+    };
+    whole_number(amount)
+        .map(|amount| amount.saturating_mul(unit_seconds))
+        .filter(|seconds| MAX_AGE_SECONDS.contains(seconds))
+        .map(|seconds| Some(seconds as u32))
+        .ok_or(EXPIRY_ERROR)
+}
+
+/// "Max uses"; empty means no limit.
+pub fn max_uses(text: &str) -> Result<Option<u32>, &'static str> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    whole_number(text)
+        .filter(|uses| MAX_USES.contains(uses))
+        .map(|uses| Some(uses as u32))
+        .ok_or(USES_ERROR)
+}
 
 pub const INVALID_LINK: &str = "This invite link is invalid or has expired.";
 
@@ -202,15 +233,6 @@ fn grouped(count: u64) -> String {
     grouped
 }
 
-/// The label of a picker choice.
-#[cfg(test)]
-pub fn choice_label(choices: &[(Option<u32>, &'static str)], value: Option<u32>) -> &'static str {
-    choices
-        .iter()
-        .find(|(choice, _)| *choice == value)
-        .map_or("", |(_, label)| label)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,19 +389,44 @@ mod tests {
     }
 
     #[test]
-    fn picker_labels_and_plurals() {
-        assert_eq!(choice_label(&EXPIRY_CHOICES, DEFAULT_EXPIRY), "7 days");
-        assert_eq!(choice_label(&EXPIRY_CHOICES, None), "Never");
-        assert_eq!(choice_label(&USE_CHOICES, None), "No limit");
-        assert_eq!(choice_label(&USE_CHOICES, Some(25)), "25 uses");
+    fn expiry_and_max_uses_are_free_form_within_the_api_bounds() {
+        assert_eq!(
+            expiry_seconds(DEFAULT_EXPIRY.0, DEFAULT_EXPIRY.1),
+            Ok(Some(604_800))
+        );
+        assert_eq!(expiry_seconds(" 90 ", ExpiryUnit::Minutes), Ok(Some(5_400)));
+        assert_eq!(expiry_seconds("1", ExpiryUnit::Minutes), Ok(Some(60)));
+        assert_eq!(
+            expiry_seconds("365", ExpiryUnit::Days),
+            Ok(Some(31_536_000))
+        );
+        assert_eq!(expiry_seconds("", ExpiryUnit::Never), Ok(None));
+        for (amount, unit) in [
+            ("0", ExpiryUnit::Minutes),
+            ("", ExpiryUnit::Hours),
+            ("366", ExpiryUnit::Days),
+            ("8761", ExpiryUnit::Hours),
+            ("1.5", ExpiryUnit::Days),
+            ("-1", ExpiryUnit::Days),
+            ("99999999999999999999999", ExpiryUnit::Days),
+        ] {
+            assert_eq!(expiry_seconds(amount, unit), Err(EXPIRY_ERROR), "{amount}");
+        }
+        assert_eq!(max_uses(""), Ok(None));
+        assert_eq!(max_uses(" 7 "), Ok(Some(7)));
+        assert_eq!(max_uses("10000"), Ok(Some(10_000)));
+        for text in ["0", "10001", "2.5", "abc", "-3", "1,000"] {
+            assert_eq!(max_uses(text), Err(USES_ERROR), "{text}");
+        }
+    }
+
+    #[test]
+    fn plurals() {
         assert_eq!(plural(1, "member"), "1 member");
         assert_eq!(plural(0, "member"), "0 members");
         assert_eq!(plural(12, "member"), "12 members");
         assert_eq!(plural(10_000, "use"), "10,000 uses");
         assert_eq!(grouped(1_234_567), "1,234,567");
         assert_eq!(grouped(999), "999");
-        for (value, label) in USE_CHOICES.iter().skip(1) {
-            assert_eq!(plural(u64::from(value.unwrap()), "use"), *label);
-        }
     }
 }

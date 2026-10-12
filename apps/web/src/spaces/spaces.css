@@ -1783,12 +1783,13 @@
 }
 .invite-link-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) auto;
   align-items: end;
   gap: 8px;
   margin-top: 12px;
 }
-.invite-link-options label {
+.invite-link-options label,
+.invite-link-expiry > span {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -1796,7 +1797,20 @@
   font-size: 0.68rem;
   font-weight: 700;
 }
-.invite-link-options select {
+.invite-link-expiry {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.invite-link-expiry > div {
+  display: flex;
+  gap: 6px;
+}
+.invite-link-options .invite-link-expiry input {
+  width: 4.5em;
+  flex: none;
+}
+.invite-link-options :is(select, input) {
   width: 100%;
   height: 42px;
   padding: 0 8px;
@@ -1808,7 +1822,7 @@
   font-size: 0.8rem;
   font-weight: 500;
 }
-.invite-link-options select:focus {
+.invite-link-options :is(select, input):focus {
   border-color: var(--terracotta);
   outline: 2px solid rgb(182 77 50 / 0.22);
 }
@@ -1832,6 +1846,9 @@
 @media (max-width: 560px) {
   .invite-link-options {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .invite-link-expiry {
+    grid-column: 1 / -1;
   }
 }
 .member-manager.invite-links li {

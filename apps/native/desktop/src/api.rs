@@ -669,7 +669,7 @@ impl Api {
         .map(|value| value.links)
     }
 
-    /// `max_age` in seconds and `max_uses` take the API's fixed choices;
+    /// `max_age` in seconds (1 minute to 365 days) and `max_uses` (1 to 10,000);
     /// `None` never expires or allows unlimited joins.
     pub fn create_invite_link(
         &self,

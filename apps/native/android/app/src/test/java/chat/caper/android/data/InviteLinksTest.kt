@@ -85,14 +85,45 @@ class InviteLinksTest {
         assertEquals("4 members", inviteMemberCount(4))
     }
 
-    @Test fun `pickers offer the API's choices with web's defaults`() {
-        assertEquals(listOf(3_600, 86_400, 604_800, 2_592_000, null), INVITE_MAX_AGES.map { it.first })
-        assertEquals(604_800, DEFAULT_INVITE_MAX_AGE)
-        assertEquals(listOf(null, 1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000), INVITE_MAX_USES.map { it.first })
-        assertEquals("No limit", INVITE_MAX_USES.first().second)
-        assertEquals("1 use", INVITE_MAX_USES[1].second)
-        assertEquals("10,000 uses", INVITE_MAX_USES.last().second)
+    @Test fun `expiry is a number of minutes, hours or days, or never, with web's default`() {
+        assertEquals("7", DEFAULT_INVITE_EXPIRY_NUMBER)
+        assertEquals(InviteExpiryUnit.Days, DEFAULT_INVITE_EXPIRY_UNIT)
+        assertEquals(listOf("minutes", "hours", "days", "Never"), InviteExpiryUnit.entries.map { it.label })
+        assertEquals(InviteOption.Valid(604_800), inviteExpirySeconds(DEFAULT_INVITE_EXPIRY_NUMBER, DEFAULT_INVITE_EXPIRY_UNIT))
+        assertEquals(InviteOption.Valid(60), inviteExpirySeconds("1", InviteExpiryUnit.Minutes))
+        assertEquals(InviteOption.Valid(5_400), inviteExpirySeconds(" 90 ", InviteExpiryUnit.Minutes))
+        assertEquals(InviteOption.Valid(3_600), inviteExpirySeconds("1", InviteExpiryUnit.Hours))
+        assertEquals(InviteOption.Valid(31_536_000), inviteExpirySeconds("8760", InviteExpiryUnit.Hours))
+        assertEquals(InviteOption.Valid(31_536_000), inviteExpirySeconds("365", InviteExpiryUnit.Days))
+        assertEquals(InviteOption.Valid(31_536_000), inviteExpirySeconds("525600", InviteExpiryUnit.Minutes))
+        assertEquals(InviteOption.Valid(604_800), inviteExpirySeconds("007", InviteExpiryUnit.Days))
+        // Never ignores the number, even a bad one.
+        listOf("7", "", "0", "abc").forEach { assertEquals(it, InviteOption.Valid(null), inviteExpirySeconds(it, InviteExpiryUnit.Never)) }
+    }
+
+    @Test fun `expiry outside 1 minute to 365 days or not a whole number is refused`() {
+        val invalid = InviteOption.Invalid("Expiry must be between 1 minute and 365 days.")
+        listOf(
+            "0" to InviteExpiryUnit.Minutes, "0" to InviteExpiryUnit.Days, "366" to InviteExpiryUnit.Days,
+            "8761" to InviteExpiryUnit.Hours, "525601" to InviteExpiryUnit.Minutes,
+            "" to InviteExpiryUnit.Days, "  " to InviteExpiryUnit.Hours, "-1" to InviteExpiryUnit.Days, "+1" to InviteExpiryUnit.Days,
+            "1.5" to InviteExpiryUnit.Days, "1,000" to InviteExpiryUnit.Minutes, "1e3" to InviteExpiryUnit.Minutes,
+            "seven" to InviteExpiryUnit.Days, "7 days" to InviteExpiryUnit.Days, "\u0667" to InviteExpiryUnit.Days,
+            "99999999999999999999" to InviteExpiryUnit.Minutes, "2147483648" to InviteExpiryUnit.Days,
+        ).forEach { (number, unit) -> assertEquals("$number $unit", invalid, inviteExpirySeconds(number, unit)) }
+    }
+
+    @Test fun `max uses is empty for no limit or a whole number from 1 to 10,000`() {
+        assertEquals(InviteOption.Valid(null), inviteMaxUses(""))
+        assertEquals(InviteOption.Valid(null), inviteMaxUses("   "))
+        assertEquals(InviteOption.Valid(1), inviteMaxUses("1"))
+        assertEquals(InviteOption.Valid(25), inviteMaxUses(" 25\n"))
+        assertEquals(InviteOption.Valid(10_000), inviteMaxUses("10000"))
+        val invalid = InviteOption.Invalid("Max uses must be a whole number from 1 to 10,000.")
+        listOf("0", "10001", "-5", "+5", "2.5", "10,000", "1e3", "ten", "5 uses", "\u0665", "99999999999999999999")
+            .forEach { assertEquals(it, invalid, inviteMaxUses(it)) }
         assertEquals("1,234 of 10,000 uses", inviteUsesLabel(1_234, 10_000))
+        assertEquals("1 of 1 use", inviteUsesLabel(1, 1))
     }
 
     @Test fun `invalid links read as web's sentence`() {

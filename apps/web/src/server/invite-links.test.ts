@@ -4,8 +4,8 @@ import { androidAssetLinks, appleAppSiteAssociation } from "./app-links.ts";
 import {
   appInviteUrl,
   createInviteLink,
-  INVITE_MAX_AGES,
-  INVITE_MAX_USES,
+  inviteExpirySeconds,
+  inviteMaxUses,
   inviteCode,
   inviteExpiry,
   inviteLinkSummary,
@@ -71,11 +71,6 @@ test("invite link summaries read like Discord's", () => {
     inviteLinkSummary({ ...link, uses: 1_234, maxUses: 10_000, expiresAt: "2026-11-10T00:00:00Z" }, now),
     "#feedback · 1,234 of 10,000 uses · Expires in 30 days",
   );
-  assert.deepEqual(
-    INVITE_MAX_AGES.map((option) => option.label),
-    ["1 hour", "1 day", "7 days", "30 days", "Never"],
-  );
-  assert.equal(INVITE_MAX_USES.at(-1)?.label, "10,000 uses");
   assert.equal(inviteExpiry("2026-10-11T00:30:00Z", now), "Expires in 30 minutes");
   assert.equal(inviteExpiry("2026-10-11T01:00:00Z", now), "Expires in 1 hour");
   assert.equal(inviteExpiry("2026-10-10T23:00:00Z", now), "Expires in 1 minute");
@@ -112,4 +107,25 @@ test("native apps verify caper.chat invite links and open caper:// links", async
     assert.match(fingerprint, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
   assert.equal(appInviteUrl("AbCdE12345"), "caper://invite/AbCdE12345");
   assert.equal(inviteCode("caper://invite/AbCdE12345"), "AbCdE12345");
+});
+
+test("expiry and max uses are free-form within the API's bounds", () => {
+  assert.deepEqual(inviteExpirySeconds("7", "days"), { value: 604_800 });
+  assert.deepEqual(inviteExpirySeconds(" 90 ", "minutes"), { value: 5_400 });
+  assert.deepEqual(inviteExpirySeconds("1", "minutes"), { value: 60 });
+  assert.deepEqual(inviteExpirySeconds("365", "days"), { value: 31_536_000 });
+  assert.deepEqual(inviteExpirySeconds("", "never"), { value: null });
+  for (const [amount, unit] of [
+    ["0", "minutes"],
+    ["", "hours"],
+    ["366", "days"],
+    ["8761", "hours"],
+    ["1.5", "days"],
+    ["-1", "days"],
+  ] as const)
+    assert.ok(inviteExpirySeconds(amount, unit).error, `${amount} ${unit}`);
+  assert.deepEqual(inviteMaxUses(""), { value: null });
+  assert.deepEqual(inviteMaxUses(" 7 "), { value: 7 });
+  assert.deepEqual(inviteMaxUses("10000"), { value: 10_000 });
+  for (const text of ["0", "10001", "2.5", "abc", "-3"]) assert.ok(inviteMaxUses(text).error, text);
 });

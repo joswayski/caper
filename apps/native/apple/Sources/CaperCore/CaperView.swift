@@ -5568,8 +5568,12 @@ private struct InvitePreviewCard: View {
 /// Manage space's "Invite link": owners create, copy and revoke shareable links.
 private struct InviteLinksSection: View {
     @Bindable var model: AppModel
-    @State private var maxAge: Int? = InviteLinks.defaultExpiry
-    @State private var maxUses: Int? = nil
+    @State private var expiryNumber = InviteLinks.defaultExpiryNumber
+    @State private var expiryUnit = InviteLinks.defaultExpiryUnit
+    /// Empty is No limit.
+    @State private var maxUses = ""
+    @State private var expiryError: String?
+    @State private var maxUsesError: String?
     @State private var channelID: String?
     @State private var links: [InviteLink] = []
     @State private var loading = false
@@ -5581,6 +5585,9 @@ private struct InviteLinksSection: View {
     @State private var copiedReset: Task<Void, Never>?
 
     private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
+    private var unitOptions: [InviteOption<InviteExpiryUnit>] {
+        InviteExpiryUnit.allCases.map { InviteOption(label: $0.label, value: $0) }
+    }
     private var channelOptions: [InviteOption<String?>] {
         [InviteOption<String?>(label: "Default channel", value: nil)]
             + publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
@@ -5615,9 +5622,53 @@ private struct InviteLinksSection: View {
     }
 
     @ViewBuilder private var pickers: some View {
-        InviteOptionPicker(title: "Expire after", selection: $maxAge, options: InviteLinks.expiryOptions)
-        InviteOptionPicker(title: "Max uses", selection: $maxUses, options: InviteLinks.useOptions)
+        expiryField
+        maxUsesField
         InviteOptionPicker(title: "Opens in", selection: $channelID, options: channelOptions)
+    }
+
+    /// A whole number and its unit; Never hides the number.
+    private var expiryField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Expire after").font(CaperTheme.font(12, weight: .bold))
+            HStack(spacing: 8) {
+                if expiryUnit != .never {
+                    numberField("7", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
+                        .frame(width: 76)
+                        .accessibilityLabel("Expire after")
+                        .accessibilityIdentifier("invite-link-expiry-number")
+                }
+                InviteOptionPicker(title: "Expiry unit", selection: Binding(get: { expiryUnit }, set: { expiryUnit = $0; expiryError = nil }),
+                                   options: unitOptions, showsTitle: false)
+                    .accessibilityIdentifier("invite-link-expiry-unit")
+            }
+            if let expiryError { fieldError(expiryError).accessibilityIdentifier("invite-link-expiry-error") }
+        }
+    }
+
+    private var maxUsesField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Max uses").font(CaperTheme.font(12, weight: .bold))
+            numberField("No limit", text: Binding(get: { maxUses }, set: { maxUses = $0; maxUsesError = nil }))
+                .frame(width: 140)
+                .accessibilityLabel("Max uses")
+                .accessibilityIdentifier("invite-link-max-uses")
+            if let maxUsesError { fieldError(maxUsesError).accessibilityIdentifier("invite-link-max-uses-error") }
+        }
+    }
+
+    private func numberField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(CaperTextFieldStyle())
+            .autocorrectionDisabled()
+            #if os(iOS)
+            .keyboardType(.numberPad)
+            #endif
+    }
+
+    private func fieldError(_ message: String) -> some View {
+        Text(message).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func row(_ link: InviteLink) -> some View {
@@ -5650,12 +5701,18 @@ private struct InviteLinksSection: View {
 
     private func create() {
         guard pending == nil else { return }
+        // Out-of-range options show beside their fields and aren't sent.
+        let expiry = InviteLinks.expirySeconds(expiryNumber, unit: expiryUnit)
+        let uses = InviteLinks.maxUses(maxUses)
+        if case .failure(let failure) = expiry { expiryError = failure.message } else { expiryError = nil }
+        if case .failure(let failure) = uses { maxUsesError = failure.message } else { maxUsesError = nil }
+        guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
         // A channel made private since it was picked falls back to the default.
         let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
         pending = "create"; error = nil
         Task {
             do {
-                let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: maxUses)
+                let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: useLimit)
                 links.removeAll { $0.code == link.code }
                 links.insert(link, at: 0)
                 copy(link)
@@ -5702,11 +5759,13 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
     let title: String
     @Binding var selection: Value
     let options: [InviteOption<Value>]
+    /// False when a surrounding label already names the menu; `title` stays its accessibility label.
+    var showsTitle = true
     @Environment(\.isEnabled) private var isEnabled
     private var current: String { options.first { $0.value == selection }?.label ?? options.first?.label ?? "" }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(CaperTheme.font(12, weight: .bold))
+            if showsTitle { Text(title).font(CaperTheme.font(12, weight: .bold)) }
             Menu {
                 ForEach(options, id: \.label) { option in
                     Button(option.label) { selection = option.value }

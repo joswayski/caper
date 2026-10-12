@@ -3,9 +3,12 @@ import { useEffect, useId, useState } from "react";
 import {
   type Channel,
   createInviteLink,
-  DEFAULT_INVITE_MAX_AGE,
-  INVITE_MAX_AGES,
-  INVITE_MAX_USES,
+  DEFAULT_INVITE_EXPIRY,
+  INVITE_EXPIRY_UNITS,
+  type InviteExpiryUnit,
+  inviteExpirySeconds,
+  inviteMaxUses,
+  MAX_INVITE_USES,
   type InviteLink,
   inviteCode,
   inviteLinkSummary,
@@ -17,14 +20,6 @@ import {
 
 function message(reason: unknown) {
   return reason instanceof SpacesApiError ? reason.message : "That request did not work.";
-}
-
-function optionValue(value: number | null) {
-  return value === null ? "" : String(value);
-}
-
-function parseOption(value: string) {
-  return value === "" ? null : Number(value);
 }
 
 /** Owner controls for Discord-style shareable links in Manage space. */
@@ -40,8 +35,9 @@ export function InviteLinkManager({
 }) {
   const publicChannels = channels.filter((channel) => !channel.private);
   const [links, setLinks] = useState<InviteLink[]>();
-  const [maxAge, setMaxAge] = useState<number | null>(DEFAULT_INVITE_MAX_AGE);
-  const [maxUses, setMaxUses] = useState<number | null>(null);
+  const [expiryAmount, setExpiryAmount] = useState(DEFAULT_INVITE_EXPIRY.amount);
+  const [expiryUnit, setExpiryUnit] = useState<InviteExpiryUnit>(DEFAULT_INVITE_EXPIRY.unit);
+  const [usesText, setUsesText] = useState("");
   const [landing, setLanding] = useState<string | null>(
     publicChannels.some((channel) => channel.id === channelId) ? channelId! : null,
   );
@@ -77,9 +73,13 @@ export function InviteLinkManager({
         onSubmit={(event) => {
           event.preventDefault();
           if (pending) return;
+          const maxAge = inviteExpirySeconds(expiryAmount, expiryUnit);
+          const maxUses = inviteMaxUses(usesText);
+          const invalid = maxAge.error ?? maxUses.error;
+          if (invalid) return setError(invalid);
           setPending(true);
           setError(undefined);
-          void createInviteLink(spaceId, { channelId: landing, maxAge, maxUses })
+          void createInviteLink(spaceId, { channelId: landing, maxAge: maxAge.value!, maxUses: maxUses.value! })
             .then(async (link) => {
               setLinks((current) => [link, ...(current ?? [])]);
               await copy(link.code);
@@ -88,35 +88,54 @@ export function InviteLinkManager({
             .finally(() => setPending(false));
         }}
       >
-        <label htmlFor={`${ids}-age`}>
-          Expire after
-          <select
-            id={`${ids}-age`}
-            value={optionValue(maxAge)}
-            disabled={pending}
-            onChange={(event) => setMaxAge(parseOption(event.target.value))}
-          >
-            {INVITE_MAX_AGES.map((option) => (
-              <option key={option.label} value={optionValue(option.value)}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="invite-link-expiry" role="group" aria-labelledby={`${ids}-age-label`}>
+          <span id={`${ids}-age-label`}>Expire after</span>
+          <div>
+            {expiryUnit !== "never" && (
+              <input
+                aria-label="Expire after amount"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={expiryAmount}
+                disabled={pending}
+                onChange={(event) => {
+                  setExpiryAmount(event.target.value.replace(/\D/g, "").slice(0, 6));
+                  setError(undefined);
+                }}
+              />
+            )}
+            <select
+              aria-label="Expire after unit"
+              value={expiryUnit}
+              disabled={pending}
+              onChange={(event) => {
+                setExpiryUnit(event.target.value as InviteExpiryUnit);
+                setError(undefined);
+              }}
+            >
+              {INVITE_EXPIRY_UNITS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
         <label htmlFor={`${ids}-uses`}>
           Max uses
-          <select
+          <input
             id={`${ids}-uses`}
-            value={optionValue(maxUses)}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            placeholder="No limit"
+            title={`1 to ${MAX_INVITE_USES.toLocaleString("en-US")}, or empty for no limit`}
+            value={usesText}
             disabled={pending}
-            onChange={(event) => setMaxUses(parseOption(event.target.value))}
-          >
-            {INVITE_MAX_USES.map((option) => (
-              <option key={option.label} value={optionValue(option.value)}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onChange={(event) => {
+              setUsesText(event.target.value.replace(/\D/g, "").slice(0, 6));
+              setError(undefined);
+            }}
+          />
         </label>
         <label htmlFor={`${ids}-channel`}>
           Opens in

@@ -32,15 +32,53 @@ fun inviteCode(input: String): String? {
 /** `<origin>/invite/<code>`, for the configured API origin. */
 fun inviteLinkUrl(origin: String, code: String): String = "${origin.trimEnd('/')}/invite/$code"
 
-/** "Expire after" choices, in seconds; null never expires. */
-val INVITE_MAX_AGES: List<Pair<Int?, String>> = listOf(
-    3_600 to "1 hour", 86_400 to "1 day", 604_800 to "7 days", 2_592_000 to "30 days", null to "Never",
-)
-const val DEFAULT_INVITE_MAX_AGE = 604_800
+/** "Expire after" units: [seconds] per unit of the number field, null for "Never" (no number). */
+enum class InviteExpiryUnit(val label: String, val seconds: Long?) {
+    Minutes("minutes", 60), Hours("hours", 3_600), Days("days", 86_400), Never("Never", null),
+}
 
-/** "Max uses" choices; null has no limit (the default). */
-val INVITE_MAX_USES: List<Pair<Int?, String>> = listOf<Pair<Int?, String>>(null to "No limit") +
-    listOf(1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000).map { it to plural(it.toLong(), "use") }
+/** Web's default expiry, 7 days. */
+const val DEFAULT_INVITE_EXPIRY_NUMBER = "7"
+val DEFAULT_INVITE_EXPIRY_UNIT = InviteExpiryUnit.Days
+
+/** The API's range for `maxAge`: 1 minute to 365 days, in seconds. */
+const val MIN_INVITE_MAX_AGE = 60L
+const val MAX_INVITE_MAX_AGE = 31_536_000L
+/** The API's largest `maxUses`. */
+const val MAX_INVITE_MAX_USES = 10_000L
+
+const val INVALID_INVITE_EXPIRY = "Expiry must be between 1 minute and 365 days."
+const val INVALID_INVITE_MAX_USES = "Max uses must be a whole number from 1 to 10,000."
+
+/** A parsed "Expire after" or "Max uses" field: what to send (null never expires / has no limit), or its inline error. */
+sealed interface InviteOption {
+    data class Valid(val value: Int?) : InviteOption
+    data class Invalid(val error: String) : InviteOption
+}
+
+private val wholeNumber = Regex("^[0-9]+$")
+
+/** [text] as a whole number of ASCII digits (surrounding space ignored), or null; too many digits is null too. */
+private fun wholeNumberOrNull(text: String): Long? = text.trim().takeIf { wholeNumber.matches(it) }?.toLongOrNull()
+
+/**
+ * The "Expire after" fields as `maxAge` seconds: [number] × [unit], from 1 minute to 365 days.
+ * "Never" sends null whatever [number] holds.
+ */
+fun inviteExpirySeconds(number: String, unit: InviteExpiryUnit): InviteOption {
+    val perUnit = unit.seconds ?: return InviteOption.Valid(null)
+    val seconds = wholeNumberOrNull(number)?.takeIf { it <= MAX_INVITE_MAX_AGE }?.let { it * perUnit }
+    return if (seconds != null && seconds in MIN_INVITE_MAX_AGE..MAX_INVITE_MAX_AGE) InviteOption.Valid(seconds.toInt())
+    else InviteOption.Invalid(INVALID_INVITE_EXPIRY)
+}
+
+/** The "Max uses" field as `maxUses`: empty has no limit (null), otherwise a whole number from 1 to 10,000. */
+fun inviteMaxUses(text: String): InviteOption {
+    if (text.isBlank()) return InviteOption.Valid(null)
+    val uses = wholeNumberOrNull(text)
+    return if (uses != null && uses in 1..MAX_INVITE_MAX_USES) InviteOption.Valid(uses.toInt())
+    else InviteOption.Invalid(INVALID_INVITE_MAX_USES)
+}
 
 /** "10,000" */
 private fun grouped(count: Long) = String.format(java.util.Locale.US, "%,d", count)

@@ -50,6 +50,36 @@ public struct OpenedInviteLink: Equatable, Identifiable, Sendable {
     public let link: String
 }
 
+/// The unit of an invite link's "Expire after" number, or Never.
+public enum InviteExpiryUnit: String, CaseIterable, Hashable, Sendable {
+    case minutes, hours, days, never
+
+    public var label: String {
+        switch self {
+        case .minutes: "minutes"
+        case .hours: "hours"
+        case .days: "days"
+        case .never: "Never"
+        }
+    }
+
+    /// Seconds in one unit, or nil for Never.
+    public var seconds: Int? {
+        switch self {
+        case .minutes: 60
+        case .hours: 3_600
+        case .days: 86_400
+        case .never: nil
+        }
+    }
+}
+
+/// Why an invite link option can't be sent, worded for the form.
+public struct InviteOptionError: Error, Equatable, Sendable {
+    public let message: String
+    public init(message: String) { self.message = message }
+}
+
 /// One choice in an invite link picker.
 public struct InviteOption<Value: Hashable & Sendable>: Hashable, Sendable {
     public let label: String
@@ -62,18 +92,43 @@ public enum InviteLinks {
     public static let codeLength = 10
     static let invalid = "This invite link is invalid or has expired."
 
-    /// "Expire after": the API's `maxAge` seconds, or nil for Never.
-    public static let expiryOptions: [InviteOption<Int?>] = [
-        InviteOption(label: "1 hour", value: 3_600), InviteOption(label: "1 day", value: 86_400),
-        InviteOption(label: "7 days", value: 604_800), InviteOption(label: "30 days", value: 2_592_000),
-        InviteOption(label: "Never", value: nil),
-    ]
-    public static let defaultExpiry: Int? = 604_800
+    /// "Expire after" starts at 7 days.
+    public static let defaultExpiryNumber = "7"
+    public static let defaultExpiryUnit = InviteExpiryUnit.days
+    /// The API's `maxAge` range: 1 minute to 365 days.
+    public static let expiryRange = 60...31_536_000
+    /// The API's `maxUses` range. Spaces have no member cap, so the limit is a practical one.
+    public static let maxUsesRange = 1...10_000
+    public static let expiryError = "Expiry must be between 1 minute and 365 days."
+    public static let maxUsesError = "Max uses must be a whole number from 1 to 10,000."
 
-    /// "Max uses": the API's `maxUses`, or nil for No limit.
-    /// Spaces have no member cap, so the largest choice is a practical one.
-    public static let useOptions: [InviteOption<Int?>] = [InviteOption(label: "No limit", value: nil)]
-        + [1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000].map { InviteOption(label: plural($0, "use"), value: $0) }
+    /// "Expire after" as the API's `maxAge`: nil for Never, otherwise the
+    /// number of `unit`s in seconds. Anything but a whole number of units
+    /// from 1 minute to 365 days is `expiryError`.
+    public static func expirySeconds(_ number: String, unit: InviteExpiryUnit) -> Result<Int?, InviteOptionError> {
+        guard let unitSeconds = unit.seconds else { return .success(nil) }
+        guard let count = wholeNumber(number), count <= expiryRange.upperBound / unitSeconds,
+              expiryRange.contains(count * unitSeconds)
+        else { return .failure(InviteOptionError(message: expiryError)) }
+        return .success(count * unitSeconds)
+    }
+
+    /// "Max uses" as the API's `maxUses`: nil (No limit) when empty, otherwise
+    /// a whole number from 1 to 10,000, or `maxUsesError`.
+    public static func maxUses(_ text: String) -> Result<Int?, InviteOptionError> {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .success(nil) }
+        guard let count = wholeNumber(text), maxUsesRange.contains(count)
+        else { return .failure(InviteOptionError(message: maxUsesError)) }
+        return .success(count)
+    }
+
+    /// Plain ASCII digits (surrounding whitespace allowed), without signs,
+    /// decimals or grouping; nil when empty or too large for `Int`.
+    static func wholeNumber(_ text: String) -> Int? {
+        let digits = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return Int(digits)
+    }
 
     public static func isCode(_ value: Substring) -> Bool {
         value.count == codeLength && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }

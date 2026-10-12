@@ -108,9 +108,8 @@ final class InviteLinksTests: XCTestCase {
         }
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: "feedback", uses: 3, maxUses: 10, expiresIn: 6 * 86_400), now: now),
                        "#feedback · 3 of 10 uses · Expires in 6 days")
-        XCTAssertEqual(InviteLinks.useOptions.map(\.value), [nil, 1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000])
-        XCTAssertEqual(InviteLinks.useOptions.last?.label, "10,000 uses")
-        XCTAssertEqual(InviteLinks.expiryOptions.map(\.label), ["1 hour", "1 day", "7 days", "30 days", "Never"])
+        XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 3, maxUses: 10_000, expiresIn: 6 * 3_600), now: now),
+                       "3 of 10,000 uses · Expires in 6 hours")
         XCTAssertEqual(InviteLinks.grouped(1_234_567), "1,234,567")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 2, maxUses: nil, expiresIn: nil), now: now),
                        "2 uses · Never expires")
@@ -121,6 +120,49 @@ final class InviteLinksTests: XCTestCase {
         XCTAssertEqual(InviteLinks.expiry(nil, now: now), "Never expires")
         XCTAssertEqual(InviteLinks.memberCount(1), "1 member")
         XCTAssertEqual(InviteLinks.memberCount(12), "12 members")
+    }
+
+    func testExpiryIsAWholeNumberOfUnitsFromOneMinuteTo365Days() {
+        func seconds(_ number: String, _ unit: InviteExpiryUnit) -> Result<Int?, InviteOptionError> {
+            InviteLinks.expirySeconds(number, unit: unit)
+        }
+        XCTAssertEqual(InviteLinks.defaultExpiryNumber, "7")
+        XCTAssertEqual(InviteLinks.defaultExpiryUnit, .days)
+        XCTAssertEqual(InviteExpiryUnit.allCases.map(\.label), ["minutes", "hours", "days", "Never"])
+        XCTAssertEqual(seconds("7", .days), .success(604_800))
+        XCTAssertEqual(seconds("1", .minutes), .success(60))
+        XCTAssertEqual(seconds("90", .minutes), .success(5_400))
+        XCTAssertEqual(seconds("12", .hours), .success(43_200))
+        XCTAssertEqual(seconds("8760", .hours), .success(31_536_000))
+        XCTAssertEqual(seconds("525600", .minutes), .success(31_536_000))
+        XCTAssertEqual(seconds("365", .days), .success(31_536_000))
+        XCTAssertEqual(seconds(" 30 ", .days), .success(2_592_000))
+        XCTAssertEqual(seconds("007", .hours), .success(25_200))
+        // Never ignores the number, even an invalid one.
+        XCTAssertEqual(seconds("7", .never), .success(nil))
+        XCTAssertEqual(seconds("", .never), .success(nil))
+        XCTAssertEqual(seconds("abc", .never), .success(nil))
+        for (number, unit) in [
+            ("", InviteExpiryUnit.days), ("  ", .days), ("0", .minutes), ("0", .days), ("-1", .days), ("+1", .days),
+            ("1.5", .days), ("1,000", .minutes), ("1e2", .minutes), ("seven", .days), ("٣", .days), ("７", .days),
+            ("366", .days), ("8761", .hours), ("525601", .minutes),
+            ("9223372036854775807", .days), ("99999999999999999999", .minutes),
+        ] {
+            XCTAssertEqual(InviteLinks.expirySeconds(number, unit: unit),
+                           .failure(InviteOptionError(message: "Expiry must be between 1 minute and 365 days.")), "\(number) \(unit)")
+        }
+    }
+
+    func testMaxUsesIsEmptyForNoLimitOrAWholeNumberUpTo10000() {
+        XCTAssertEqual(InviteLinks.maxUses(""), .success(nil))
+        XCTAssertEqual(InviteLinks.maxUses("   "), .success(nil))
+        XCTAssertEqual(InviteLinks.maxUses("1"), .success(1))
+        XCTAssertEqual(InviteLinks.maxUses(" 25\n"), .success(25))
+        XCTAssertEqual(InviteLinks.maxUses("10000"), .success(10_000))
+        for text in ["0", "-1", "+5", "1.0", "2.5", "10,000", "10001", "1e3", "ten", "٥", "99999999999999999999"] {
+            XCTAssertEqual(InviteLinks.maxUses(text),
+                           .failure(InviteOptionError(message: "Max uses must be a whole number from 1 to 10,000.")), text)
+        }
     }
 
     func testTimestampsWithMicrosecondsParse() {

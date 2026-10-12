@@ -409,8 +409,11 @@ struct InviteLinkPanel {
     loading: bool,
     creating: bool,
     revoking: BTreeSet<String>,
-    max_age: Option<u32>,
-    max_uses: Option<u32>,
+    /// "Expire after": a whole number and its unit.
+    expiry_amount: String,
+    expiry_unit: invites::ExpiryUnit,
+    /// "Max uses"; empty means no limit.
+    max_uses: String,
     /// The landing channel; `None` opens the space's default channel.
     channel: Option<String>,
     error: Option<String>,
@@ -428,8 +431,9 @@ impl Default for InviteLinkPanel {
             loading: false,
             creating: false,
             revoking: BTreeSet::new(),
-            max_age: invites::DEFAULT_EXPIRY,
-            max_uses: None,
+            expiry_amount: invites::DEFAULT_EXPIRY.0.into(),
+            expiry_unit: invites::DEFAULT_EXPIRY.1,
+            max_uses: String::new(),
             channel: None,
             error: None,
             copy: None,
@@ -14637,11 +14641,7 @@ impl CaperApp {
                 .color(MUTED),
         );
         ui.add_space(10.0);
-        let expiry: Vec<_> = invites::EXPIRY_CHOICES
-            .iter()
-            .map(|(value, label)| (*value, (*label).to_owned()))
-            .collect();
-        let uses: Vec<_> = invites::USE_CHOICES
+        let units: Vec<_> = invites::EXPIRY_UNITS
             .iter()
             .map(|(value, label)| (*value, (*label).to_owned()))
             .collect();
@@ -14660,20 +14660,37 @@ impl CaperApp {
             panel.channel = None;
         }
         let enabled = !panel.creating;
+        let mut edited = false;
         ui.columns(3, |columns| {
-            invite_picker(
-                &mut columns[0],
-                "Expire after",
-                &expiry,
-                &mut panel.max_age,
-                enabled,
-            );
-            invite_picker(
-                &mut columns[1],
-                "Max uses",
-                &uses,
+            let ui = &mut columns[0];
+            let heading = ui.label(bold("Expire after").size(11.5).color(MUTED));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if panel.expiry_unit != invites::ExpiryUnit::Never {
+                    edited |= invite_number_field(
+                        ui,
+                        &mut panel.expiry_amount,
+                        "",
+                        56.0,
+                        enabled,
+                        heading.id,
+                    );
+                }
+                let unit = panel.expiry_unit;
+                invite_menu(ui, &units, &mut panel.expiry_unit, enabled).labelled_by(heading.id);
+                edited |= unit != panel.expiry_unit;
+            });
+            let ui = &mut columns[1];
+            let heading = ui.label(bold("Max uses").size(11.5).color(MUTED));
+            ui.add_space(6.0);
+            let width = ui.available_width();
+            edited |= invite_number_field(
+                ui,
                 &mut panel.max_uses,
+                "No limit",
+                width,
                 enabled,
+                heading.id,
             );
             invite_picker(
                 &mut columns[2],
@@ -14700,19 +14717,29 @@ impl CaperApp {
                 .inner
             })
             .inner;
+        if edited {
+            panel.error = None;
+        }
         if create.clicked()
             && let Some(space) = self.selected_space.clone()
         {
             let panel = &mut self.invite_links;
-            panel.creating = true;
-            panel.error = None;
-            let operation = AccountOperation::CreateInviteLink {
-                space,
-                channel: panel.channel.clone(),
-                max_age: panel.max_age,
-                max_uses: panel.max_uses,
-            };
-            self.account_op(operation);
+            let parsed = invites::expiry_seconds(&panel.expiry_amount, panel.expiry_unit)
+                .and_then(|max_age| Ok((max_age, invites::max_uses(&panel.max_uses)?)));
+            match parsed {
+                Err(error) => panel.error = Some(error.into()),
+                Ok((max_age, max_uses)) => {
+                    panel.creating = true;
+                    panel.error = None;
+                    let operation = AccountOperation::CreateInviteLink {
+                        space,
+                        channel: panel.channel.clone(),
+                        max_age,
+                        max_uses,
+                    };
+                    self.account_op(operation);
+                }
+            }
         }
         if let Some(error) = &self.invite_links.error {
             ui.add_space(6.0);
@@ -15485,8 +15512,8 @@ fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Resp
     response
 }
 
-/// One invite link choice ("Expire after", "Max uses", "Opens in"): a label
-/// over a select-style button whose menu lists `choices`.
+/// An invite link choice such as "Opens in": a label over a select-style
+/// button whose menu lists `choices`.
 fn invite_picker<T: Clone + PartialEq>(
     ui: &mut egui::Ui,
     label: &str,
@@ -15496,11 +15523,21 @@ fn invite_picker<T: Clone + PartialEq>(
 ) {
     let heading = ui.label(bold(label).size(11.5).color(MUTED));
     ui.add_space(6.0);
+    invite_menu(ui, choices, value, enabled).labelled_by(heading.id);
+}
+
+/// The dropdown half of `invite_picker`, filling the remaining width.
+fn invite_menu<T: Clone + PartialEq>(
+    ui: &mut egui::Ui,
+    choices: &[(T, String)],
+    value: &mut T,
+    enabled: bool,
+) -> egui::Response {
     let selected = choices
         .iter()
         .find(|(choice, _)| choice == value)
         .map_or("", |(_, text)| text.as_str());
-    let button = device_picker(ui, selected, enabled).labelled_by(heading.id);
+    let button = device_picker(ui, selected, enabled);
     let width = button.rect.width().max(160.0);
     egui::Popup::menu(&button).width(width).show(|ui| {
         for (choice, text) in choices {
@@ -15509,6 +15546,33 @@ fn invite_picker<T: Clone + PartialEq>(
             }
         }
     });
+    button
+}
+
+/// A digits-only field in the invite options row; true when edited.
+fn invite_number_field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+    enabled: bool,
+    label: egui::Id,
+) -> bool {
+    let field = ui
+        .add_enabled(
+            enabled,
+            egui::TextEdit::singleline(text)
+                .hint_text(hint)
+                .vertical_align(egui::Align::Center)
+                .char_limit(6)
+                .min_size(egui::vec2(width, 36.0))
+                .desired_width(width),
+        )
+        .labelled_by(label);
+    if field.changed() {
+        text.retain(|character| character.is_ascii_digit());
+    }
+    field.changed()
 }
 
 /// How long a Copy button reads "Copied".

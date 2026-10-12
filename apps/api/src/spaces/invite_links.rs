@@ -6,10 +6,10 @@ use super::*;
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
-/// 1 hour, 1 day, 7 days or 30 days, in seconds; `None` never expires.
-const MAX_AGES: [i64; 4] = [3_600, 86_400, 604_800, 2_592_000];
-/// Spaces have no member cap, so the largest choice is a practical one.
-const MAX_USES: [i32; 10] = [1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000];
+/// Expiry from one minute to a year, in seconds; `None` never expires.
+const MAX_AGE: std::ops::RangeInclusive<i64> = 60..=31_536_000;
+/// Spaces have no member cap, so this bound is a practical one.
+const MAX_USES: std::ops::RangeInclusive<i32> = 1..=10_000;
 const ACTIVE_LINKS_PER_SPACE: i64 = 100;
 const LIVE: &str = "l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > now())
      AND (l.max_uses IS NULL OR l.uses < l.max_uses)";
@@ -111,7 +111,7 @@ pub(super) fn valid_code(code: &str) -> bool {
 }
 
 fn validate(input: &LinkInput) -> Result<(), ApiError> {
-    if input.max_age.is_some_and(|age| !MAX_AGES.contains(&age)) {
+    if input.max_age.is_some_and(|age| !MAX_AGE.contains(&age)) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid maxAge"));
     }
     if input.max_uses.is_some_and(|uses| !MAX_USES.contains(&uses)) {

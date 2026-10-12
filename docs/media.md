@@ -839,10 +839,10 @@ paths check membership and channel visibility, including replay and live deliver
 
 Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
 random alphanumeric characters (about 59 bits), so the unauthenticated preview
-cannot be enumerated. Each link optionally expires (1 hour, 1 day, 7 days, 30 days, or never), caps
-uses (1, 5, 10, 25, 50, 100, 500, 1,000, 5,000 or 10,000, or unlimited; spaces
-have no member cap), and
-lands joiners in a public channel; a landing channel deleted or made private later
+cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
+Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
+spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
 falls back to the starter channel and is no longer named in previews. Links are
 retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
 recorded in `space_invite_link_uses`.
