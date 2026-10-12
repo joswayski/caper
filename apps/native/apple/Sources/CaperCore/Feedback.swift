@@ -175,7 +175,7 @@ public enum FeedbackInbox {
     public static let subtitle = "Conversations where someone asked the Caper team. Replies post there, for everyone in it."
     public static let empty = "No feedback yet."
     /// The empty Caper DM's note, in place of "Only you and X can read this conversation."
-    public static let teamDirectNote = "Messages here go to the Caper team. They’ll reply in a thread on each one."
+    public static let teamDirectNote = "Messages here go to the Caper team."
     public static let archivedTitle = "Archived feedback"
     public static let archivedEmpty = "Nothing archived."
     public static let showArchived = "Show archived"

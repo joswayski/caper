@@ -197,12 +197,14 @@ pub(crate) async fn page(
                 'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name) END,
                 'replyCount', COALESCE((root.payload->'thread'->>'replyCount')::bigint, 0),
                 'archived', z.archived,
-                -- Answered while the newest message in its thread is the
-                -- team's; anyone else replying makes it wait again.
+                -- Answered while the newest message in its thread (in the
+                -- Caper DM, also the DM itself since) is the team's; anyone
+                -- else replying makes it wait again.
                 'answered', COALESCE((SELECT EXISTS(SELECT 1 FROM public.feedback_team t
                         WHERE t.user_id=cs.user_id AND t.deleted_at IS NULL)
                     FROM public.messages a JOIN public.chat_sessions cs ON cs.id=a.session_id
-                    WHERE a.channel_id=r.channel_id AND (a.thread_root_id=r.thread_root_id OR a.id=r.thread_root_id)
+                    WHERE a.channel_id=r.channel_id AND (a.thread_root_id=r.thread_root_id OR a.id=r.thread_root_id
+                        OR (COALESCE(lo.team_account OR hi.team_account, false) AND a.thread_root_id IS NULL AND a.id>r.message_id))
                     ORDER BY a.channel_seq DESC LIMIT 1), false))
          FROM public.feedback_reports r
          JOIN public.messages m ON m.id=r.message_id

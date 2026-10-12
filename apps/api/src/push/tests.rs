@@ -3567,4 +3567,27 @@ async fn messaging_caper_sends_each_new_message_to_the_team(pool: PgPool) {
     assert_eq!(ids, [second.as_str(), first.as_str()]);
     assert!(!ids.contains(&follow.as_str()));
     assert_eq!(inbox["reports"][1]["answered"], false, "Alice spoke last");
+    // The team can also just answer in the DM; that answers what came before.
+    send(&h, &jose, &caper, "Both fixed in today's build", None).await;
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    let answered: Vec<&Value> = inbox["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["answered"])
+        .collect();
+    assert_eq!(answered, [&json!(true), &json!(true)]);
+    assert_eq!(
+        inbox["reports"].as_array().unwrap().len(),
+        2,
+        "the team's message is no report"
+    );
 }

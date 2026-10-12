@@ -126,7 +126,7 @@ final class FeedbackTests: XCTestCase {
         XCTAssertTrue(caper.isTeam)
         XCTAssertFalse(pat.isTeam, "missing means false")
         XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: caper, name: "Caper"),
-                       "Messages here go to the Caper team. They’ll reply in a thread on each one.")
+                       "Messages here go to the Caper team.")
         XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: pat, name: "Pat"), "Only you and Pat can read this conversation.")
         XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: nil, name: "Pat"), "Only you and Pat can read this conversation.")
     }

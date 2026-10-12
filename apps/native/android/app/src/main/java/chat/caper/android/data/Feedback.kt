@@ -41,7 +41,7 @@ internal fun feedbackPreview(report: FeedbackReport): String = when {
 internal fun feedbackStatus(report: FeedbackReport): String = if (report.answered) "Answered" else "Waiting"
 
 /** The empty Caper DM's line, in place of "Only you and … can read this conversation." */
-internal const val CAPER_DM_EMPTY_NOTE = "Messages here go to the Caper team. They’ll reply in a thread on each one."
+internal const val CAPER_DM_EMPTY_NOTE = "Messages here go to the Caper team."
 
 /** RFC 3339 with `Z` or an offset (Postgres sends `+00:00`); null when unreadable. */
 internal fun parseTimestamp(value: String): Instant? =

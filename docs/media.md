@@ -2511,9 +2511,10 @@ and is marked **Caper team has been notified 🫡** for everyone there.
 the Caper account (`users.team_account`, username `caper`, no email, so nobody
 signs in as it; the API maps every alias to it). Each top-level message sent
 there is a report, marked like `@feedback`, so it lands in the inbox as its own
-thread; replies in that thread stay part of it. The team answers in the thread
-as itself. The DM's `peer.team` is true, and clients replace the empty state's
-privacy line with *Messages here go to the Caper team.* When the team posts in
+thread; replies in that thread stay part of it. The team answers as itself, in
+the thread or straight in the DM; either counts as answered. The DM's `peer.team`
+is true, and clients replace the empty state's privacy line with *Messages here go
+to the Caper team.* When the team posts in
 any DM it visits (the Caper DM, personal notes or two people's DM), everyone in
 the conversation is notified as for a DM message.
 

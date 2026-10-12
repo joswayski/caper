@@ -17807,8 +17807,7 @@ fn rich_text(
 }
 
 /// Under "No messages yet." in the Caper DM.
-const TEAM_DM_NOTE: &str =
-    "Messages here go to the Caper team. They’ll reply in a thread on each one.";
+const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
 
 /// Web's confirmation after inviting someone to a space or a private channel.
 const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
@@ -31089,7 +31088,7 @@ mod tests {
         app.directs[0].peer.team = true;
         assert_eq!(
             app.empty_conversation_note(),
-            "Messages here go to the Caper team. They’ll reply in a thread on each one."
+            "Messages here go to the Caper team."
         );
     }
 

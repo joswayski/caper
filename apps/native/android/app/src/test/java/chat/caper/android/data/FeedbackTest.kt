@@ -32,7 +32,7 @@ class FeedbackTest {
             {"id":"direct000001","peer":{"id":"caper0000001","username":"caper","displayName":"Caper","avatarId":1,"team":true},"lastSeq":"0","readSeq":"0","status":"accepted"},
             {"id":"direct000002","peer":{"id":"sam000000001","username":"sam","displayName":"Sam"},"lastSeq":"0","readSeq":"0"}]}""").conversations
         assertEquals(listOf(true, false), list.map { it.peer.team })
-        assertEquals("Messages here go to the Caper team. They’ll reply in a thread on each one.", CAPER_DM_EMPTY_NOTE)
+        assertEquals("Messages here go to the Caper team.", CAPER_DM_EMPTY_NOTE)
     }
 
     @Test fun `the account says whether it is on the feedback team`() {

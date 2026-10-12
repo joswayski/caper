@@ -1766,7 +1766,7 @@ export default function Chat({
                     <p>No messages yet.</p>
                     <small>
                       {team
-                        ? "Messages here go to the Caper team. They’ll reply in a thread on each one."
+                        ? "Messages here go to the Caper team."
                         : direct
                           ? `Only you and ${channelName} can read this conversation.`
                           : `Start the conversation in #${channelName}.`}
