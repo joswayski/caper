@@ -61,15 +61,19 @@ the conversation. Mention ids are the 12-character random account `external_id`,
 never the internal sequence key.
 
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
-pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
-that opens the existing DM or starts one through `POST /api/dms`, then navigates
-there. Message-author avatars/names (channels, DMs, threads and Pins) and member-list
+pills stay inert): avatar, display name, `@username`, and an inline DM composer
+with text, emoji and file attachments. Typing and choosing files stay local;
+**Send** resolves the DM, uploads its files and opens the conversation only after
+confirmed delivery. **Open conversation** opens a DM without sending the draft;
+incoming requests still require explicit acceptance. Message-author avatars/names
+(channels, DMs, threads and Pins) and member-list
 rows open the same card on every client; guest authors stay inert. Your own card
-says "You" and has no button. Card data comes only from what
+says "You" and has no composer. Card data comes only from what
 the client already loaded: space members, then `GET /api/people`, then DM peers;
 someone you share nothing with shows `@username` and the generic avatar, and
-Message still works. Authors absent from that directory retain their message name
-and avatar, without a guessed username or Message action. Wide layouts (web desktop,
+messaging still works when their privacy settings permit it. Authors absent from
+that directory retain their message name and avatar, without a guessed username
+or messaging action. Wide layouts (web desktop,
 macOS, Rust desktop) show a popover by the clicked identity; web narrow/touch,
 Android and iPhone show a bottom sheet. DM errors
 stay inline in the card. No API change. Mentions drive phone push kinds
@@ -6945,3 +6949,83 @@ It previously used the terracotta voice style, which looked enabled while empty.
 2. Release the Apple clients from the merged revision with the usual TestFlight
    workflow. Rollback requires a corrected higher-build-number release; no data
    rollback is needed.
+
+### Inline profile DMs (October 11, 2026)
+
+Other people's profile cards have an independent, per-person composer on web,
+Android, iOS/macOS and Rust desktop. It supports text, emoji and up to 10 files,
+including file-only messages. File selection stages locally; Send resolves the
+DM and uses the existing compression, reservation, PUT and completion pipeline.
+Confirmed delivery clears that person's draft and opens the conversation.
+Open conversation navigates without sending; known incoming requests remain
+read-only until accepted. Block and DM privacy refusals keep the draft inline.
+
+Layout, the same on every client: the header has the avatar, name and
+`@username` with Open conversation (speech bubble) and Close icons at the end;
+Invite to space and Block share one row; a full-width divider separates the
+composer. The composer reuses the channel composer's shell (Attach at the
+start, then the field, Emoji and a terracotta Send) with staged files above it
+as the channel's draft chips, including image thumbnails and sizes. Delivery
+uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit
+there. Keyboard hints stay in accessible descriptions, not visible text.
+
+Populated cards resist outside dismissal. File/emoji pickers preserve the draft
+and saved insertion point; Close explicitly leaves it saved. Drafts survive
+close/reopen while signed in, not logout or app/page restart. Profile navigation
+retains the underlying conversation's text and, with #544, its staged files and
+thread replies, as for any conversation switch. An unconfirmed POST
+freezes its original text, attachment IDs and client message ID; Retry sends that
+same command and reuses completed uploads. Web's Edit action warns that the
+previous copy may have arrived before allowing changes.
+
+Clipboard files: web accepts files carried by a browser paste event; Apple uses
+its native Paste action for file URLs and image bytes. Android and Rust desktop
+put **Paste from clipboard** in the Attach menu (beside Photos/Files or Choose
+files): Android reads clipboard content URIs, and egui delivers no event for an
+image-only Ctrl+V. Native clipboard formats and provider permissions vary.
+
+Emoji buttons: channel, thread and profile composers on every client have an
+Emoji button beside the existing `:name:` shortcut. It opens the reaction
+picker (a popover above the button on web desktop, Rust desktop and macOS; a
+bottom drawer or sheet on touch layouts) and inserts at the caret or replaces
+the selection, within the 4,000-character limit. Native pickers now list
+smileys first and flags last, approximating web's category order.
+
+| Platform | Validation and remaining acceptance |
+| --- | --- |
+| Web | `npm run check` and 578 `npm test` tests pass. `PROFILE_TEST_WEB_URL=… node scripts/test-profile-composer.mjs` against the local parity fixture passes (text/emoji/files, file-only send, chooser cancellation/caret, outside clicks, per-person drafts, lost acknowledgment with identical retry and one persisted message, rejection, retained channel text, incoming-request isolation, wide/narrow layouts). Channel and thread emoji insertion at the caret checked in Chromium. Rendered desktop/narrow and picker states inspected. File paste uses a synthetic browser event, not the OS clipboard. |
+| Android | `:app:compileDebugKotlin` passes with platform/build-tools 36. `:app:testDebugUnitTest` (317 JVM tests) passes. `:app:compileDebugAndroidTestKotlin` compiled the updated profile composer UI tests before the latest rebase; on current main it stops in the untouched `ReactionUiTest`/`VoiceRosterUiTest`, whose call sites predate main's newer signatures. Instrumentation was not run. No emulator (no KVM): no rendered, keyboard, picker, clipboard or device acceptance. |
+| iOS/macOS | Changed Swift files parse with Linux Swift 6.1; the picker-order logic was compiled and run standalone. No Apple SDK typecheck, XCTest, render or device/picker/clipboard acceptance. |
+| Rust desktop | 426 tests pass (12 device/audio ignored), including new channel emoji insertion, image thumbnail and picker-order tests; fmt passes. Clippy is clean for this change; on current main it reports two `collapsible_if` lints in main's own-profile refresh code (#527), untouched here. Linux X11 renders inspected: card layout, real clipboard image pasted through the Attach menu with its thumbnail, profile and channel pickers anchored at their buttons. Windows, Wayland, native file picker and live storage acceptance remain separate. |
+| API/containers | No API changes; no Docker image changes. No live storage, multi-account production or physical-device checks. |
+
+**Deployment order.**
+
+1. Existing account, DM, chat and asset APIs must be available. No new
+   infrastructure apply, secret/configuration, database migration, API or gateway
+   rollout is required for this feature. File sending needs existing storage
+   configuration. Web and native clients can release independently.
+   Merging does not deploy them; set `MERGED_SHA` to the full merged revision and
+   wait for its immutable web image before rollout.
+2. Deploy web with the existing operator workflow, then wait for readiness:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After that deployment workflow succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Before native distribution, compile/test with Xcode and the Android SDK and
+   complete real picker, clipboard, keyboard/focus and dismissal acceptance on
+   each platform. Then publish signed native clients through the existing release:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+4. With separate test accounts, verify text, the Emoji buttons, attached/pasted files,
+   file-only send, draft close/reopen, preserved underlying drafts, offline retry
+   without duplication, blocked/private recipients and incoming-request preview.
+   Roll back web using the same workflow with the previous known-good SHA; native
+   rollback requires a corrected higher-build-number release. No database or
+   infrastructure rollback is needed. No deployment or release was performed.

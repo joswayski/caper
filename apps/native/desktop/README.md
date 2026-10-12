@@ -92,8 +92,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and no Caper credentials, confirms (retrying while storage has not seen it
   yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
   errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. Pasting images from the clipboard is not supported (egui
-  does not deliver image pastes).
+  message keeps. The conversation composer does not paste images. Profile
+  composers' Attach menu has **Paste from clipboard** for native copied files
+  and images on Windows and X11/XWayland, and on Wayland compositors with the
+  data-control clipboard protocol: egui delivers no event for an image-only
+  Ctrl+V. Channel, thread and profile composers have an Emoji button beside
+  the `:name:` shortcut.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. An independent account gateway feed presents local OS notifications
@@ -119,9 +123,15 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   rather than 4px rounded ones, including in thread replies and edited messages.
   Messages that mention you get a terracotta tint with a 2px leading edge.
   Clicking a person's pill, or Enter/Space on a focused pill, opens a card with
-  their avatar, name and `@username` from loaded data, and a **Message** button
-  that opens or creates the DM (your own card says "You"). Mentions do not
-  notify anyone.
+  their avatar, name and `@username` from loaded data, Open conversation and
+  Close icons, and an inline DM composer in the channel composer's shell
+  (Attach, Emoji, Send; staged files with image thumbnails above it). Enter
+  sends (your own card says "You"). Close retains the per-person draft; populated cards resist
+  outside clicks, and sending prevents dismissal. Drafts survive dialogs until
+  logout. Only Send resolves the DM, prepares/uploads files and sends; success opens it,
+  while errors retain the draft and uncertain retries reuse the exact payload
+  and message UUID. Incoming requests require **Open conversation** and Accept
+  first. Mentions do not notify anyone.
 - Message requests: a DM from someone you share no space with waits under
   "Message requests" (with a count, never unread dots or sounds) and opens
   read-only with Accept, Decline or Block; your own pending requests say

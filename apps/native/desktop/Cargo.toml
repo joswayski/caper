@@ -30,6 +30,8 @@ tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 
 [dependencies]
+# egui only pastes text; read native copied file lists and RGBA images too.
+arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 # AVIF photos: rav1e (pure-Rust AV1, BSD-2-Clause) in an avif-serialize
 # (BSD-3-Clause) container; see src/avif.rs.
 avif-serialize = "=0.8.9"

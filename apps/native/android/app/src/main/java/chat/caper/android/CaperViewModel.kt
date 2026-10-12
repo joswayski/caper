@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.Manifest
 import android.app.Application
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -60,6 +61,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val drafts = ConversationDrafts()
     /** Staged files of conversations that are not open, by channel or DM ID, still uploading (like their text drafts). */
     private val stagedFiles = mutableMapOf<String, List<DraftAttachmentUi>>()
+    internal val profileDrafts = ProfileMessageDrafts(api)
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
@@ -273,6 +275,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         drafts.clear()
+        profileDrafts.clear().forEach { discardDraftFiles(it.key) }
         notificationEdits = null
         pendingInvitationIntent = null
         pendingChannelIntent = null
@@ -577,17 +580,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** `POST /api/dms` by username (it returns an existing DM), then opens it unless you navigated meanwhile. */
-    private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit) {
+    private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit, fromProfile: Boolean = false) {
         val navigation = generation
         val directNavigation = directOpeningRevision
-        val conversation = api.startDirectConversation(requireAccountToken(), username)
+        val token = requireAccountToken()
+        // Profile navigation previews even an uncached incoming request. Creating
+        // an existing request would accept it before the user sees its controls.
+        val existing = if (fromProfile) api.directConversations(token).conversations.firstOrNull {
+            it.peer.username.equals(username, ignoreCase = true)
+        } else null
+        if (request != accountGeneration) return
+        val conversation = existing ?: api.startDirectConversation(token, username)
         if (request != accountGeneration) return
         mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
         if (navigation == generation && directNavigation == directOpeningRevision) { done(); selectDirect(conversation) }
     }
 
     /**
-     * The mention card's Message: opens a loaded DM with that person, otherwise the
+     * The mention card's Open conversation: opens a loaded DM with that person, otherwise the
      * same create-by-username flow, reporting failures to the card instead of the app.
      */
     fun messageMentioned(id: String?, username: String, done: () -> Unit, failed: (String) -> Unit) {
@@ -599,9 +609,38 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         val request = accountGeneration
         viewModelScope.launch {
-            try { openDirectByUsername(username, request, done) }
+            try { openDirectByUsername(username, request, done, fromProfile = true) }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
+        }
+    }
+
+    /** Only Send resolves/uploads a profile draft; opening happens after a confirmed message. */
+    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit) {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = directOpeningRevision
+        val files = profileDrafts[person].files
+        viewModelScope.launch {
+            val result = profileDrafts.send(person, id, username, token, session = {
+                val capability = createChatSession(request) ?: error("Chat session is unavailable.")
+                capability to requireNotNull(chatAuthor)
+            }, directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+            if (request != accountGeneration) return@launch
+            if (result == null) {
+                if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
+                return@launch
+            }
+            files.forEach { discardDraftFiles(it.key) }
+            val (conversation, sent) = result
+            mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+            if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
+            directHistories.remove(conversation.id)
+            if (navigation == generation && directNavigation == directOpeningRevision) {
+                done()
+                selectDirect(conversation)
+            }
         }
     }
 
@@ -1568,23 +1607,76 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
-    fun addAttachments(uris: List<Uri>) {
+    fun addAttachments(uris: List<Uri>) = addAttachments(uris, null)
+
+    internal fun addProfileAttachments(person: String, uris: List<Uri>) = addAttachments(uris, person)
+
+    /** Clipboard providers grant URI access; copy the bytes locally just like picked files. */
+    internal fun pasteProfileAttachments(person: String) {
+        val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
+        val clip = clipboard.primaryClip
+        val uris = (0 until (clip?.itemCount ?: 0)).mapNotNull { clip?.getItemAt(it)?.uri }
+            .filter { it.scheme == "content" }.distinct()
+        if (uris.isEmpty()) profileDrafts.error(person, "No files on the clipboard. Copy a file or use Attach files.")
+        else addProfileAttachments(person, uris)
+    }
+
+    private fun addAttachments(uris: List<Uri>, person: String?) {
         val current = mutable.value
-        if (current.selectedChannel?.joined != true || accountToken == null) return
+        if ((person == null && current.selectedChannel?.joined != true) || accountToken == null) return
         if (!current.uploadsEnabled || uris.isEmpty()) return
-        val room = AttachmentPolicy.MAX_ATTACHMENTS - current.drafts.size
+        if (person != null && !profileDrafts[person].editable) return
+        val room = AttachmentPolicy.MAX_ATTACHMENTS - (if (person == null) current.drafts else profileDrafts[person].files).size
         if (room <= 0) {
-            mutable.value = current.copy(attachmentError = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+            if (person == null) mutable.value = current.copy(attachmentError = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+            else profileDrafts.error(person, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
             return
         }
-        mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
+        if (person == null) mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
+        val settings = compression
+        val request = accountGeneration
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
             draftDirectories[key] = directory
-            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString()))
-            retryDraft(key)
+            val draft = DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString())
+            if (person == null) {
+                mutable.value = mutable.value.copy(drafts = mutable.value.drafts + draft)
+                retryDraft(key)
+                return@forEach
+            }
+            // Profile files stay local until Send supplies a real DM destination.
+            profileDrafts.add(person, listOf(draft))
+            uploadJobs[key] = viewModelScope.launch {
+                try {
+                    val picked = preparer.copy(uri, directory)
+                    val image = picked.contentType.startsWith("image/")
+                    updateDraft(key, person) {
+                        it.copy(
+                            name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
+                            thumbnail = if (image) Uri.fromFile(picked.source).toString() else null, pickedImage = if (image) uri.toString() else null,
+                        )
+                    }
+                    val prepared = preparer.prepare(picked, settings, directory, progressReporter(key, person))
+                    if (request != accountGeneration) return@launch
+                    profileDrafts.ready(person, key, prepared)
+                    updateDraft(key, person) {
+                        it.copy(
+                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                            localUrl = Uri.fromFile(prepared.file).toString(),
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    updateDraft(key, person) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
+                } finally {
+                    uploadJobs.remove(key)
+                }
+            }
         }
+        if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
     }
 
     private fun restoreStagedFiles(channelId: String) {
@@ -1659,6 +1751,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         discardDraftFiles(draft.key)
     }
 
+    internal fun removeProfileAttachment(person: String, key: String) {
+        if (profileDrafts.remove(person, key)) discardDraftFiles(key)
+    }
+
     /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
     private fun discardDraftFiles(key: String) {
         uploadJobs.remove(key)?.cancel()
@@ -1666,19 +1762,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         draftDirectories.remove(key)?.let { directory -> viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() } }
     }
 
-    private fun updateDraft(key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+    private fun updateDraft(key: String, person: String? = null, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+        if (person != null) { profileDrafts.updateFile(person, key, change); return }
         stagedFiles.entries.forEach { entry -> if (entry.value.any { it.key == key }) entry.setValue(entry.value.map { if (it.key == key) change(it) else it }) }
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.map { if (it.key == key) change(it) else it })
         pendingDrafts = pendingDrafts.map { if (it.key == key) change(it) else it }
     }
 
     /** Compression/upload progress arrives off the main thread; post at most every 1%. */
-    private fun progressReporter(key: String): (Float) -> Unit {
+    private fun progressReporter(key: String, person: String? = null): (Float) -> Unit {
         var last = -1f
         return { fraction ->
             if (fraction - last >= 0.01f || fraction >= 1f) {
                 last = fraction
-                viewModelScope.launch(Dispatchers.Main) { updateDraft(key) { if (it.attachment == null) it.copy(progress = fraction) else it } }
+                viewModelScope.launch(Dispatchers.Main) { updateDraft(key, person) { if (it.attachment == null) it.copy(progress = fraction) else it } }
             }
         }
     }

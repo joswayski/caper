@@ -24,6 +24,23 @@ enum EmojiArtwork {
         return entries
     }()
     static let choices = entries.filter(\.selectable)
+    /// Picker order approximating web's: smileys (the emoticon block, then
+    /// other faces) before people, then the other categories with flags last.
+    /// The catalog itself is in code point order.
+    static let pickerChoices: [EmojiCatalogEntry] = {
+        let order = ["smileys_people", "animals_nature", "food_drink", "travel_places", "activities", "objects", "symbols", "flags"]
+        func rank(_ entry: EmojiCatalogEntry) -> (Int, Int) {
+            let category = order.firstIndex(of: entry.category) ?? order.count
+            let point = entry.id.split(separator: "-").first.flatMap { UInt32($0, radix: 16) } ?? 0
+            let face = entry.category != "smileys_people" || (0x1f600...0x1f64f).contains(point) ? 0
+                : entry.name.contains("face") || entry.keywords.split(separator: " ").contains("face") ? 1 : 2
+            return (category, face)
+        }
+        return choices.enumerated().sorted { left, right in
+            let (a, b) = (rank(left.element), rank(right.element))
+            return (a.0, a.1, left.offset) < (b.0, b.1, right.offset)
+        }.map(\.element)
+    }()
     private static let entriesByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
 
     static func id(for emoji: String) -> String {

@@ -1,0 +1,400 @@
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { Plus, Send } from "lucide-react";
+import { getAccount } from "../account/client.ts";
+import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
+import { directMessageErrors } from "../spaces/direct-errors.ts";
+import { apiError, forgetAccountSession, sharedAccountSession } from "./client.ts";
+import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
+import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import EmojiButton from "./EmojiButton.tsx";
+import { insertEmoji } from "./emoji-autocomplete.ts";
+import { prepareFile, type CompressionSettings } from "./prepare.ts";
+import { isChatMessage, type ChatAttachment } from "./types.ts";
+import { browserTransport, MAX_ATTACHMENTS, uploadPrepared, uploadSettings } from "./uploads.ts";
+
+interface ProfileFile {
+  key: string;
+  file: File;
+  /** Object URL for an image or video thumbnail; revoked when the file leaves. */
+  localUrl?: string;
+  /** Upload progress once Send starts; unset while the file is only staged. */
+  progress?: number;
+  attachment?: ChatAttachment;
+}
+interface ProfileDraft {
+  text: string;
+  files: ProfileFile[];
+  channelId?: string;
+  /** Once POST starts, retries must send this exact command until settled. */
+  command?: { clientMessageId: string; text: string; attachmentIds: string[] };
+}
+// Like conversation drafts, these live only in this signed-in page. Closing a
+// card never discards files or an uncertain send; signing out reloads the page.
+const drafts = new Map<string, ProfileDraft>();
+const pending = new Set<string>();
+const emptyDraft: ProfileDraft = { text: "", files: [] };
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+};
+const notify = () => {
+  for (const listener of listeners) listener();
+};
+
+export default function ProfileComposer({
+  personId,
+  username,
+  inputRef: input,
+  onSent,
+  onStateChange,
+}: {
+  personId: string;
+  username: string;
+  /** The card focuses this field when it opens. */
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  onSent: () => void;
+  onStateChange: (state: { active: boolean; sending: boolean }) => void;
+}) {
+  const draft = useSyncExternalStore(
+    subscribe,
+    () => drafts.get(personId) ?? emptyDraft,
+    () => emptyDraft,
+  );
+  const sending = useSyncExternalStore(
+    subscribe,
+    () => pending.has(personId),
+    () => false,
+  );
+  const [error, setError] = useState<string>();
+  const [status, setStatus] = useState<string>();
+  const [settings, setSettings] = useState<CompressionSettings>();
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [choosingFile, setChoosingFile] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const locked = sending || !!draft.command;
+
+  const save = (next: ProfileDraft) => {
+    if (next.text || next.files.length || next.command) drafts.set(personId, next);
+    else drafts.delete(personId);
+    notify();
+  };
+  const suggestions = useComposerSuggestions({
+    id: "profile",
+    draft: draft.text,
+    input,
+    specialMentions: false,
+    onInsert: (text) => save({ ...draft, text }),
+    onTooLong: () => setError("Messages must be 4,000 characters or fewer."),
+  });
+  useEffect(() => {
+    let active = true;
+    void uploadSettings().then((value) => {
+      if (active) {
+        setSettings(value);
+        setSettingsLoaded(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    onStateChange({ active: !!draft.text || !!draft.files.length || emojiOpen || choosingFile, sending });
+  }, [draft, emojiOpen, choosingFile, sending, onStateChange]);
+  useEffect(() => {
+    const element = fileInput.current;
+    const cancel = () => {
+      setChoosingFile(false);
+      requestAnimationFrame(() => input.current?.focus());
+    };
+    element?.addEventListener("cancel", cancel);
+    return () => element?.removeEventListener("cancel", cancel);
+  }, []);
+
+  // Grow with the draft, like the channel composer, up to the CSS max-height.
+  useLayoutEffect(() => {
+    const element = input.current;
+    if (!element) return;
+    element.style.height = "0px";
+    element.style.height = `${element.scrollHeight + element.offsetHeight - element.clientHeight}px`;
+  }, [draft.text]);
+
+  const restoreFocus = () => requestAnimationFrame(() => input.current?.focus());
+  const addFiles = (files: File[]) => {
+    if (locked || !settings || !files.length) return;
+    const room = MAX_ATTACHMENTS - draft.files.length;
+    setError(files.length > room ? `You can attach up to ${MAX_ATTACHMENTS} files.` : undefined);
+    const added = files.slice(0, room).map((file) => ({
+      key: crypto.randomUUID(),
+      file,
+      localUrl: /^(image|video)\//.test(file.type) ? URL.createObjectURL(file) : undefined,
+    }));
+    save({ ...draft, files: [...draft.files, ...added] });
+    restoreFocus();
+  };
+  const removeFile = (key: string) => {
+    const removed = draft.files.find((item) => item.key === key);
+    if (removed?.localUrl) URL.revokeObjectURL(removed.localUrl);
+    save({ ...draft, files: draft.files.filter((item) => item.key !== key) });
+    restoreFocus();
+  };
+  const chooseEmoji = (emoji: string) => {
+    const element = input.current;
+    const start = element?.selectionStart ?? draft.text.length;
+    const result = insertEmoji(draft.text, { start, end: element?.selectionEnd ?? start, query: "" }, emoji);
+    if (!result) {
+      setError("Messages must be 4,000 characters or fewer.");
+      return;
+    }
+    save({ ...draft, text: result.value });
+    setError(undefined);
+    requestAnimationFrame(() => {
+      element?.focus();
+      element?.setSelectionRange(result.caret, result.caret);
+    });
+  };
+  const submit = async () => {
+    if (pending.has(personId)) return;
+    if ((!draft.text.trim() && !draft.files.length) || Array.from(draft.text).length > 4_000) {
+      setError(
+        Array.from(draft.text).length > 4_000
+          ? "Messages must be 4,000 characters or fewer."
+          : "Write a message or attach a file first.",
+      );
+      return;
+    }
+    pending.add(personId);
+    notify();
+    setError(undefined);
+    setStatus("Sending…");
+    try {
+      const account = await getAccount();
+      if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
+      const existing = (await listDirectConversations()).conversations.find((item) => item.peer.id === personId);
+      // Creating an existing DM also accepts its request; inspect it first.
+      if (existing && directStatus(existing) === "incoming")
+        throw new Error("Open the conversation and accept this message request before replying.");
+      const conversation = existing ?? (await createDirectConversation(username));
+      if (conversation.peer.id !== personId) throw new Error("This username has changed. Reopen the person’s profile.");
+      if (conversation.blocked) throw new Error("Unblock this person before messaging them.");
+      if (directStatus(conversation) === "incoming")
+        throw new Error("Open the conversation and accept this message request before replying.");
+      if (draft.channelId && draft.channelId !== conversation.id)
+        throw new Error("The conversation changed. Remove the files and try again.");
+      draft.channelId = conversation.id;
+      const session = await sharedAccountSession(account.id, account.displayName);
+      for (const item of draft.files) {
+        if (item.attachment) continue;
+        if (!settings) throw new Error("File uploads are unavailable. Your draft is kept.");
+        item.progress = 0;
+        save({ ...draft });
+        const signal = AbortSignal.timeout(120_000);
+        const prepared = await prepareFile(item.file, settings, () => {}, signal);
+        item.attachment = await uploadPrepared(
+          conversation.id,
+          prepared,
+          browserTransport,
+          (progress) => {
+            item.progress = progress;
+            save({ ...draft });
+          },
+          signal,
+        );
+      }
+      const command = draft.command ?? {
+        clientMessageId: crypto.randomUUID(),
+        text: draft.text,
+        attachmentIds: draft.files.map((item) => item.attachment!.id),
+      };
+      draft.command = command;
+      save({ ...draft });
+      setStatus("Sending…");
+      const response = await fetch(`/api/chat/channels/${encodeURIComponent(conversation.id)}/messages`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+        body: JSON.stringify(command),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        const reason = await apiError(response, "Message could not be sent.");
+        const code = reason.code;
+        if (
+          [400, 404, 409, 413, 422].includes(response.status) ||
+          (response.status === 403 && code && code in directMessageErrors)
+        ) {
+          draft.command = undefined;
+          save({ ...draft });
+        }
+        if (response.status === 401) forgetAccountSession(session.token);
+        throw reason;
+      }
+      const message: unknown = await response.json();
+      if (
+        !isChatMessage(message) ||
+        message.channelId !== conversation.id ||
+        message.clientMessageId !== command.clientMessageId ||
+        message.author.id !== account.id
+      )
+        throw new Error("The chat service returned an invalid confirmation.");
+      for (const item of draft.files) if (item.localUrl) URL.revokeObjectURL(item.localUrl);
+      save({ text: "", files: [] });
+      setStatus(undefined);
+      onSent();
+    } catch (reason) {
+      // Keep completed uploads and the idempotent command, not just the text.
+      for (const item of draft.files) if (!item.attachment) item.progress = undefined;
+      save({ ...draft });
+      setStatus(undefined);
+      setError(
+        reason instanceof TypeError
+          ? "Couldn’t confirm delivery. Check your connection."
+          : reason instanceof Error
+            ? reason.message
+            : "Couldn’t send this message.",
+      );
+    } finally {
+      pending.delete(personId);
+      notify();
+    }
+  };
+
+  const files: DraftAttachment[] = draft.files.map((item) => ({
+    key: item.key,
+    name: item.file.name,
+    localUrl: item.localUrl,
+    localKind: item.localUrl ? (item.file.type.startsWith("video/") ? "video" : "image") : undefined,
+    sourceSize: item.file.size,
+    storedSize: item.attachment?.size ?? (item.progress === undefined ? undefined : item.file.size),
+    progress: item.progress ?? 0,
+    staged: !item.attachment && item.progress === undefined && !sending,
+    attachment: item.attachment,
+  }));
+  const canSend = !sending && (!!draft.text.trim() || !!draft.files.length);
+
+  return (
+    <div className="chat-profile-composer">
+      {draft.command && !sending ? (
+        <p className="chat-send-status">
+          <span className="chat-send-error" role="alert">
+            {error ?? "Delivery isn’t confirmed."}
+          </span>
+          <button type="button" onClick={() => void submit()}>
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              save({ ...draft, command: undefined });
+              setError("The earlier copy may have arrived. Check the conversation before sending again.");
+              restoreFocus();
+            }}
+          >
+            Edit
+          </button>
+        </p>
+      ) : (
+        error && (
+          <p className="chat-inline-error" role="alert">
+            {error}
+          </p>
+        )
+      )}
+      <DraftAttachments drafts={files} onRemove={locked ? undefined : removeFile} />
+      <form
+        data-attach
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <button
+          type="button"
+          className="chat-attach"
+          aria-label="Attach files"
+          disabled={locked || !settings || draft.files.length >= MAX_ATTACHMENTS}
+          title={settings ? "Attach files" : settingsLoaded ? "File uploads are unavailable" : "Checking file uploads…"}
+          onClick={() => {
+            setChoosingFile(true);
+            fileInput.current?.click();
+          }}
+        >
+          <Plus size={17} aria-hidden="true" />
+        </button>
+        <input
+          type="file"
+          ref={fileInput}
+          multiple
+          hidden
+          onChange={(event) => {
+            setChoosingFile(false);
+            addFiles([...(event.target.files ?? [])]);
+            event.target.value = "";
+            restoreFocus();
+          }}
+        />
+        <label className="sr-only" htmlFor="profile-message">
+          Message @{username}
+        </label>
+        {suggestions.popup}
+        <textarea
+          id="profile-message"
+          ref={input}
+          rows={1}
+          value={draft.text}
+          disabled={locked}
+          placeholder={`Message @${username}`}
+          enterKeyHint="send"
+          aria-describedby="profile-composer-hint"
+          {...suggestions.textarea}
+          onChange={(event) => {
+            save({ ...draft, text: event.target.value });
+            suggestions.change(event.target);
+            setError(undefined);
+          }}
+          onBlur={suggestions.blur}
+          onPaste={(event) => {
+            if (event.clipboardData.files.length && settings && !locked) {
+              event.preventDefault();
+              addFiles([...event.clipboardData.files]);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (suggestions.keyDown(event)) {
+              event.stopPropagation();
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+        />
+        <span id="profile-composer-hint" className="sr-only">
+          Enter to send. Shift+Enter for a new line. Your draft is kept if you close this card.
+        </span>
+        <div className="chat-composer-tools">
+          <EmojiButton disabled={locked} onSelect={chooseEmoji} onOpenChange={setEmojiOpen} />
+          <button
+            type="submit"
+            className="chat-composer-send"
+            aria-label={draft.command ? "Retry send" : `Send to @${username}`}
+            title="Send"
+            disabled={!canSend}
+          >
+            <Send size={16} aria-hidden="true" />
+          </button>
+        </div>
+      </form>
+      {status && (
+        <p className="chat-profile-status" role="status">
+          {status}
+        </p>
+      )}
+    </div>
+  );
+}

@@ -1506,6 +1506,80 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileFileOnlySendRetriesUploadedAssetAndPreservesActiveDraftFiles() async throws {
+        let api = client()
+        let model = AppModel(api: api)
+        model.account = Account(id: "self", username: "owner", displayName: "Me")
+        model.selectedChannelID = channelID
+        let destination = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "peer00000001", username: "jordan", displayName: "Jordan"), lastSeq: "0", readSeq: "0")
+        let person = MentionCardPerson(id: destination.peer.id, username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let ordinary = composerHandler()
+        var sends: [[String: Any]] = []
+        var sent: ChatMessage?
+        AttachmentURLProtocol.handler = { request, body in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("GET", "/api/dms"): return (200, Data(#"{"conversations":[]}"#.utf8))
+            case ("POST", "/api/dms"): return (200, try JSONEncoder().encode(destination))
+            case ("POST", "/api/assets") where json(body)?["channelId"] as? String == destination.id:
+                return (201, Data(#"{"id":"Asset0000008","upload":{"method":"PUT","url":"https://r2.invalid/original/Asset0000008","headers":{"content-type":"text/plain"}}}"#.utf8))
+            case ("POST", "/api/assets/Asset0000008/complete"):
+                return (200, Data(#"{"id":"Asset0000008","kind":"file","contentType":"text/plain","name":"profile.txt","size":9}"#.utf8))
+            case ("POST", "/api/chat/channels/\(destination.id)/messages"):
+                let input = try XCTUnwrap(json(body))
+                sends.append(input)
+                if sends.count == 1 { return (503, Data(#"{"error":"unavailable"}"#.utf8)) }
+                sent = ChatMessage(id: "Message00000001", channelId: destination.id, seq: "1",
+                    author: ChatAuthor(id: "self", name: "Me", isGuest: false),
+                    content: ChatContent(version: 1, type: "text", text: "", attachments: [
+                        ChatAttachment(id: "Asset0000008", kind: .file, contentType: "text/plain", name: "profile.txt", size: 9),
+                    ]), createdAt: "now", clientMessageId: try XCTUnwrap(input["clientMessageId"] as? String))
+                return (200, try JSONEncoder().encode(sent!))
+            case ("GET", "/api/chat/channels/\(destination.id)/messages"):
+                return (200, try JSONEncoder().encode(ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                    channel: HistoryIdentity(id: destination.id, name: "Jordan", direct: true), messages: [sent].compactMap { $0 }, cursor: "1", hasMore: false)))
+            case ("POST", "/api/auth/logout"), ("POST", "/api/dms/\(destination.id)/read"): return (204, Data())
+            default: return try ordinary(request, body)
+            }
+        }
+        await model.chat.open(channelID: channelID, displayName: "Me")
+        await model.chat.checkUploadAvailability()
+        model.chat.draft = "Active composer text"
+        model.chat.addAttachments([try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")])
+        await waitUntil("active upload") { model.chat.attachmentDrafts.first?.attachment != nil }
+        let draft = model.profileMessageDraft(personID: person.id)
+        let before = AttachmentURLProtocol.requests.count
+        let file = try AttachmentStaging.stage(data: Data("file only".utf8), filename: "profile.txt")
+        draft.add([file])
+        XCTAssertTrue(draft.canSend, "file-only composition is supported")
+        XCTAssertEqual(AttachmentURLProtocol.requests.count, before, "picking only stages, without creating or uploading")
+        XCTAssertTrue(draft === model.profileMessageDraft(personID: person.id))
+        let first = await model.sendProfileMessage(to: person)
+        XCTAssertFalse(first)
+        XCTAssertEqual(model.selectedChannelID, channelID)
+        XCTAssertEqual(model.chat.draft, "Active composer text")
+        XCTAssertEqual(model.chat.attachmentDrafts.first?.name, "notes.txt")
+        XCTAssertEqual(draft.files.first?.local, file)
+        let retry = await model.sendProfileMessage(to: person)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertEqual(sends.first?["text"] as? String, "")
+        XCTAssertEqual(sends.first?["clientMessageId"] as? String, sends.last?["clientMessageId"] as? String)
+        XCTAssertEqual(sends.first?["attachmentIds"] as? [String], ["Asset0000008"])
+        XCTAssertEqual(sends.last?["attachmentIds"] as? [String], ["Asset0000008"])
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" && json($0.body)?["channelId"] as? String == destination.id }.count, 1)
+        XCTAssertTrue(draft.files.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        await model.chat.open(channelID: channelID, displayName: "Me")
+        await model.chat.checkUploadAvailability()
+        XCTAssertEqual(model.chat.draft, "Active composer text")
+        let restored = try XCTUnwrap(model.chat.attachmentDrafts.first)
+        XCTAssertEqual(restored.name, "notes.txt")
+        XCTAssertEqual(try Data(contentsOf: restored.localURL), Data("hello".utf8))
+        await model.logout()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restored.localURL.path))
+    }
+
+    @MainActor
     func testRemovingADraftWhileCompressingNeverUploads() async throws {
         AttachmentURLProtocol.handler = composerHandler()
         let chat = ChatModel(api: client())

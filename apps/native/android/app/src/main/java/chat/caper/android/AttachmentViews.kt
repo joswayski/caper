@@ -320,7 +320,10 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** Composer chips: thumbnail, name, size or upload progress, and remove (web `DraftAttachments`). */
-@Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: (String) -> Unit) {
+@Composable internal fun DraftAttachmentStrip(
+    drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
+    enabled: Boolean = true, uploadOnSend: Boolean = false,
+) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
     val still = reducedMotion()
@@ -357,22 +360,23 @@ internal fun durationLabel(durationMs: Long?): String? {
                             val status = draft.error ?: when {
                                 draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
                                 draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
+                                uploadOnSend -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
                                 else -> "Uploading… ${(draft.progress * 100).toInt()}%"
                             }
                             Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             // Progress glides between updates instead of jumping.
                             val progress by animateFloatAsState(draft.progress.coerceIn(0f, 1f),
                                 if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "upload")
-                            if (draft.attachment == null && draft.error == null) LinearProgressIndicator(
+                            if (draft.attachment == null && draft.error == null && (!uploadOnSend || draft.compressing)) LinearProgressIndicator(
                                 progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
                                 color = Terracotta, trackColor = Border,
                             )
                         }
                     }
-                    if (draft.error != null) TextButton({ retry(draft.key) }, Modifier.semantics { contentDescription = "Retry uploading ${draft.name}" }) {
+                    if (draft.error != null && retry != null) TextButton({ retry(draft.key) }, Modifier.semantics { contentDescription = "Retry uploading ${draft.name}" }) {
                         Text("Retry", fontSize = 11.sp)
                     }
-                    IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }) {
+                    IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {
                         Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted)
                     }
                 }

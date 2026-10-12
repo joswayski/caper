@@ -1455,6 +1455,30 @@ private struct AttachmentDraftChip: View {
     let preview: () -> Void
     let retry: () -> Void
     let remove: () -> Void
+
+    var body: some View {
+        StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL,
+                       status: draft.statusLabel, failed: draft.error != nil,
+                       progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
+                       retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
+    }
+}
+
+/// A composer's staged file: thumbnail (images) or kind icon, name, status,
+/// optional upload progress and Remove. Shared by channel and profile composers.
+struct StagedFileChip: View {
+    let id: String
+    let name: String
+    let kind: AttachmentKind
+    let localURL: URL
+    let status: String
+    var failed = false
+    var progress: Double?
+    var removable = true
+    /// Offered for a failed upload.
+    var retry: (() -> Void)?
+    let preview: () -> Void
+    let remove: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var thumbnail: CGImage?
 
@@ -1473,14 +1497,14 @@ private struct AttachmentDraftChip: View {
                     .background(CaperTheme.raised)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(draft.name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
-                        Text(draft.statusLabel).font(CaperTheme.font(10))
-                            .foregroundStyle(draft.error == nil ? CaperTheme.muted : CaperTheme.terracottaBright).lineLimit(2)
-                        if draft.attachment == nil && draft.error == nil {
-                            ProgressView(value: draft.progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
+                        Text(name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
+                        Text(status).font(CaperTheme.font(10))
+                            .foregroundStyle(failed ? CaperTheme.terracottaBright : CaperTheme.muted).lineLimit(2)
+                        if let progress {
+                            ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
                                 // Glides between progress events instead of jumping.
-                                .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: draft.progress)
-                                .accessibilityLabel("Uploading \(draft.name)")
+                                .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: progress)
+                                .accessibilityLabel("Uploading \(name)")
                         }
                     }
                     .frame(maxWidth: 160, alignment: .leading)
@@ -1488,35 +1512,37 @@ private struct AttachmentDraftChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Preview \(draft.name)")
-            if draft.error != nil {
+            .accessibilityLabel("Preview \(name)")
+            if let retry {
                 Button("Retry", action: retry).buttonStyle(.plain)
-                    .accessibilityLabel("Retry uploading \(draft.name)")
+                    .accessibilityLabel("Retry uploading \(name)")
             }
-            Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 24, height: 24)
-                    #if os(iOS)
-                    .frame(minWidth: 44, minHeight: 44)
-                    #endif
-                    .contentShape(Rectangle())
+            if removable {
+                Button(action: remove) {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 24, height: 24)
+                        #if os(iOS)
+                        .frame(minWidth: 44, minHeight: 44)
+                        #endif
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CaperTheme.muted)
+                .accessibilityLabel("Remove \(name)")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(CaperTheme.muted)
-            .accessibilityLabel("Remove \(draft.name)")
         }
         .padding(.leading, 6).padding(.trailing, 4).padding(.vertical, 6)
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(draft.error == nil ? CaperTheme.border : CaperTheme.terracottaBright))
-        .task(id: draft.localURL) {
-            guard draft.kind == .image else { thumbnail = nil; return }
-            let key = "draft:\(draft.id):\(draft.localURL.lastPathComponent)"
-            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: draft.localURL, maxPixelSize: 120)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? CaperTheme.terracottaBright : CaperTheme.border))
+        .task(id: localURL) {
+            guard kind == .image else { thumbnail = nil; return }
+            let key = "draft:\(id):\(localURL.lastPathComponent)"
+            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 120)
         }
     }
 
     private var icon: String {
-        switch draft.kind {
+        switch kind {
         case .image: return "photo"
         case .video: return "film"
         case .audio: return "waveform"

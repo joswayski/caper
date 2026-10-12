@@ -1507,7 +1507,7 @@ internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabl
         key(card.id) {
             MentionCardSheet(card, { done, failed -> card.username?.let { username ->
                 viewModel.messageMentioned(card.id, username, { profile = null; close?.invoke(); done() }, failed)
-            } }, state = state, viewModel = viewModel) { profile = null }
+            } }, state = state, viewModel = viewModel, onMessageSent = { profile = null; close?.invoke() }) { profile = null }
         }
     }
 }
@@ -1693,6 +1693,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
+                    trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1979,6 +1980,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             leadingIcon = {
                                 AttachButton(attachDisabledReason(state), viewModel::addAttachments)
                             },
+                            // The `:name:` shortcut still works; this is the visible way in.
+                            trailingIcon = {
+                                EmojiInsertButton(!state.messagesLoading && state.messagesError == null) { emoji ->
+                                    insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it) }
+                                }
+                            },
                             enabled = !state.messagesLoading && state.messagesError == null,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions,
                             colors = composerFieldColors(),
@@ -2085,7 +2092,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 /** The channel and thread composers' field: the composer surface, terracotta while focused. */
-@Composable private fun composerFieldColors() = OutlinedTextFieldDefaults.colors(
+@Composable internal fun composerFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border,
 )
 
@@ -2777,7 +2784,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     pinnerTarget?.let { author ->
         val card = authorCard(author, state)
         key(author.id) {
-            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }, state = state, viewModel = viewModel) { pinnerTarget = null }
+            MentionCardSheet(card, { done, failed -> card.username?.let { viewModel.messageMentioned(card.id, it, { pinnerTarget = null; close(); done() }, failed) } }, state = state, viewModel = viewModel,
+                onMessageSent = { pinnerTarget = null; close() }) { pinnerTarget = null }
         }
     }
     actionTarget?.let { target ->
@@ -2809,9 +2817,27 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     historyTarget?.let { target -> MessageHistoryDialog(state.pinnedMessages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null } }
 }
 
-@Composable internal fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
+private val emojiPickerCategories = listOf("smileys_people", "animals_nature", "food_drink", "travel_places", "activities", "objects", "symbols", "flags")
+/**
+ * Picker order approximating web's: smileys (the emoticon block, then other faces) before people, then the other
+ * categories with flags last. The catalog itself is in code point order; sorting is stable within each group.
+ */
+internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
+    { emojiPickerCategories.indexOf(it.category).let { rank -> if (rank < 0) emojiPickerCategories.size else rank } },
+    {
+        val point = it.id.substringBefore('-').toIntOrNull(16) ?: 0
+        when {
+            it.category != "smileys_people" || point in 0x1f600..0x1f64f -> 0
+            "face" in it.name || "face" in it.keywords.split(' ') -> 1
+            else -> 2
+        }
+    },
+)
+
+@Composable internal fun EmojiPicker(onDismiss: () -> Unit, title: String = "Add reaction", select: (String) -> Unit) {
     val context = LocalContext.current
-    val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable } }
+    // Picker order, as on web: smileys and people first, flags last.
+    val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable }.sortedWith(emojiPickerOrder) }
     var query by rememberSaveable { mutableStateOf("") }
     val shown = remember(query, catalog) {
         val needle = query.trim().lowercase(Locale.ROOT)
@@ -2820,7 +2846,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     Dialog(onDismissRequest = onDismiss) {
         Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text("Add reaction", Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small) { Text("Close") } }
+                Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small) { Text("Close") } }
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
                 if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
                 else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
@@ -2953,28 +2979,62 @@ internal fun attachDisabledReason(state: AppUiState): String? = when {
     else -> null
 }
 
+/** Replaces the field's selection (or inserts at the caret), within the 4,000-character limit. */
+internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextFieldValue? =
+    insertEmoji(value, EmojiToken(value.selection.min, value.selection.max, ""), emoji)
+
+/** A composer's emoji control: the emoji picker, inserting at the field's selection. */
+@Composable internal fun EmojiInsertButton(enabled: Boolean, interaction: (Boolean) -> Unit = {}, insert: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics { contentDescription = "Insert emoji" }, enabled = enabled) {
+        Icon(painterResource(R.drawable.lucide_smile), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+    }
+    if (open) EmojiPicker({ open = false; interaction(false) }, title = "Insert emoji") { emoji ->
+        open = false; interaction(false)
+        insert(emoji)
+    }
+}
+
 /** Photo picker for photos/videos plus the system document picker for any file. */
-@Composable private fun AttachButton(disabledReason: String?, add: (List<android.net.Uri>) -> Unit) {
+@Composable internal fun AttachButton(
+    disabledReason: String?, add: (List<android.net.Uri>) -> Unit, interaction: (Boolean) -> Unit = {},
+    /** Imports files copied to the clipboard, where a composer supports it. */
+    paste: (() -> Unit)? = null,
+) {
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
-    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
-    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
+    var picking by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(picking) { interaction(open || picking) }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) {
+        add(it); picking = false; interaction(open)
+    }
+    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
+        add(it); picking = false; interaction(open)
+    }
     Box {
-        IconButton({ open = true }, Modifier.size(48.dp).semantics {
+        IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
             if (disabledReason != null) stateDescription = disabledReason
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
-        DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+        DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
-                open = false
+                open = false; picking = true
                 runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+                    .onFailure { picking = false; interaction(false) }
             })
             DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
-                open = false
+                open = false; picking = true
                 runCatching { documents.launch(arrayOf("*/*")) }
+                    .onFailure { picking = false; interaction(false) }
             })
+            paste?.let { paste ->
+                DropdownMenuItem(text = { Text("Paste from clipboard", fontSize = 13.sp) }, onClick = {
+                    open = false; interaction(false)
+                    paste()
+                })
+            }
         }
     }
 }

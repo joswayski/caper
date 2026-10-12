@@ -3133,7 +3133,12 @@ export default function Spaces({
   );
 
   const messagePerson = async (username: string) => {
-    const conversation = await createDirectConversation(username);
+    // Creating an existing incoming DM accepts it. Opening a profile's
+    // conversation should show the request, leaving acceptance explicit.
+    const existing = (await listDirectConversations()).conversations.find(
+      (item) => item.peer.username.toLowerCase() === username.toLowerCase(),
+    );
+    const conversation = existing ?? (await createDirectConversation(username));
     setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     openDirect(conversation);
   };

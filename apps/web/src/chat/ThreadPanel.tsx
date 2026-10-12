@@ -7,6 +7,8 @@ import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
+import EmojiButton from "./EmojiButton.tsx";
+import { insertEmoji } from "./emoji-autocomplete.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage } from "./types.ts";
 
@@ -124,6 +126,20 @@ export default function ThreadPanel({
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
+  };
+  const chooseEmoji = (emoji: string) => {
+    const input = composer.current;
+    const start = input?.selectionStart ?? draft.text.length;
+    const result = insertEmoji(draft.text, { start, end: input?.selectionEnd ?? start, query: "" }, emoji);
+    if (!result) {
+      setValidation("Messages must be 4,000 characters or fewer.");
+      return;
+    }
+    update({ text: result.value });
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(result.caret, result.caret);
+    });
   };
   const suggestions = useComposerSuggestions({
     id: "chat-thread",
@@ -521,6 +537,7 @@ export default function ThreadPanel({
                   />
                   {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
+                <EmojiButton disabled={state.phase !== "ready" || state.thread.loading} onSelect={chooseEmoji} />
                 <button
                   type="submit"
                   disabled={

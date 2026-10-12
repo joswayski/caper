@@ -49,4 +49,20 @@ final class EmojiAutocompleteTests: XCTestCase {
         XCTAssertEqual(result.selection.location, ("👩‍💻 😀" as NSString).length)
         XCTAssertNil(EmojiAutocomplete.inserting(entry("z", "😀😀", "two"), in: "abc :gr", match: EmojiAutocomplete.match(text: "abc :gr", selection: NSRange(location: 7, length: 0), markedText: false, catalog: catalog)!, scalarLimit: 5))
     }
+
+    func testPickerInsertionReplacesSelectionAndEnforcesScalarLimit() throws {
+        let text = "👩‍💻 replace then 🚀"
+        let result = try XCTUnwrap(EmojiAutocomplete.inserting("🎉", in: text, selection: NSRange(location: 6, length: 7)))
+        XCTAssertEqual(result.text, "👩‍💻 🎉 then 🚀")
+        XCTAssertEqual(result.selection, NSRange(location: 8, length: 0), "native offsets are UTF-16, not scalar counts")
+        let caret = try XCTUnwrap(EmojiAutocomplete.inserting("👍", in: "a🚀z", selection: NSRange(location: 3, length: 0)))
+        XCTAssertEqual(caret.text, "a🚀👍z")
+        XCTAssertEqual(caret.selection, NSRange(location: 5, length: 0))
+        let limit = String(repeating: "a", count: 3_999) + "X"
+        XCTAssertEqual(EmojiAutocomplete.inserting("👍", in: limit, selection: NSRange(location: 3_999, length: 1))?.text,
+                       String(repeating: "a", count: 3_999) + "👍", "replacement at the scalar limit is allowed")
+        XCTAssertNil(EmojiAutocomplete.inserting("👍", in: limit, selection: NSRange(location: 4_000, length: 0)))
+        XCTAssertNil(EmojiAutocomplete.inserting("👩‍💻", in: limit, selection: NSRange(location: 3_999, length: 1)))
+        XCTAssertNil(EmojiAutocomplete.inserting("👍", in: text, selection: NSRange(location: 100, length: 1)))
+    }
 }
