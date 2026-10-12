@@ -1210,6 +1210,64 @@ public final class AppModel {
         await select(space: accepted)
     }
 
+    // MARK: Invite links
+
+    /// The shareable URL for a link code, on the configured server's origin.
+    public func inviteLinkURL(_ code: String) -> String { InviteLinks.url(code: code, baseURL: api.baseURL) }
+
+    public func invitePreview(code: String) async throws -> InvitePreview {
+        let attempt = generation
+        let preview = try await api.invitePreview(code: code)
+        guard generation == attempt else { throw CancellationError() }
+        return preview
+    }
+
+    /// Joins by link (or finds the space already joined), refreshes the space
+    /// list and opens the link's channel, or the space's default one.
+    public func joinInvite(code: String) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
+        clearNavigationCache()
+        let attempt = generation
+        let result = try await api.joinInvite(code: code)
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        // A failed refresh still opens the joined space; the periodic reconcile catches up.
+        if let response = try? await api.spaces(), generation == attempt {
+            limits = response.limits
+            spaces = response.spaces
+            invitations = response.invitations
+            spacesLoaded = true
+        }
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        invitations.removeAll { $0.id == result.space.id }
+        let space = spaces.first { $0.id == result.space.id } ?? result.space
+        if !spaces.contains(where: { $0.id == space.id }) { spaces.append(space) }
+        await navigate(space: space, channelID: result.channelId)
+    }
+
+    /// The open space's live links, newest first (owners only).
+    public func loadInviteLinks() async throws -> [InviteLink] {
+        guard let id = detail?.space.id, isOwner else { return [] }
+        let attempt = generation
+        let links = try await api.inviteLinks(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return links
+    }
+
+    public func createInviteLink(channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.createInviteLink(spaceID: id, channelID: channelID, maxAge: maxAge, maxUses: maxUses)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
+    public func revokeInviteLink(_ link: InviteLink) async throws {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        try await api.revokeInviteLink(spaceID: id, code: link.code)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+    }
+
     public func declineInvitation(_ invitation: Space) async throws {
         membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
         let attempt = generation

@@ -353,6 +353,7 @@ targets:
       - Tests/CaperCoreTests/MessageRequestsTests.swift
       - Tests/CaperCoreTests/NotificationSettingsTests.swift
       - Tests/CaperCoreTests/FriendlyErrorTests.swift
+      - Tests/CaperCoreTests/InviteLinksTests.swift
       - Tests/CaperCoreTests/MessageLinksTests.swift
       - Tests/CaperCoreTests/FileDropTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift

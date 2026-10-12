@@ -35,6 +35,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- Invite links: owners create links in Manage space (expiry, use limit and an
+  optional public landing channel; the new link is copied at once), then copy or
+  revoke live ones. Anyone signed in can paste a link or bare code into **Join with
+  invite link** (the rail's link tile or the first-space screen), preview the
+  space and join it. Opening `caper.chat/invite/...` links from the browser in the
+  app (a registered URL handler) is not implemented yet.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by

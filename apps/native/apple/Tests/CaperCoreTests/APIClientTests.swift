@@ -423,6 +423,65 @@ final class APIClientTests: XCTestCase {
         ])
     }
 
+    func testInviteLinkEndpoints() async throws {
+        let spaceID = "Space1234567"
+        let code = "aB3dE5gH9k"
+        let link = #"{"code":"aB3dE5gH9k","channel":{"id":"Channel12345","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner","avatarId":2},"uses":0,"maxUses":10,"expiresAt":"2026-10-18T12:00:00.123456Z","createdAt":"2026-10-11T12:00:00.123456Z"}"#
+        var requests: [String] = []
+        var bodies: [String] = []
+        MockURLProtocol.handler = { request in
+            requests.append("\(request.httpMethod ?? "") \(request.url!.path)")
+            if let body = try requestBodyData(request) { bodies.append(String(decoding: body, as: UTF8.self)) }
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/invites/\(code)"):
+                return (200, Data(#"{"code":"aB3dE5gH9k","space":{"name":"Studio"},"channel":null,"inviter":{"username":"owner","displayName":"Owner","avatarId":2},"memberCount":3,"expiresAt":null}"#.utf8))
+            case ("POST", "/api/invites/\(code)/join"):
+                return (200, Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channelId":null,"joined":true}"#.utf8))
+            case ("GET", "/api/spaces/\(spaceID)/invite-links"):
+                return (200, Data(#"{"links":[\#(link)]}"#.utf8))
+            case ("POST", "/api/spaces/\(spaceID)/invite-links"):
+                return (201, Data(link.utf8))
+            default: return (204, Data())
+            }
+        }
+        let api = client()
+        let preview = try await api.invitePreview(code: code)
+        XCTAssertEqual(preview.space.name, "Studio")
+        XCTAssertNil(preview.channel)
+        XCTAssertEqual(preview.memberCount, 3)
+        let joined = try await api.joinInvite(code: code)
+        XCTAssertEqual(joined.space.id, spaceID)
+        XCTAssertTrue(joined.joined)
+        let links = try await api.inviteLinks(spaceID: spaceID)
+        XCTAssertEqual(links.map(\.code), [code])
+        XCTAssertEqual(links.first?.channel?.name, "feedback")
+        let created = try await api.createInviteLink(spaceID: spaceID, channelID: "Channel12345", maxAge: 604_800, maxUses: nil)
+        XCTAssertEqual(created.maxUses, 10)
+        _ = try await api.createInviteLink(spaceID: spaceID, channelID: nil, maxAge: nil, maxUses: 5)
+        try await api.revokeInviteLink(spaceID: spaceID, code: code)
+        XCTAssertEqual(requests, [
+            "GET /api/invites/\(code)",
+            "POST /api/invites/\(code)/join",
+            "GET /api/spaces/\(spaceID)/invite-links",
+            "POST /api/spaces/\(spaceID)/invite-links",
+            "POST /api/spaces/\(spaceID)/invite-links",
+            "DELETE /api/spaces/\(spaceID)/invite-links/\(code)",
+        ])
+        let sent = try bodies.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        XCTAssertEqual(sent.count, 2)
+        XCTAssertEqual(sent[0]?["channelId"] as? String, "Channel12345")
+        XCTAssertEqual(sent[0]?["maxAge"] as? Int, 604_800)
+        XCTAssertNil(sent[0]?["maxUses"] as? Int)
+        XCTAssertNil(sent[1]?["channelId"] as? String)
+        XCTAssertNil(sent[1]?["maxAge"] as? Int)
+        XCTAssertEqual(sent[1]?["maxUses"] as? Int, 5)
+
+        // A malformed code never reaches the server and reads as a dead link.
+        do { _ = try await api.invitePreview(code: "short"); XCTFail("Expected a rejected code") }
+        catch let error as APIError { XCTAssertEqual(error.status, 404) }
+        XCTAssertEqual(requests.count, 6)
+    }
+
     func testInviteUsernameNormalizationAndValidation() {
         XCTAssertEqual(WorkspaceValidation.normalizeUsername(" Alice-TEAM! "), "aliceteam")
         XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))

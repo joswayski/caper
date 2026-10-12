@@ -14,6 +14,14 @@ the platform can encode it; other files upload unchanged) and upload straight
 to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
+Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
+style: each link can expire (30 minutes to 7 days, or never), cap its uses, and open
+in a chosen public channel. Anyone can preview a live link; signing in returns to it
+to join. Owners list, copy and revoke links in **Manage space**; signed-in people can
+also paste a link to join from web, Android, iPhone/Mac and desktop. Opening links
+directly in the native apps (universal/app links) is not implemented yet. See
+[invite links](docs/media.md#invite-links).
+
 Signed-in accounts can start persistent, private one-to-one messages by username.
 The Direct messages list is shared across spaces. Phone push is implemented behind
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web

@@ -1124,6 +1124,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .route("/readyz", get(ready))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(account_login)
+        .route("/api/invites/{code}", get(spaces::preview_invite_link))
         .merge(updates::routes())
         .merge(protected)
         .merge(channel_media::routes())

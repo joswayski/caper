@@ -408,3 +408,137 @@ export function acceptChannelInvitation(spaceId: string, channelId: string) {
 export function declineChannelInvitation(spaceId: string, channelId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "DELETE" });
 }
+
+export interface InvitePerson {
+  username: string;
+  displayName: string;
+  avatarId?: number | null;
+}
+
+export interface InviteLink {
+  code: string;
+  channel: { id: string; name: string } | null;
+  createdBy: InvitePerson;
+  uses: number;
+  maxUses: number | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface InvitePreview {
+  code: string;
+  space: { name: string };
+  channel: { name: string } | null;
+  inviter: InvitePerson;
+  memberCount: number;
+  expiresAt: string | null;
+}
+
+export interface InviteLinkOptions {
+  channelId: string | null;
+  /** Seconds; null never expires. */
+  maxAge: number | null;
+  /** null allows unlimited joins. */
+  maxUses: number | null;
+}
+
+/** Discord's choices; the API accepts only these. */
+export const INVITE_MAX_AGES: { label: string; value: number | null }[] = [
+  { label: "30 minutes", value: 1_800 },
+  { label: "1 hour", value: 3_600 },
+  { label: "6 hours", value: 21_600 },
+  { label: "12 hours", value: 43_200 },
+  { label: "1 day", value: 86_400 },
+  { label: "7 days", value: 604_800 },
+  { label: "Never", value: null },
+];
+export const INVITE_MAX_USES: { label: string; value: number | null }[] = [
+  { label: "No limit", value: null },
+  ...[1, 5, 10, 25, 50, 100].map((value) => ({ label: `${value} ${value === 1 ? "use" : "uses"}`, value })),
+];
+export const DEFAULT_INVITE_MAX_AGE = 604_800;
+
+const INVITE_CODE = /^[A-Za-z0-9]{10}$/;
+
+/** The code from a pasted invite: a full or scheme-less `/invite/<code>` URL, or the bare code. */
+export function inviteCode(input: string): string | undefined {
+  const value = input.trim();
+  if (INVITE_CODE.test(value)) return value;
+  const path = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/[?#].*$/, "");
+  const match = /^(?:[^/\s]+)?\/invite\/([A-Za-z0-9]{10})\/?$/.exec(path);
+  return match?.[1];
+}
+
+export function inviteUrl(code: string, origin = window.location.origin) {
+  return `${origin}/invite/${code}`;
+}
+
+/** "#feedback · 3 of 10 uses · Expires in 6 days" */
+export function inviteLinkSummary(link: InviteLink, now = Date.now()) {
+  const uses =
+    link.maxUses === null
+      ? `${link.uses} ${link.uses === 1 ? "use" : "uses"}`
+      : `${link.uses} of ${link.maxUses} ${link.maxUses === 1 ? "use" : "uses"}`;
+  return [link.channel && `#${link.channel.name}`, uses, inviteExpiry(link.expiresAt, now)].filter(Boolean).join(" · ");
+}
+
+export function inviteExpiry(expiresAt: string | null, now = Date.now()) {
+  if (!expiresAt) return "Never expires";
+  const minutes = Math.max(1, Math.round((Date.parse(expiresAt) - now) / 60_000));
+  if (minutes < 60) return `Expires in ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Expires in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = Math.round(hours / 24);
+  return `Expires in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
+/** Async callers reject (rather than throw) for a malformed `/invite/<anything>` URL. */
+function pathCode(code: string) {
+  if (!INVITE_CODE.test(code)) throw new SpacesApiError(404, "This invite link is invalid or has expired.");
+  return code;
+}
+
+export function listInviteLinks(spaceId: string) {
+  return request<{ links: InviteLink[] }>(`/api/spaces/${pathId(spaceId)}/invite-links`);
+}
+
+export function createInviteLink(spaceId: string, options: InviteLinkOptions) {
+  return request<InviteLink>(`/api/spaces/${pathId(spaceId)}/invite-links`, {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}
+
+export async function revokeInviteLink(spaceId: string, code: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/invite-links/${pathCode(code)}`, { method: "DELETE" });
+}
+
+export async function previewInvite(code: string) {
+  return request<InvitePreview>(`/api/invites/${pathCode(code)}`);
+}
+
+export async function joinInvite(code: string) {
+  return request<{ space: Space; channelId: string | null; joined: boolean }>(`/api/invites/${pathCode(code)}/join`, {
+    method: "POST",
+  });
+}
+
+/** Where a joined invite opens in the spaces app. */
+export function invitedSpacePath(spaceId: string, channelId: string | null) {
+  const query = new URLSearchParams({ space: spaceId });
+  if (channelId) query.set("channel", channelId);
+  return `/spaces?${query}`;
+}
+
+/** A pending invite carried through sign-in as `?invite=<code>`. */
+export function inviteFromSearch(search: string) {
+  const code = new URLSearchParams(search).get("invite");
+  return code && INVITE_CODE.test(code) ? code : undefined;
+}
+
+/** Where to go once signed in: back to a pending invite, after the profile if it is unfinished. */
+export function signedInPath(account: { username: string | null }, search: string) {
+  const invite = inviteFromSearch(search);
+  if (!account.username) return invite ? `/profile?invite=${invite}` : "/profile";
+  return invite ? `/invite/${invite}` : "/spaces";
+}

@@ -797,8 +797,8 @@ cancel pending invitations. Every client confirms before removing a space member
 ("Remove {name}?") or a private-channel member ("Remove {name} from #channel?");
 cancelling an invitation stays one click. Invitees must accept before becoming members.
 Existing memberships are unchanged; the migration does not retroactively ask
-existing members to accept. There are no invite links, custom roles, ownership
-transfers or public space discovery yet.
+existing members to accept. Owners can also share [invite links](#invite-links). There are no custom roles,
+ownership transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed. Removal is a
 soft delete: space memberships, private-channel grants and channel joins get
@@ -834,6 +834,40 @@ Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invite links
+
+Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
+random alphanumeric characters (about 59 bits), so the unauthenticated preview
+cannot be enumerated. Each link optionally expires (30 minutes, 1, 6 or 12 hours,
+1 or 7 days, or never), caps uses (1, 5, 10, 25, 50 or 100, or unlimited), and
+lands joiners in a public channel; a landing channel deleted or made private later
+falls back to the starter channel and is no longer named in previews. Links are
+retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
+recorded in `space_invite_link_uses`.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
+| Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
+| Anyone previews | `GET /api/invites/{code}` (no auth) | space name, landing channel, inviter, member count, expiry |
+| Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
+
+Creating links shares the owner's invitation attempt budget below; a space can
+have at most 100 live links. Joining checks the membership quota under the same
+space lock as invitation acceptance, consumes one use, joins the landing channel,
+and fulfils any pending username invitation. Existing members get the space back
+without consuming a use, so a link doubles as a shortcut. Leaving does not block
+rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
+an owner's block returns 403 until the owner invites the account by username.
+Expired, revoked, exhausted and unknown links all return the same 404.
+
+The web `/invite/<code>` page previews the link and sends signed-out visitors to
+`/login?invite=<code>` (then the profile step if unfinished) and back. Web and
+native apps also accept a pasted link or bare code (web: under **Create a space**); opening
+`https://caper.chat/invite/...` directly in the apps needs universal/app link
+entitlements and is not implemented.
 
 ### Invitation consent and abuse limits
 
