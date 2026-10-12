@@ -7192,16 +7192,21 @@ Open conversation navigates without sending; known incoming requests remain
 read-only until accepted. Block and DM privacy refusals keep the draft inline.
 
 Layout, the same on every client: the header has the avatar, name and
-`@username` with Open conversation (speech bubble) and Close icons at the end;
-Invite to space and Block share one row; a full-width divider separates the
-composer. The composer reuses the channel composer's shell (Attach at the
+`@username` with a neutral More profile actions (ellipsis) menu, Open
+conversation (speech bubble) and Close icons at the end. Block/Unblock is
+inside that secondary menu and blocking still requires confirmation;
+Invite to space stays below the header. A full-width divider separates the
+composer. The composer reuses the channel composer's shell (Attach/paperclip at the
 start, then the field, Emoji and an eggshell primary Send) with staged files above it
 as the channel's draft chips, including image thumbnails and sizes. Delivery
 uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit
 there. Keyboard hints stay in accessible descriptions, not visible text.
 
-Populated cards resist outside dismissal. File/emoji pickers preserve the draft
-and saved insertion point; Close explicitly leaves it saved. Drafts survive
+Outside clicks/taps close cards even when they contain draft text or files;
+active sends and file/emoji pickers still prevent accidental dismissal. iPhone
+uses a backdrop-only tap recognizer on the native sheet's presentation container,
+leaving detents, dragging, keyboard handling and child dialogs native.
+Pickers preserve the draft and saved insertion point; Close also leaves it saved. Drafts survive
 close/reopen while signed in, not logout or app/page restart. Profile navigation
 retains the underlying conversation's text and, with #544, its staged files and
 thread replies, as for any conversation switch. An unconfirmed POST
@@ -7229,6 +7234,24 @@ smileys first and flags last, approximating web's category order.
 | iOS/macOS | Changed Swift files parse with Linux Swift 6.1; the picker-order logic was compiled and run standalone. No Apple SDK typecheck, XCTest, render or device/picker/clipboard acceptance. |
 | Rust desktop | 458 tests pass (12 device/audio ignored), including new channel emoji insertion, image thumbnail and picker-order tests; fmt and Clippy pass. The one failure, `compress::tests::usage_compression_settings_decode_with_defaults`, is on main from #550 and untouched here. Linux X11 renders inspected: card layout, real clipboard image pasted through the Attach menu with its thumbnail, profile and channel pickers anchored at their buttons. Windows, Wayland, native file picker and live storage acceptance remain separate. |
 | API/containers | No API changes; no Docker image changes. No live storage, multi-account production or physical-device checks. |
+
+**Profile actions follow-up (October 12, 2026).** The table above records the
+earlier composer validation, not acceptance of the new profile menu and dismissal:
+
+- Web: `npm run check`, 598 `npm test` tests and
+  `node scripts/test-profile-composer.mjs` pass. The regression checks the hidden
+  Block action, menu/confirmation, paperclip, outside dismissal with retained
+  text/files, and active-send protection. Desktop/narrow renders were inspected;
+  narrow Chromium is not an iPhone/device check.
+- Rust desktop: 476 tests pass (12 device/audio tests ignored); fmt, build and
+  Clippy pass. Linux X11 default/menu renders were inspected, and real outside
+  clicks followed by reopening retain the typed draft.
+- Android: implementation and instrumentation updated, but this follow-up's
+  Gradle check stops at missing Android SDK configuration. No compilation,
+  instrumentation run, render or device acceptance for these changes.
+- iOS/macOS: implementation and parity UI regression updated. This orb has no
+  Swift compiler or Apple SDK; typechecking, XCTest, native menu rendering and
+  iPhone backdrop taps still require Apple validation before release.
 
 **Deployment order.**
 

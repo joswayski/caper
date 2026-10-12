@@ -444,6 +444,38 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
         capture("mention-card-self", app: app)
     }
+
+    func testProfileBlockMenuAndBackdropDismissalPreserveDraft() throws {
+        let app = launch()
+        let author = try require(app.buttons.matching(NSPredicate(format: "label == %@", "Open profile for Maya")).firstMatch, timeout: 30,
+                                 "The seeded author's profile must be available")
+        author.tap()
+        let card = app.descendants(matching: .any)["mention-card"]
+        let composer = try require(app.descendants(matching: .any)["mention-card-composer"], timeout: 5,
+                                   "The profile must have its own composer")
+        XCTAssertFalse(app.descendants(matching: .any)["mention-card-block"].exists,
+                       "Block must stay inside the secondary menu")
+        composer.tap()
+        composer.typeText("Keep this profile draft")
+        app.descendants(matching: .any)["mention-card-more"].tap()
+        let block = try require(app.descendants(matching: .any)["mention-card-block"], timeout: 3,
+                                "More profile actions must offer Block")
+        block.tap()
+        let cancel = try require(app.buttons["Cancel"], timeout: 5, "Block still requires confirmation")
+        cancel.tap()
+        author.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Keep this profile draft")
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.1)).tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: card)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 3), .completed,
+                       "A backdrop tap closes the profile even with a draft")
+        author.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Keep this profile draft")
+        app.buttons["mention-card-close"].tap()
+    }
+
     #if os(iOS)
     func testIPhoneComposerUsesContentHeightAndShrinksAfterEditing() throws {
         let app = launch()

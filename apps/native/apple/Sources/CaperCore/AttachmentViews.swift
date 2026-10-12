@@ -1747,7 +1747,7 @@ struct AttachmentPickerButton: View {
             Button { showPhotos = true } label: { Label("Photos and videos", systemImage: "photo.on.rectangle") }
             Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
         } label: {
-            Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+            Image(systemName: "paperclip").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
                 .frame(width: 42, height: 42)
                 .contentShape(Rectangle())
         }

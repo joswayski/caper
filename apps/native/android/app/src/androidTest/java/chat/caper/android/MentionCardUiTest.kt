@@ -10,7 +10,6 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -124,7 +123,7 @@ class MentionCardUiTest {
         compose.runOnIdle { assertEquals(1, sends) }
     }
 
-    @Test fun profileSheetProtectsDraftsPickersAndSendingAndExplicitCloseKeepsDraft() {
+    @Test fun profileSheetDismissesWithDraftsButProtectsPickersAndSending() {
         val visible = mutableStateOf(true)
         val draft = mutableStateOf(ProfileMessageDraft(text = "Keep this draft"))
         val picking = mutableStateOf(false)
@@ -145,28 +144,37 @@ class MentionCardUiTest {
             compose.waitForIdle()
         }
         back()
-        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Close sheet").performClick()
-        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Protected profile"))
-            .performTouchInput { swipeDown() }
-        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("Close profile").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(1, closed)
             assertEquals("Keep this draft", draft.value.text)
             visible.value = true
             draft.value = ProfileMessageDraft(files = listOf(DraftAttachmentUi("file", "note.txt", "file")))
         }
-        back()
-        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
-        compose.runOnIdle { draft.value = ProfileMessageDraft(); picking.value = true }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Close sheet").performClick()
+        compose.onNodeWithContentDescription("Close profile").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(2, closed)
+            assertEquals("note.txt", draft.value.files.single().name)
+            visible.value = true
+            picking.value = true
+        }
         back()
         compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
         compose.runOnIdle { picking.value = false; draft.value = ProfileMessageDraft(sending = true) }
         back()
         compose.onNodeWithContentDescription("Close profile").assertIsNotEnabled()
-        compose.runOnIdle { assertEquals(1, closed); draft.value = ProfileMessageDraft() }
+        compose.runOnIdle { assertEquals(2, closed); draft.value = ProfileMessageDraft(text = "Explicit close keeps this") }
+        compose.onNodeWithContentDescription("Close profile").performClick()
+        compose.runOnIdle {
+            assertEquals(3, closed)
+            assertEquals("Explicit close keeps this", draft.value.text)
+            visible.value = true
+            draft.value = ProfileMessageDraft()
+        }
         back()
         compose.onNodeWithContentDescription("Close profile").assertDoesNotExist()
-        compose.runOnIdle { assertEquals(2, closed) }
+        compose.runOnIdle { assertEquals(4, closed) }
     }
 }

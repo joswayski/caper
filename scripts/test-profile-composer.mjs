@@ -94,7 +94,23 @@ try {
   wait('document.querySelector(".chat-drafts li small")?.textContent === "36 B"');
   open("Maya");
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
+  assert.equal(evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Block")'), false);
+  assert.equal(evaluate('return !!document.querySelector(".chat-profile-composer .lucide-paperclip")'), true);
   capture("profile-desktop-empty");
+  browser("click", '.chat-mention-card [aria-label="More profile actions"]');
+  wait('!!document.querySelector(".chat-profile-menu")');
+  assert.equal(evaluate('return document.querySelector(".chat-profile-menu button").textContent'), "Block");
+  if (artifacts) browser("screenshot", `${artifacts}/profile-desktop-menu.png`);
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-profile-menu")');
+  assert.equal(value(), "", "Escape closes only the child menu");
+  browser("click", '.chat-mention-card [aria-label="More profile actions"]');
+  wait('!!document.querySelector(".chat-profile-menu")');
+  browser("click", ".chat-profile-menu button");
+  wait('document.querySelector("dialog[open] h2")?.textContent === "Block Maya?"');
+  assert.equal(evaluate('return !!document.querySelector(".chat-mention-card")'), false);
+  browser("click", "dialog[open] [data-initial-focus]");
+  open("Maya");
   browser("fill", "#profile-message", "Hello suffix");
   evaluate('document.querySelector("#profile-message").setSelectionRange(6, 6)');
   // Cancelling a chooser keeps both the draft and the selected caret.
@@ -116,12 +132,11 @@ try {
     document.querySelector('#profile-message').dispatchEvent(new ClipboardEvent('paste', {clipboardData:transfer, bubbles:true, cancelable:true}));`);
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
   assert.equal((await directs()).length, 0, "Typing and staging files must not create a DM");
+  capture("profile-desktop-files");
   browser("mouse", "move", "900", "100");
   browser("mouse", "down", "left");
   browser("mouse", "up", "left");
-  assert.equal(value(), "Hello 😀suffix", "Outside clicks must not dismiss an active draft");
-  capture("profile-desktop-files");
-  close();
+  wait('!document.querySelector(".chat-mention-card")');
   open("Alex");
   assert.equal(value(), "", "Each person gets their own draft");
   close();
@@ -138,7 +153,14 @@ try {
       if (send && window.dropProfileAck) { window.dropProfileAck = false; throw new TypeError('TEST FIXTURE lost acknowledgement'); }
       return response;
     };`);
+  await control({ holdSends: true });
   browser("click", '.chat-profile-composer button[type="submit"]');
+  wait('document.querySelector("#profile-message")?.disabled');
+  browser("mouse", "move", "900", "100");
+  browser("mouse", "down", "left");
+  browser("mouse", "up", "left");
+  assert.equal(value(), "Hello 😀suffix", "An active send still prevents dismissal");
+  await control({ holdSends: false });
   wait('document.querySelector(".chat-profile-composer button[type=submit]")?.ariaLabel === "Retry send"');
   assert.equal(value(), "Hello 😀suffix");
   assert.equal(evaluate('return document.querySelector("#profile-message").disabled'), true);
@@ -191,6 +213,10 @@ try {
   close();
   browser("set", "viewport", "390", "844", "2");
   open("Maya");
+  assert.equal(value(), "Rejected draft");
+  browser("fill", "#profile-message", "");
+  capture("profile-narrow-empty");
+  browser("fill", "#profile-message", "Rejected draft");
   // Each card checks upload settings when it opens; files wait for that.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
   browser("upload", '.chat-profile-composer input[type="file"]', file);
@@ -202,6 +228,19 @@ try {
     '(() => { const card=document.querySelector(".chat-mention-card").getBoundingClientRect(); return card.left>=0 && card.right<=innerWidth && card.bottom<=innerHeight + 0.5; })()',
   );
   assert.equal(value(), "Rejected draft");
+  browser("click", '.chat-mention-card [aria-label="More profile actions"]');
+  wait('!!document.querySelector(".chat-profile-menu")');
+  if (artifacts) browser("screenshot", `${artifacts}/profile-narrow-menu.png`);
+  browser("press", "Escape");
+  wait('!document.querySelector(".chat-profile-menu")');
+  // A backdrop press closes a drafted sheet; reopening restores text and files.
+  browser("mouse", "move", "195", "80");
+  browser("mouse", "down", "left");
+  browser("mouse", "up", "left");
+  wait('!document.querySelector(".chat-mention-card")');
+  open("Maya");
+  assert.equal(value(), "Rejected draft");
+  assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 1);
   browser("click", '.chat-profile-composer [aria-label="Insert emoji"]');
   wait('!!document.querySelector(".EmojiPickerReact")');
   capture("profile-narrow-emoji");
@@ -231,7 +270,8 @@ try {
   await control({ messageRequest: { text: "TEST FIXTURE — incoming request" } });
   browser("set", "viewport", "1280", "800", "2");
   browser("open", `${web}/spaces`);
-  wait('!!document.querySelector(".direct-requests")');
+  // Wait for restored conversation loading, not just the sidebar's first paint.
+  wait('!!document.querySelector("#chat-message:not(:disabled)") && !!document.querySelector(".direct-requests")');
   browser("click", ".direct-requests");
   browser("click", "#direct-request-list .direct-select");
   wait('!!document.querySelector(".direct-request-bar")');
@@ -249,10 +289,15 @@ try {
     "Open conversation must not silently accept a request",
   );
   console.log(
-    "PASS: profile text/emoji/files and file-only sends, caret/chooser cancellation, outside clicks, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
+    "PASS: secondary Block menu/confirmation, profile text/emoji/files and file-only sends, caret/chooser cancellation, outside dismissal with retained drafts, active-send protection, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
   );
 } catch (error) {
-  console.error(evaluate('return document.querySelector(".chat-mention-card")?.textContent'));
+  // Preserve the original failure even if the browser itself stopped responding.
+  try {
+    console.error(browser("snapshot", "-i"));
+  } catch {
+    console.error("Browser diagnostics unavailable.");
+  }
   throw error;
 } finally {
   browser("close");

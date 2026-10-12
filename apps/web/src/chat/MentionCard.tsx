@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { MessageCircle, X } from "lucide-react";
+import { Ellipsis, MessageCircle, X } from "lucide-react";
 import {
   autoUpdate,
   flip,
@@ -10,6 +10,7 @@ import {
   FloatingTree,
   offset,
   shift,
+  useClick,
   useDismiss,
   useFloating,
   useFloatingNodeId,
@@ -70,7 +71,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   /** Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried. */
   const [invited, setInvited] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [status, setStatus] = useState<string>();
-  const [composerState, setComposerState] = useState({ active: false, sending: false });
+  const [composerState, setComposerState] = useState({ picking: false, sending: false });
   const canMessage = !person.self && !blocked && !!onMessage && !!person.username;
   const returnFocus = useRef(anchor);
   const composerInput = useRef<HTMLTextAreaElement>(null);
@@ -87,7 +88,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([
-    useDismiss(context, { outsidePress: !composerState.active && !composerState.sending && !pending }),
+    useDismiss(context, { outsidePress: !composerState.picking && !composerState.sending && !pending }),
     useRole(context),
   ]);
   useEffect(() => {
@@ -165,6 +166,22 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
             {person.displayName && person.username && <span>@{person.username}</span>}
           </div>
           <div className="chat-profile-header-actions">
+            {!person.self && onBlock && (
+              <ProfileMenu
+                disabled={!!pending || composerState.sending}
+                label={pending === "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block"}
+                onAction={() => {
+                  if (blocked) void unblockPerson();
+                  else
+                    onBlock({
+                      id: person.id,
+                      name: person.displayName ?? person.username ?? "Profile",
+                      avatarId: person.avatarId,
+                      isGuest: false,
+                    });
+                }}
+              />
+            )}
             {!person.self && !blocked && onMessage && person.username && (
               <button
                 type="button"
@@ -200,25 +217,6 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
                 onClick={() => setChoosingSpace(!choosingSpace)}
               >
                 Invite to space
-              </button>
-            )}
-            {onBlock && (
-              <button
-                type="button"
-                className="chat-mention-card-action chat-profile-block"
-                disabled={!!pending || composerState.sending}
-                onClick={() => {
-                  if (blocked) void unblockPerson();
-                  else
-                    onBlock({
-                      id: person.id,
-                      name: person.displayName ?? person.username ?? "Profile",
-                      avatarId: person.avatarId,
-                      isGuest: false,
-                    });
-                }}
-              >
-                {pending === "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block"}
               </button>
             )}
           </div>
@@ -278,6 +276,60 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
           panel
         )}
       </FloatingPortal>
+    </FloatingNode>
+  );
+}
+
+/** A child menu keeps safety actions out of the profile's primary action row. */
+function ProfileMenu({ disabled, label, onAction }: { disabled: boolean; label: string; onAction: () => void }) {
+  const [open, setOpen] = useState(false);
+  const nodeId = useFloatingNodeId();
+  const { refs, floatingStyles, context } = useFloating({
+    nodeId,
+    open,
+    onOpenChange: setOpen,
+    placement: "bottom-end",
+    strategy: "fixed",
+    middleware: [offset(4), flip(), shift({ padding: 12 })],
+    whileElementsMounted: autoUpdate,
+  });
+  const { getReferenceProps, getFloatingProps, getItemProps } = useInteractions([
+    useClick(context),
+    useDismiss(context, { bubbles: false }),
+    useRole(context, { role: "menu" }),
+  ]);
+  return (
+    <FloatingNode id={nodeId}>
+      <button
+        ref={refs.setReference}
+        type="button"
+        aria-label="More profile actions"
+        title="More profile actions"
+        disabled={disabled}
+        {...getReferenceProps()}
+      >
+        <Ellipsis size={18} aria-hidden="true" />
+      </button>
+      {open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={context}>
+            <div ref={refs.setFloating} style={floatingStyles} className="chat-profile-menu" {...getFloatingProps()}>
+              <button
+                type="button"
+                disabled={disabled}
+                {...getItemProps({
+                  onClick: () => {
+                    setOpen(false);
+                    onAction();
+                  },
+                })}
+              >
+                {label}
+              </button>
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
     </FloatingNode>
   );
 }
