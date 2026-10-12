@@ -9,10 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
+mod invite_links;
 mod joining;
 mod unread;
+pub(crate) use invite_links::{accept as accept_invite_link, preview as preview_invite_link};
 pub(crate) use joining::channel_participation;
 use joining::{add_channel_member, remove_channel_member};
+#[cfg(test)]
+mod invite_links_tests;
 #[cfg(test)]
 mod joining_tests;
 
@@ -266,6 +270,15 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/spaces/{space}/members/{user}",
             delete(remove_space_member),
         )
+        .route(
+            "/api/spaces/{space}/invite-links",
+            get(invite_links::list_links).post(invite_links::create_link),
+        )
+        .route(
+            "/api/spaces/{space}/invite-links/{code}",
+            delete(invite_links::revoke_link),
+        )
+        .route("/api/invites/{code}/join", post(accept_invite_link))
         .route("/api/spaces/{space}/invitations", get(list_invitations))
         .route(
             "/api/spaces/{space}/invitations/{user}",
@@ -880,12 +893,19 @@ async fn remove_space_member(
     if changed.rows_affected() != 1 {
         return Err(not_found());
     }
+    // Owner removals also bar rejoining through invite links; leaving does not.
+    let status = if target == principal.user.id {
+        "revoked"
+    } else {
+        "removed"
+    };
     sqlx::query(
-        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,'revoked')
-        ON CONFLICT(space_id,user_id) DO UPDATE SET status='revoked',updated_at=now()",
+        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,$3)
+        ON CONFLICT(space_id,user_id) DO UPDATE SET status=$3,updated_at=now()",
     )
     .bind(space_id)
     .bind(target)
+    .bind(status)
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;

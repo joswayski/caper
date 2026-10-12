@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod app_link;
 mod attachments;
 mod avatar_images;
 mod avif;
@@ -16,6 +17,7 @@ mod file_drop;
 mod forwarding;
 mod gateway;
 mod grouping;
+mod invites;
 mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -220,6 +222,7 @@ enum NavIcon {
     ChevronRight,
     Download,
     ExternalLink,
+    Link,
     Volume,
 }
 
@@ -449,6 +452,60 @@ struct MentionCard {
     fresh: bool,
 }
 
+/// Manage space's "Invite link" section: the open space's live links and the
+/// next link's choices.
+struct InviteLinkPanel {
+    /// The space these links belong to; answers for another are dropped.
+    space: Option<String>,
+    links: Vec<invites::InviteLink>,
+    loading: bool,
+    creating: bool,
+    revoking: BTreeSet<String>,
+    /// "Expire after": a whole number and its unit.
+    expiry_amount: String,
+    expiry_unit: invites::ExpiryUnit,
+    /// "Max uses"; empty means no limit.
+    max_uses: String,
+    /// The landing channel; `None` opens the space's default channel.
+    channel: Option<String>,
+    error: Option<String>,
+    /// A new link's URL, copied on the next frame (copying needs the UI).
+    copy: Option<String>,
+    /// The code whose "Copy" reads "Copied", and since when.
+    copied: Option<(String, Instant)>,
+}
+
+impl Default for InviteLinkPanel {
+    fn default() -> Self {
+        Self {
+            space: None,
+            links: Vec::new(),
+            loading: false,
+            creating: false,
+            revoking: BTreeSet::new(),
+            expiry_amount: invites::DEFAULT_EXPIRY.0.into(),
+            expiry_unit: invites::DEFAULT_EXPIRY.1,
+            max_uses: String::new(),
+            channel: None,
+            error: None,
+            copy: None,
+            copied: None,
+        }
+    }
+}
+
+/// The "Join with invite link" dialog: a pasted link, then its preview.
+#[derive(Default)]
+struct InviteJoin {
+    input: String,
+    /// Fences answers to a preview or join that was replaced or abandoned.
+    request: u64,
+    busy: bool,
+    joining: bool,
+    preview: Option<invites::InvitePreview>,
+    error: Option<String>,
+}
+
 #[derive(Clone)]
 enum Dialog {
     SignIn,
@@ -459,6 +516,8 @@ enum Dialog {
     Diagnostics,
     CreateSpace,
     ManageSpace,
+    /// Paste an invite link, preview its space and join.
+    JoinInvite,
     Invitation(model::Space),
     LeaveSpace {
         id: String,
@@ -857,6 +916,14 @@ struct CaperApp {
     managed_members: Vec<Member>,
     managed_invitations: Vec<Member>,
     managed_channel: Option<String>,
+    /// The configured API origin, which also serves `/invite/<code>` links.
+    api_base: url::Url,
+    invite_links: InviteLinkPanel,
+    invite_join: InviteJoin,
+    /// Invite codes handed off by later launches (`app_link`).
+    app_links: Option<std::sync::mpsc::Receiver<String>>,
+    /// An invite link from the OS, waiting for sign-in and a finished profile.
+    pending_invite: Option<String>,
     persist_preferences: bool,
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
@@ -888,6 +955,7 @@ impl CaperApp {
     fn new(context: &egui::Context, api: api::Api, fixture: Option<&str>) -> Self {
         configure(context);
         let voice = Voice::new(api.base().clone(), context.clone());
+        let api_base = api.base().clone();
         // Fixtures never fetch attachment media.
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
         let worker = Worker::new(api, context.clone());
@@ -1060,6 +1128,11 @@ impl CaperApp {
             managed_members: Vec::new(),
             managed_invitations: Vec::new(),
             managed_channel: None,
+            api_base,
+            invite_links: InviteLinkPanel::default(),
+            invite_join: InviteJoin::default(),
+            app_links: None,
+            pending_invite: None,
             persist_preferences: fixture.is_none(),
             connection_copy_status: "",
             diagnostics_copied: false,
@@ -1528,6 +1601,8 @@ impl CaperApp {
                             owner: false,
                         });
                     }
+                    app.reset_invite_links();
+                    app.invite_links.links = app.fixture_invite_links();
                     // As `GET /api/people` answers: the other members, and
                     // labelled DM contacts outside the space.
                     app.people = Some(
@@ -1546,6 +1621,26 @@ impl CaperApp {
                         .into(),
                     );
                     app.dialog = Some(Dialog::ManageSpace);
+                } else if matches!(name, "parity-invite-join" | "parity-invite-preview") {
+                    app.dialog = Some(Dialog::JoinInvite);
+                    app.invite_join.input = "https://caper.chat/invite/TESTfixt01".into();
+                    if name == "parity-invite-preview" {
+                        app.invite_join.preview = Some(invites::InvitePreview {
+                            code: "TESTfixt01".into(),
+                            space: invites::SpaceName {
+                                name: "TEST FIXTURE · Invited Studio".into(),
+                            },
+                            channel: Some(invites::NamedChannel {
+                                name: "feedback".into(),
+                            }),
+                            inviter: model::Inviter {
+                                username: "fixture_host".into(),
+                                display_name: "TEST FIXTURE host".into(),
+                            },
+                            member_count: 12,
+                            expires_at: None,
+                        });
+                    }
                 } else if name == "parity-channel" {
                     app.form_name = "planning".into();
                     app.form_private = true;
@@ -1944,6 +2039,39 @@ impl CaperApp {
         for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
             self.media_availability.insert(root.into(), true);
         }
+    }
+
+    /// Labelled sample links for the static Manage space preview; nothing is
+    /// created on a server.
+    fn fixture_invite_links(&self) -> Vec<invites::InviteLink> {
+        let owner = model::Inviter {
+            username: "fixture_owner".into(),
+            display_name: "Fixture Owner".into(),
+        };
+        let at = |offset: chrono::TimeDelta| (chrono::Utc::now() + offset).to_rfc3339();
+        vec![
+            invites::InviteLink {
+                code: "TESTfixt01".into(),
+                channel: Some(invites::LinkChannel {
+                    id: "chan00000002".into(),
+                    name: "design".into(),
+                }),
+                created_by: owner.clone(),
+                uses: 3,
+                max_uses: Some(10),
+                expires_at: Some(at(chrono::TimeDelta::days(6))),
+                created_at: at(-chrono::TimeDelta::days(1)),
+            },
+            invites::InviteLink {
+                code: "TESTfixt02".into(),
+                channel: None,
+                created_by: owner,
+                uses: 2,
+                max_uses: None,
+                expires_at: None,
+                created_at: at(-chrono::TimeDelta::days(3)),
+            },
+        ]
     }
 
     /// Static attachment preview: synthetic local images, never fetched, and
@@ -3070,6 +3198,11 @@ impl CaperApp {
         self.privacy_saving = false;
         self.privacy_error = None;
         self.notifications = notifications::Notifications::default();
+        self.invite_links = InviteLinkPanel::default();
+        self.invite_join = InviteJoin {
+            request: self.invite_join.request + 1,
+            ..InviteJoin::default()
+        };
     }
 
     fn is_blocked(&self, account: &str) -> bool {
@@ -3353,6 +3486,103 @@ impl CaperApp {
             AccountResult::NotificationsSaved { scope, result } => {
                 self.notifications.finish_save(&scope, result);
             }
+            AccountResult::InviteLinks { space, result }
+                if self.invite_links.space.as_ref() == Some(&space) =>
+            {
+                let panel = &mut self.invite_links;
+                panel.loading = false;
+                match result {
+                    Ok(links) => panel.links = links,
+                    Err(error) => panel.error = Some(error),
+                }
+            }
+            AccountResult::InviteLinkCreated { space, result }
+                if self.invite_links.space.as_ref() == Some(&space) =>
+            {
+                let panel = &mut self.invite_links;
+                panel.creating = false;
+                match result {
+                    Ok(link) => {
+                        // The new link leads the list and is copied at once.
+                        panel.error = None;
+                        panel.links.retain(|item| item.code != link.code);
+                        panel.copy = Some(invites::invite_url(&self.api_base, &link.code));
+                        panel.copied = Some((link.code.clone(), Instant::now()));
+                        panel.links.insert(0, link);
+                    }
+                    Err(error) => panel.error = Some(error),
+                }
+            }
+            AccountResult::InviteLinkRevoked {
+                space,
+                code,
+                result,
+            } if self.invite_links.space.as_ref() == Some(&space) => {
+                self.invite_links.revoking.remove(&code);
+                match result {
+                    Ok(()) => self.invite_links.links.retain(|item| item.code != code),
+                    Err(error) => {
+                        // It may have expired or been revoked elsewhere: reload.
+                        self.invite_links.error = Some(error);
+                        self.invite_links.loading = true;
+                        self.account_op(AccountOperation::LoadInviteLinks { space });
+                    }
+                }
+            }
+            AccountResult::InvitePreview { request, result }
+                if request == self.invite_join.request =>
+            {
+                let join = &mut self.invite_join;
+                join.busy = false;
+                match result {
+                    Ok(preview) => {
+                        join.preview = Some(preview);
+                        join.error = None;
+                    }
+                    Err(error) => join.error = Some(error),
+                }
+            }
+            AccountResult::InviteJoined { request, result }
+                if request == self.invite_join.request =>
+            {
+                self.invite_join.busy = false;
+                self.invite_join.joining = false;
+                match result {
+                    Ok(joined) => self.joined_invite(joined),
+                    Err(error) => self.invite_join.error = Some(error),
+                }
+            }
+            AccountResult::InviteLinks { .. }
+            | AccountResult::InviteLinkCreated { .. }
+            | AccountResult::InviteLinkRevoked { .. }
+            | AccountResult::InvitePreview { .. }
+            | AccountResult::InviteJoined { .. } => {}
+        }
+    }
+
+    /// Web's invite join: the space joins the list (a member just opens it),
+    /// then opens at the link's channel or the space's default.
+    fn joined_invite(&mut self, joined: invites::JoinedInvite) {
+        let space = joined.space;
+        self.membership_revision += 1;
+        self.invitations.retain(|item| item.id != space.id);
+        self.navigation_cache.forget_space(&space.id);
+        match self.spaces.iter_mut().find(|item| item.id == space.id) {
+            Some(existing) => *existing = space.clone(),
+            None => self.spaces.push(space.clone()),
+        }
+        self.invite_join = InviteJoin {
+            request: self.invite_join.request + 1,
+            ..InviteJoin::default()
+        };
+        if matches!(self.dialog, Some(Dialog::JoinInvite)) {
+            self.dialog = None;
+        }
+        if self.token.is_some() {
+            self.navigate(NavigationTarget {
+                space: Some(space.id),
+                channel: joined.channel_id,
+            });
         }
     }
 
@@ -3595,7 +3825,12 @@ impl CaperApp {
         self.member_error = None;
         self.member_refocus = false;
         self.member_status = None;
+        self.reset_invite_links();
         if let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone()) {
+            self.invite_links.loading = true;
+            self.account_op(AccountOperation::LoadInviteLinks {
+                space: space.clone(),
+            });
             self.worker.send(Command::Admin {
                 generation: self.generation,
                 token: token.clone(),
@@ -3612,6 +3847,81 @@ impl CaperApp {
         }
         self.load_people();
         self.dialog = Some(Dialog::ManageSpace);
+    }
+
+    /// Fresh invite link choices for the open space: seven days, no use
+    /// limit, opening in the selected channel when it is public.
+    fn reset_invite_links(&mut self) {
+        let channel = self
+            .detail
+            .as_ref()
+            .zip(self.selected_channel.as_ref())
+            .and_then(|(detail, selected)| {
+                detail
+                    .channels
+                    .iter()
+                    .find(|channel| &channel.id == selected && !channel.private)
+            })
+            .map(|channel| channel.id.clone());
+        self.invite_links = InviteLinkPanel {
+            space: self.selected_space.clone(),
+            channel,
+            ..InviteLinkPanel::default()
+        };
+    }
+
+    /// Invite links from the OS (a launch argument or a later click handed off
+    /// by `app_link`) open the join dialog once signed in with a profile.
+    fn poll_app_links(&mut self, context: &egui::Context) {
+        let mut arrived = false;
+        if let Some(links) = &self.app_links {
+            while let Ok(code) = links.try_recv() {
+                self.pending_invite = Some(code);
+                arrived = true;
+            }
+        }
+        if arrived {
+            context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        let ready = self
+            .account
+            .as_ref()
+            .is_some_and(|account| account.username.is_some() && account.display_name.is_some());
+        if !ready || matches!(self.dialog, Some(Dialog::SignIn | Dialog::Profile)) {
+            return;
+        }
+        if let Some(code) = self.pending_invite.take() {
+            self.open_invite_link(code);
+        }
+    }
+
+    /// The join dialog with `code` filled in and its preview already loading.
+    fn open_invite_link(&mut self, code: String) {
+        self.open_join_invite();
+        let input = invites::invite_url(&self.api_base, &code);
+        let join = &mut self.invite_join;
+        join.input = input;
+        join.request += 1;
+        join.busy = true;
+        let operation = AccountOperation::PreviewInvite {
+            request: join.request,
+            code,
+        };
+        self.account_op(operation);
+    }
+
+    fn open_join_invite(&mut self) {
+        if self.account.is_none() {
+            self.dialog = Some(Dialog::SignIn);
+            return;
+        }
+        self.invite_join = InviteJoin {
+            request: self.invite_join.request + 1,
+            ..InviteJoin::default()
+        };
+        self.error = None;
+        self.dialog = Some(Dialog::JoinInvite);
     }
 
     fn open_start_direct(&mut self) {
@@ -6399,6 +6709,7 @@ impl eframe::App for CaperApp {
 
 impl CaperApp {
     fn page(&mut self, context: &egui::Context) {
+        self.poll_app_links(context);
         let login = self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn));
         if !login {
             // The next sign-in page focuses its field again.
@@ -6753,6 +7064,24 @@ impl CaperApp {
                                 {
                                     self.logout();
                                 }
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("Join with invite link")
+                                                        .size(13.6)
+                                                        .color(MUTED),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.open_join_invite();
+                                        }
+                                    },
+                                );
                             });
                         });
                     });
@@ -7804,6 +8133,41 @@ impl CaperApp {
                                 Dialog::SignIn
                             });
                             self.form_name.clear();
+                        }
+                        ui.add_space(10.0);
+                        // Joining by link never counts against owned spaces,
+                        // so it stays available when Create space is not.
+                        let (rect, join) =
+                            ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                        ui.painter().rect(
+                            rect,
+                            12.0,
+                            if join.hovered() { RAISED } else { SURFACE },
+                            Stroke::new(
+                                1.0,
+                                if join.has_focus() {
+                                    TERRACOTTA_BRIGHT
+                                } else {
+                                    BORDER
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+                        join.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                "Join with invite link",
+                            )
+                        });
+                        paint_icon(
+                            ui.painter(),
+                            egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
+                            NavIcon::Link,
+                            if join.hovered() { TEXT } else { MUTED },
+                        );
+                        if join.on_hover_text("Join with invite link").clicked() {
+                            self.open_join_invite();
                         }
                         ui.add_space(14.0);
                     });
@@ -14205,6 +14569,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
+            Dialog::JoinInvite => "Join with invite link",
             Dialog::Invitation(_) => "You’re invited!",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::LeaveChannel { name, .. } => {
@@ -14255,6 +14620,9 @@ impl CaperApp {
             520.0
         } else if matches!(dialog, Dialog::Profile) {
             460.0
+        } else if matches!(dialog, Dialog::JoinInvite) {
+            // Room for the preview card without resizing the shell.
+            340.0
         } else if settings {
             560.0
         } else if matches!(
@@ -14284,6 +14652,7 @@ impl CaperApp {
         };
         // A member removal in flight can't be cancelled or closed.
         let removing = self.loading && matches!(dialog, Dialog::RemoveMember { .. });
+        let join_dialog = matches!(dialog, Dialog::JoinInvite);
         // These requests navigate when they finish, so their dialogs stay open
         // (Cancel, close, Escape and backdrop do nothing) until then.
         let hold_while_loading = return_to.is_some()
@@ -14298,7 +14667,11 @@ impl CaperApp {
             && !egui::Popup::is_any_open(context);
         let dismiss_on_backdrop = matches!(
             dialog,
-            Dialog::Settings | Dialog::ManageSpace | Dialog::ManageChannel(_) | Dialog::StartDirect
+            Dialog::Settings
+                | Dialog::ManageSpace
+                | Dialog::ManageChannel(_)
+                | Dialog::StartDirect
+                | Dialog::JoinInvite
         );
         let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
@@ -14396,6 +14769,7 @@ impl CaperApp {
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
+                                            Dialog::JoinInvite => self.join_invite_dialog(ui, &mut close),
                                             Dialog::Invitation(invitation) => {
                                                 ui.heading(format!("Join {}?", invitation.name));
                                                 if let Some(inviter) = &invitation.inviter {
@@ -14567,7 +14941,9 @@ impl CaperApp {
                         .is_some_and(|position| !modal.response.rect.contains(position))
             });
         }
-        if close && !(self.loading && hold_while_loading) {
+        // A join navigates when it finishes, so its dialog stays until then.
+        let joining = join_dialog && self.invite_join.joining;
+        if close && !(self.loading && hold_while_loading) && !joining {
             self.dialog = return_to;
             self.error = None;
         }
@@ -14987,6 +15363,9 @@ impl CaperApp {
         }
         if manage {
             ui.separator();
+            self.invite_link_section(ui);
+            ui.add_space(14.0);
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.label(bold("Members").size(14.0));
                 egui::Frame::new()
@@ -15050,6 +15429,322 @@ impl CaperApp {
                         .map_or("this space", |detail| detail.space.name.as_str())
                         .into(),
                 });
+            }
+        }
+    }
+
+    /// Manage space's "Invite link": the next link's choices, Create link, and
+    /// the space's live links with Copy and Revoke.
+    fn invite_link_section(&mut self, ui: &mut egui::Ui) {
+        if let Some(url) = self.invite_links.copy.take() {
+            ui.ctx().copy_text(url);
+        }
+        ui.label(bold("Invite link").size(14.0));
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("Anyone with the link can join this space.")
+                .size(12.0)
+                .color(MUTED),
+        );
+        ui.add_space(10.0);
+        let units: Vec<_> = invites::EXPIRY_UNITS
+            .iter()
+            .map(|(value, label)| (*value, (*label).to_owned()))
+            .collect();
+        // Links can open only public channels.
+        let channels: Vec<_> = std::iter::once((None, "Default channel".to_owned()))
+            .chain(self.detail.iter().flat_map(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .filter(|channel| !channel.private)
+                    .map(|channel| (Some(channel.id.clone()), format!("#{}", channel.name)))
+            }))
+            .collect();
+        let panel = &mut self.invite_links;
+        if !channels.iter().any(|(id, _)| *id == panel.channel) {
+            panel.channel = None;
+        }
+        let enabled = !panel.creating;
+        let mut edited = false;
+        ui.columns(3, |columns| {
+            let ui = &mut columns[0];
+            let heading = ui.label(bold("Expire after").size(11.5).color(MUTED));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if panel.expiry_unit != invites::ExpiryUnit::Never {
+                    edited |= invite_number_field(
+                        ui,
+                        &mut panel.expiry_amount,
+                        "",
+                        56.0,
+                        enabled,
+                        heading.id,
+                    );
+                }
+                let unit = panel.expiry_unit;
+                invite_menu(ui, &units, &mut panel.expiry_unit, enabled).labelled_by(heading.id);
+                edited |= unit != panel.expiry_unit;
+            });
+            let ui = &mut columns[1];
+            let heading = ui.label(bold("Max uses").size(11.5).color(MUTED));
+            ui.add_space(6.0);
+            let width = ui.available_width();
+            edited |= invite_number_field(
+                ui,
+                &mut panel.max_uses,
+                "No limit",
+                width,
+                enabled,
+                heading.id,
+            );
+            invite_picker(
+                &mut columns[2],
+                "Opens in",
+                &channels,
+                &mut panel.channel,
+                enabled,
+            );
+        });
+        ui.add_space(12.0);
+        let create = ui
+            .horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    primary_button(
+                        ui,
+                        if panel.creating {
+                            "Creating…"
+                        } else {
+                            "Create link"
+                        },
+                        enabled,
+                    )
+                })
+                .inner
+            })
+            .inner;
+        if edited {
+            panel.error = None;
+        }
+        if create.clicked()
+            && let Some(space) = self.selected_space.clone()
+        {
+            let panel = &mut self.invite_links;
+            let parsed = invites::expiry_seconds(&panel.expiry_amount, panel.expiry_unit)
+                .and_then(|max_age| Ok((max_age, invites::max_uses(&panel.max_uses)?)));
+            match parsed {
+                Err(error) => panel.error = Some(error.into()),
+                Ok((max_age, max_uses)) => {
+                    panel.creating = true;
+                    panel.error = None;
+                    let operation = AccountOperation::CreateInviteLink {
+                        space,
+                        channel: panel.channel.clone(),
+                        max_age,
+                        max_uses,
+                    };
+                    self.account_op(operation);
+                }
+            }
+        }
+        if let Some(error) = &self.invite_links.error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        }
+        if self.invite_links.loading && self.invite_links.links.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Loading invite links…")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+        }
+        let now = chrono::Utc::now();
+        let copied = self
+            .invite_links
+            .copied
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < COPIED_FOR)
+            .map(|(code, at)| (code.clone(), COPIED_FOR - at.elapsed()));
+        if let Some((_, remaining)) = &copied {
+            ui.ctx().request_repaint_after(*remaining);
+        }
+        for link in self.invite_links.links.clone() {
+            ui.add_space(8.0);
+            let url = invites::invite_url(&self.api_base, &link.code);
+            let revoking = self.invite_links.revoking.contains(&link.code);
+            let was_copied = copied.as_ref().is_some_and(|(code, _)| *code == link.code);
+            let (copy, revoke) = egui::Frame::new()
+                .fill(RAISED)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width((ui.available_width() - 150.0).max(1.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&url).monospace().size(12.0).color(TEXT),
+                                )
+                                .truncate(),
+                            );
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new(invites::link_meta(&link, now))
+                                    .size(11.0)
+                                    .color(MUTED),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let revoke = toned(
+                                ui,
+                                REMOVE_TONE,
+                                !revoking,
+                                egui::Button::new(
+                                    RichText::new(if revoking { "Revoking…" } else { "Revoke" })
+                                        .size(11.0),
+                                )
+                                .min_size(egui::vec2(64.0, 32.0)),
+                            );
+                            let copy = toned(
+                                ui,
+                                SECONDARY_TONE,
+                                true,
+                                egui::Button::new(
+                                    RichText::new(if was_copied { "Copied" } else { "Copy" })
+                                        .size(11.0),
+                                )
+                                .min_size(egui::vec2(64.0, 32.0)),
+                            );
+                            (copy.clicked(), revoke.clicked())
+                        })
+                        .inner
+                    })
+                    .inner
+                })
+                .inner;
+            if copy {
+                ui.ctx().copy_text(url);
+                self.invite_links.copied = Some((link.code.clone(), Instant::now()));
+            }
+            if revoke && let Some(space) = self.selected_space.clone() {
+                self.invite_links.revoking.insert(link.code.clone());
+                self.invite_links.error = None;
+                self.account_op(AccountOperation::RevokeInviteLink {
+                    space,
+                    code: link.code,
+                });
+            }
+        }
+    }
+
+    /// "Join with invite link": paste a link, preview its space, then join.
+    fn join_invite_dialog(&mut self, ui: &mut egui::Ui, close: &mut bool) {
+        if let Some(preview) = self.invite_join.preview.clone() {
+            egui::Frame::new()
+                .fill(RAISED)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+                .inner_margin(egui::Margin::symmetric(14, 12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(bold(&preview.space.name).size(16.0));
+                    ui.add_space(4.0);
+                    for line in [
+                        Some(format!("Invited by {}", preview.inviter.display_name)),
+                        Some(invites::plural(preview.member_count, "member")),
+                        preview
+                            .channel
+                            .as_ref()
+                            .map(|channel| format!("Opens in #{}", channel.name)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        ui.label(RichText::new(line).size(12.8).color(MUTED));
+                    }
+                });
+            if let Some(error) = &self.invite_join.error {
+                ui.add_space(8.0);
+                ui.label(RichText::new(error).size(12.0).color(ERROR));
+            }
+            let joining = self.invite_join.joining;
+            let (cancel, join) = dialog_buttons(
+                ui,
+                "Cancel",
+                if joining { "Joining…" } else { "Join space" },
+                PRIMARY_TONE,
+                !joining,
+                !self.invite_join.busy,
+            );
+            if cancel.clicked() {
+                *close = true;
+            } else if join.clicked() && !self.invite_join.busy {
+                let join = &mut self.invite_join;
+                join.request += 1;
+                join.busy = true;
+                join.joining = true;
+                join.error = None;
+                let operation = AccountOperation::JoinInvite {
+                    request: join.request,
+                    code: preview.code,
+                };
+                self.account_op(operation);
+            }
+            return;
+        }
+        let label = ui.label(bold("Invite link").size(11.5).color(MUTED));
+        ui.add_space(8.0);
+        let field = ui
+            .add_sized(
+                [ui.available_width(), 42.0],
+                egui::TextEdit::singleline(&mut self.invite_join.input)
+                    .vertical_align(egui::Align::Center)
+                    .margin(egui::Margin::symmetric(8, 4))
+                    .hint_text(
+                        RichText::new("https://caper.chat/invite/…")
+                            .color(MUTED.gamma_multiply(0.65)),
+                    ),
+            )
+            .labelled_by(label.id);
+        if self.focus_dialog_field {
+            field.request_focus();
+        }
+        if field.changed() {
+            self.invite_join.error = None;
+        }
+        let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if let Some(error) = &self.invite_join.error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        }
+        let busy = self.invite_join.busy;
+        let ready = !busy && !self.invite_join.input.trim().is_empty();
+        let (cancel, next) = dialog_buttons(
+            ui,
+            "Cancel",
+            if busy { "Checking…" } else { "Continue" },
+            PRIMARY_TONE,
+            true,
+            ready,
+        );
+        if cancel.clicked() {
+            *close = true;
+        } else if (next.clicked() || entered) && ready {
+            match invites::invite_code(&self.invite_join.input) {
+                None => self.invite_join.error = Some(invites::INVALID_LINK.into()),
+                Some(code) => {
+                    let join = &mut self.invite_join;
+                    join.request += 1;
+                    join.busy = true;
+                    join.error = None;
+                    let operation = AccountOperation::PreviewInvite {
+                        request: join.request,
+                        code,
+                    };
+                    self.account_op(operation);
+                }
             }
         }
     }
@@ -15662,6 +16357,72 @@ fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Resp
     response
 }
 
+/// An invite link choice such as "Opens in": a label over a select-style
+/// button whose menu lists `choices`.
+fn invite_picker<T: Clone + PartialEq>(
+    ui: &mut egui::Ui,
+    label: &str,
+    choices: &[(T, String)],
+    value: &mut T,
+    enabled: bool,
+) {
+    let heading = ui.label(bold(label).size(11.5).color(MUTED));
+    ui.add_space(6.0);
+    invite_menu(ui, choices, value, enabled).labelled_by(heading.id);
+}
+
+/// The dropdown half of `invite_picker`, filling the remaining width.
+fn invite_menu<T: Clone + PartialEq>(
+    ui: &mut egui::Ui,
+    choices: &[(T, String)],
+    value: &mut T,
+    enabled: bool,
+) -> egui::Response {
+    let selected = choices
+        .iter()
+        .find(|(choice, _)| choice == value)
+        .map_or("", |(_, text)| text.as_str());
+    let button = device_picker(ui, selected, enabled);
+    let width = button.rect.width().max(160.0);
+    egui::Popup::menu(&button).width(width).show(|ui| {
+        for (choice, text) in choices {
+            if ui.selectable_label(choice == value, text).clicked() {
+                *value = choice.clone();
+            }
+        }
+    });
+    button
+}
+
+/// A digits-only field in the invite options row; true when edited.
+fn invite_number_field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+    enabled: bool,
+    label: egui::Id,
+) -> bool {
+    let field = ui
+        .add_enabled(
+            enabled,
+            egui::TextEdit::singleline(text)
+                .hint_text(hint)
+                .vertical_align(egui::Align::Center)
+                .char_limit(6)
+                .min_size(egui::vec2(width, 36.0))
+                .desired_width(width),
+        )
+        .labelled_by(label);
+    if field.changed() {
+        text.retain(|character| character.is_ascii_digit());
+    }
+    field.changed()
+}
+
+/// How long a Copy button reads "Copied".
+const COPIED_FOR: Duration = Duration::from_secs(2);
+
 fn settings_switch(
     ui: &mut egui::Ui,
     value: &mut bool,
@@ -16027,6 +16788,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Pause => egui::include_image!("../resources/icons/pause.svg"),
         NavIcon::Download => egui::include_image!("../resources/icons/download.svg"),
         NavIcon::ExternalLink => egui::include_image!("../resources/icons/external-link.svg"),
+        NavIcon::Link => egui::include_image!("../resources/icons/link.svg"),
         NavIcon::Volume => egui::include_image!("../resources/icons/volume-2.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
@@ -18298,6 +19060,18 @@ fn main() -> eframe::Result {
         eprintln!("Caper could not start: {message}");
         std::process::exit(2)
     });
+    let launch_invite = app_link::launch_code(&args);
+    if fixture.is_none() {
+        // A clicked link while Caper is open goes to that window instead.
+        if launch_invite.as_deref().is_some_and(app_link::hand_off) {
+            return Ok(());
+        }
+        if !cfg!(debug_assertions)
+            && let Err(error) = app_link::register()
+        {
+            eprintln!("Caper could not register caper:// links: {error}");
+        }
+    }
     let viewport_size = if fixture.as_deref().is_some_and(|name| {
         matches!(
             name,
@@ -18345,6 +19119,11 @@ fn main() -> eframe::Result {
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);
             }
+            if fixture.is_none() {
+                let context = creation.egui_ctx.clone();
+                app.app_links = app_link::listen(move || context.request_repaint());
+            }
+            app.pending_invite = launch_invite;
             if fixture.is_none() {
                 app.daily_icon = Some(daily_icon::DailyIcon::load(creation.storage));
             }
@@ -24890,6 +25669,37 @@ mod tests {
     }
 
     #[test]
+    fn os_invite_links_wait_for_sign_in_then_open_the_join_preview() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-admin"),
+        );
+        app.token = Some("fixture-token".into());
+        app.dialog = None;
+        let account = app.account.take();
+        app.pending_invite = Some("AbCdE12345".into());
+        render(&mut app, &context, vec![]);
+        assert!(
+            !matches!(app.dialog, Some(Dialog::JoinInvite)),
+            "signed out: the link waits"
+        );
+        assert_eq!(app.pending_invite.as_deref(), Some("AbCdE12345"));
+
+        app.account = account;
+        app.dialog = None;
+        render(&mut app, &context, vec![]);
+        assert!(matches!(app.dialog, Some(Dialog::JoinInvite)));
+        assert_eq!(app.pending_invite, None);
+        assert_eq!(
+            app.invite_join.input,
+            "http://127.0.0.1:9/invite/AbCdE12345"
+        );
+        assert!(app.invite_join.busy, "the preview is already loading");
+    }
+
+    #[test]
     fn member_invites_check_first_confirm_and_keep_the_username_on_failure() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -24903,8 +25713,8 @@ mod tests {
         let invite = |app: &mut CaperApp, username: &str| {
             app.member_username = username.into();
             render(app, &context, vec![]);
-            let output = render(app, &context, vec![]);
-            click(app, &context, text_position(&output, "Invite"));
+            let position = scrolled_text_position(app, &context, "Invite");
+            click(app, &context, position);
         };
         invite(&mut app, "maya");
         assert_eq!(
@@ -24935,11 +25745,12 @@ mod tests {
             .unwrap();
         app.receive();
         assert!(app.member_username.is_empty());
-        let output = render(&mut app, &context, vec![]);
-        assert!(shows(
-            &output,
-            "Invitation sent. They must accept before joining."
-        ));
+        // Panics unless the confirmation is shown.
+        scrolled_text_position(
+            &mut app,
+            &context,
+            "Invitation sent. They must accept before joining.",
+        );
 
         invite(&mut app, "ghost");
         events
@@ -24995,6 +25806,8 @@ mod tests {
         let id = egui::Id::new("member-username");
         let list = id.with("people");
         render(&mut app, &context, vec![]);
+        // Scroll past the Invite link section to Members, as a person would.
+        scrolled_text_position(&mut app, &context, "Delete space");
         assert_eq!(
             type_username(&mut app, &context, id, "@FIX"),
             [
@@ -27026,9 +27839,9 @@ mod tests {
                 Some(fixture),
             );
             render(&mut app, &context, vec![]);
-            let output = render(&mut app, &context, vec![]);
             // The owner has no Remove; the first belongs to Maya.
-            click(&mut app, &context, text_position(&output, "Remove"));
+            let position = scrolled_text_position(&mut app, &context, "Remove");
+            click(&mut app, &context, position);
             assert!(
                 matches!(&app.dialog, Some(Dialog::RemoveMember { member, .. }) if member == "fixture-maya"),
                 "{fixture}"
@@ -27083,8 +27896,8 @@ mod tests {
                 );
                 app.token = Some("account-token".into());
                 render(&mut app, &context, vec![]);
-                let output = render(&mut app, &context, vec![]);
-                click(&mut app, &context, text_position(&output, "Remove"));
+                let position = scrolled_text_position(&mut app, &context, "Remove");
+                click(&mut app, &context, position);
                 render(&mut app, &context, vec![]);
                 let output = render(&mut app, &context, vec![]);
                 click(&mut app, &context, text_position(&output, "Remove"));
@@ -28017,6 +28830,35 @@ mod tests {
             status.top() - divider,
             account_top - status.bottom()
         );
+    }
+
+    /// Like `text_position`, scrolling the open dialog down until `label` is
+    /// painted: Manage space's Invite link section can push Members below
+    /// the fold at the test window size.
+    fn scrolled_text_position(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        label: &str,
+    ) -> egui::Pos2 {
+        for _ in 0..12 {
+            let output = render(app, context, vec![]);
+            if shows(&output, label) {
+                return text_position(&output, label);
+            }
+            render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(720.0, 450.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -200.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        panic!("missing {label} after scrolling")
     }
 
     fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {

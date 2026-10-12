@@ -136,6 +136,9 @@ private struct FirstSpaceView: View {
     @State private var name = ""
     @State private var error: String?
     @State private var pending = false
+    @State private var joining = false
+    /// A link opened from another app, shown in the join dialog.
+    @State private var opened: OpenedInviteLink?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -156,6 +159,13 @@ private struct FirstSpaceView: View {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Divider().overlay(CaperTheme.border)
+                HStack {
+                    Text("Have an invite link?").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                    Spacer()
+                    Button("Join with invite link") { opened = nil; joining = true }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                        .disabled(pending).accessibilityIdentifier("first-space-join-invite")
+                }
                 HStack {
                     Spacer()
                     Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
@@ -163,6 +173,22 @@ private struct FirstSpaceView: View {
                 }
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
+            .sheet(isPresented: $joining) {
+                JoinInviteSheet(model: model, opened: opened, close: { joining = false })
+                    .id(opened?.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(CaperTheme.surface)
+                    #if os(iOS)
+                    .presentationDetents([.medium, .large])
+                    #else
+                    .frame(width: 520)
+                    .frame(minHeight: 300)
+                    #endif
+            }
+            .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
+                guard let link = model.takeInviteLink() else { return }
+                opened = link; joining = true
+            }
     }
     private func create() {
         guard !pending, model.canCreateSpace, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -385,12 +411,14 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
+    /// `joinInvite` carries a link opened from another app, or nil.
+    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
         case .login: "login"
         case .profile: "profile"
         case .createSpace: "create-space"
+        case .joinInvite(let opened): opened.map { "join-invite-\($0.id)" } ?? "join-invite"
         case .createChannel: "create-channel"
         case .newDirectMessage: "new-direct-message"
         case .manageSpace: "manage-space"
@@ -657,7 +685,7 @@ private struct WorkspaceView: View {
                             .accessibilityHidden(true)
                             .modifier(Entrance.scrim)
                         DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
-                            WorkspaceSheetView(item: item, model: model) { sheet = nil }
+                            WorkspaceSheetView(item: item, model: model, show: { sheet = $0 }) { sheet = nil }
                                 .id(item.id)
                         }
                             .frame(width: min(item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
@@ -680,6 +708,10 @@ private struct WorkspaceView: View {
         // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
         .modifier(MediaViewerHost())
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
+        // A link opened from another app replaces any open dialog.
+        .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
+            if let link = model.takeInviteLink() { sheet = .joinInvite(link) }
+        }
         .onChange(of: model.notificationInvitation, initial: true) { _, invitation in
             if let invitation { sheet = .invitation(invitation); model.notificationInvitation = nil }
         }
@@ -772,7 +804,8 @@ private struct SpaceRail: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
-                .buttonStyle(.plain).modifier(ControlHover()).disabled(model.account != nil && !model.canCreateSpace)
+                // Stays enabled at the space limit: the dialog also joins by invite link.
+                .buttonStyle(.plain).modifier(ControlHover())
                 .help(createHelp)
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
@@ -4974,13 +5007,16 @@ private struct ProfileView: View {
 private struct WorkspaceSheetView: View {
     let item: WorkspaceSheet
     @Bindable var model: AppModel
+    /// Replaces this dialog with another, e.g. Create a space → Join with invite link.
+    var show: (WorkspaceSheet) -> Void = { _ in }
     let close: () -> Void
     var body: some View {
         Group {
             switch item {
             case .login: EmptyView() // Presented full-screen by LoginPresentation.
             case .profile: ProfileSheet(model: model, close: close)
-            case .createSpace: SpaceEditor(model: model, close: close, managing: false)
+            case .createSpace: SpaceEditor(model: model, close: close, managing: false, joinInvite: { show(.joinInvite(nil)) })
+            case .joinInvite(let opened): JoinInviteSheet(model: model, opened: opened, close: close)
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
@@ -5808,8 +5844,364 @@ private struct InvitationSheet: View {
     }
 }
 
+/// "Join with invite link": paste a link or code, preview the space, then join.
+private struct JoinInviteSheet: View {
+    @Bindable var model: AppModel
+    /// A link opened from another app: filled in and looked up at once.
+    var opened: OpenedInviteLink? = nil
+    let close: () -> Void
+    @State private var link = ""
+    @State private var preview: InvitePreview?
+    @State private var pending = false
+    @State private var error: String?
+    @FocusState private var linkFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SheetHeader(title: "Join with invite link", closeDisabled: pending, close: close)
+            VStack(alignment: .leading, spacing: 16) {
+                if let preview { InvitePreviewCard(preview: preview) } else { linkField }
+                if let error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("invite-link-error")
+                }
+                actions
+            }.padding(22)
+        }.background(CaperTheme.surface)
+            .onAppear {
+                // As if the link had been pasted and Continue pressed.
+                if let opened, link.isEmpty { link = opened.link; lookUp() } else { linkFocused = true }
+            }
+            .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
+    }
+
+    private var linkField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Invite link").font(CaperTheme.font(12, weight: .bold))
+            TextField("https://caper.chat/invite/…", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }))
+                .textFieldStyle(CaperTextFieldStyle())
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                #endif
+                .focused($linkFocused)
+                .submitLabel(.go).onSubmit(lookUp)
+                .accessibilityLabel("Invite link")
+                .accessibilityIdentifier("invite-link-field")
+        }
+    }
+
+    private var actions: some View {
+        HStack {
+            Spacer()
+            if preview == nil {
+                Button(pending ? "Checking…" : "Continue", action: lookUp).buttonStyle(CaperPrimaryButton()).frame(width: 140)
+                    .disabled(pending || link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("invite-link-continue")
+            } else {
+                Button("Cancel", action: close).buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending)
+                    .keyboardShortcut(.cancelAction)
+                Button(pending ? "Joining…" : "Join space", action: join).buttonStyle(CaperPrimaryButton()).frame(width: 140)
+                    .disabled(pending).keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("invite-link-join")
+            }
+        }
+    }
+
+    private func lookUp() {
+        guard !pending, preview == nil else { return }
+        guard let code = InviteLinks.code(from: link) else { error = InviteLinks.invalid; return }
+        pending = true; error = nil
+        Task {
+            do { preview = try await model.invitePreview(code: code) }
+            catch { self.error = Self.message(for: error) }
+            pending = false
+        }
+    }
+
+    private func join() {
+        guard !pending, let code = preview?.code else { return }
+        pending = true; error = nil
+        Task {
+            do {
+                try await model.joinInvite(code: code)
+                pending = false
+                close()
+            } catch {
+                self.error = Self.message(for: error)
+                pending = false
+            }
+        }
+    }
+
+    /// A dead link (404) reads the same however it died; refusals (403/409)
+    /// show the server's text as a sentence.
+    static func message(for error: Error) -> String {
+        if let failure = error as? APIError, failure.status == 404 { return InviteLinks.invalid }
+        return FriendlyError.message(for: error)
+    }
+}
+
+/// The space an invite link opens: name, inviter, size and landing channel.
+private struct InvitePreviewCard: View {
+    let preview: InvitePreview
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text(String(preview.space.name.prefix(1)).uppercased()).font(CaperTheme.font(18, weight: .black))
+                .frame(width: 52, height: 52).background(CaperTheme.raised)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(preview.space.name).font(CaperTheme.font(18, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId)
+                    Text("Invited by \(preview.inviter.displayName)").lineLimit(1)
+                }
+                Text(InviteLinks.memberCount(preview.memberCount))
+                if let channel = preview.channel { Text("Opens in #\(channel.name)").lineLimit(1) }
+            }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            Spacer(minLength: 0)
+        }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("invite-preview")
+    }
+}
+
+/// Manage space's "Invite link": owners create, copy and revoke shareable links.
+private struct InviteLinksSection: View {
+    @Bindable var model: AppModel
+    @State private var expiryNumber = InviteLinks.defaultExpiryNumber
+    @State private var expiryUnit = InviteLinks.defaultExpiryUnit
+    /// Empty is No limit.
+    @State private var maxUses = ""
+    @State private var expiryError: String?
+    @State private var maxUsesError: String?
+    @State private var channelID: String?
+    @State private var links: [InviteLink] = []
+    @State private var loading = false
+    /// "create", or the code of the link being revoked.
+    @State private var pending: String?
+    @State private var error: String?
+    /// The link whose Copy button reads "Copied".
+    @State private var copied: String?
+    @State private var copiedReset: Task<Void, Never>?
+
+    private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
+    private var unitOptions: [InviteOption<InviteExpiryUnit>] {
+        InviteExpiryUnit.allCases.map { InviteOption(label: $0.label, value: $0) }
+    }
+    private var channelOptions: [InviteOption<String?>] {
+        [InviteOption<String?>(label: "Default channel", value: nil)]
+            + publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Invite link").font(CaperTheme.font(14, weight: .bold))
+                Text("Anyone with the link can join this space.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 10) { pickers }
+                VStack(alignment: .leading, spacing: 10) { pickers }
+            }
+            Button(pending == "create" ? "Creating…" : "Create link", action: create)
+                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                .accessibilityIdentifier("invite-link-create")
+            if let error {
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if loading && links.isEmpty { ProgressView("Loading invite links…").font(CaperTheme.font(12)) }
+            ForEach(links) { link in row(link) }
+        }
+        .onAppear {
+            // Opens in the channel being viewed when anyone can see it.
+            if let channel = model.selectedChannel, !channel.private { channelID = channel.id }
+        }
+        .task(id: model.detail?.space.id) { await load() }
+        .onDisappear { copiedReset?.cancel() }
+    }
+
+    @ViewBuilder private var pickers: some View {
+        expiryField
+        maxUsesField
+        InviteOptionPicker(title: "Opens in", selection: $channelID, options: channelOptions)
+    }
+
+    /// A whole number and its unit; Never hides the number.
+    private var expiryField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Expire after").font(CaperTheme.font(12, weight: .bold))
+            HStack(spacing: 8) {
+                if expiryUnit != .never {
+                    numberField("7", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
+                        .frame(width: 76)
+                        .accessibilityLabel("Expire after")
+                        .accessibilityIdentifier("invite-link-expiry-number")
+                }
+                InviteOptionPicker(title: "Expiry unit", selection: Binding(get: { expiryUnit }, set: { expiryUnit = $0; expiryError = nil }),
+                                   options: unitOptions, showsTitle: false)
+                    .accessibilityIdentifier("invite-link-expiry-unit")
+            }
+            if let expiryError { fieldError(expiryError).accessibilityIdentifier("invite-link-expiry-error") }
+        }
+    }
+
+    private var maxUsesField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Max uses").font(CaperTheme.font(12, weight: .bold))
+            numberField("No limit", text: Binding(get: { maxUses }, set: { maxUses = $0; maxUsesError = nil }))
+                .frame(width: 140)
+                .accessibilityLabel("Max uses")
+                .accessibilityIdentifier("invite-link-max-uses")
+            if let maxUsesError { fieldError(maxUsesError).accessibilityIdentifier("invite-link-max-uses-error") }
+        }
+    }
+
+    private func numberField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(CaperTextFieldStyle())
+            .autocorrectionDisabled()
+            #if os(iOS)
+            .keyboardType(.numberPad)
+            #endif
+    }
+
+    private func fieldError(_ message: String) -> some View {
+        Text(message).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func row(_ link: InviteLink) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                TimelineView(.everyMinute) { context in
+                    Text(InviteLinks.meta(for: link, now: context.date)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+            }
+            Spacer(minLength: 8)
+            Button(copied == link.code ? "Copied" : "Copy") { copy(link) }.buttonStyle(CaperSecondaryButton())
+                .accessibilityLabel(copied == link.code ? "Copied" : "Copy invite link")
+            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revoke(link) }
+                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil)
+        }
+        .padding(10).background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .accessibilityIdentifier("invite-link-\(link.code)")
+    }
+
+    private func load() async {
+        loading = true; error = nil
+        do { links = try await model.loadInviteLinks() }
+        catch is CancellationError {}
+        catch { self.error = FriendlyError.message(for: error) }
+        loading = false
+    }
+
+    private func create() {
+        guard pending == nil else { return }
+        // Out-of-range options show beside their fields and aren't sent.
+        let expiry = InviteLinks.expirySeconds(expiryNumber, unit: expiryUnit)
+        let uses = InviteLinks.maxUses(maxUses)
+        if case .failure(let failure) = expiry { expiryError = failure.message } else { expiryError = nil }
+        if case .failure(let failure) = uses { maxUsesError = failure.message } else { maxUsesError = nil }
+        guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
+        // A channel made private since it was picked falls back to the default.
+        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
+        pending = "create"; error = nil
+        Task {
+            do {
+                let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: useLimit)
+                links.removeAll { $0.code == link.code }
+                links.insert(link, at: 0)
+                copy(link)
+            } catch { self.error = FriendlyError.message(for: error) }
+            pending = nil
+        }
+    }
+
+    private func revoke(_ link: InviteLink) {
+        guard pending == nil else { return }
+        pending = link.code; error = nil
+        Task {
+            do {
+                try await model.revokeInviteLink(link)
+                links.removeAll { $0.code == link.code }
+            } catch let failure as APIError where failure.status == 404 {
+                // Already expired, used up or revoked elsewhere.
+                links.removeAll { $0.code == link.code }
+            } catch { self.error = FriendlyError.message(for: error) }
+            pending = nil
+        }
+    }
+
+    private func copy(_ link: InviteLink) {
+        let url = model.inviteLinkURL(link.code)
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(url, forType: .string) else { error = "Copy failed; try again."; return }
+        #else
+        UIPasteboard.general.string = url
+        #endif
+        copied = link.code
+        copiedReset?.cancel()
+        copiedReset = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            copied = nil
+        }
+    }
+}
+
+/// A labelled menu of fixed choices, styled like the audio device pickers.
+private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [InviteOption<Value>]
+    /// False when a surrounding label already names the menu; `title` stays its accessibility label.
+    var showsTitle = true
+    @Environment(\.isEnabled) private var isEnabled
+    private var current: String { options.first { $0.value == selection }?.label ?? options.first?.label ?? "" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if showsTitle { Text(title).font(CaperTheme.font(12, weight: .bold)) }
+            Menu {
+                ForEach(options, id: \.label) { option in
+                    Button(option.label) { selection = option.value }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(current).lineLimit(1)
+                    Spacer(minLength: 0)
+                    CaperIcon(name: "chevron-down", size: 12)
+                }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
+                    .padding(.horizontal, 11).frame(minWidth: 140, minHeight: 42)
+                    .background(CaperTheme.composer)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    .opacity(isEnabled ? 1 : 0.45)
+            }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .accessibilityLabel(title).accessibilityValue(current)
+                .modifier(ControlHover())
+        }
+    }
+}
+
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
+    /// Create a space only: switches to "Join with invite link".
+    var joinInvite: (() -> Void)? = nil
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
     /// The member whose removal is being confirmed.
@@ -5836,8 +6228,12 @@ private struct SpaceEditor: View {
                 VStack(alignment: .leading, spacing: 18) {
                     CaperField(title: "Space name", text: $name, focus: $nameFocused)
                         .onChange(of: name) { _, _ in error = nil }
-                    Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
+                    Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
+                        .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
+                    if !managing { createFooter }
                     if managing {
+                        Divider().overlay(CaperTheme.border)
+                        InviteLinksSection(model: model)
                         Divider().overlay(CaperTheme.border)
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
                             .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
@@ -5899,6 +6295,21 @@ private struct SpaceEditor: View {
                 try await model.removeSpaceMember(member)
             }
             .modifier(ConfirmationPresentation())
+        }
+    }
+    /// Create a space: the space limit, and joining by invite link instead.
+    @ViewBuilder private var createFooter: some View {
+        if model.limits != nil && !model.canCreateSpace {
+            Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+        }
+        if let joinInvite {
+            Divider().overlay(CaperTheme.border)
+            HStack {
+                Text("Have an invite link?").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Spacer()
+                Button("Join with invite link", action: joinInvite).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                    .disabled(pending).accessibilityIdentifier("join-invite-link")
+            }
         }
     }
     /// Typing another username clears the last result, as on web.

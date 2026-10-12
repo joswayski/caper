@@ -816,8 +816,8 @@ cancel pending invitations. Every client confirms before removing a space member
 ("Remove {name}?") or a private-channel member ("Remove {name} from #channel?");
 cancelling an invitation stays one click. Invitees must accept before becoming members.
 Existing memberships are unchanged; the migration does not retroactively ask
-existing members to accept. There are no invite links, custom roles, ownership
-transfers or public space discovery yet.
+existing members to accept. Owners can also share [invite links](#invite-links). There are no custom roles,
+ownership transfers or public space discovery yet.
 
 Username fields suggest people the client already has, on web, Android, Apple and
 Rust desktop. The space invite field offers `GET /api/people` (people you share an
@@ -869,6 +869,78 @@ Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invite links
+
+Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
+random alphanumeric characters (about 59 bits), so the unauthenticated preview
+cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
+Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
+spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
+falls back to the starter channel and is no longer named in previews. Links are
+retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
+recorded in `space_invite_link_uses`.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
+| Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
+| Anyone previews | `GET /api/invites/{code}` (no auth) | space name, landing channel, inviter, member count, expiry |
+| Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
+
+Creating links shares the owner's invitation attempt budget below; a space can
+have at most 100 live links. Joining checks the membership quota under the same
+space lock as invitation acceptance, consumes one use, joins the landing channel,
+and fulfils any pending username invitation. Existing members get the space back
+without consuming a use, so a link doubles as a shortcut. Leaving does not block
+rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
+an owner's block returns 403 until the owner invites the account by username.
+Expired, revoked, exhausted and unknown links all return the same 404.
+
+The web `/invite/<code>` page previews the link and sends signed-out visitors to
+`/login?invite=<code>` (then the profile step if unfinished) and back. Web and
+native apps also accept a pasted link or bare code (web: under **Create a space**).
+
+Opening links in the apps: every native app registers the `caper://` scheme, and
+the invite page links to `caper://invite/<code>` ("Open in the Caper app"). An
+opened link fills in the join dialog and loads its preview, after sign-in and
+the profile step when needed. Platform specifics:
+
+- iPhone: universal links for `https://caper.chat/invite/*` through the
+  `applinks:caper.chat` Associated Domains entitlement and
+  `/.well-known/apple-app-site-association` (team `NAUU43LATL`, `chat.caper.ios`).
+  Automatic signing with `-allowProvisioningUpdates` should add the capability to
+  the App ID; if a TestFlight export fails on the profile, enable Associated
+  Domains for `chat.caper.ios` in the Apple developer portal.
+- Mac: `caper://` only. The Developer ID build has no provisioning profile, which
+  universal links require.
+- Android: verified App Links for `https://caper.chat/invite/` against
+  `/.well-known/assetlinks.json` (`apps/web/src/server/app-links.ts`). It lists the
+  upload key that signs the GitHub APK. Play re-signs store installs, so add the
+  Play app-signing SHA-256 (Play Console → App integrity → App signing) there for
+  Play installs to verify; until then they open the browser.
+- Windows/Linux desktop: `caper://` is registered per user on launch (HKCU
+  `Software\Classes\caper`; `~/.local/share/applications/chat.caper.links.desktop`
+  plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
+  handed to the open window over loopback (a token file in the app data folder)
+  instead of starting a second copy.
+
+**To do (owner): finish automatic app-link opening.**
+
+- [ ] Android Play installs: once Play App Signing exists for `chat.caper.android`
+  (after the first app bundle upload), copy **App signing key certificate →
+  SHA-256** from Play Console → Test and release → App integrity → Play app
+  signing, add it to `ANDROID_CERT_FINGERPRINTS` in
+  `apps/web/src/server/app-links.ts`, and deploy web. Until then Play installs open
+  invite links in the browser ("Open in the Caper app" still works); GitHub APK
+  installs already open directly.
+- [ ] iPhone: confirm the first TestFlight build with `applinks:caper.chat` signs.
+  If the export fails on the provisioning profile, enable **Associated Domains**
+  for `chat.caper.ios` at developer.apple.com → Certificates, IDs & Profiles →
+  Identifiers, then rerun the release. Verify by tapping a `caper.chat/invite/...`
+  link in Messages on a device with the TestFlight build.
 
 ### Invitation consent and abuse limits
 

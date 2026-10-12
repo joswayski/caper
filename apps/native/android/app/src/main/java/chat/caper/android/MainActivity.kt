@@ -203,14 +203,20 @@ class MainActivity : ComponentActivity() {
         val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         CaperEffects.init(applicationContext)
-        // A recreated activity or a relaunch from Recents must not reopen an old tap.
-        if (savedInstanceState == null) openFromNotification(intent)
+        // A recreated activity or a relaunch from Recents must not reopen an old tap or link.
+        if (savedInstanceState == null) openFromIntent(intent)
         setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromNotification(intent) }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromIntent(intent) }
+
+    /** A notification tap, or an invite link from the manifest's VIEW filters. */
+    private fun openFromIntent(intent: Intent) {
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        openFromNotification(intent)
+        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let(viewModel::openInviteLink)
+    }
 
     private fun openFromNotification(intent: Intent) {
-        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         viewModel.openFromNotification(
             intent.getStringExtra(CaperNotifications.EXTRA_CONVERSATION_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_SPACE_ID),
@@ -242,6 +248,9 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface Overlay {
     data object CreateSpace : Overlay
+    data object JoinInvite : Overlay
+    /** "Join with invite link" for a link opened from another app, already loading its preview. */
+    data class OpenedInviteLink(val request: InviteLinkRequest) : Overlay
     data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
     data object CreateChannel : Overlay
@@ -304,6 +313,11 @@ internal data class VoiceJoinIntent(
     }
 
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
+    // An opened invite link (signed in, or once sign-in finishes) takes over whatever dialog is open.
+    val openedInviteLink by viewModel.inviteLinkToOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(openedInviteLink) {
+        openedInviteLink?.let { overlay = Overlay.OpenedInviteLink(it); viewModel.inviteLinkShown(it) }
+    }
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
@@ -318,7 +332,7 @@ internal data class VoiceJoinIntent(
                     // Web's first-space page: an account with no spaces names one.
                     else if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
                         state.spaces.none { !it.demo } && state.selectedDirectId == null && !navigationOpen)
-                        FirstSpaceScreen(state, viewModel)
+                        FirstSpaceScreen(state, viewModel) { overlay = Overlay.JoinInvite }
                     else HomeScreen(
                         state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                     )
@@ -344,6 +358,11 @@ internal data class VoiceJoinIntent(
 
     when (val shown = overlay) {
         Overlay.CreateSpace -> CreateSpaceDialog(state.busy, state.error, viewModel::clearError, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
+        Overlay.JoinInvite -> if (state.account != null) JoinInviteDialog(state.busy, viewModel) { overlay = null }
+        // Keyed by the opening, so another link starts over even while this one is shown.
+        is Overlay.OpenedInviteLink -> if (state.account != null) key(shown.request.id) {
+            JoinInviteDialog(state.busy, viewModel, shown.request) { overlay = null }
+        }
         is Overlay.Invitation -> InvitationDialog(shown.space, state.busy, state.error, { overlay = null },
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
@@ -770,6 +789,11 @@ private fun Modifier.browseDrag(
             },
             color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
         ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, tint = if (spaceEnabled) TerracottaBright else TerracottaBright.copy(alpha = 0.4f)) } }
+        // Joining by link stays open at the owned-space limit; the server enforces the membership limit.
+        if (state.account != null) Surface(
+            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.JoinInvite) }.semantics { contentDescription = "Join with invite link" },
+            color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, Border),
+        ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_link), null, Modifier.size(20.dp), tint = TextMuted) } }
     }
 }
 
@@ -3212,7 +3236,7 @@ internal fun counterTone(count: Int): Color = when {
     else CaperDialog("Edit profile", close) { form() }
 }
 
-@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {
+@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel, joinInvite: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     val limits = state.limits
@@ -3230,6 +3254,10 @@ internal fun counterTone(count: Int): Color = when {
         Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
         ) { Text(if (state.busy) "Creating…" else "Create space") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(joinInvite, Modifier.fillMaxWidth(), enabled = !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            Text("Join with invite link", color = Text)
+        }
         TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
     }
 }
@@ -3313,6 +3341,8 @@ internal fun counterTone(count: Int): Color = when {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         OutlinedTextField(name, { name = it.codePointTake(80); if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
+        HorizontalDivider(color = Border)
+        InviteLinkSection(state, detail, viewModel)
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false,

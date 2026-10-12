@@ -5,6 +5,7 @@ import ProfileForm from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import Wordmark from "../components/Wordmark";
+import { inviteFromSearch } from "../spaces/client";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({ meta: [{ title: "Profile - Caper" }] }),
@@ -52,7 +53,13 @@ function Profile() {
         <p className="leading-[1.65] text-content-muted">
           Your username is unique. Your display name is what people see in conversations.
         </p>
-        <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
+        <ProfileForm
+          account={account}
+          onSaved={() => {
+            const invite = inviteFromSearch(window.location.search);
+            return invite ? navigate({ to: "/invite/$code", params: { code: invite } }) : navigate({ to: "/spaces" });
+          }}
+        />
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
         <div className="mt-8 flex justify-end border-t border-border pt-3 text-[.85rem]">

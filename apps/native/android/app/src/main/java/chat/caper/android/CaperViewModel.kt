@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -113,6 +114,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var unreadRefreshScheduled: Job? = null
     private val channelReads = mutableMapOf<String, String>()
     private var conversationVisible = true
+    private var inviteLinkSequence = 0L
+    /** An opened invite link that has not been shown yet; in memory only, so it never outlives the app. */
+    private val pendingInviteLink = MutableStateFlow<InviteLinkRequest?>(null)
+    /**
+     * The opened invite link for "Join with invite link" to show, once someone with a finished
+     * profile is home: a link opened while signed out or setting up a profile waits until then.
+     */
+    val inviteLinkToOpen: StateFlow<InviteLinkRequest?> =
+        combine(pendingInviteLink, state) { link, current -> link?.takeIf { opensInviteLinks(current) } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         loadHome()
@@ -336,6 +347,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (loaded != null) selectChannel(loaded) else selectSpace(spaceId, channelId)
     }
 
+    /**
+     * An invite link opened from another app (`https://caper.chat/invite/<code>` or
+     * `caper://invite/<code>`): "Join with invite link" opens with it and loads its preview, now or
+     * after sign-in and profile setup ([inviteLinkToOpen]). A newer link replaces one still
+     * waiting; anything that is not an invite link is ignored.
+     */
+    fun openInviteLink(url: String) {
+        val code = inviteCode(url) ?: return
+        pendingInviteLink.value = InviteLinkRequest(url.trim(), code, ++inviteLinkSequence)
+    }
+
+    /** The dialog opened for [request]; a newer link that arrived meanwhile still waits. */
+    fun inviteLinkShown(request: InviteLinkRequest) {
+        pendingInviteLink.compareAndSet(request, null)
+    }
+
     fun consumeNotificationInvitation() {
         mutable.value = mutable.value.copy(notificationInvitation = null, notificationBrowseSpace = null)
     }
@@ -406,7 +433,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList())
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList(), inviteLinks = emptyList())
         viewModelScope.launch {
             try {
                 val detail = api.space(requireAccountToken(), id)
@@ -2141,6 +2168,75 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
             mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id })
     }
+    /** The open space's live invite links, for its owner; a failed load is [failed]'s, beside the links. */
+    fun loadInviteLinks(loaded: () -> Unit, failed: (String) -> Unit) {
+        val detail = mutable.value.selectedSpace ?: return
+        val context = AdminMutationContext(accountGeneration, detail.space.id)
+        mutable.value = mutable.value.copy(inviteLinks = emptyList())
+        viewModelScope.launch {
+            try {
+                val links = api.inviteLinks(requireAccountToken(), detail.space.id).links
+                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) { mutable.value = mutable.value.copy(inviteLinks = links); loaded() }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error)) }
+        }
+    }
+    /** Creates a link for the open space; [done] gets it (now first in the list) to copy. */
+    fun createInviteLink(channelId: String?, maxAge: Int?, maxUses: Int?, done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        val link = formRequest(request, failed) { api.createInviteLink(requireAccountToken(), detail.space.id, channelId, maxAge, maxUses) } ?: return@launchAction
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
+        done(link)
+    }
+    /** A link that is already gone (404: revoked elsewhere, expired or used up) leaves the list too. */
+    fun revokeInviteLink(link: InviteLink, failed: (String) -> Unit) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        formRequest(request, failed) {
+            try { api.revokeInviteLink(requireAccountToken(), detail.space.id, link.code) }
+            catch (error: ApiException) { if (error.status != 404) throw error }
+            Unit
+        } ?: return@launchAction
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(inviteLinks = mutable.value.inviteLinks.filter { it.code != link.code })
+    }
+    fun inviteUrl(code: String): String = api.inviteUrl(code)
+    /** What a live invite link shares before joining; an invalid or expired one fails with [INVALID_INVITE_LINK]. */
+    fun previewInvite(code: String, done: (InvitePreview) -> Unit, failed: (String) -> Unit) {
+        val request = accountGeneration
+        viewModelScope.launch {
+            try {
+                val preview = api.invitePreview(code, accountToken)
+                if (request == accountGeneration) done(preview)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == accountGeneration) failed(inviteError(error)) }
+        }
+    }
+    /**
+     * Joins with an invite link (or, already a member, just opens the space), refreshes the spaces
+     * list and opens the space at the link's channel, else its default.
+     */
+    fun joinInvite(code: String, done: () -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        val token = requireAccountToken()
+        val result = try { api.joinInvite(token, code) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(inviteError(error)); return@launchAction }
+        if (request != accountGeneration) return@launchAction
+        val list = try { api.spaces(token) } catch (error: CancellationException) { throw error } catch (_: Throwable) { null }
+        if (request != accountGeneration) return@launchAction
+        val current = mutable.value
+        mutable.value = current.copy(
+            spaces = list?.spaces?.takeIf { spaces -> spaces.any { it.id == result.space.id } }
+                ?: (current.spaces.filter { it.id != result.space.id } + result.space),
+            invitations = (list?.invitations ?: current.invitations).filter { it.id != result.space.id },
+            limits = list?.limits ?: current.limits,
+        )
+        done(); selectSpace(result.space.id, result.channelId)
+    }
+    private fun inviteError(error: Throwable): String =
+        if (error is ApiException && error.status == 404) INVALID_INVITE_LINK else message(error)
     fun acceptInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
         val accepted = api.acceptSpaceInvitation(requireAccountToken(), invitation.id)
         if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
@@ -2185,6 +2281,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun <T> memberRequest(request: Long, failed: (String) -> Unit, block: suspend () -> T): T? = try { block() }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == accountGeneration) failed(error.message ?: "That request did not work."); null }
+
+    /** Like [memberRequest], with the readable error text: invite-link forms keep their choices on failure. */
+    private suspend fun <T> formRequest(request: Long, failed: (String) -> Unit, block: suspend () -> T): T? = try { block() }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(message(error)); null }
 
     /** [done] runs only after the removal succeeds, so a failed one keeps its confirmation open. */
     fun removeChannelGrant(channel: Channel, member: Member, done: () -> Unit = {}) = launchAction { request ->
@@ -2408,6 +2509,16 @@ internal fun mergeDirects(current: List<DirectConversation>, incoming: List<Dire
 
 private fun maxSeq(first: String, second: String): String =
     runCatching { maxOf(first.toBigInteger(), second.toBigInteger()).toString() }.getOrDefault(second)
+
+/** An opened invite link: [url] as opened, its [code], and [id] to tell repeat openings apart. */
+data class InviteLinkRequest(val url: String, val code: String, val id: Long)
+
+/** Home (or Browse) shows for an account with a finished profile, past the launch loading screen. */
+internal fun opensInviteLinks(state: AppUiState): Boolean {
+    val account = state.account ?: return false
+    return account.username != null && account.displayName != null && !state.restoring &&
+        (state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces)
+}
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 

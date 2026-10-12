@@ -1,6 +1,11 @@
 //! Per-user, opt-in launch at login. The OS registration is the source of truth;
 //! restoring app preferences must never silently register Caper again.
 
+/// The escaped `Exec=` value launching `executable`, shared with the
+/// `caper://` link handler entry.
+#[cfg(target_os = "linux")]
+pub(crate) use platform::exec as desktop_exec;
+
 #[cfg(target_os = "linux")]
 mod platform {
     use std::io;
@@ -25,7 +30,7 @@ mod platform {
             })
     }
 
-    fn exec(executable: &Path) -> io::Result<String> {
+    pub(crate) fn exec(executable: &Path) -> io::Result<String> {
         let path = executable
             .to_str()
             .filter(|path| !path.contains(['\n', '\r', '\0', '=']) && executable.is_absolute())

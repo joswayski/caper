@@ -88,6 +88,10 @@ public final class AppModel {
     @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
     /// A tapped push that arrived before spaces loaded; opened in their place.
     @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
+    /// An invite link the system opened the app with, until the join dialog
+    /// takes it (see `openInviteLink`). Memory only: never kept across launches.
+    public private(set) var openedInviteLink: OpenedInviteLink?
+    @ObservationIgnored private var lastOpenedInvite: (code: String, at: Date)?
     @ObservationIgnored private var notificationRouteRevision = 0
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
@@ -332,6 +336,7 @@ public final class AppModel {
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
         limits = nil; navigationOpen = false; restoringWorkspace = false
+        openedInviteLink = nil; lastOpenedInvite = nil
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
         await chat.stop(discardingDrafts: true)
@@ -1215,6 +1220,92 @@ public final class AppModel {
         invitations.removeAll { $0.id == invitation.id }
         spaces.removeAll { $0.id == accepted.id }; spaces.append(accepted)
         await select(space: accepted)
+    }
+
+    // MARK: Invite links
+
+    /// The shareable URL for a link code, on the configured server's origin.
+    public func inviteLinkURL(_ code: String) -> String { InviteLinks.url(code: code, baseURL: api.baseURL) }
+
+    /// Opens "Join with invite link" for a link from another app
+    /// (`caper://invite/<code>`, or `https://caper.chat/invite/<code>` on iPhone)
+    /// with its preview loading. Signed out or before the profile is finished,
+    /// the link waits for sign-in and onboarding. A newer link replaces a
+    /// waiting one; anything that is not an invite link is ignored.
+    public func openInviteLink(_ url: URL) {
+        guard let code = InviteLinks.code(opening: url) else { return }
+        // One universal link can arrive both as a URL and as a browsing activity.
+        let now = Date()
+        if let last = lastOpenedInvite, last.code == code, now.timeIntervalSince(last.at) < 1 { return }
+        lastOpenedInvite = (code, now)
+        openedInviteLink = OpenedInviteLink(link: url.absoluteString)
+    }
+
+    /// The opened link, once the workspace (signed in, profile finished,
+    /// spaces loaded) can show its dialog.
+    public var deliverableInviteLink: OpenedInviteLink? {
+        guard phase == .ready, account != nil, spacesLoaded, !restoringWorkspace else { return nil }
+        return openedInviteLink
+    }
+
+    /// Hands the opened link to the dialog that shows it, exactly once.
+    public func takeInviteLink() -> OpenedInviteLink? {
+        guard let link = deliverableInviteLink else { return nil }
+        openedInviteLink = nil
+        return link
+    }
+
+    public func invitePreview(code: String) async throws -> InvitePreview {
+        let attempt = generation
+        let preview = try await api.invitePreview(code: code)
+        guard generation == attempt else { throw CancellationError() }
+        return preview
+    }
+
+    /// Joins by link (or finds the space already joined), refreshes the space
+    /// list and opens the link's channel, or the space's default one.
+    public func joinInvite(code: String) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
+        clearNavigationCache()
+        let attempt = generation
+        let result = try await api.joinInvite(code: code)
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        // A failed refresh still opens the joined space; the periodic reconcile catches up.
+        if let response = try? await api.spaces(), generation == attempt {
+            limits = response.limits
+            spaces = response.spaces
+            invitations = response.invitations
+            spacesLoaded = true
+        }
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        invitations.removeAll { $0.id == result.space.id }
+        let space = spaces.first { $0.id == result.space.id } ?? result.space
+        if !spaces.contains(where: { $0.id == space.id }) { spaces.append(space) }
+        await navigate(space: space, channelID: result.channelId)
+    }
+
+    /// The open space's live links, newest first (owners only).
+    public func loadInviteLinks() async throws -> [InviteLink] {
+        guard let id = detail?.space.id, isOwner else { return [] }
+        let attempt = generation
+        let links = try await api.inviteLinks(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return links
+    }
+
+    public func createInviteLink(channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.createInviteLink(spaceID: id, channelID: channelID, maxAge: maxAge, maxUses: maxUses)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
+    public func revokeInviteLink(_ link: InviteLink) async throws {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        try await api.revokeInviteLink(spaceID: id, code: link.code)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
     }
 
     public func declineInvitation(_ invitation: Space) async throws {

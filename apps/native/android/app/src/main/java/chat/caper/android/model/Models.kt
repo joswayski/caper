@@ -81,6 +81,32 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val mutedUntil: String? = null,
 )
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
+/** An invite link's inviter or creator: public identity only. */
+@Serializable data class InvitePerson(val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class InviteNamed(val name: String)
+/** `GET /api/invites/{code}`: what a live link shares before joining. [channel] is its public landing channel. */
+@Serializable data class InvitePreview(
+    val code: String,
+    val space: InviteNamed,
+    val channel: InviteNamed? = null,
+    val inviter: InvitePerson,
+    val memberCount: Int = 0,
+    val expiresAt: String? = null,
+)
+/** `POST /api/invites/{code}/join`: [joined] is false when you already belonged. */
+@Serializable data class InviteJoin(val space: Space, val channelId: String? = null, val joined: Boolean = true)
+@Serializable data class InviteLinkChannel(val id: String, val name: String)
+/** An owner's live invite link. Null [maxUses] has no limit; null [expiresAt] never expires. */
+@Serializable data class InviteLink(
+    val code: String,
+    val channel: InviteLinkChannel? = null,
+    val createdBy: InvitePerson,
+    val uses: Int = 0,
+    val maxUses: Int? = null,
+    val expiresAt: String? = null,
+    val createdAt: String,
+)
+@Serializable data class InviteLinkList(val links: List<InviteLink>)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
     val space: Space,
@@ -445,6 +471,8 @@ data class AppUiState(
     val channelGrants: List<Member> = emptyList(),
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
+    /** The open space's live invite links (owner only), newest first. */
+    val inviteLinks: List<InviteLink> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
