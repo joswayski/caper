@@ -2252,6 +2252,188 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileCompositionStaysLocalAndRetriesSameMessageBeforeOpeningDM() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        let source = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "source", username: "source", displayName: "Source"), lastSeq: "0", readSeq: "0")
+        let destination = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "peer00000001", username: "jordan", displayName: "Jordan"), lastSeq: "0", readSeq: "0", status: .outgoing)
+        let person = MentionCardPerson(id: destination.peer.id, username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        model.directMessages = [source]
+        var creates = 0
+        var bodies: [[String: String]] = []
+        var sent: ChatMessage?
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            if path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat","author":{"id":"owner0000001","name":"Owner","isGuest":false}}"#.utf8))
+            }
+            if path == "/api/dms", request.httpMethod == "GET" {
+                return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [source])))
+            }
+            if path == "/api/dms", request.httpMethod == "POST" {
+                creates += 1
+                return (200, try JSONEncoder().encode(destination))
+            }
+            if path == "/api/chat/channels/\(destination.id)/messages", request.httpMethod == "POST" {
+                let data = try XCTUnwrap(requestBodyData(request))
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+                bodies.append(body)
+                if bodies.count == 1 { throw URLError(.timedOut) }
+                sent = ChatMessage(id: "Message00000001", channelId: destination.id, seq: "1",
+                                   author: ChatAuthor(id: "owner0000001", name: "Owner", isGuest: false),
+                                   content: ChatContent(version: 1, type: "text", text: try XCTUnwrap(body["text"])),
+                                   createdAt: "now", clientMessageId: try XCTUnwrap(body["clientMessageId"]))
+                return (200, try JSONEncoder().encode(sent!))
+            }
+            if path.hasSuffix("/messages"), request.httpMethod == "GET" {
+                let id = String(path.split(separator: "/")[3])
+                return (200, try JSONEncoder().encode(ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                    channel: HistoryIdentity(id: id, name: id, direct: true), messages: id == destination.id ? [sent].compactMap { $0 } : [],
+                    cursor: id == destination.id ? "1" : "0", hasMore: false)))
+            }
+            if path.hasSuffix("/read") || path == "/api/auth/logout" { return (204, Data()) }
+            throw URLError(.badURL)
+        }
+        await model.select(directMessage: source)
+        model.chat.draft = "Keep the active conversation's draft"
+        let draft = model.profileMessageDraft(personID: person.id)
+        draft.text = "Hello Jordan 👋"
+        let other = model.profileMessageDraft(personID: "other0000001")
+        other.text = "For someone else"
+        XCTAssertTrue(draft === model.profileMessageDraft(personID: person.id), "reopening reuses the person's draft")
+        XCTAssertEqual(creates, 0, "typing never resolves or creates a DM")
+        XCTAssertEqual(model.selectedDirectMessageID, source.id)
+        let first = await model.sendProfileMessage(to: person)
+        XCTAssertFalse(first)
+        XCTAssertEqual(draft.text, "Hello Jordan 👋")
+        XCTAssertFalse(draft.editable, "uncertain payloads are frozen until confirmed")
+        XCTAssertTrue(draft.error?.contains("Send outcome is unknown") == true)
+        XCTAssertEqual(model.selectedDirectMessageID, source.id, "a failed send never navigates")
+        XCTAssertEqual(model.chat.draft, "Keep the active conversation's draft")
+        let retry = await model.sendProfileMessage(to: person)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(bodies.first, bodies.last, "retry must keep the exact clientMessageId and payload")
+        XCTAssertEqual(creates, 1)
+        XCTAssertEqual(model.selectedDirectMessageID, destination.id)
+        XCTAssertEqual(model.chat.messages.last?.content.text, "Hello Jordan 👋")
+        XCTAssertEqual(draft.text, "")
+        XCTAssertNil(draft.pending)
+        XCTAssertEqual(other.text, "For someone else")
+        await model.select(directMessage: source)
+        XCTAssertEqual(model.chat.draft, "Keep the active conversation's draft")
+        await model.logout()
+        XCTAssertEqual(other.text, "")
+        XCTAssertFalse(other === model.profileMessageDraft(personID: "other0000001"), "logout removes account drafts")
+    }
+
+    @MainActor
+    func testProfileSendRefusalsAndRenamedRecipientKeepDraftAndWorkspace() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        model.selectedChannelID = "chan00000001"
+        model.chat.draft = "Unrelated draft"
+        let person = MentionCardPerson(id: "peer00000001", username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let draft = model.profileMessageDraft(personID: person.id)
+        draft.text = "Don't lose this"
+        for code in ["dm_not_accepted", "dm_blocked"] {
+            MockURLProtocol.handler = { request in
+                if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
+                if request.httpMethod == "GET", request.url?.path == "/api/dms" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
+                XCTAssertEqual(request.url?.path, "/api/dms", "privacy refusal must happen before upload or send")
+                return (403, Data(#"{"error":"server wording","code":"\#(code)"}"#.utf8))
+            }
+            let success = await model.sendProfileMessage(to: person)
+            XCTAssertFalse(success)
+            XCTAssertEqual(draft.error, DirectMessageErrors.message(code: code))
+            XCTAssertEqual(draft.text, "Don't lose this")
+            XCTAssertTrue(draft.editable)
+            XCTAssertEqual(model.selectedChannelID, "chan00000001")
+            XCTAssertEqual(model.chat.draft, "Unrelated draft")
+        }
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
+            if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
+            return (200, Data(#"{"id":"dm0000000002","peer":{"id":"new000000001","username":"jordan","displayName":"Someone else"},"lastSeq":"0","readSeq":"0"}"#.utf8))
+        }
+        let renamed = await model.sendProfileMessage(to: person)
+        XCTAssertFalse(renamed)
+        XCTAssertTrue(draft.error?.contains("no longer belongs") == true, "never send a stale profile's draft to a new username owner")
+        XCTAssertEqual(draft.text, "Don't lose this")
+        XCTAssertEqual(model.selectedChannelID, "chan00000001")
+        MockURLProtocol.handler = { _ in (204, Data()) }
+        await model.logout()
+    }
+
+    @MainActor
+    func testProfileSendRequiresIncomingRequestAcceptanceInConversation() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        model.selectedChannelID = "chan00000001"
+        let incoming = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "peer00000001", username: "jordan", displayName: "Jordan"), lastSeq: "1", readSeq: "0", status: .incoming)
+        let person = MentionCardPerson(id: incoming.peer.id, username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let draft = model.profileMessageDraft(personID: person.id)
+        draft.text = "Keep this request reply"
+        let file = try AttachmentStaging.stage(data: Data([4, 5]), filename: "reply.txt")
+        draft.add([file])
+        // Check both a loaded request and one discovered just before DM creation.
+        for loaded in [true, false] {
+            model.directMessages = loaded ? [incoming] : []
+            MockURLProtocol.handler = { request in
+                XCTAssertEqual(request.httpMethod, "GET", "must not create, accept, upload or send")
+                XCTAssertEqual(request.url?.path, "/api/dms")
+                return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [incoming])))
+            }
+            let success = await model.sendProfileMessage(to: person)
+            XCTAssertFalse(success)
+            XCTAssertEqual(draft.error, "Open conversation and accept this message request before sending.")
+            XCTAssertEqual(draft.text, "Keep this request reply")
+            XCTAssertEqual(draft.files.first?.local, file)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path))
+            XCTAssertTrue(draft.editable)
+            XCTAssertEqual(model.selectedChannelID, "chan00000001")
+            XCTAssertNil(model.selectedDirectMessageID)
+        }
+        MockURLProtocol.handler = { _ in (204, Data()) }
+        await model.logout()
+    }
+
+    @MainActor
+    func testLogoutWhileProfileSendWaitsDiscardsDraftAndPreventsLateNavigation() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        let person = MentionCardPerson(id: "peer00000001", username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let draft = model.profileMessageDraft(personID: person.id)
+        draft.text = "Private draft"
+        let file = try AttachmentStaging.stage(data: Data([1, 2, 3]), filename: "private.txt")
+        draft.add([file])
+        let started = expectation(description: "DM resolution started")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/dms", urlRequest.httpMethod == "POST" else { return false }
+            held = request; started.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
+            return (204, Data())
+        }
+        let sending = Task { await model.sendProfileMessage(to: person) }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(draft.sending)
+        XCTAssertFalse(draft.editable)
+        XCTAssertFalse(draft.canSend, "a second send is disabled")
+        await model.logout()
+        held?.respond(status: 200, data: Data(#"{"id":"dm0000000002","peer":{"id":"peer00000001","username":"jordan","displayName":"Jordan"},"lastSeq":"0","readSeq":"0"}"#.utf8))
+        let result = await sending.value
+        XCTAssertFalse(result)
+        XCTAssertEqual(draft.text, "")
+        XCTAssertTrue(draft.files.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        XCTAssertNil(model.selectedDirectMessageID)
+        XCTAssertTrue(model.directMessages.isEmpty)
+    }
+
+    @MainActor
     func testDirectMessageCreationRefusalBelongsToCallerAndKeepsWorkspace() async throws {
         let model = AppModel(api: client())
         model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")

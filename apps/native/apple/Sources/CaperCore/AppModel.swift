@@ -153,6 +153,7 @@ public final class AppModel {
     private var generation = 0
     private var navigationGeneration = 0
     private var openingForward = false
+    private var profileMessageDrafts: [String: ProfileMessageDraft] = [:]
     private var voiceJoinGeneration = 0
     private var peopleRequest = 0
     private var navigationCacheEpoch = 0
@@ -324,6 +325,8 @@ public final class AppModel {
         clearNavigationCache()
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
+        profileMessageDrafts.values.forEach { $0.discard() }
+        profileMessageDrafts = [:]
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
         notificationInvitation = nil; notificationChannelInvitation = nil
         directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
@@ -473,6 +476,90 @@ public final class AppModel {
         } catch {
             guard generation == attempt else { return false }
             throw error
+        }
+    }
+
+    func profileMessageDraft(personID: String) -> ProfileMessageDraft {
+        if let draft = profileMessageDrafts[personID] { return draft }
+        let draft = ProfileMessageDraft()
+        profileMessageDrafts[personID] = draft
+        return draft
+    }
+
+    /// Only explicit Send resolves a DM. Incoming requests stay read-only.
+    /// Nothing touches the active
+    /// ChatModel's composer or navigation until the message is confirmed.
+    func sendProfileMessage(to person: MentionCardPerson) async -> Bool {
+        let draft = profileMessageDraft(personID: person.id)
+        guard let account, !person.isSelf, let username = person.username, draft.canSend else { return false }
+        guard !blockedIDs.contains(person.id) else {
+            draft.error = DirectMessageErrors.message(code: "dm_blocked")
+            return false
+        }
+        let attempt = generation
+        draft.sending = true; draft.error = nil
+        var attemptedSend = false
+        defer { draft.sending = false; draft.progress = nil }
+        do {
+            let conversation: DirectMessageConversation
+            if let known = directMessages.first(where: { $0.peer.id == person.id }) ?? draft.conversation { conversation = known }
+            else {
+                // POST /api/dms accepts an existing incoming request. Look it
+                // up first so profile Send never silently accepts one.
+                let conversations = try await api.directMessages()
+                try draft.checkActive()
+                guard generation == attempt else { throw CancellationError() }
+                directMessages = conversations
+                if let known = conversations.first(where: { $0.peer.id == person.id }) { conversation = known }
+                else { conversation = try await api.createDirectMessage(username: username) }
+            }
+            try draft.checkActive()
+            guard generation == attempt else { throw CancellationError() }
+            // A stale username must never send this person's draft to a new owner.
+            guard conversation.peer.id == person.id else {
+                throw UserFacingError(message: "This username no longer belongs to this person. Reopen their profile and try again.")
+            }
+            if conversation.blocked { throw APIError(status: 403, message: DirectMessageErrors.message(code: "dm_blocked")!, code: "dm_blocked") }
+            if conversation.status == .incoming {
+                throw UserFacingError(message: "Open conversation and accept this message request before sending.")
+            }
+            draft.conversation = conversation
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            try draft.checkActive()
+            guard generation == attempt, session.author.id == account.id, !session.author.isGuest else { throw CancellationError() }
+            if draft.pending == nil {
+                let attachments = try await draft.upload(channelID: conversation.id, api: api)
+                try draft.checkActive()
+                draft.pending = PendingMessage(id: UUID().uuidString.lowercased(), text: draft.text, attachments: attachments)
+            }
+            let command = draft.pending!
+            draft.progress = "Sending…"
+            attemptedSend = true
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
+                                             text: command.text, attachmentIDs: command.attachmentIDs)
+            try draft.checkActive()
+            guard generation == attempt else { throw CancellationError() }
+            guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id),
+                  (message.content.attachments ?? []).map(\.id) == command.attachmentIDs else {
+                throw APIError(status: 502, message: "The chat service returned an invalid message.")
+            }
+            draft.clear()
+            chat.receiveProfileMessage(message)
+            invalidateNavigation(channelID: conversation.id)
+            await select(directMessage: conversation)
+            return generation == attempt
+        } catch {
+            guard generation == attempt, !draft.discarded else { return false }
+            let refusal = error as? APIError
+            if attemptedSend, let refusal, [400, 401, 403, 404, 409, 413, 422].contains(refusal.status) {
+                draft.pending = nil
+                draft.error = FriendlyError.message(for: refusal)
+            } else if draft.pending != nil {
+                draft.error = "Send outcome is unknown. Retry Send safely resends the same message. \(FriendlyError.message(for: error))"
+            } else { draft.error = FriendlyError.message(for: error) }
+            if refusal?.code == "dm_blocked" { Task { await refreshBlocks(); await refreshDirectMessages() } }
+            return false
         }
     }
 
@@ -3227,6 +3314,10 @@ public final class ChatModel {
     }
 
     // MARK: Attachments
+
+    func receiveProfileMessage(_ message: ChatMessage) {
+        if channelID == message.channelId { merge([message]) }
+    }
 
     /// Uploads are optional server configuration; only a successful usage
     /// response enables the attach control.

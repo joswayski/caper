@@ -1,4 +1,6 @@
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(iOS)
 import MediaPlayer
 import UIKit
@@ -2982,6 +2984,7 @@ private struct ChatView: View {
                         #if os(iOS)
                         .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                         #endif
+                        ComposerEmojiButton(controller: composerAutocomplete).padding(.trailing, 2)
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -3353,6 +3356,7 @@ private struct NativeThreadView: View {
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
+                    ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
                         .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
                 }
@@ -3891,18 +3895,29 @@ private struct MentionCardHost: ViewModifier {
 
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
-        content.popover(item: $target, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
+        content.popover(item: protectedTarget, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
             MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
                             requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
         .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #else
-        content.sheet(item: $target) { target in
+        content.sheet(item: protectedTarget) { target in
             MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
                             requestBlock: { blockTarget = $0 }) { self.target = nil }
         }
         .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #endif
+    }
+
+    private var protectedTarget: Binding<MentionCardTarget?> {
+        Binding(get: { target }, set: { next in
+            if let target {
+                let person = model.mentionPerson(target, viewerID: viewerID)
+                let draft = model.profileMessageDraft(personID: person.id)
+                if draft.preventsImplicitDismissal { return }
+            }
+            target = next
+        })
     }
 
     #if os(macOS)
@@ -3955,14 +3970,20 @@ private struct MentionPillInteraction: ViewModifier {
     }
 }
 
-/// A person's mention card: avatar, name, @username, then **Message** (or
-/// "You"). Data is resolved locally; **Message** reuses the DM-by-username flow.
+/// Profile composition has its own per-person draft; only Send opens a DM.
 private struct MentionCardView: View {
     @Bindable var model: AppModel
+    @Bindable var draft: ProfileMessageDraft
     let person: MentionCardPerson
     /// Shows the host's block confirmation once the card has closed.
     let requestBlock: (BlockTarget) -> Void
     let close: () -> Void
+    @StateObject private var autocomplete = ComposerAutocompleteController()
+    @State private var showingEmojiPicker = false
+    @State private var insertEmoji: ((String) -> Void)?
+    @State private var showingFiles = false
+    @State private var uploadsAvailable = false
+    @State private var previewFile: URL?
     @State private var pending: String?
     @State private var error: String?
     @State private var status: String?
@@ -3978,51 +3999,72 @@ private struct MentionCardView: View {
     }
     private static let redundantInvitation = ["user already in space": "Member", "user already invited": "Invited"]
 
+    init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void, close: @escaping () -> Void) {
+        self.model = model
+        self.draft = model.profileMessageDraft(personID: person.id)
+        self.person = person
+        self.requestBlock = requestBlock
+        self.close = close
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                        .accessibilityIdentifier("mention-card-title")
-                    if let subtitle = person.subtitle {
-                        Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                            .accessibilityIdentifier("mention-card-username")
+                // Identity, then Open conversation and Close at the end, as on web.
+                HStack(alignment: .center, spacing: 12) {
+                    Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                            .accessibilityIdentifier("mention-card-title")
+                        if let subtitle = person.subtitle {
+                            Text(subtitle).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                                .accessibilityIdentifier("mention-card-username")
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    HStack(spacing: 2) {
+                        if canMessage {
+                            CardIconButton(systemImage: "bubble.left", label: pending == "message" ? "Opening…" : "Open conversation") {
+                                Task { await openConversation() }
+                            }
+                            .disabled(pending != nil || draft.sending || draft.presentingDialog)
+                            .accessibilityIdentifier("mention-card-message")
+                        }
+                        CardIconButton(systemImage: "xmark", label: "Close profile") { close() }
+                            .disabled(draft.sending || draft.presentingDialog)
+                            .accessibilityIdentifier("mention-card-close")
                     }
                 }
                 if person.isSelf {
                     Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("mention-card-you")
                 } else {
-                    if !blocked, person.username != nil {
-                        Button(pending == "message" ? "Opening…" : "Message") { Task { await message() } }
-                            .buttonStyle(CaperPrimaryButton())
-                            .disabled(pending != nil)
-                            .accessibilityIdentifier("mention-card-message")
-                    }
-                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
-                        Button("Invite to space") { choosingSpace.toggle() }
-                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
-                            .accessibilityIdentifier("mention-card-invite")
-                        if choosingSpace {
-                            VStack(spacing: 6) {
-                                ForEach(ownedSpaces) { space in
-                                    Button(pending == space.id ? "Sending…" : space.name + (invited[space.id].map { " · \($0)" } ?? "")) {
-                                        Task { await invite(space) }
-                                    }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                                        .disabled(pending != nil || invited[space.id] != nil)
-                                }
-                            }.accessibilityLabel("Spaces you own")
+                    // Invite and Block share one row.
+                    HStack(spacing: 8) {
+                        if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                            Button("Invite to space") { choosingSpace.toggle() }
+                                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
+                                .accessibilityIdentifier("mention-card-invite")
                         }
+                        Button {
+                            if blocked { Task { await unblock() } }
+                            else { blockRequested = true; close() }
+                        } label: {
+                            Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
+                                .foregroundStyle(CaperTheme.error)
+                        }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
+                            .accessibilityIdentifier("mention-card-block")
                     }
-                    Button {
-                        if blocked { Task { await unblock() } }
-                        else { blockRequested = true; close() }
-                    } label: {
-                        Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
-                            .foregroundStyle(CaperTheme.error)
-                    }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
-                        .accessibilityIdentifier("mention-card-block")
+                    if choosingSpace, !blocked, person.username != nil {
+                        VStack(spacing: 6) {
+                            ForEach(ownedSpaces) { space in
+                                Button(pending == space.id ? "Sending…" : space.name + (invited[space.id].map { " · \($0)" } ?? "")) {
+                                    Task { await invite(space) }
+                                }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                    .disabled(pending != nil || draft.sending || invited[space.id] != nil)
+                            }
+                        }.accessibilityLabel("Spaces you own")
+                    }
                     if let status {
                         Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -4033,23 +4075,56 @@ private struct MentionCardView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("mention-card-error")
                     }
+                    if canMessage {
+                        // The composer sits below a full-width divider, as on web.
+                        Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.horizontal, -16)
+                        composer
+                    }
                 }
             }.padding(16)
         }
         #if os(macOS)
         // A fixed width keeps text wrapping stable; the height fits the
         // content, and only a long space list scrolls.
-        .frame(width: 280, alignment: .topLeading)
-        .frame(maxHeight: 460)
+        .frame(width: person.isSelf ? 280 : 320, alignment: .topLeading)
+        .frame(maxHeight: 620)
         .fixedSize(horizontal: false, vertical: true)
         .background(CaperTheme.surface)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .presentationDetents(person.isSelf ? [.height(196)] : [.height(380), .large])
+        .presentationDetents(person.isSelf ? [.height(196)] : [.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
         #endif
+        .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { draft.presentingDialog = false }
+            switch result {
+            case .success(let urls):
+                var files: [LocalAttachmentFile] = []
+                for url in urls.prefix(AttachmentPolicy.maxAttachments) {
+                    do { files.append(try AttachmentStaging.stage(copying: url)) }
+                    catch { draft.error = "Some files couldn’t be added." }
+                }
+                let failed = files.count < min(urls.count, AttachmentPolicy.maxAttachments)
+                draft.add(files)
+                if failed { draft.error = "Some files couldn’t be added." }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError { draft.error = "Files couldn’t be added. Try again." }
+            }
+        }
+        .quickLookPreview($previewFile)
+        #if os(macOS)
+        .popover(isPresented: $showingEmojiPicker) { emojiPicker.onDisappear { finishEmojiPicker() } }
+        #else
+        .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
+        #endif
+        .onChange(of: showingFiles) { _, _ in updateDialogState() }
+        .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
+        .onChange(of: previewFile) { _, _ in updateDialogState() }
+        .onChange(of: draft.editable) { _, editable in if !editable { autocomplete.update(nil) } }
         .onDisappear {
+            draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
             }
@@ -4059,18 +4134,148 @@ private struct MentionCardView: View {
         .accessibilityIdentifier("mention-card")
     }
 
-    private func message() async {
-        guard pending == nil, !blocked, let username = person.username else { return }
+    private var canMessage: Bool { !person.isSelf && !blocked && person.username != nil }
+
+    /// The channel composer's shell: Attach, the field, Emoji and Send in one
+    /// box, with staged files (image thumbnails included) above it.
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if model.directMessages.contains(where: { $0.peer.id == person.id && $0.status == .incoming }) {
+                Text("Open the conversation and accept this message request before replying.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            }
+            if !draft.files.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(draft.files) { file in
+                        StagedFileChip(id: file.id, name: file.local.name,
+                                       kind: AttachmentKind.local(contentType: file.local.contentType),
+                                       localURL: file.local.url,
+                                       status: AttachmentPolicy.formatBytes(file.local.size),
+                                       removable: draft.editable,
+                                       preview: { draft.presentingDialog = true; previewFile = file.local.url },
+                                       remove: { draft.remove(id: file.id) })
+                    }
+                }.accessibilityLabel("Files to send")
+            }
+            ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
+            HStack(alignment: .bottom, spacing: 0) {
+                Button { draft.presentingDialog = true; showingFiles = true } label: {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                        .frame(width: 40, height: 42).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.files.count >= AttachmentPolicy.maxAttachments)
+                .opacity(uploadsAvailable ? 1 : 0.4)
+                .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
+                .accessibilityLabel("Attach files")
+                .accessibilityIdentifier("mention-card-files")
+                ZStack(alignment: .topLeading) {
+                    if draft.text.isEmpty {
+                        Text("Message @\(person.username ?? person.title)").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                            .lineLimit(1).padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    NativeMessageComposer(text: Binding(get: { draft.text }, set: { if draft.editable { draft.text = $0 } }),
+                                          placeholder: "Message @\(person.username ?? person.title)", controller: autocomplete, mentions: .empty,
+                                          submit: { send() }, editable: draft.editable && pending == nil,
+                                          accessibilityID: "mention-card-composer", pasteAttachments: uploadsAvailable ? pasteAttachments : nil)
+                }
+                .frame(minHeight: 42, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
+                Button {
+                    insertEmoji = autocomplete.insertAction
+                    draft.presentingDialog = true; showingEmojiPicker = true
+                } label: {
+                    Image(systemName: "face.smiling").font(.system(size: 16)).foregroundStyle(CaperTheme.muted)
+                        .frame(width: 36, height: 42).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!draft.editable || pending != nil)
+                .help("Insert emoji").accessibilityLabel("Insert emoji")
+                .accessibilityIdentifier("mention-card-emoji")
+                Button { send() } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
+                        .frame(width: 32, height: 32).contentShape(Rectangle())
+                }
+                .buttonStyle(PrimaryIconButton())
+                .disabled(!draft.canSend || pending != nil || draft.presentingDialog)
+                .padding(.trailing, 5).padding(.bottom, 5)
+                .help(draft.pending == nil ? "Send" : "Retry send")
+                .accessibilityLabel(draft.pending == nil ? "Send" : "Retry send")
+                .accessibilityIdentifier("mention-card-send")
+            }
+            .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            if draft.pending != nil, !draft.sending {
+                Text("Delivery isn’t confirmed. Send retries the same message.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let progress = draft.progress { Text(progress).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
+            if let error = draft.error {
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("mention-card-error")
+            }
+        }
+        .task {
+            do {
+                _ = try await model.api.assetUsage()
+                try Task.checkCancellation()
+                uploadsAvailable = !draft.discarded
+            } catch { uploadsAvailable = false }
+        }
+    }
+
+    private func send() {
+        guard draft.canSend, pending == nil, !draft.presentingDialog else { return }
+        Task { if await model.sendProfileMessage(to: person) { close() } }
+    }
+
+    private var emojiPicker: some View {
+        ReactionPicker(title: "Insert emoji") { emoji in
+            if draft.editable { insertEmoji?(emoji) }
+            showingEmojiPicker = false
+        }
+    }
+
+    private func finishEmojiPicker() {
+        insertEmoji = nil
+        autocomplete.restoreFocus()
+    }
+
+    private func updateDialogState() {
+        draft.presentingDialog = showingFiles || showingEmojiPicker || previewFile != nil
+    }
+
+    private func pasteAttachments() -> Bool {
+        guard uploadsAvailable else { return false }
+        guard draft.editable, pending == nil else { return true }
+        do {
+            let files = try NativeAttachmentPaste.stage()
+            guard !files.isEmpty else { return false }
+            draft.add(files)
+        } catch { draft.error = "Pasted files couldn’t be added. Try selecting them with Files." }
+        return true
+    }
+
+    private func openConversation() async {
+        guard pending == nil, !draft.sending, !blocked, let username = person.username else { return }
         pending = "message"; error = nil
         defer { pending = nil }
+        // Open an incoming request as a preview; never run the create endpoint
+        // for a known request because that endpoint would accept it.
+        await model.refreshDirectMessages()
+        guard model.account != nil, !draft.discarded else { return }
+        if let failure = model.directMessagesError { error = failure; return }
         do {
-            if try await model.createDirectMessage(username: username) { close() }
+            if let conversation = model.directMessages.first(where: { $0.peer.id == person.id }) {
+                await model.select(directMessage: conversation)
+                close()
+            } else if try await model.createDirectMessage(username: username) { close() }
             else { error = "Couldn’t open that conversation." }
         } catch { self.error = FriendlyError.message(for: error) }
     }
 
     private func invite(_ space: Space) async {
-        guard pending == nil, !blocked, invited[space.id] == nil, let username = person.username else { return }
+        guard pending == nil, !draft.sending, !blocked, invited[space.id] == nil, let username = person.username else { return }
         pending = space.id; error = nil; status = nil
         defer { pending = nil }
         do {
@@ -4086,7 +4291,7 @@ private struct MentionCardView: View {
 
     /// Unblock keeps the card open and says so, as on web.
     private func unblock() async {
-        guard pending == nil else { return }
+        guard pending == nil, !draft.sending else { return }
         pending = "unblock"; error = nil
         defer { pending = nil }
         do {
@@ -4782,17 +4987,81 @@ private struct PinnedMessagesView: View {
     }
 }
 
+/// A muted icon control in a card header (Open conversation, Close).
+private struct CardIconButton: View {
+    let systemImage: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage).font(.system(size: 15, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                .frame(width: 32, height: 32)
+                #if os(iOS)
+                .frame(minWidth: 44, minHeight: 44)
+                #endif
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(ControlHover())
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+/// A composer's emoji control: the emoji picker, inserting at the text view's
+/// selection when it opened. The `:name:` shortcut still works.
+private struct ComposerEmojiButton: View {
+    let controller: ComposerAutocompleteController
+    var enabled = true
+    @State private var showing = false
+    @State private var insert: ((String) -> Void)?
+
+    var body: some View {
+        Button {
+            insert = controller.insertAction
+            showing = true
+        } label: {
+            Image(systemName: "face.smiling").font(.system(size: 16)).foregroundStyle(CaperTheme.muted)
+                .frame(width: 36, height: 42).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help("Insert emoji")
+        .accessibilityLabel("Insert emoji")
+        .accessibilityIdentifier("composer-emoji")
+        #if os(macOS)
+        .popover(isPresented: $showing) { picker.onDisappear(perform: finish) }
+        #else
+        .sheet(isPresented: $showing, onDismiss: finish) { picker }
+        #endif
+    }
+
+    private var picker: some View {
+        ReactionPicker(title: "Insert emoji") { emoji in
+            insert?(emoji)
+            showing = false
+        }
+    }
+
+    private func finish() {
+        insert = nil
+        controller.restoreFocus()
+    }
+}
+
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     #if os(macOS)
     @FocusState private var focusedEmoji: String?
     #endif
+    var title = "Add reaction"
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !term.isEmpty else { return EmojiArtwork.choices }
-        return EmojiArtwork.choices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
+        guard !term.isEmpty else { return EmojiArtwork.pickerChoices }
+        return EmojiArtwork.pickerChoices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
     }
     var body: some View {
         #if os(macOS)
@@ -4800,7 +5069,7 @@ private struct ReactionPicker: View {
         // popover. Keep both the header and accessible bounds in its content.
         VStack(spacing: 0) {
             HStack {
-                Text("Add reaction").font(CaperTheme.font(14, weight: .bold))
+                Text(title).font(CaperTheme.font(14, weight: .bold))
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -4816,7 +5085,7 @@ private struct ReactionPicker: View {
         #else
         NavigationStack {
             content
-                .navigationTitle("Add reaction")
+                .navigationTitle(title)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }

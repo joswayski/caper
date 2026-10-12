@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { MessageCircle, X } from "lucide-react";
 import {
   autoUpdate,
   flip,
   FloatingFocusManager,
+  FloatingNode,
   FloatingOverlay,
   FloatingPortal,
+  FloatingTree,
   offset,
   shift,
   useDismiss,
   useFloating,
+  useFloatingNodeId,
   useInteractions,
   useRole,
 } from "@floating-ui/react";
@@ -19,6 +23,7 @@ import { addSpaceMember, type Space } from "../spaces/client.ts";
 import { friendlyError } from "../spaces/errors.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { getRememberedAccount, subscribeAccount, withAccountProfile } from "../account/client.ts";
+import ProfileComposer from "./ProfileComposer.tsx";
 
 export interface MentionCardTarget {
   person: MentionCardPerson;
@@ -34,14 +39,7 @@ const redundantInvitation: Record<string, string | undefined> = {
   "user already invited": "Invited",
 };
 
-/** Who a mention points at, with Message to open or start a DM. */
-export default function MentionCard({
-  target,
-  onClose,
-  onMessage,
-  onBlock,
-  spaces = [],
-}: {
+type MentionCardProps = {
   target: MentionCardTarget;
   onClose: () => void;
   onMessage?: (username: string) => Promise<void>;
@@ -49,7 +47,19 @@ export default function MentionCard({
   onBlock?: (author: ChatAuthor) => void;
   /** Only non-demo spaces owned by the signed-in account. */
   spaces?: Space[];
-}) {
+};
+
+/** Who a mention points at, with a composer to message them directly. */
+export default function MentionCard(props: MentionCardProps) {
+  // The composer's emoji picker is a child floating element of this card.
+  return (
+    <FloatingTree>
+      <MentionCardPanel {...props} />
+    </FloatingTree>
+  );
+}
+
+function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: MentionCardProps) {
   const { person: snapshot, anchor, drawer } = target;
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const person = withAccountProfile(snapshot, account);
@@ -60,18 +70,26 @@ export default function MentionCard({
   /** Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried. */
   const [invited, setInvited] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [status, setStatus] = useState<string>();
+  const [composerState, setComposerState] = useState({ active: false, sending: false });
+  const canMessage = !person.self && !blocked && !!onMessage && !!person.username;
   const returnFocus = useRef(anchor);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const nodeId = useFloatingNodeId();
   const { refs, floatingStyles, context } = useFloating({
+    nodeId,
     open: true,
     onOpenChange: (open) => {
-      if (!open) onClose();
+      if (!open && !composerState.sending && !pending) onClose();
     },
     placement: "bottom-start",
     strategy: "fixed",
     middleware: [offset(6), flip(), shift({ padding: 12, crossAxis: true })],
     whileElementsMounted: autoUpdate,
   });
-  const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);
+  const { getFloatingProps } = useInteractions([
+    useDismiss(context, { outsidePress: !composerState.active && !composerState.sending && !pending }),
+    useRole(context),
+  ]);
   useEffect(() => {
     refs.setReference(anchor);
   }, [anchor, refs.setReference]);
@@ -127,7 +145,8 @@ export default function MentionCard({
     <FloatingFocusManager
       context={context}
       returnFocus={returnFocus}
-      initialFocus={target.focusOnOpen === false ? -1 : 0}
+      initialFocus={target.focusOnOpen === false ? -1 : canMessage && !drawer ? composerInput : 0}
+      closeOnFocusOut={false}
     >
       <div
         className={`chat-mention-card${drawer ? " chat-mention-card-drawer" : ""}`}
@@ -145,60 +164,49 @@ export default function MentionCard({
             <strong>{title}</strong>
             {person.displayName && person.username && <span>@{person.username}</span>}
           </div>
+          <div className="chat-profile-header-actions">
+            {!person.self && !blocked && onMessage && person.username && (
+              <button
+                type="button"
+                aria-label="Open conversation"
+                title={pending === "message" ? "Opening…" : "Open conversation"}
+                disabled={!!pending || composerState.sending}
+                onClick={() => void message()}
+              >
+                <MessageCircle size={18} aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label="Close profile"
+              title="Close"
+              disabled={composerState.sending || !!pending}
+              onClick={onClose}
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
         </div>
         {person.self ? (
           <p className="chat-mention-card-self">You</p>
         ) : (
-          <>
-            {!blocked && onMessage && person.username && (
+          <div className="chat-profile-actions">
+            {!blocked && person.username && spaces.length > 0 && (
               <button
                 type="button"
-                className="chat-mention-card-message"
-                disabled={!!pending}
-                onClick={() => void message()}
+                className="chat-mention-card-action"
+                aria-expanded={choosingSpace}
+                disabled={!!pending || composerState.sending}
+                onClick={() => setChoosingSpace(!choosingSpace)}
               >
-                {pending === "message" ? "Opening…" : "Message"}
+                Invite to space
               </button>
-            )}
-            {!blocked && person.username && spaces.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  className="chat-mention-card-action"
-                  aria-expanded={choosingSpace}
-                  disabled={!!pending}
-                  onClick={() => setChoosingSpace(!choosingSpace)}
-                >
-                  Invite to space
-                </button>
-                {choosingSpace && (
-                  <ul className="chat-profile-spaces" aria-label="Spaces you own">
-                    {spaces.map((space) => (
-                      <li key={space.id}>
-                        <button
-                          type="button"
-                          className="chat-mention-card-action"
-                          disabled={!!pending || invited.has(space.id)}
-                          onClick={() => void invite(space)}
-                        >
-                          <span>{space.name}</span>
-                          {pending === space.id ? (
-                            <small>Sending…</small>
-                          ) : (
-                            invited.has(space.id) && <small>{invited.get(space.id)}</small>
-                          )}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
             )}
             {onBlock && (
               <button
                 type="button"
                 className="chat-mention-card-action chat-profile-block"
-                disabled={!!pending}
+                disabled={!!pending || composerState.sending}
                 onClick={() => {
                   if (blocked) void unblockPerson();
                   else
@@ -213,7 +221,28 @@ export default function MentionCard({
                 {pending === "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block"}
               </button>
             )}
-          </>
+          </div>
+        )}
+        {!person.self && !blocked && choosingSpace && (
+          <ul className="chat-profile-spaces" aria-label="Spaces you own">
+            {spaces.map((space) => (
+              <li key={space.id}>
+                <button
+                  type="button"
+                  className="chat-mention-card-action"
+                  disabled={!!pending || composerState.sending || invited.has(space.id)}
+                  onClick={() => void invite(space)}
+                >
+                  <span>{space.name}</span>
+                  {pending === space.id ? (
+                    <small>Sending…</small>
+                  ) : (
+                    invited.has(space.id) && <small>{invited.get(space.id)}</small>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
         {status && (
           <p className="chat-profile-status" role="status">
@@ -225,19 +254,30 @@ export default function MentionCard({
             {error}
           </p>
         )}
+        {canMessage && (
+          <ProfileComposer
+            personId={person.id}
+            username={person.username!}
+            inputRef={composerInput}
+            onSent={() => void message()}
+            onStateChange={setComposerState}
+          />
+        )}
       </div>
     </FloatingFocusManager>
   );
 
   return (
-    <FloatingPortal root={anchor.closest<HTMLElement>(".live-scene") ?? undefined}>
-      {drawer ? (
-        <FloatingOverlay lockScroll className="chat-actions-overlay">
-          {panel}
-        </FloatingOverlay>
-      ) : (
-        panel
-      )}
-    </FloatingPortal>
+    <FloatingNode id={nodeId}>
+      <FloatingPortal root={anchor.closest<HTMLElement>(".live-scene") ?? undefined}>
+        {drawer ? (
+          <FloatingOverlay lockScroll className="chat-actions-overlay">
+            {panel}
+          </FloatingOverlay>
+        ) : (
+          panel
+        )}
+      </FloatingPortal>
+    </FloatingNode>
   );
 }

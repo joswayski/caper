@@ -307,19 +307,23 @@ export function MessageAttachments({
 
 export interface DraftAttachment extends UploadState {
   key: string;
+  /** Kept locally until Send, which prepares and uploads it (profile cards). */
+  staged?: boolean;
   /** Local file for previewing before sending, also used by the pending row. */
   localUrl?: string;
   localKind?: "image" | "video";
 }
 
+/** Without `onRemove` (while a message is sending) files cannot be removed;
+ * without `onRetry` a failed upload has no chip-level Retry. */
 export function DraftAttachments({
   drafts,
   onRemove,
   onRetry,
 }: {
   drafts: DraftAttachment[];
-  onRemove: (key: string) => void;
-  onRetry: (key: string) => void;
+  onRemove?: (key: string) => void;
+  onRetry?: (key: string) => void;
 }) {
   const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
   const closeViewer = useCallback(() => setViewing(undefined), []);
@@ -357,7 +361,9 @@ export function DraftAttachments({
                 <strong title={draft.name}>{draft.name}</strong>
                 <small>
                   {draft.error ??
-                    (draft.attachment ? (
+                    (draft.staged ? (
+                      formatBytes(draft.sourceSize)
+                    ) : draft.attachment ? (
                       <>
                         {draft.storedSize !== undefined && draft.storedSize < draft.sourceSize && (
                           <span className="chat-draft-source-size">{formatBytes(draft.sourceSize)} → </span>
@@ -404,10 +410,10 @@ export function DraftAttachments({
               ) : (
                 <div className="chat-draft-preview">{content}</div>
               )}
-              {!draft.attachment && !draft.error && (
+              {!draft.attachment && !draft.error && !draft.staged && (
                 <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
               )}
-              {draft.error && (
+              {draft.error && onRetry && (
                 <button
                   type="button"
                   className="chat-draft-retry"
@@ -417,14 +423,16 @@ export function DraftAttachments({
                   Retry
                 </button>
               )}
-              <button
-                type="button"
-                className="chat-draft-remove"
-                aria-label={`Remove ${draft.name}`}
-                onClick={() => onRemove(draft.key)}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
+              {onRemove && (
+                <button
+                  type="button"
+                  className="chat-draft-remove"
+                  aria-label={`Remove ${draft.name}`}
+                  onClick={() => onRemove(draft.key)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
             </li>
           );
         })}

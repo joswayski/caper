@@ -5,18 +5,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import chat.caper.android.data.CaperApi
 import chat.caper.android.model.*
 import chat.caper.android.ui.Blackout
 import chat.caper.android.ui.CaperTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,18 +73,96 @@ class MentionCardUiTest {
         compose.runOnIdle { text.config[SemanticsActions.CustomActions].first().action() }
         compose.onNodeWithText("Maya Fixture").assertIsDisplayed()
         compose.onNodeWithText("@maya").assertIsDisplayed()
-        compose.onNodeWithText("Message").assertIsEnabled().performClick()
-        compose.onNodeWithText("Opening…").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Open conversation").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("Opening…").assertIsNotEnabled()
         compose.runOnIdle { assertEquals("maya", requested); fail?.invoke("That account was not found.") }
         compose.onNodeWithText("That account was not found.").assertIsDisplayed()
-        compose.onNodeWithText("Message").assertIsEnabled()
+        compose.onNodeWithContentDescription("Open conversation").assertIsEnabled()
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         compose.waitForIdle()
         compose.onNodeWithText("Maya Fixture").assertDoesNotExist()
 
         compose.runOnIdle { text.config[SemanticsActions.CustomActions].last().action() }
         compose.onNodeWithText("You").assertIsDisplayed()
-        compose.onNodeWithText("Message").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Open conversation").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, actions) }
+    }
+
+    @Test fun profileComposerKeepsTextAcrossEmojiAndReopenAndOnlyExplicitSendSends() {
+        val drafts = ProfileMessageDrafts(CaperApi())
+        val visible = mutableStateOf(true)
+        var sends = 0
+        var picking = false
+        compose.setContent {
+            CaperTheme {
+                Scaffold(containerColor = Blackout) { padding ->
+                    Column(Modifier.padding(padding)) {
+                        val state = drafts.state.collectAsState().value
+                        if (visible.value) ProfileMessageComposer(
+                            "Maya", state["maya"] ?: ProfileMessageDraft(), writable = true, uploadsEnabled = false,
+                            text = { drafts.text("maya", it) }, add = {}, paste = {}, remove = {}, send = { sends++ },
+                            pickerInteraction = { picking = it },
+                        )
+                    }
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
+        compose.onNodeWithText("Message @Maya").performTextInput("Keep this draft")
+        compose.onNodeWithContentDescription("Insert emoji").performClick()
+        compose.onNodeWithText("Insert emoji").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(picking) }
+        compose.onNodeWithText("Search emoji").performTextInput("grinning-face")
+        compose.onNodeWithContentDescription("grinning-face").performClick()
+        compose.onNodeWithText("Keep this draft😀").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(false, picking); assertEquals(0, sends); visible.value = false }
+        compose.waitForIdle()
+        compose.runOnIdle { visible.value = true }
+        compose.onNodeWithText("Keep this draft😀").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Attach files").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.runOnIdle { assertEquals(1, sends) }
+    }
+
+    @Test fun profileSheetProtectsDraftsPickersAndSendingAndExplicitCloseKeepsDraft() {
+        val visible = mutableStateOf(true)
+        val draft = mutableStateOf(ProfileMessageDraft(text = "Keep this draft"))
+        val picking = mutableStateOf(false)
+        var closed = 0
+        compose.setContent {
+            CaperTheme {
+                if (visible.value) ProfileBottomSheet("Protected profile", draft.value, picking.value, {
+                    closed++; visible.value = false
+                }) { Text("Profile sheet test") }
+            }
+        }
+        fun back() {
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            compose.waitForIdle()
+        }
+        back()
+        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close sheet").performClick()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Protected profile"))
+            .performTouchInput { swipeDown() }
+        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(1, closed)
+            assertEquals("Keep this draft", draft.value.text)
+            visible.value = true
+            draft.value = ProfileMessageDraft(files = listOf(DraftAttachmentUi("file", "note.txt", "file")))
+        }
+        back()
+        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
+        compose.runOnIdle { draft.value = ProfileMessageDraft(); picking.value = true }
+        back()
+        compose.onNodeWithContentDescription("Close profile").assertIsDisplayed()
+        compose.runOnIdle { picking.value = false; draft.value = ProfileMessageDraft(sending = true) }
+        back()
+        compose.onNodeWithContentDescription("Close profile").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(1, closed); draft.value = ProfileMessageDraft() }
+        back()
+        compose.onNodeWithContentDescription("Close profile").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(2, closed) }
     }
 }

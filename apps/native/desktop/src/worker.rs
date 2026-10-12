@@ -18,6 +18,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    SendProfile {
+        epoch: u64,
+        person: String,
+        token: String,
+        send: Box<crate::profile_dm::Send>,
+    },
     Forward {
         generation: u64,
         request: u64,
@@ -520,6 +526,17 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    ProfileStatus {
+        epoch: u64,
+        person: String,
+        status: String,
+    },
+    ProfileSent {
+        epoch: u64,
+        person: String,
+        send: Box<crate::profile_dm::Send>,
+        result: Result<DirectConversation, crate::profile_dm::Failure>,
+    },
     OpenNotification {
         epoch: u64,
         alert: crate::os_notifications::Alert,
@@ -1289,6 +1306,30 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 api.cancel_asset(&token, &id);
             }
             return;
+        }
+        Command::SendProfile {
+            epoch,
+            person,
+            token,
+            send: mut operation,
+        } => {
+            let result = operation.run(api, &token, &|status| {
+                send(
+                    events,
+                    context,
+                    Event::ProfileStatus {
+                        epoch,
+                        person: person.clone(),
+                        status,
+                    },
+                )
+            });
+            Event::ProfileSent {
+                epoch,
+                person,
+                send: operation,
+                result,
+            }
         }
         Command::Upload {
             key,

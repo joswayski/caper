@@ -32,6 +32,7 @@ mod navigation;
 mod notifications;
 mod os_notifications;
 mod player;
+mod profile_dm;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
@@ -194,6 +195,26 @@ fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
     curve(y1, y2, (low + high) / 2.0)
 }
 
+/// A composer that inserts the emoji picker's choice into its draft.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum EmojiTarget {
+    Channel,
+    /// A thread's root message ID.
+    Thread(String),
+    /// A profile card's person ID.
+    Profile(String),
+}
+
+impl EmojiTarget {
+    fn editor(&self) -> egui::Id {
+        match self {
+            Self::Channel => egui::Id::new("message-composer"),
+            Self::Thread(root) => egui::Id::new(("thread-draft", root)),
+            Self::Profile(person) => egui::Id::new(("profile-composer", person)),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NavIcon {
     Chevron,
@@ -224,6 +245,9 @@ enum NavIcon {
     ExternalLink,
     Link,
     Volume,
+    Smile,
+    Send,
+    MessageCircle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -439,8 +463,6 @@ struct MentionCard {
     /// Pin metadata supplies the fallback identity, not a made-up username.
     author: Option<model::Author>,
     focus_on_open: bool,
-    /// The `CreateDirect` navigation while **Message** is opening a DM.
-    opening: Option<u64>,
     choosing_space: bool,
     /// A membership revision and destination, independent of chat navigation.
     inviting: Option<(u64, String)>,
@@ -822,6 +844,16 @@ struct CaperApp {
     ime_composing: bool,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
+    profile_drafts: BTreeMap<String, profile_dm::Draft>,
+    profile_picker: Option<(String, std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>)>,
+    /// The composer an open emoji picker inserts into, at the saved selection.
+    composer_emoji: Option<(EmojiTarget, emoji::Token)>,
+    /// Where the composer's Emoji button was clicked; the picker opens above it.
+    composer_emoji_anchor: Option<egui::Pos2>,
+    /// The profile composer's Attach menu (Choose files / Paste) was open last frame.
+    profile_attach_menu: bool,
+    profile_send_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    profile_navigation: Option<u64>,
     thread_view: Option<ThreadView>,
     thread_request: u64,
     thread_pages: BTreeMap<String, ThreadView>,
@@ -1057,6 +1089,13 @@ impl CaperApp {
             ime_composing: false,
             pending: None,
             mention_card: None,
+            profile_drafts: BTreeMap::new(),
+            profile_picker: None,
+            composer_emoji: None,
+            profile_attach_menu: false,
+            composer_emoji_anchor: None,
+            profile_send_cancel: None,
+            profile_navigation: None,
             thread_view: None,
             thread_request: 0,
             thread_pages: BTreeMap::new(),
@@ -2351,8 +2390,54 @@ impl CaperApp {
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
+                Event::ProfileStatus {
+                    epoch,
+                    person,
+                    status,
+                } if epoch == self.account_epoch => {
+                    if let Some(draft) = self.profile_drafts.get_mut(&person) {
+                        draft.status = Some(status);
+                    }
+                }
+                Event::ProfileSent {
+                    epoch,
+                    person,
+                    send,
+                    result,
+                } if epoch == self.account_epoch => {
+                    self.profile_send_cancel = None;
+                    if let Some(direct) = &send.direct {
+                        self.directs.retain(|item| item.id != direct.id);
+                        self.directs.push(direct.clone());
+                    }
+                    let draft = self.profile_drafts.entry(person.clone()).or_default();
+                    draft.sending = false;
+                    draft.status = None;
+                    draft.files = send.files;
+                    match result {
+                        Ok(direct) => {
+                            if !send.open_only {
+                                self.profile_drafts.remove(&person);
+                            }
+                            self.composer_emoji = None;
+                            self.mention_card = None;
+                            self.directs.retain(|item| item.id != direct.id);
+                            self.directs.push(direct.clone());
+                            self.select_direct(direct);
+                            self.profile_navigation = self.opening.then_some(self.navigation);
+                        }
+                        Err(error) => {
+                            if !send.open_only {
+                                draft.retry_id = error.uncertain.then_some(send.client_id);
+                            }
+                            draft.error = Some(error.message);
+                        }
+                    }
+                }
                 Event::OpenNotification { epoch, alert }
-                    if epoch == self.account_epoch && self.token.is_some() =>
+                    if epoch == self.account_epoch
+                        && self.token.is_some()
+                        && !self.profile_sending() =>
                 {
                     self.worker.focus();
                     self.dialog = None;
@@ -2494,17 +2579,6 @@ impl CaperApp {
                     result,
                 } if generation == self.generation => {
                     self.loading = false;
-                    // A mention card's Message keeps its own pending state and
-                    // error; opening the DM closes the card with the old channel.
-                    let card = self
-                        .mention_card
-                        .as_mut()
-                        .filter(|card| card.opening == Some(navigation));
-                    let from_card = card.is_some();
-                    if let Some(card) = card {
-                        card.opening = None;
-                        card.error = result.as_ref().err().cloned();
-                    }
                     match result {
                         Ok(direct) => {
                             self.directs.retain(|item| item.id != direct.id);
@@ -2514,9 +2588,7 @@ impl CaperApp {
                                 self.select_direct(direct);
                             }
                         }
-                        Err(error) if navigation == self.navigation && !from_card => {
-                            self.error = Some(error)
-                        }
+                        Err(error) if navigation == self.navigation => self.error = Some(error),
                         Err(_) => {}
                     }
                 }
@@ -3187,6 +3259,13 @@ impl CaperApp {
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
+        if let Some(cancel) = self.profile_send_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.profile_drafts.clear();
+        self.profile_picker = None;
+        self.composer_emoji = None;
+        self.profile_navigation = None;
         self.unread_spaces.clear();
         self.channel_reads.clear();
         self.unread_revision += 1;
@@ -4262,6 +4341,9 @@ impl CaperApp {
     }
 
     fn navigate(&mut self, target: NavigationTarget) {
+        if self.profile_sending() {
+            return;
+        }
         // Another conversation's media never stays open over it.
         self.viewer = None;
         self.notification_browse_space = None;
@@ -4490,6 +4572,9 @@ impl CaperApp {
                     self.member_page = 0;
                 }
                 self.generation += 1;
+                if self.profile_navigation == Some(navigation) {
+                    self.profile_navigation = None;
+                }
                 self.clear_channel_state();
                 self.selected_direct = None;
                 self.loading = false;
@@ -4518,6 +4603,7 @@ impl CaperApp {
                     }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
+                    self.draft = self.drafts.remove(&channel).unwrap_or_default();
                 }
                 if let Some((request, source)) = forward_focus
                     && request == self.navigation
@@ -4657,7 +4743,9 @@ impl CaperApp {
         self.load_error = None;
         self.pending = None;
         self.drop_drafts();
-        self.mention_card = None;
+        if !self.profile_sending() {
+            self.mention_card = None;
+        }
         self.reaction_picker = None;
         self.reactors_view = None;
         self.pending_reactions.clear();
@@ -5336,7 +5424,9 @@ impl CaperApp {
         self.load_error = None;
         self.pending = None;
         self.drop_drafts();
-        self.mention_card = None;
+        if !self.profile_sending() {
+            self.mention_card = None;
+        }
         self.reaction_picker = None;
         self.reactors_view = None;
         self.pending_reactions.clear();
@@ -6040,6 +6130,9 @@ impl CaperApp {
     }
 
     fn load_context(&mut self, root: Option<String>, anchor: String, newer: bool) {
+        if self.profile_sending() {
+            return;
+        }
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
@@ -11362,12 +11455,21 @@ impl CaperApp {
                         ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
                         let empty = draft.0.trim().is_empty();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            primary_button(ui, "Send reply", !blocked && !loading && !empty).clicked()
+                            let send = primary_button(ui, "Send reply", !blocked && !loading && !empty).clicked();
+                            let emoji = ui
+                                .add_enabled_ui(!loading, |ui| drawn_icon_button(ui, NavIcon::Smile, "Insert emoji"))
+                                .inner
+                                .clicked();
+                            (send, emoji)
                         })
                         .inner
                     })
                     .inner;
+                let (send, choose_emoji) = send;
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
+                if choose_emoji {
+                    self.open_composer_emoji(EmojiTarget::Thread(root.clone()), &output, &draft.0);
+                }
                 if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
             });
         } else {
@@ -11705,6 +11807,7 @@ impl CaperApp {
                         .show(ui, |ui| {
                             let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
                             let mut pick = false;
+                            let mut choose_emoji = false;
                             let editor = ui.horizontal_top(|ui| {
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
@@ -11721,14 +11824,30 @@ impl CaperApp {
                                         });
                                     pick = button.clicked();
                                 });
-                                editor_area(ui, &mut self.draft)
+                                // Leave room for Emoji at the end of the field.
+                                let width = (ui.available_width() - 36.0).max(0.0);
+                                let editor = ui
+                                    .allocate_ui_with_layout(egui::vec2(width, max_editor_height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                        ui.set_width(width);
+                                        editor_area(ui, &mut self.draft)
+                                    })
+                                    .inner;
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    choose_emoji = drawn_icon_button(ui, NavIcon::Smile, "Insert emoji").clicked();
+                                });
+                                editor
                             }).inner;
                             if pick {
                                 self.pick_files(ui.ctx());
                             }
-                            editor
+                            (editor, choose_emoji)
                         });
-                    let mut output = editor.inner.inner;
+                    let (mut output, choose_emoji) = (editor.inner.0.inner, editor.inner.1);
+                    if choose_emoji {
+                        let draft = self.draft.clone();
+                        self.open_composer_emoji(EmojiTarget::Channel, &output, &draft);
+                    }
                     let draft = self.draft.clone();
                     if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
                         self.draft = value;
@@ -12311,13 +12430,12 @@ impl CaperApp {
         if let Some(root) = view_thread {
             self.open_thread(root);
         }
-        if let Some(pill) = body.pill {
+        if let Some(pill) = body.pill.filter(|_| !self.profile_sending()) {
             // Opening another pill replaces the card.
             self.mention_card = Some(MentionCard {
                 pill,
                 author: None,
                 focus_on_open: true,
-                opening: None,
                 choosing_space: false,
                 inviting: None,
                 invited: BTreeMap::new(),
@@ -12550,6 +12668,7 @@ impl CaperApp {
                 });
                 if emoji.on_hover_text("Add reaction").clicked() {
                     self.reaction_picker = Some(message.id.clone());
+                    self.composer_emoji = None;
                     self.reaction_search.clear();
                     self.reaction_search_focus = true;
                 }
@@ -12586,6 +12705,7 @@ impl CaperApp {
                             });
                             if add.on_hover_text("Add reaction").clicked() {
                                 self.reaction_picker = Some(message.id.clone());
+                                self.composer_emoji = None;
                                 self.reaction_search.clear();
                                 self.reaction_search_focus = true;
                                 ui.close();
@@ -12921,7 +13041,9 @@ impl CaperApp {
                 self.mention_card(context);
             });
         motion::modal(context, modal.response.layer_id);
-        if close || (!card_was_open && self.mention_card.is_none() && modal.should_close()) {
+        if !self.profile_sending()
+            && (close || (!card_was_open && self.mention_card.is_none() && modal.should_close()))
+        {
             self.showing_pins = false;
             self.mention_card = None;
             self.reactors_view = None;
@@ -13371,6 +13493,20 @@ impl CaperApp {
     /// Picker results, abandoned drafts, local previews, image loads and
     /// URL refreshes.
     fn attachment_housekeeping(&mut self, context: &egui::Context) {
+        if let Some((person, receiver)) = &self.profile_picker {
+            match receiver.try_recv() {
+                Ok(files) => {
+                    let person = person.clone();
+                    self.profile_picker = None;
+                    self.profile_drafts
+                        .entry(person)
+                        .or_default()
+                        .add_files(files.into_iter().map(profile_dm::File::picked).collect());
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.profile_picker = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(receiver) = &self.file_picker {
             match receiver.try_recv() {
                 Ok(files) => {
@@ -13415,7 +13551,18 @@ impl CaperApp {
                 .collect()
         });
         if !dropped.is_empty() {
-            self.add_files(dropped);
+            if let Some(person) = self
+                .mention_card
+                .as_ref()
+                .and_then(|card| card.pill.entry.id.clone())
+            {
+                self.profile_drafts
+                    .entry(person)
+                    .or_default()
+                    .add_files(dropped.into_iter().map(profile_dm::File::picked).collect());
+            } else {
+                self.add_files(dropped);
+            }
         }
     }
 
@@ -13834,10 +13981,19 @@ impl CaperApp {
     }
 
     fn emoji_picker(&mut self, context: &egui::Context) {
-        let Some(message) = self.reaction_picker.clone() else {
+        let target = self
+            .composer_emoji
+            .as_ref()
+            .map(|(target, _)| target.clone());
+        let Some(message) = self
+            .reaction_picker
+            .clone()
+            .or_else(|| target.as_ref().map(|_| String::new()))
+        else {
             return;
         };
-        if !self.selected_is_joined() || self.session.is_none() {
+        let profile = target.is_some();
+        if !profile && (!self.selected_is_joined() || self.session.is_none()) {
             self.reaction_picker = None;
             return;
         }
@@ -13846,10 +14002,21 @@ impl CaperApp {
         let mut close_requested =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let mut selected = None;
-        egui::Window::new("Add reaction")
-            .id(egui::Id::new("emoji-picker"))
+        let mut window = egui::Window::new(if profile {
+            "Insert emoji"
+        } else {
+            "Add reaction"
+        })
+        .id(egui::Id::new("emoji-picker"));
+        // A composer's picker opens above its Emoji button, ending at it.
+        if profile && let Some(anchor) = self.composer_emoji_anchor {
+            window = window
+                .pivot(egui::Align2::RIGHT_BOTTOM)
+                .fixed_pos(anchor + egui::vec2(14.0, -18.0));
+        }
+        window
             // Above the Pins overlay, as its sublayer, when opened from a pin.
-            .order(if self.showing_pins {
+            .order(if profile || self.showing_pins {
                 egui::Order::Foreground
             } else {
                 egui::Order::Middle
@@ -13872,7 +14039,7 @@ impl CaperApp {
                 }
                 ui.add_space(6.0);
                 let query = self.reaction_search.trim().to_lowercase();
-                let choices: Vec<_> = emoji::catalog()
+                let mut choices: Vec<_> = emoji::catalog()
                     .iter()
                     .filter(|entry| {
                         entry.selectable
@@ -13882,6 +14049,8 @@ impl CaperApp {
                                 || entry.category.to_lowercase().contains(&query))
                     })
                     .collect();
+                // Web's order: smileys and people first, flags last.
+                choices.sort_by_key(|entry| emoji::picker_order(entry));
                 if choices.is_empty() {
                     ui.label(RichText::new("No emoji found").color(MUTED));
                 }
@@ -13914,11 +14083,99 @@ impl CaperApp {
                 );
             });
         if let Some(emoji) = selected {
-            self.set_reaction(&message, &emoji, true);
+            match &target {
+                Some(target) => self.insert_composer_emoji(context, target, &emoji),
+                None => self.set_reaction(&message, &emoji, true),
+            }
             close_requested = true;
         }
         if !open || close_requested {
-            self.reaction_picker = None;
+            if let Some(target) = self.composer_emoji.take().map(|(target, _)| target) {
+                if let EmojiTarget::Profile(_) = target
+                    && let Some(card) = &mut self.mention_card
+                {
+                    card.fresh = true;
+                }
+                context.memory_mut(|memory| memory.request_focus(target.editor()));
+            } else {
+                self.reaction_picker = None;
+            }
+        }
+    }
+
+    /// Opens the emoji picker for a composer, replacing its current selection.
+    fn open_composer_emoji(
+        &mut self,
+        target: EmojiTarget,
+        output: &egui::text_edit::TextEditOutput,
+        text: &str,
+    ) {
+        let selection = output.state.cursor.char_range().map_or_else(
+            || {
+                let caret = text.chars().count();
+                caret..caret
+            },
+            |range| range.as_sorted_char_range(),
+        );
+        self.composer_emoji = Some((
+            target,
+            emoji::Token {
+                start: selection.start,
+                end: selection.end,
+                query: String::new(),
+            },
+        ));
+        self.composer_emoji_anchor = output
+            .response
+            .ctx
+            .input(|input| input.pointer.interact_pos());
+        self.reaction_picker = None;
+        self.reaction_search.clear();
+        self.reaction_search_focus = true;
+    }
+
+    fn insert_composer_emoji(
+        &mut self,
+        context: &egui::Context,
+        target: &EmojiTarget,
+        emoji: &str,
+    ) {
+        let Some((_, selection)) = self.composer_emoji.clone() else {
+            return;
+        };
+        let text = match target {
+            EmojiTarget::Channel => Some(&mut self.draft),
+            EmojiTarget::Thread(root) => self.thread_drafts.get_mut(root).map(|draft| &mut draft.0),
+            EmojiTarget::Profile(person) => self
+                .profile_drafts
+                .get_mut(person)
+                .filter(|draft| draft.editable())
+                .map(|draft| &mut draft.text),
+        };
+        let Some(text) = text else {
+            return;
+        };
+        let id = target.editor();
+        if let Some((value, caret)) = emoji::insert(text, &selection, emoji) {
+            *text = value;
+            if let Some(mut state) = egui::TextEdit::load_state(context, id) {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(caret),
+                    )));
+                state.store(context, id);
+            }
+        } else {
+            let error = "Messages can be at most 4,000 characters.".to_owned();
+            match target {
+                EmojiTarget::Profile(person) => {
+                    if let Some(draft) = self.profile_drafts.get_mut(person) {
+                        draft.error = Some(error);
+                    }
+                }
+                _ => self.error = Some(error),
+            }
         }
     }
 
@@ -13944,13 +14201,21 @@ impl CaperApp {
             .map_or("general", |channel| channel.name.as_str())
     }
 
-    fn suggestions(&self, token: &ComposerToken) -> Vec<Suggestion> {
+    fn suggestions(&self, token: &ComposerToken, id: egui::Id) -> Vec<Suggestion> {
         match token {
             ComposerToken::Emoji(token) => emoji::suggestions(&token.query)
                 .into_iter()
                 .map(Suggestion::Emoji)
                 .collect(),
             ComposerToken::Mention(token) => {
+                if self
+                    .mention_card
+                    .as_ref()
+                    .and_then(|card| card.pill.entry.id.as_ref())
+                    .is_some_and(|person| id == egui::Id::new(("profile-composer", person)))
+                {
+                    return Vec::new();
+                }
                 let (people, specials) = self.mention_people();
                 mentions::suggestions(&people, specials, &token.query)
                     .into_iter()
@@ -13998,7 +14263,7 @@ impl CaperApp {
         }
         let choices = active
             .as_ref()
-            .map(|token| self.suggestions(token))
+            .map(|token| self.suggestions(token, id))
             .unwrap_or_default();
         let mut chosen = None;
         if !choices.is_empty() {
@@ -14052,7 +14317,7 @@ impl CaperApp {
             .and_then(|range| state.token_at(text, range));
         let choices = active
             .as_ref()
-            .map(|token| self.suggestions(token))
+            .map(|token| self.suggestions(token, id))
             .unwrap_or_default();
         let mut chosen = pass.chosen.clone();
         if !choices.is_empty() && chosen.is_none() {
@@ -14198,6 +14463,9 @@ impl CaperApp {
         response: &egui::Response,
         focus_on_open: bool,
     ) {
+        if self.profile_sending() {
+            return;
+        }
         self.mention_card = Some(MentionCard {
             pill: PillClick {
                 id: response.id,
@@ -14210,7 +14478,6 @@ impl CaperApp {
             },
             author: Some(author.clone()),
             focus_on_open,
-            opening: None,
             choosing_space: false,
             inviting: None,
             invited: BTreeMap::new(),
@@ -14252,32 +14519,34 @@ impl CaperApp {
             profile.display_name.clone_from(&account.display_name);
         }
         let id = egui::Id::new("mention-card");
-        let height = context
-            .memory(|memory| memory.area_rect(id))
-            .map_or(190.0, |rect| rect.height());
         // Follow the pill while the history scrolls.
         let anchor = context
             .read_response(card.pill.id)
             .map_or(card.pill.rect, |pill| pill.rect);
-        let (pivot, position) =
-            if anchor.bottom() + 6.0 + height <= context.content_rect().bottom() - 8.0 {
-                (
-                    egui::Align2::LEFT_TOP,
-                    anchor.left_bottom() + egui::vec2(0.0, 6.0),
-                )
-            } else {
-                (
-                    egui::Align2::LEFT_BOTTOM,
-                    anchor.left_top() - egui::vec2(0.0, 6.0),
-                )
-            };
+        let below = context.content_rect().bottom() - anchor.bottom() - 14.0;
+        let above = anchor.top() - context.content_rect().top() - 14.0;
+        // Keep one side while files, errors or invitation choices grow the card.
+        let (pivot, position, available) = if below >= above {
+            (
+                egui::Align2::LEFT_TOP,
+                anchor.left_bottom() + egui::vec2(0.0, 6.0),
+                below,
+            )
+        } else {
+            (
+                egui::Align2::LEFT_BOTTOM,
+                anchor.left_top() - egui::vec2(0.0, 6.0),
+                above,
+            )
+        };
         let mut message = false;
-        let blocked = card
-            .pill
-            .entry
-            .id
-            .as_deref()
-            .is_some_and(|id| self.is_blocked(id));
+        let blocked = card.pill.entry.id.as_deref().is_some_and(|id| {
+            self.is_blocked(id)
+                || self
+                    .directs
+                    .iter()
+                    .any(|direct| direct.peer.id == id && direct.blocked)
+        });
         // Don't offer the open space to someone who is already in it.
         let member_of_open =
             self.detail
@@ -14301,10 +14570,25 @@ impl CaperApp {
             })
             .cloned()
             .collect();
-        let busy = card.opening.is_some() || card.inviting.is_some() || self.block_busy;
+        let sending = self.profile_sending();
+        let busy = sending
+            || self.profile_navigation.is_some()
+            || card.inviting.is_some()
+            || self.block_busy;
+        let child_open = self.profile_picker.is_some()
+            || self.profile_emoji_open()
+            || self.profile_attach_menu
+            || self.dialog.is_some();
+        if sending {
+            context.memory_mut(|memory| {
+                memory.set_modal_layer(egui::LayerId::new(egui::Order::Foreground, id))
+            });
+        }
         let mut block_action = false;
         let mut toggle_spaces = false;
         let mut invitation = None;
+        let mut close = false;
+        let mut open_conversation = false;
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .pivot(pivot)
@@ -14317,125 +14601,157 @@ impl CaperApp {
                     .corner_radius(8)
                     .inner_margin(16)
                     .show(ui, |ui| {
-                        // 280px including the padding and the border.
-                        ui.set_width(246.0);
-                        // Areas reuse their last size. Let newly opened destinations
-                        // and errors grow before the scroll area clips to that size.
-                        ui.set_max_height(context.content_rect().height() - 64.0);
+                        // 320px including the padding and the border.
+                        ui.set_width(286.0);
+                        ui.set_max_height(available - 34.0);
                         ui.spacing_mut().item_spacing.y = 12.0;
-                        egui::ScrollArea::vertical()
-                            .max_height(context.content_rect().height() - 64.0)
-                            .show(ui, |ui| {
-                                let initial = profile
-                                    .display_name
-                                    .as_deref()
-                                    .or(profile.username.as_deref())
-                                    .unwrap_or("Profile");
-                                avatar(ui, initial, profile.avatar_id, 48.0, false);
-                                ui.vertical(|ui| {
+                        let can_message = !profile.me
+                            && !blocked
+                            && profile.username.is_some()
+                            && card.pill.entry.id.is_some();
+                        // Identity, then Open conversation and Close at the end.
+                        ui.horizontal_top(|ui| {
+                            let initial = profile
+                                .display_name
+                                .as_deref()
+                                .or(profile.username.as_deref())
+                                .unwrap_or("Profile");
+                            avatar(ui, initial, profile.avatar_id, 48.0, false);
+                            ui.add_space(4.0);
+                            let actions = if can_message { 60.0 } else { 30.0 };
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width() - actions, 48.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.label(bold(profile.title()).size(15.0).color(TEXT));
+                                    ui.add_space(6.0);
+                                    ui.add(
+                                        egui::Label::new(
+                                            bold(profile.title()).size(15.0).color(TEXT),
+                                        )
+                                        .truncate(),
+                                    );
                                     if profile.display_name.is_some()
                                         && let Some(username) = &profile.username
                                     {
-                                        ui.label(
-                                            RichText::new(format!("@{username}"))
-                                                .size(12.0)
-                                                .color(MUTED),
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(format!("@{username}"))
+                                                    .size(12.0)
+                                                    .color(MUTED),
+                                            )
+                                            .truncate(),
                                         );
                                     }
-                                });
+                                },
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                close = ui
+                                    .add_enabled_ui(!busy && !child_open, |ui| {
+                                        drawn_icon_button(ui, NavIcon::Close, "Close profile")
+                                    })
+                                    .inner
+                                    .clicked();
+                                if can_message {
+                                    open_conversation = ui
+                                        .add_enabled_ui(
+                                            !busy
+                                                && !self.loading
+                                                && !self.opening
+                                                && self.token.is_some(),
+                                            |ui| {
+                                                drawn_icon_button(
+                                                    ui,
+                                                    NavIcon::MessageCircle,
+                                                    "Open conversation",
+                                                )
+                                            },
+                                        )
+                                        .inner
+                                        .clicked();
+                                }
+                            });
+                        });
+                        egui::ScrollArea::vertical()
+                            .max_height((available - 110.0).max(1.0))
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 12.0;
                                 if profile.me {
                                     ui.label(RichText::new("You").size(12.0).color(MUTED));
                                     return;
                                 }
-                                if !blocked && profile.username.is_some() {
-                                    // Full width with a centered label.
-                                    let button = ui
-                                        .vertical_centered_justified(|ui| {
-                                            toned_rounded(
-                                                ui,
-                                                PRIMARY_TONE,
-                                                7,
+                                let invite = !blocked
+                                    && profile.username.is_some()
+                                    && card.pill.entry.id.is_some()
+                                    && !owned_spaces.is_empty();
+                                let block = card.pill.entry.id.is_some() && self.account.is_some();
+                                // Invite and Block share one row, as on web.
+                                let count = usize::from(invite) + usize::from(block);
+                                if count > 0 {
+                                    let width = (286.0 - 8.0 * (count - 1) as f32) / count as f32;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        if invite {
+                                            toggle_spaces = ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new("Invite to space")
+                                                        .min_size(egui::vec2(width, 36.0)),
+                                                )
+                                                .clicked();
+                                        }
+                                        if block {
+                                            let button = ui.add_enabled(
                                                 !busy,
                                                 egui::Button::new(
-                                                    bold(if card.opening.is_some() {
-                                                        "Opening…"
+                                                    RichText::new(if blocked && self.block_busy {
+                                                        "Unblocking…"
+                                                    } else if blocked {
+                                                        "Unblock"
                                                     } else {
-                                                        "Message"
+                                                        "Block"
                                                     })
-                                                    .size(12.0),
+                                                    .color(ERROR),
                                                 )
-                                                .min_size(egui::vec2(0.0, 36.0)),
-                                            )
-                                        })
-                                        .inner;
-                                    if card.fresh && card.focus_on_open {
-                                        button.request_focus();
-                                    }
-                                    message = button.clicked();
-                                    if card.pill.entry.id.is_some() && !owned_spaces.is_empty() {
-                                        toggle_spaces = ui
-                                            .add_enabled(
-                                                !busy,
-                                                egui::Button::new("Invite to space")
-                                                    .min_size(egui::vec2(246.0, 36.0)),
-                                            )
-                                            .clicked();
-                                        if card.choosing_space {
-                                            for space in &owned_spaces {
-                                                let label = if card
-                                                    .inviting
-                                                    .as_ref()
-                                                    .is_some_and(|(_, id)| id == &space.id)
-                                                {
-                                                    "Sending…".to_owned()
-                                                } else if let Some(already) =
-                                                    card.invited.get(&space.id)
-                                                {
-                                                    format!("{} · {already}", space.name)
-                                                } else {
-                                                    space.name.clone()
-                                                };
-                                                if ui
-                                                    .add_enabled(
-                                                        !busy
-                                                            && !card
-                                                                .invited
-                                                                .contains_key(&space.id),
-                                                        egui::Button::new(label)
-                                                            .min_size(egui::vec2(246.0, 36.0)),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    invitation = Some(space.clone());
-                                                }
+                                                .min_size(egui::vec2(width, 36.0)),
+                                            );
+                                            if card.fresh && card.focus_on_open && !can_message {
+                                                button.request_focus();
+                                            }
+                                            block_action = button.clicked();
+                                        }
+                                    });
+                                }
+                                if invite && card.choosing_space {
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 6.0;
+                                        for space in &owned_spaces {
+                                            let label = if card
+                                                .inviting
+                                                .as_ref()
+                                                .is_some_and(|(_, id)| id == &space.id)
+                                            {
+                                                "Sending…".to_owned()
+                                            } else if let Some(already) =
+                                                card.invited.get(&space.id)
+                                            {
+                                                format!("{} · {already}", space.name)
+                                            } else {
+                                                space.name.clone()
+                                            };
+                                            if ui
+                                                .add_enabled(
+                                                    !busy && !card.invited.contains_key(&space.id),
+                                                    egui::Button::new(label)
+                                                        .min_size(egui::vec2(286.0, 36.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                invitation = Some(space.clone());
                                             }
                                         }
-                                    }
-                                }
-                                if card.pill.entry.id.is_some() && self.account.is_some() {
-                                    let button = ui.add_enabled(
-                                        !busy,
-                                        egui::Button::new(
-                                            RichText::new(if blocked && self.block_busy {
-                                                "Unblocking…"
-                                            } else if blocked {
-                                                "Unblock"
-                                            } else {
-                                                "Block"
-                                            })
-                                            .color(ERROR),
-                                        )
-                                        .min_size(egui::vec2(246.0, 36.0)),
-                                    );
-                                    if card.fresh
-                                        && card.focus_on_open
-                                        && (blocked || profile.username.is_none())
-                                    {
-                                        button.request_focus();
-                                    }
-                                    block_action = button.clicked();
+                                    });
                                 }
                                 if let Some(status) = &card.status {
                                     ui.label(RichText::new(status).size(12.0).color(MUTED));
@@ -14443,13 +14759,78 @@ impl CaperApp {
                                 if let Some(error) = &card.error {
                                     ui.label(RichText::new(error).size(12.0).color(ERROR));
                                 }
+                                if can_message
+                                    && let (Some(person), Some(username)) =
+                                        (&card.pill.entry.id, profile.username.as_deref())
+                                {
+                                    // The composer sits below a full-width divider, as on web.
+                                    let top = ui.cursor().top();
+                                    let x = ui.max_rect().x_range();
+                                    ui.painter().hline(
+                                        (x.min - 16.0)..=(x.max + 16.0),
+                                        top,
+                                        Stroke::new(1.0, BORDER),
+                                    );
+                                    // Item spacing is added before widgets, not spaces.
+                                    ui.add_space(12.0);
+                                    message = self.profile_composer(
+                                        ui,
+                                        person,
+                                        username,
+                                        busy,
+                                        card.fresh && card.focus_on_open,
+                                    );
+                                }
                             });
                     });
             });
+        if self.profile_emoji_open() {
+            context.set_sublayer(
+                shown.response.layer_id,
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker")),
+            );
+        }
         let escape =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if escape || (!card.fresh && shown.response.clicked_elsewhere()) {
+        let suggestions_open = card.pill.entry.id.as_ref().is_some_and(|person| {
+            let editor = egui::Id::new(("profile-composer", person));
+            if self
+                .composer_suggestions
+                .get(&editor)
+                .is_none_or(|state| state.token.is_none())
+            {
+                return false;
+            }
+            let id = editor.with("suggestions");
+            context
+                .memory(|memory| memory.area_rect(id))
+                .is_some_and(|rect| {
+                    context.input(|input| {
+                        input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pos| rect.contains(pos))
+                    })
+                })
+        });
+        let has_draft = card.pill.entry.id.as_ref().is_some_and(|person| {
+            self.profile_drafts
+                .get(person)
+                .is_some_and(|draft| !draft.text.is_empty() || !draft.files.is_empty())
+        });
+        if !busy
+            && !child_open
+            && !message
+            && !open_conversation
+            && (close
+                || escape
+                || (!has_draft
+                    && !suggestions_open
+                    && !card.fresh
+                    && shown.response.clicked_elsewhere()))
+        {
             self.mention_card = None;
+            self.composer_emoji = None;
             if escape {
                 context.memory_mut(|memory| memory.request_focus(card.pill.id));
             }
@@ -14496,38 +14877,355 @@ impl CaperApp {
                 request,
             });
         }
-        if message && let Some(username) = &profile.username {
-            self.message_from_card(&card.pill.entry, username);
+        if (message || open_conversation)
+            && let Some(username) = &profile.username
+            && let Some(person) = &card.pill.entry.id
+        {
+            self.profile_action(person, username, !message);
         }
     }
 
-    /// **Message** opens the existing DM with this person, or creates one by
-    /// username through the same request as the Open conversation dialog.
-    fn message_from_card(&mut self, entry: &model::Mention, username: &str) {
-        if let Some(direct) = self
-            .directs
-            .iter()
-            .find(|direct| entry.id.as_deref() == Some(direct.peer.id.as_str()))
-            .cloned()
+    fn profile_emoji_open(&self) -> bool {
+        matches!(self.composer_emoji, Some((EmojiTarget::Profile(_), _)))
+    }
+
+    fn profile_sending(&self) -> bool {
+        self.profile_drafts.values().any(|draft| draft.sending)
+    }
+
+    /// Independent of the active channel's draft, pending send and attachments.
+    /// Web's composer shell: Attach, the field, Emoji and Send in one box, with
+    /// staged files (and image thumbnails) above it. Returns whether Send was used.
+    fn profile_composer(
+        &mut self,
+        ui: &mut egui::Ui,
+        person: &str,
+        username: &str,
+        busy: bool,
+        focus: bool,
+    ) -> bool {
+        let mut draft = self.profile_drafts.remove(person).unwrap_or_default();
+        let id = EmojiTarget::Profile(person.to_owned()).editor();
+        let editable = draft.editable() && !busy;
+        let can_attach = editable
+            && self.token.is_some()
+            && self.uploads.is_some()
+            && self.profile_picker.is_none()
+            && draft.files.len() < uploads::MAX_ATTACHMENTS;
+        // Ctrl/Cmd+V in the focused field imports copied files or an image;
+        // ordinary text pastes stay with egui.
+        let paste = can_attach
+            && ui.memory(|memory| memory.has_focus(id))
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::Paste(_))
+                        || matches!(event, egui::Event::Key {
+                            key: egui::Key::V, pressed: true, modifiers, ..
+                        } if modifiers.command || modifiers.ctrl)
+                })
+            });
+        if paste {
+            match profile_dm::paste_files() {
+                Ok(files) if !files.is_empty() => {
+                    ui.input_mut(|input| {
+                        input
+                            .events
+                            .retain(|event| !matches!(event, egui::Event::Paste(_)))
+                    });
+                    draft.add_files(files);
+                }
+                Err(error) => draft.error = Some(error),
+                _ => {}
+            }
+        }
+        if !draft.files.is_empty() {
+            let mut remove = None;
+            let mut preview = None;
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                let context = ui.ctx().clone();
+                for (index, file) in draft.files.iter_mut().enumerate() {
+                    let name = file.name();
+                    let url = url::Url::from_file_path(&file.path).ok().map(String::from);
+                    let status = if file.attachment.is_some() || !draft.sending {
+                        uploads::size_label(file.size, None)
+                    } else {
+                        "Waiting to send…".into()
+                    };
+                    let (open, removed) = file_chip(
+                        ui,
+                        286.0,
+                        FileChip {
+                            id: egui::Id::new(("profile-file", person, index)),
+                            name: &name,
+                            status,
+                            error: false,
+                            thumbnail: file.thumbnail(&context),
+                            progress: None,
+                            url,
+                            removable: editable,
+                        },
+                    );
+                    if open.is_some() {
+                        preview = open;
+                    }
+                    if removed {
+                        remove = Some(index);
+                    }
+                }
+            });
+            if let Some(index) = remove {
+                draft.files.remove(index);
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
+            if let Some(url) = preview {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+        }
+        let suggestions = self.suggestion_keys(ui, id, &draft.text);
+        let pending_picker = self
+            .profile_picker
+            .as_ref()
+            .is_some_and(|(id, _)| id == person);
+        let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
+        let mut pick = false;
+        let mut paste_now = false;
+        let mut menu_open = false;
+        let mut choose_emoji = false;
+        let mut send = false;
+        let shell = egui::Frame::new()
+            .fill(COMPOSER)
+            .corner_radius(8)
+            .inner_margin(egui::Margin {
+                left: 4,
+                right: 4,
+                ..Default::default()
+            })
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.vertical(|ui| {
+                        ui.add_space(7.0);
+                        let attach = ui
+                            .add_enabled_ui(can_attach, |ui| {
+                                drawn_icon_button(ui, NavIcon::Plus, "Attach files")
+                            })
+                            .inner
+                            .on_disabled_hover_text(
+                                if draft.files.len() >= uploads::MAX_ATTACHMENTS {
+                                    format!(
+                                        "You can attach up to {} files.",
+                                        uploads::MAX_ATTACHMENTS
+                                    )
+                                } else {
+                                    "File uploads are not ready yet.".to_owned()
+                                },
+                            );
+                        // egui delivers no event for an image-only Ctrl+V, so
+                        // Paste is offered here too, as on Android.
+                        egui::Popup::menu(&attach).show(|ui| {
+                            if ui.button("Choose files…").clicked() {
+                                pick = true;
+                                ui.close();
+                            }
+                            if ui.button("Paste from clipboard").clicked() {
+                                paste_now = true;
+                                ui.close();
+                            }
+                        });
+                        menu_open = egui::Popup::menu(&attach).is_open();
+                    });
+                    let width = (ui.available_width() - 62.0).max(0.0);
+                    let output = ui
+                        .allocate_ui_with_layout(
+                            egui::vec2(width, 120.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(width);
+                                ui.add_enabled_ui(editable, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("profile-editor-scroll", person))
+                                        .max_height(120.0)
+                                        .min_scrolled_height(42.0)
+                                        .auto_shrink([false, true])
+                                        .show(ui, |ui| {
+                                            egui::TextEdit::multiline(&mut draft.text)
+                                                .id(id)
+                                                .hint_text(
+                                                    RichText::new(format!("Message @{username}"))
+                                                        .color(Color32::from_rgb(142, 149, 152)),
+                                                )
+                                                .desired_width(f32::INFINITY)
+                                                .min_size(egui::vec2(0.0, 42.0))
+                                                .desired_rows(1)
+                                                .return_key(Some(egui::KeyboardShortcut::new(
+                                                    egui::Modifiers::SHIFT,
+                                                    egui::Key::Enter,
+                                                )))
+                                                .font(egui::FontId::proportional(13.6))
+                                                .margin(egui::vec2(8.0, 10.0))
+                                                .frame(false)
+                                                .char_limit(4_000)
+                                                .show(ui)
+                                        })
+                                        .inner
+                                })
+                                .inner
+                            },
+                        )
+                        .inner;
+                    ui.vertical(|ui| {
+                        ui.add_space(7.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            choose_emoji = ui
+                                .add_enabled_ui(editable, |ui| {
+                                    drawn_icon_button(ui, NavIcon::Smile, "Insert emoji")
+                                })
+                                .inner
+                                .clicked();
+                            send = send_icon_button(
+                                ui,
+                                can_send,
+                                if draft.retry_id.is_some() {
+                                    "Retry send"
+                                } else {
+                                    "Send"
+                                },
+                            )
+                            .clicked();
+                        });
+                    });
+                    output
+                })
+                .inner
+            });
+        let mut output = shell.inner;
+        ui.painter().rect_stroke(
+            shell.response.rect,
+            8.0,
+            Stroke::new(
+                1.0,
+                if output.response.has_focus() {
+                    TERRACOTTA
+                } else {
+                    BORDER
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        if focus {
+            output.response.request_focus();
+        }
+        if editable
+            && let Some(value) = self.suggestion_popup(ui, &suggestions, &draft.text, &mut output)
         {
-            self.select_direct(direct);
+            draft.text = value;
+        }
+        // Enter sends, Shift+Enter starts a new line, as in the channel composer.
+        let enter = output.response.has_focus()
+            && !self.ime_composing
+            && !suggestions.ime
+            && ui.input(|input| {
+                input.events.iter().any(|event| matches!(event,
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if !modifiers.shift
+                ))
+            });
+        self.profile_attach_menu = menu_open;
+        if paste_now && can_attach {
+            match profile_dm::paste_files() {
+                Ok(files) if files.is_empty() => {
+                    draft.error = Some("Nothing to paste. Copy an image or files first.".into());
+                }
+                Ok(files) => draft.add_files(files),
+                Err(error) => draft.error = Some(error),
+            }
+            output.response.request_focus();
+        }
+        if choose_emoji {
+            let text = draft.text.clone();
+            self.open_composer_emoji(EmojiTarget::Profile(person.to_owned()), &output, &text);
+        }
+        if pick {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let context = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let files = rfd::FileDialog::new()
+                    .set_title("Attach files")
+                    .pick_files()
+                    .unwrap_or_default();
+                let _ = sender.send(files);
+                context.request_repaint();
+            });
+            self.profile_picker = Some((person.to_owned(), receiver));
+        }
+        if draft.retry_id.is_some() && !draft.sending {
+            ui.label(
+                RichText::new("Delivery isn’t confirmed. Send retries the same message.")
+                    .size(12.0)
+                    .color(ERROR),
+            );
+        }
+        if let Some(status) = &draft.status {
+            ui.label(RichText::new(status).size(12.0).color(MUTED));
+        }
+        if let Some(error) = &draft.error {
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        }
+        self.profile_drafts.insert(person.to_owned(), draft);
+        send || (enter && can_send)
+    }
+
+    /// Only explicit Send/Open resolves the canonical DM; Open never writes a message.
+    fn profile_action(&mut self, person: &str, username: &str, open_only: bool) {
+        if self.profile_sending() || self.profile_picker.is_some() || self.is_blocked(person) {
             return;
         }
         let Some(token) = self.token.clone() else {
             return;
         };
-        self.navigation += 1;
-        self.opening = false;
-        self.navigation_target = None;
-        if let Some(card) = &mut self.mention_card {
-            card.opening = Some(self.navigation);
-            card.error = None;
-        }
-        self.worker.send(Command::CreateDirect {
-            generation: self.generation,
-            navigation: self.navigation,
+        let draft = self.profile_drafts.entry(person.to_owned()).or_default();
+        let id = if open_only {
+            draft.sending = true;
+            draft.error = None;
+            draft.status = Some("Opening…".into());
+            draft
+                .retry_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+        } else {
+            match draft.begin() {
+                Ok(id) => id,
+                Err(error) => {
+                    draft.error = Some(error);
+                    return;
+                }
+            }
+        };
+        self.composer_emoji = None;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.profile_send_cancel = Some(cancel.clone());
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: person.to_owned(),
             token,
-            username: username.to_owned(),
+            send: Box::new(profile_dm::Send {
+                person: person.to_owned(),
+                username: username.to_owned(),
+                name: self
+                    .account
+                    .as_ref()
+                    .and_then(|account| account.display_name.clone())
+                    .unwrap_or_default(),
+                client_id: id,
+                text: draft.text.clone(),
+                files: draft.files.clone(),
+                settings: self.uploads.clone(),
+                cancel,
+                retrying: draft.retry_id.is_some(),
+                open_only,
+                direct: None,
+            }),
         });
     }
 
@@ -16337,6 +17035,174 @@ fn login_error_frame(ui: &mut egui::Ui, error: &str) {
         });
 }
 
+/// A staged file in a composer: thumbnail or file icon, name, status, an
+/// optional upload bar and Remove, as on web's draft chips.
+struct FileChip<'a> {
+    id: egui::Id,
+    name: &'a str,
+    status: String,
+    error: bool,
+    thumbnail: Option<&'a egui::TextureHandle>,
+    /// Upload progress while a file is being sent.
+    progress: Option<f32>,
+    /// Opens the local or uploaded original.
+    url: Option<String>,
+    removable: bool,
+}
+
+/// Returns the preview URL to open, if clicked, and whether Remove was clicked.
+fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, bool) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 8.0, SURFACE);
+    let thumb = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(32.0, 32.0));
+    if let Some(texture) = chip.thumbnail {
+        // Centre-crop the local preview into the square.
+        let [width, height] = texture.size().map(|value| value.max(1) as f32);
+        let side = width.min(height);
+        let uv = egui::Rect::from_min_size(
+            egui::pos2((width - side) / 2.0 / width, (height - side) / 2.0 / height),
+            egui::vec2(side / width, side / height),
+        );
+        egui::Image::new((texture.id(), thumb.size()))
+            .uv(uv)
+            .corner_radius(6)
+            .paint_at(ui, thumb);
+    } else {
+        paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+    }
+    // Names and errors truncate in the chip; the tooltip has them in full.
+    response.on_hover_text(format!("{}\n{}", chip.name, chip.status));
+    let text_left = thumb.right() + 8.0;
+    let end = if chip.removable {
+        rect.right() - 34.0
+    } else {
+        rect.right() - 8.0
+    };
+    let text_width = end - text_left;
+    let line = |text: String, font: egui::FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
+    painter.galley(
+        egui::pos2(text_left, rect.top() + 8.0),
+        line(
+            chip.name.to_owned(),
+            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TEXT,
+        ),
+        TEXT,
+    );
+    painter.galley(
+        egui::pos2(text_left, rect.top() + 26.0),
+        line(
+            chip.status,
+            egui::FontId::proportional(11.0),
+            if chip.error { ERROR } else { MUTED },
+        ),
+        MUTED,
+    );
+    if let Some(progress) = chip.progress {
+        let track = egui::Rect::from_min_max(
+            egui::pos2(text_left, rect.bottom() - 5.0),
+            egui::pos2(end, rect.bottom() - 3.0),
+        );
+        painter.rect_filled(track, 1.0, BORDER);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                track.min,
+                egui::vec2(track.width() * progress.clamp(0.0, 1.0), track.height()),
+            ),
+            1.0,
+            TERRACOTTA,
+        );
+    }
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, if chip.error { ERROR } else { BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    let close = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 17.0, rect.center().y),
+        egui::vec2(22.0, 22.0),
+    );
+    let mut preview = None;
+    if let Some(url) = chip.url {
+        let response = ui.interact(
+            egui::Rect::from_min_max(rect.min, egui::pos2(close.left() - 4.0, rect.bottom())),
+            chip.id.with("preview"),
+            egui::Sense::click(),
+        );
+        let label = format!("Preview {}", chip.name);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+        });
+        if response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(label)
+            .clicked()
+        {
+            preview = Some(url);
+        }
+    }
+    let mut removed = false;
+    if chip.removable {
+        let response = ui.interact(close, chip.id.with("remove"), egui::Sense::click());
+        if response.hovered() {
+            painter.rect_filled(close, 6.0, RAISED);
+        }
+        paint_icon(
+            &painter,
+            close.shrink(4.0),
+            NavIcon::Close,
+            if response.hovered() { TEXT } else { MUTED },
+        );
+        let label = format!("Remove {}", chip.name);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+        });
+        removed = response.on_hover_text(label).clicked();
+    }
+    (preview, removed)
+}
+
+/// Web's composer Send: the eggshell primary action with the Send icon,
+/// neutral while unavailable.
+fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(28.0, 28.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    if enabled {
+        let fill = if response.is_pointer_button_down_on() {
+            ACTION_PRESS
+        } else if response.hovered() || response.has_focus() {
+            ACTION_HOVER
+        } else {
+            ACTION
+        };
+        ui.painter().rect_filled(rect, 6.0, fill);
+    }
+    paint_icon(
+        ui.painter(),
+        rect.shrink(7.0),
+        NavIcon::Send,
+        if enabled {
+            ON_ACTION
+        } else {
+            MUTED.gamma_multiply(0.5)
+        },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.on_hover_text(label)
+}
+
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if response.hovered() || response.has_focus() {
@@ -16844,6 +17710,9 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::ExternalLink => egui::include_image!("../resources/icons/external-link.svg"),
         NavIcon::Link => egui::include_image!("../resources/icons/link.svg"),
         NavIcon::Volume => egui::include_image!("../resources/icons/volume-2.svg"),
+        NavIcon::Smile => egui::include_image!("../resources/icons/smile.svg"),
+        NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
+        NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
@@ -19393,6 +20262,7 @@ mod tests {
         context: &egui::Context,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        context.enable_accesskit();
         context.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -19924,7 +20794,7 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert_eq!(card_entry(&app), Some("fixture-maya"));
         assert!(
-            shows(&output, "@maya") && shows(&output, "Message"),
+            shows(&output, "@maya") && shows_control(&output, "Send"),
             "pinner profile, not the message author: {:?}",
             text_shapes(&output)
         );
@@ -19932,12 +20802,14 @@ mod tests {
         click(
             &mut app,
             &context,
-            text_position(&output, "Message") + egui::vec2(20.0, 8.0),
+            card_control(&context, &output, "Insert emoji"),
         );
         assert!(
-            app.mention_card.as_ref().unwrap().opening.is_some(),
-            "the card's Message button is interactive above the modal"
+            app.profile_emoji_open(),
+            "the card's emoji button is interactive above the modal"
         );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(!app.profile_emoji_open());
         render(&mut app, &context, press(egui::Key::Escape));
         assert!(app.mention_card.is_none());
         assert!(app.showing_pins, "Escape closes the child first");
@@ -20341,6 +21213,17 @@ mod tests {
     fn account_server(
         routes: Vec<(&'static str, u16, &'static str)>,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        account_server_with(move |line, _| {
+            routes.iter().find(|(route, _, _)| *route == line).map_or(
+                (404, r#"{"error":"Not found"}"#.into()),
+                |(_, status, body)| (*status, (*body).into()),
+            )
+        })
+    }
+
+    fn account_server_with(
+        reply: impl Fn(&str, &[u8]) -> (u16, String) + Send + 'static,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{BufRead, BufReader, Read, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.local_addr().unwrap());
@@ -20373,12 +21256,7 @@ mod tests {
                         .trim_end()
                         .to_owned(),
                 );
-                let (status, reply) = routes
-                    .iter()
-                    .find(|(route, _, _)| *route == line)
-                    .map_or((404, r#"{"error":"Not found"}"#), |(_, status, body)| {
-                        (*status, *body)
-                    });
+                let (status, reply) = reply(&line, &body);
                 let _ = write!(
                     reader.get_mut(),
                     "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
@@ -20409,6 +21287,7 @@ mod tests {
                 _ => None,
             })
             .next_back()
+            .or_else(|| labelled_center(output, label))
             .unwrap_or_else(|| panic!("missing {label}"))
     }
 
@@ -22432,6 +23311,7 @@ mod tests {
         time: f64,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        context.enable_accesskit();
         context.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -25183,6 +26063,55 @@ mod tests {
         text_shapes(output).iter().any(|label| label == text)
     }
 
+    /// Drawn text, or an icon control's accessible label (Send, Insert emoji).
+    fn shows_control(output: &egui::FullOutput, text: &str) -> bool {
+        shows(output, text) || labelled_center(output, text).is_some()
+    }
+
+    /// A labelled control inside the open mention card, where the channel
+    /// composer has a control with the same label (Insert emoji).
+    fn card_control(context: &egui::Context, output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        let card = context
+            .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+            .expect("mention card is open");
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some(label))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                )
+            })
+            .find(|center| card.contains(*center))
+            .unwrap_or_else(|| panic!("{label} is not in the card"))
+    }
+
+    /// The centre of a control with this accessible label, such as
+    /// an icon button. `render` enables AccessKit for every test frame.
+    fn labelled_center(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()?
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some(label))
+            .find_map(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                )
+            })
+    }
+
     /// The rows of the suggestion list `area` drawn this pass, as "title
     /// detail", after checking that each detail sits directly below its title.
     fn suggestion_rows(
@@ -26278,11 +27207,14 @@ mod tests {
             Some("parity-direct"),
         );
         let names = |app: &CaperApp, query: &str| {
-            app.suggestions(&ComposerToken::Mention(mentions::Token {
-                start: 0,
-                end: query.len() + 1,
-                query: query.into(),
-            }))
+            app.suggestions(
+                &ComposerToken::Mention(mentions::Token {
+                    start: 0,
+                    end: query.len() + 1,
+                    query: query.into(),
+                }),
+                egui::Id::new("channel-composer"),
+            )
             .into_iter()
             .map(|choice| match choice {
                 Suggestion::Mention(candidate) => candidate.name().to_owned(),
@@ -26399,6 +27331,7 @@ mod tests {
                 }
                 _ => None,
             })
+            .or_else(|| labelled_center(output, text))
             .unwrap_or_else(|| panic!("{text} is not drawn"))
     }
 
@@ -26482,16 +27415,16 @@ mod tests {
                 click_at(&mut app, &context, target);
                 let output = render(&mut app, &context, vec![]);
                 assert!(
-                    shows(&output, "@maya") && shows(&output, "Message"),
+                    shows(&output, "@maya") && shows_control(&output, "Send"),
                     "profile resolves the author/member by ID"
                 );
                 render(&mut app, &context, press(egui::Key::Escape));
                 let output = render(&mut app, &context, vec![]);
-                assert!(!shows(&output, "Message"));
+                assert!(!shows_control(&output, "Send"));
                 render(&mut app, &context, press(egui::Key::Enter));
                 let output = render(&mut app, &context, vec![]);
                 assert!(
-                    shows(&output, "@maya") && shows(&output, "Message"),
+                    shows(&output, "@maya") && shows_control(&output, "Send"),
                     "focus returns and Enter reopens the profile"
                 );
                 render(&mut app, &context, press(egui::Key::Escape));
@@ -26552,12 +27485,16 @@ mod tests {
         assert_eq!(card_entry(&app), Some("fixture-alex"));
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
-        for label in ["Alex", "@alex", "Message"] {
-            assert!(shows(&output, label), "{label}: {:?}", text_shapes(&output));
+        for label in ["Alex", "@alex", "Send"] {
+            assert!(
+                shows_control(&output, label),
+                "{label}: {:?}",
+                text_shapes(&output)
+            );
         }
         let output = render(&mut app, &context, vec![]);
         assert!(
-            shows(&output, "Message"),
+            shows_control(&output, "Send"),
             "the opening click is not outside"
         );
         let pill = app.mention_card.as_ref().unwrap().pill.id;
@@ -26587,7 +27524,7 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
-        assert!(!shows(&output, "Message"), "no Message for yourself");
+        assert!(!shows_control(&output, "Send"), "no Send for yourself");
         assert!(!shows(&output, "Block") && !shows(&output, "Invite to space"));
 
         let outside = text_center(&output, "Beginning of conversation");
@@ -26682,6 +27619,21 @@ mod tests {
             !card_labels.contains(&"Fixture Studio"),
             "Alex is already in the open space"
         );
+        // Destination rows may be clipped below the taller profile composer.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(card.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -500.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
         click_at(
             &mut app,
             &context,
@@ -26692,6 +27644,21 @@ mod tests {
                 .as_ref()
                 .is_some_and(|card| card.status.is_some())
         });
+        // Expanded destination choices scroll within the taller composer;
+        // the success copy and Close profile remain reachable.
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(card.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -500.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Invitation sent to Another owned space."));
         assert!(shows(&output, "Another owned space · Invited"));
@@ -26740,12 +27707,14 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Unblock"));
-        assert!(!shows(&output, "Message") && !shows(&output, "Invite to space"));
+        assert!(!shows_control(&output, "Send") && !shows(&output, "Invite to space"));
         click_at(&mut app, &context, last_text_position(&output, "Unblock"));
         receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
         assert!(
-            shows(&output, "Message") && shows(&output, "Block") && shows(&output, "Unblocked."),
+            shows_control(&output, "Send")
+                && shows(&output, "Block")
+                && shows(&output, "Unblocked."),
             "{:?}",
             text_shapes(&output)
         );
@@ -26875,25 +27844,229 @@ mod tests {
         };
         let (pill, card) = card_beside_pill(900.0, ALEX_MESSAGE, "@alex");
         assert!(card.top() >= pill.bottom(), "{pill:?} {card:?}");
-        assert!(card.width() <= 280.0 + 0.5, "{card:?}");
+        assert!(card.width() <= 320.0 + 0.5, "{card:?}");
         let (pill, card) = card_beside_pill(560.0, "Thanks @maya", "@maya");
         assert!(card.bottom() <= pill.top(), "{pill:?} {card:?}");
     }
 
     #[test]
-    fn mention_card_message_opens_an_existing_dm_or_shows_a_creation_error() {
-        let (base, _) = account_server(vec![
-            (
-                "GET /api/chat/channels/dm0000000009/messages",
-                200,
-                r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000009","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
-            ),
-            (
-                "POST /api/chat/session",
-                200,
-                r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#,
-            ),
-        ]);
+    fn profile_drafts_survive_dismissal_dialogs_and_picker_results_until_logout() {
+        let context = egui::Context::default();
+        let (base, seen) = account_server(Vec::new());
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.uploads = Some(crate::compress::Compression::default());
+        app.draft = "Original channel draft".into();
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        messages[0].content.text = "Thanks @maya".into();
+        messages[0].content.mentions = vec![model::Mention {
+            kind: "user".into(),
+            id: Some("fixture-maya".into()),
+            username: Some("maya".into()),
+        }];
+        app.timeline.reset(messages, "4").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        render(&mut app, &context, vec![]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text("Hi Alex :wave".into())],
+        );
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert!(
+            app.profile_drafts["fixture-alex"]
+                .text
+                .starts_with("Hi Alex ")
+        );
+        assert!(
+            !app.profile_drafts["fixture-alex"].text.contains(":wave"),
+            "Enter accepts emoji, never sends"
+        );
+        assert!(app.selected_direct.is_none());
+        assert_eq!(app.draft, "Original channel draft");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "typing and emoji do not contact the API"
+        );
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.profile_picker = Some(("fixture-alex".into(), receiver));
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(
+            app.mention_card.is_some(),
+            "picker does not dismiss the card"
+        );
+        sender
+            .send(vec![std::path::PathBuf::from("receipt.txt")])
+            .unwrap();
+        app.attachment_housekeeping(&context);
+        assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
+        let retained = app.profile_drafts["fixture-alex"].text.clone();
+        click_at(&mut app, &context, egui::pos2(600.0, 700.0));
+        assert!(app.mention_card.is_some(), "outside clicks retain a draft");
+        app.profile_drafts.get_mut("fixture-alex").unwrap().sending = true;
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Close profile"));
+        render(&mut app, &context, press(egui::Key::Escape));
+        click_at(&mut app, &context, egui::pos2(600.0, 700.0));
+        assert!(app.mention_card.is_some(), "sending prevents all dismissal");
+        app.profile_drafts.get_mut("fixture-alex").unwrap().sending = false;
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Close profile"));
+        assert!(app.mention_card.is_none());
+        assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
+        assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, "Thanks @maya", "@maya"),
+        );
+        render(&mut app, &context, vec![]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text("Hi Maya".into())],
+        );
+        assert_eq!(app.profile_drafts["fixture-maya"].text, "Hi Maya");
+        render(&mut app, &context, press(egui::Key::Escape));
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
+        assert!(shows(&output, "receipt.txt"));
+        click_at(&mut app, &context, last_text_position(&output, "Block"));
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
+        assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "picking files does not create a DM or upload"
+        );
+        app.logout();
+        assert!(app.profile_drafts.is_empty());
+        assert!(app.profile_picker.is_none());
+    }
+
+    #[test]
+    fn profile_open_creates_without_sending_or_previews_uncached_incoming_request() {
+        for incoming in [false, true] {
+            let (base, seen) = account_server_with(move |route, _| {
+                let direct = serde_json::json!({
+                    "id":"dm0000000002","peer":{"id":"fixture-alex","username":"alex","displayName":"Alex"},
+                    "lastSeq":"0","readSeq":"0","status":if incoming { "incoming" } else { "accepted" }
+                });
+                match route {
+                    "GET /api/dms" => (200, serde_json::json!({"conversations":if incoming { vec![direct] } else { Vec::new() }}).to_string()),
+                    "POST /api/dms" if !incoming => (201, direct.to_string()),
+                    "GET /api/chat/channels/dm0000000002/messages" => (200, r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000002","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#.into()),
+                    "POST /api/chat/session" => (200, r#"{"token":"chat","author":{"id":"fixture-owner","name":"Owner","isGuest":false}}"#.into()),
+                    _ => (404, r#"{"error":"Not found"}"#.into()),
+                }
+            });
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new(&base).unwrap(),
+                Some("parity-mentions"),
+            );
+            app.token = Some("account-token".into());
+            app.draft = "Keep my channel draft".into();
+            app.restore_drafts(vec![model::Attachment {
+                id: "channel-file".into(),
+                kind: model::AttachmentKind::File,
+                content_type: "text/plain".into(),
+                name: "channel.txt".into(),
+                size: 4,
+                width: None,
+                height: None,
+                duration_ms: None,
+                preview: false,
+                url: None,
+                preview_url: None,
+                unavailable: false,
+                status: model::AttachmentStatus::Ready,
+                animated: false,
+            }]);
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click_at(
+                &mut app,
+                &context,
+                pill_center(&output, ALEX_MESSAGE, "@alex"),
+            );
+            render(&mut app, &context, vec![]);
+            let draft = app.profile_drafts.get_mut("fixture-alex").unwrap();
+            draft.text = "Keep my profile draft".into();
+            draft.add_files(vec![crate::profile_dm::File::picked("not-read.txt".into())]);
+            let retry_id = incoming.then(|| uuid::Uuid::new_v4().to_string());
+            draft.retry_id = retry_id.clone();
+            assert!(seen.lock().unwrap().is_empty());
+            let output = render(&mut app, &context, vec![]);
+            click_at(
+                &mut app,
+                &context,
+                text_center(&output, "Open conversation"),
+            );
+            receive_until(&mut app, |app| {
+                app.selected_direct.as_deref() == Some("dm0000000002")
+            });
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(shows(&output, "Accept"), incoming);
+            assert_eq!(
+                app.profile_drafts["fixture-alex"].text,
+                "Keep my profile draft"
+            );
+            assert_eq!(
+                app.profile_drafts["fixture-alex"].files[0].name(),
+                "not-read.txt"
+            );
+            assert_eq!(app.profile_drafts["fixture-alex"].retry_id, retry_id);
+            assert_eq!(app.drafts["chan00000001"], "Keep my channel draft");
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0], "GET /api/dms");
+            assert_eq!(
+                seen.iter()
+                    .filter(|line| line.starts_with("POST /api/dms "))
+                    .count(),
+                usize::from(!incoming)
+            );
+            assert!(!seen.iter().any(|line| line.starts_with("POST /api/assets")
+                || (line.starts_with("POST ") && line.contains("/messages"))
+                || line.contains("/accept")));
+        }
+    }
+
+    #[test]
+    fn mention_card_send_opens_an_existing_dm_or_retains_a_failed_draft() {
+        let (base, _) = account_server_with(|route, body| {
+            let reply = match route {
+                "GET /api/dms" => r#"{"conversations":[{"id":"dm0000000009","peer":{"id":"fixture-alex","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0"}]}"#.into(),
+                "POST /api/chat/channels/dm0000000009/messages" => {
+                    let sent: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    serde_json::json!({"id":"m1","channelId":"dm0000000009","seq":"1","createdAt":"2026-10-11T00:00:00Z","clientMessageId":sent["clientMessageId"],"author":{"id":"fixture_owner","name":"Owner","isGuest":false},"content":{"version":1,"type":"text","text":sent["text"]}}).to_string()
+                }
+                "GET /api/chat/channels/dm0000000009/messages" => r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000009","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#.into(),
+                "POST /api/chat/session" => r#"{"token":"chat","author":{"id":"fixture_owner","name":"TEST FIXTURE Owner","isGuest":false}}"#.into(),
+                _ => return (404, r#"{"error":"Not found"}"#.into()),
+            };
+            (200, reply)
+        });
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -26923,8 +28096,27 @@ mod tests {
             pill_center(&output, ALEX_MESSAGE, "@alex"),
         );
         // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        app.draft = "Keep my channel draft".into();
+        app.restore_drafts(vec![model::Attachment {
+            id: "channel-file".into(),
+            kind: model::AttachmentKind::File,
+            content_type: "text/plain".into(),
+            name: "channel.txt".into(),
+            size: 4,
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: false,
+            url: None,
+            preview_url: None,
+            unavailable: false,
+            status: model::AttachmentStatus::Ready,
+            animated: false,
+        }]);
+        app.profile_drafts.get_mut("fixture-alex").unwrap().text = "Hello Alex".into();
         let output = render(&mut app, &context, vec![]);
-        click_at(&mut app, &context, text_center(&output, "Message"));
+        click_at(&mut app, &context, text_center(&output, "Send"));
         assert!(
             app.selected_direct.is_none(),
             "keep the channel until the DM is ready"
@@ -26934,8 +28126,13 @@ mod tests {
         });
         assert_eq!(app.selected_direct.as_deref(), Some("dm0000000009"));
         assert!(app.mention_card.is_none(), "opening the DM closes the card");
+        assert_eq!(
+            app.drafts.get("chan00000001").map(String::as_str),
+            Some("Keep my channel draft")
+        );
+        assert!(!app.profile_drafts.contains_key("fixture-alex"));
 
-        // Without a DM, Message creates one by username; this API is unreachable.
+        // This unreachable API keeps the entire profile draft in place.
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -26950,34 +28147,151 @@ mod tests {
             pill_center(&output, ALEX_MESSAGE, "@alex"),
         );
         // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        app.profile_drafts.get_mut("fixture-alex").unwrap().text = "Keep this message".into();
         let output = render(&mut app, &context, vec![]);
-        click_at(&mut app, &context, text_center(&output, "Message"));
-        assert_eq!(
-            app.mention_card.as_ref().unwrap().opening,
-            Some(app.navigation)
-        );
-        assert!(shows(&render(&mut app, &context, vec![]), "Opening…"));
+        click_at(&mut app, &context, text_center(&output, "Send"));
+        assert!(app.profile_sending());
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.mention_card.is_some(), "a send cannot be dismissed");
         let deadline = Instant::now() + Duration::from_secs(10);
-        while app.mention_card.as_ref().unwrap().opening.is_some() && Instant::now() < deadline {
+        while app.profile_sending() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
             app.receive();
         }
-        let card = app
-            .mention_card
-            .as_ref()
-            .expect("a failure keeps the card open");
-        let error = card
+        assert!(app.mention_card.is_some(), "a failure keeps the card open");
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert_eq!(draft.text, "Keep this message");
+        let error = draft
             .error
             .clone()
             .expect("the API error is shown in the card");
         assert!(app.error.is_none(), "not duplicated outside the card");
         assert!(app.selected_direct.is_none());
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, &error) && shows(&output, "Message"));
+        assert!(shows(&output, &error) && shows_control(&output, "Send"));
+
+        // An uncertain retry can later receive a definitive refusal. Only
+        // uncertainty keeps the original payload frozen.
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        for uncertain in [true, false] {
+            let draft = app.profile_drafts.get_mut("fixture-alex").unwrap();
+            draft.sending = true;
+            events
+                .send(crate::worker::Event::ProfileSent {
+                    epoch: app.account_epoch,
+                    person: "fixture-alex".into(),
+                    send: Box::new(crate::profile_dm::Send {
+                        person: "fixture-alex".into(),
+                        username: "alex".into(),
+                        name: "Owner".into(),
+                        client_id: "same-client-id".into(),
+                        text: draft.text.clone(),
+                        files: Vec::new(),
+                        settings: None,
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        retrying: true,
+                        open_only: false,
+                        direct: None,
+                    }),
+                    result: Err(crate::profile_dm::Failure {
+                        message: "Local test refusal".into(),
+                        uncertain,
+                    }),
+                })
+                .unwrap();
+            app.receive();
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows_control(
+                &output,
+                if uncertain { "Retry send" } else { "Send" }
+            ));
+        }
+        let id = egui::Id::new(("profile-composer", "fixture-alex"));
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(&mut app, &context, vec![egui::Event::Text("!".into())]);
+        assert!(app.profile_drafts["fixture-alex"].text.contains('!'));
+        assert!(app.selected_direct.is_none());
     }
 
     #[test]
-    fn mention_card_message_creates_the_dm_by_username_and_navigates() {
+    fn profile_emoji_picker_replaces_saved_selection_within_the_scalar_limit() {
+        for (text, start, end, expected, rejected) in [
+            ("pré AB fin".into(), 4, 6, "pré 🎉 fin".into(), false),
+            (
+                "x".repeat(4_000),
+                3_999,
+                4_000,
+                format!("{}🎉", "x".repeat(3_999)),
+                false,
+            ),
+            ("x".repeat(4_000), 4_000, 4_000, "x".repeat(4_000), true),
+        ] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-mentions"),
+            );
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click_at(
+                &mut app,
+                &context,
+                pill_center(&output, ALEX_MESSAGE, "@alex"),
+            );
+            render(&mut app, &context, vec![]);
+            app.profile_drafts.get_mut("fixture-alex").unwrap().text = text;
+            let id = egui::Id::new(("profile-composer", "fixture-alex"));
+            let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(end),
+                    egui::text::CCursor::new(start),
+                )));
+            state.store(&context, id);
+            let output = render(&mut app, &context, vec![]);
+            click_at(
+                &mut app,
+                &context,
+                card_control(&context, &output, "Insert emoji"),
+            );
+            app.reaction_search = "party-popper".into();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some("party-popper"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .expect("party-popper is offered by the existing picker");
+            click_at(
+                &mut app,
+                &context,
+                egui::pos2(
+                    (bounds.x0 + bounds.x1) as f32 / 2.0,
+                    (bounds.y0 + bounds.y1) as f32 / 2.0,
+                ),
+            );
+            let draft = &app.profile_drafts["fixture-alex"];
+            assert_eq!(draft.text, expected);
+            assert_eq!(draft.error.is_some(), rejected);
+            assert!(app.selected_direct.is_none());
+        }
+    }
+
+    #[test]
+    fn mention_card_send_creates_the_dm_by_username_and_navigates() {
         use std::io::{BufRead, BufReader, Read, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let api =
@@ -27007,7 +28321,18 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
+                if request == "POST /api/chat/channels/dm0000000002/messages HTTP/1.1\r\n" {
+                    let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(sent["text"], "Hello from profile");
+                    assert!(
+                        uuid::Uuid::parse_str(sent["clientMessageId"].as_str().unwrap()).is_ok()
+                    );
+                    let reply = serde_json::json!({"id":"m1","channelId":"dm0000000002","seq":"1","createdAt":"2026-10-11T00:00:00Z","clientMessageId":sent["clientMessageId"],"author":{"id":"fixture_owner","name":"Owner","isGuest":false},"content":{"version":1,"type":"text","text":sent["text"]}}).to_string();
+                    write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                    continue;
+                }
                 let reply = match request.as_str() {
+                    "GET /api/dms HTTP/1.1\r\n" => Some(r#"{"conversations":[]}"#),
                     "GET /api/chat/channels/dm0000000002/messages HTTP/1.1\r\n" => Some(
                         r#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000002","name":"Alex","direct":true},"messages":[],"cursor":"0","hasMore":false}"#,
                     ),
@@ -27018,7 +28343,7 @@ mod tests {
                 };
                 if let Some(reply) = reply {
                     write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
-                    if request.starts_with("POST /api/chat/session ") {
+                    if request.starts_with("GET /api/chat/channels/dm0000000002/messages ") {
                         return creation.unwrap();
                     }
                     continue;
@@ -27046,8 +28371,10 @@ mod tests {
             pill_center(&output, ALEX_MESSAGE, "@alex"),
         );
         // New egui areas spend their first pass measuring, invisibly.
+        render(&mut app, &context, vec![]);
+        app.profile_drafts.get_mut("fixture-alex").unwrap().text = "Hello from profile".into();
         let output = render(&mut app, &context, vec![]);
-        click_at(&mut app, &context, text_center(&output, "Message"));
+        click_at(&mut app, &context, text_center(&output, "Send"));
         let deadline = Instant::now() + Duration::from_secs(10);
         while app.selected_direct.is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -27306,7 +28633,7 @@ mod tests {
         click_at(&mut app, &context, reply);
         assert_eq!(card_entry(&app), Some("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Alex") && shows(&output, "Message"));
+        assert!(shows(&output, "Alex") && shows_control(&output, "Send"));
     }
 
     #[test]
@@ -28349,6 +29676,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn channel_emoji_button_inserts_at_the_caret_and_refocuses_the_composer() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        app.draft = "Hello world".into();
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let id = super::EmojiTarget::Channel.editor();
+        let mut state = egui::TextEdit::load_state(&context, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(5),
+            )));
+        state.store(&context, id);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Insert emoji"));
+        assert!(matches!(
+            app.composer_emoji,
+            Some((super::EmojiTarget::Channel, _))
+        ));
+        app.reaction_search = "party-popper".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        // The search field also draws "party-popper"; click the emoji itself.
+        let popper = labelled_center(&output, "party-popper").unwrap();
+        click_at(&mut app, &context, popper);
+        assert_eq!(app.draft, "Hello🎉 world");
+        assert!(app.composer_emoji.is_none());
+        assert!(app.pending.is_none(), "inserting never sends");
+        render(&mut app, &context, vec![]);
+        assert!(context.memory(|memory| memory.has_focus(id)));
+    }
+
     fn session() -> ChatSession {
         ChatSession {
             token: "chat-token".into(),
@@ -28956,6 +30322,7 @@ mod tests {
                 }
                 _ => None,
             })
+            .or_else(|| labelled_center(output, label))
             .unwrap_or_else(|| panic!("missing {label}"))
     }
 
