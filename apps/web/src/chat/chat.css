@@ -561,7 +561,7 @@
   filter: blur(2px);
 }
 .chat-reply-glow ellipse {
-  opacity: 0.18;
+  opacity: 0.5;
 }
 @keyframes chat-reply-sweep {
   0% {
@@ -571,11 +571,11 @@
   7% {
     opacity: 1;
   }
-  45% {
+  65% {
     offset-distance: 100%;
     opacity: 1;
   }
-  53%,
+  73%,
   100% {
     offset-distance: 100%;
     opacity: 0;

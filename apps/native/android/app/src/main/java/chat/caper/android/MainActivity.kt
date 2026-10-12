@@ -2489,8 +2489,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (still || hidden) return@LaunchedEffect
         while (isActive) {
             sweep.snapTo(0f)
-            sweep.animateTo(1f, tween(2200, easing = LinearEasing))
-            delay(2000)
+            sweep.animateTo(1f, tween(2800, easing = LinearEasing))
+            delay(1400)
         }
     }
     val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
@@ -2516,15 +2516,17 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (!hidden) drawCircle(TextMuted.copy(alpha = 0.4f), 8.5.dp.toPx(), Offset(sourceX + 8.dp.toPx(), sourceY), style = Stroke(1.dp.toPx()))
         if (!hidden && !still && sweep.value > 0f && sweep.value < 1f) {
             val measure = PathMeasure().apply { setPath(path, false) }
-            val fade = minOf(1f, sweep.value / 0.14f, (1f - sweep.value) / 0.18f)
+            val fade = minOf(1f, sweep.value / 0.105f, (1f - sweep.value) / 0.12f)
             val light = Brush.radialGradient(
-                0f to TerracottaBright.copy(alpha = 0.9f * fade),
-                0.22f to TerracottaBright.copy(alpha = 0.5f * fade),
-                0.6f to TerracottaBright.copy(alpha = 0.12f * fade),
+                0f to chat.caper.android.ui.Text.copy(alpha = fade),
+                0.16f to chat.caper.android.ui.Text.copy(alpha = fade),
+                0.32f to TerracottaBright.copy(alpha = 0.95f * fade),
+                0.6f to TerracottaBright.copy(alpha = 0.3f * fade),
                 1f to Color.Transparent,
-                center = measure.getPosition(sweep.value * measure.length), radius = 28.dp.toPx(),
+                center = measure.getPosition(sweep.value * measure.length), radius = 36.dp.toPx(),
             )
-            drawPath(path, light, alpha = 0.18f, style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(path, light, alpha = 0.08f, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(path, light, alpha = 0.3f, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
             drawPath(ribbon, light)
         }
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {

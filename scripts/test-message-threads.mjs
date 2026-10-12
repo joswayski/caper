@@ -417,7 +417,7 @@ const checkLongQuotePreview = async (layout) => {
     assert.equal(
       evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationIterationCount`),
       "infinite",
-      "The visible motion does not require a hover or focus trigger",
+      "The automatic motion does not require a hover or focus trigger",
     );
     const samples = evaluate(`new Promise(resolve => {
       const beam = document.querySelector('${selector} .chat-reply-flow:not(.chat-reply-glow)');
@@ -430,7 +430,7 @@ const checkLongQuotePreview = async (layout) => {
     })`);
     assert.ok(
       samples.some((sample) => sample.opacity > 0.8),
-      "The warm beam is visible while idle",
+      "The light fades in while idle",
     );
     assert.ok(
       samples.some((sample) => sample.opacity === 0),

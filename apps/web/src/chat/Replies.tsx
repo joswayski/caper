@@ -89,9 +89,10 @@ export function ReplyContext({
           </clipPath>
           <path id={routeId} className="chat-reply-route" d={path} />
           <radialGradient id={lightId}>
-            <stop offset="0" stopColor="currentColor" stopOpacity="0.9" />
-            <stop offset="0.22" stopColor="currentColor" stopOpacity="0.5" />
-            <stop offset="0.6" stopColor="currentColor" stopOpacity="0.12" />
+            <stop offset="0" stopColor="var(--text)" stopOpacity="1" />
+            <stop offset="0.16" stopColor="var(--text)" stopOpacity="1" />
+            <stop offset="0.32" stopColor="currentColor" stopOpacity="0.95" />
+            <stop offset="0.6" stopColor="currentColor" stopOpacity="0.3" />
             <stop offset="1" stopColor="currentColor" stopOpacity="0" />
           </radialGradient>
         </defs>
@@ -99,11 +100,11 @@ export function ReplyContext({
         {!hidden && (
           <>
             <g className="chat-reply-flow chat-reply-glow" style={{ offsetPath: `url(#${routeId})` }}>
-              <ellipse rx="28" ry="3" fill={`url(#${lightId})`} />
+              <ellipse rx="36" ry="5" fill={`url(#${lightId})`} />
             </g>
             <g clipPath={`url(#${clipId})`}>
               <g className="chat-reply-flow" style={{ offsetPath: `url(#${routeId})` }}>
-                <ellipse rx="28" ry="3" fill={`url(#${lightId})`} />
+                <ellipse rx="36" ry="3" fill={`url(#${lightId})`} />
               </g>
             </g>
           </>

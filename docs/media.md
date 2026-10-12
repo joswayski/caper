@@ -6628,11 +6628,12 @@ connects both outlined avatar boundaries, tapering from thin at the replying
 author to thicker at the quoted source. Quotes wrap to three lines;
 **Show more / Show less** reveals the complete saved text separately from source
 navigation. Web, Android and Apple automatically move a feathered terracotta
-light inside the wire from the replying author toward the quoted source, with
-gradual falloff at both ends and only a faint surrounding halo, rather than a
-solid moving stroke. A quiet pause separates passes (about 4.2 seconds per
-cycle). Reduced motion and blocked-source context
-disable the light; Rust desktop keeps the tapered connector static. Replies
+light with a bright neutral center inside the wire from the replying author
+toward the quoted source, with gradual falloff at both ends and a soft surrounding
+halo, rather than a solid moving stroke. The brighter center remains compact on
+expanded quotes. Each pass lasts about 2.8 seconds; a quiet pause separates passes
+(about 4.2 seconds per cycle). Reduced motion and blocked-source context disable
+the light; Rust desktop keeps the tapered connector static. Replies
 retain a faint neutral background; mentions,
 selected threads and source-jump highlights keep their stronger colors. Desktop
 message toolbars expose **Reply** beside **Reply in thread**, including Reply
@@ -6665,7 +6666,7 @@ push rules are unchanged.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, 200/4,000-scalar Unicode quote boundaries and transactional full-text outbox snapshots. Low-memory builds use one job and zero debug information. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files. Browser checks cover full immutable quotes, three-line wrapping, expansion, both avatar attachments, a separate quote card, long URLs, source jumps and blocked-source privacy. The motion check samples live idle frames for visible upward travel, a quiet pause and repetition; reduced motion removes animation. The test waits for the live virtualized list rather than its temporary hydration preview. Existing thread/reaction/resize/retry/long-press checks and attachment recovery remain applicable. Inspected 2x desktop and narrow collapsed/expanded quotes, thread/Pins states and motion recording frames. Not Safari or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files. Browser checks cover full immutable quotes, three-line wrapping, expansion, both avatar attachments, a separate quote card, long URLs, source jumps and blocked-source privacy. The motion check samples live opacity and rendered position for automatic upward travel, a quiet pause and repetition; reduced motion removes animation. These style/geometry assertions do not establish perceptual visibility. Independently decoded 1x desktop recording pixels show peak wire luma increase over idle rising from 7 to 108 (0–255 scale), with upward movement and repetition retained in the looping GIF. Inspected fresh 2x desktop/narrow frames and 20fps desktop/expanded-narrow recordings. The narrow capture verifies coarse-pointer touch emulation, not a native phone. The test waits for the live virtualized list rather than its temporary hydration preview. Existing thread/reaction/resize/retry/long-press checks and attachment recovery remain applicable. Not Safari or physical-device acceptance. |
 | Rust desktop | 417 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. The separate quote card, tapered static connector and avatar outlines are implemented. Quote tests cover legacy compatibility, full Unicode snapshots and frozen retries. Inspected 2x Linux quote fixtures; initial-reply validation also exercised quick Reply while retaining the draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |

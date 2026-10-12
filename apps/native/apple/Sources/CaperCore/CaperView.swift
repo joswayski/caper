@@ -4522,7 +4522,7 @@ private struct NativeReplyContext: View {
             .overlay(alignment: .topLeading) {
                 GeometryReader { geometry in
                     TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || hidden)) { timeline in
-                        let progress = CGFloat(min(1, max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 4.2) / 2.2)))
+                        let progress = CGFloat(min(1, max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 4.2) / 2.8)))
                         let bottom = geometry.size.height + 6
                         let ribbon = Path { path in
                             path.move(to: CGPoint(x: 16.45, y: bottom))
@@ -4547,14 +4547,15 @@ private struct NativeReplyContext: View {
                             rings.stroke(CaperTheme.muted.opacity(0.4), lineWidth: 1)
                             if !reduceMotion && !hidden && progress > 0 && progress < 1,
                                let center = path.trimmedPath(from: 0, to: progress).currentPoint {
-                                let fade = Double(min(1, min(progress / 0.14, (1 - progress) / 0.18)))
+                                let fade = Double(min(1, min(progress / 0.105, (1 - progress) / 0.12)))
                                 let light = RadialGradient(stops: [
-                                    .init(color: CaperTheme.terracottaBright.opacity(0.9), location: 0),
-                                    .init(color: CaperTheme.terracottaBright.opacity(0.5), location: 0.22),
-                                    .init(color: CaperTheme.terracottaBright.opacity(0.12), location: 0.6),
+                                    .init(color: CaperTheme.text, location: 0),
+                                    .init(color: CaperTheme.text, location: 0.16),
+                                    .init(color: CaperTheme.terracottaBright.opacity(0.95), location: 0.32),
+                                    .init(color: CaperTheme.terracottaBright.opacity(0.3), location: 0.6),
                                     .init(color: .clear, location: 1),
-                                ], center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 28)
-                                path.stroke(light, style: StrokeStyle(lineWidth: 5, lineCap: .round)).opacity(0.18 * fade).blur(radius: 2)
+                                ], center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 36)
+                                path.stroke(light, style: StrokeStyle(lineWidth: 7, lineCap: .round)).opacity(0.5 * fade).blur(radius: 2)
                                 ribbon.fill(light).opacity(fade)
                             }
                         }.frame(width: 57, height: geometry.size.height + 40)
