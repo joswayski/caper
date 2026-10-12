@@ -2534,7 +2534,7 @@ UPDATE feedback_team SET deleted_at = now() WHERE user_id = (SELECT id FROM user
 SELECT u.username, t.created_at FROM feedback_team t JOIN users u ON u.id = t.user_id WHERE t.deleted_at IS NULL;
 ```
 
-Migration `202610120001_feedback.sql` adds the Caper account, the two tables
+Migration `202610120002_feedback.sql` adds the Caper account, the two tables
 and the function.
 `--migrate` grants the runtime role `SELECT` on `feedback_team`, `SELECT, INSERT,
 UPDATE` on `feedback_reports`, its sequence and `EXECUTE` on `feedback_access`. Every
