@@ -119,6 +119,14 @@ internal fun feedbackTargetFromNotification(
     }
 }
 
+/** The list without [report]'s thread (archive and restore move whole threads). */
+internal fun withoutThread(reports: List<FeedbackReport>, report: FeedbackReport): List<FeedbackReport> =
+    reports.filterNot { it.channel.id == report.channel.id && it.threadRootId == report.threadRootId }
+
+/** A row's archive action, as read aloud: archive from the inbox, restore from the archive. */
+internal fun archiveActionLabel(report: FeedbackReport, archived: Boolean): String =
+    if (archived) "Restore feedback from ${report.reporter.name} to the inbox" else "Archive feedback from ${report.reporter.name}"
+
 /** Appends a next page (or replaces the list for the first page), keeping one row per report. */
 internal fun mergeFeedbackPage(current: List<FeedbackReport>, page: FeedbackReports, first: Boolean): List<FeedbackReport> =
     (if (first) page.reports else current + page.reports).distinctBy { it.id }

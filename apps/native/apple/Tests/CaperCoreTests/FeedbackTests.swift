@@ -25,6 +25,21 @@ private final class FeedbackMockURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+private func feedbackBody(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count <= 0 { break }
+        body.append(buffer, count: count)
+    }
+    return body
+}
+
 final class FeedbackTests: XCTestCase {
     private let selfID = "Team00000001"
     private let channelID = "Chan00000001"
@@ -44,7 +59,7 @@ final class FeedbackTests: XCTestCase {
        "text":"@feedback uploads fail\nfrom the share sheet","attachments":2,
        "reporter":{"id":"Alice0000001","username":"alice","displayName":"Alice","avatarId":12},
        "channel":{"id":"Chan00000001","name":"plans","direct":false},"space":{"id":"Space0000001","name":"Studio"},
-       "replyCount":3,"answered":true},
+       "replyCount":3,"answered":true,"archived":false},
       {"id":"Note00000000001","messageId":"Note00000000001","threadRootId":"Note00000000001","createdAt":"2026-10-11T18:00:00Z",
        "text":"","attachments":1,
        "reporter":{"id":"Bob000000001","username":"bob","displayName":"Bob","avatarId":null},
@@ -77,6 +92,7 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(first.space, FeedbackReport.SpaceReference(id: "Space0000001", name: "Studio"))
         XCTAssertEqual(first.replyCount, 3)
         XCTAssertTrue(first.answered)
+        XCTAssertFalse(first.archived)
         let direct = page.reports[1]
         XCTAssertNil(direct.space)
         XCTAssertNil(direct.reporter.avatarId)
@@ -92,6 +108,11 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(sparse.threadRootId, "Msg000000000001", "a top-level report is its own thread")
         XCTAssertEqual(sparse.text, "")
         XCTAssertNil(sparse.space, "an empty space is a DM")
+        XCTAssertFalse(sparse.archived, "missing means not archived")
+        let archived = try JSONDecoder().decode(FeedbackReport.self, from: Data(#"""
+        {"messageId":"Msg000000000002","reporter":{"id":"r","username":"r","displayName":"R"},"channel":{"id":"c","name":"general","direct":false},"archived":true}
+        """#.utf8))
+        XCTAssertTrue(archived.archived)
     }
 
     func testVisitorAdminAndFeedbackMentionDecode() throws {
@@ -248,6 +269,15 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(FeedbackInbox.preview(files), "Sent 3 files")
         XCTAssertEqual(FeedbackInbox.status(channel), "Answered")
         XCTAssertEqual(FeedbackInbox.status(direct), "Waiting")
+        XCTAssertTrue(FeedbackInbox.accessibilityLabel(channel, archived: false).hasSuffix("Answered"))
+        XCTAssertFalse(FeedbackInbox.accessibilityLabel(channel, archived: true).contains("Answered"), "archived rows have no status")
+        XCTAssertTrue(channel.sharesThread(with: channel))
+        XCTAssertFalse(channel.sharesThread(with: direct))
+        XCTAssertEqual(FeedbackInbox.archivedTitle, "Archived feedback")
+        XCTAssertEqual(FeedbackInbox.archivedEmpty, "Nothing archived.")
+        XCTAssertEqual(FeedbackInbox.showArchived, "Show archived")
+        XCTAssertEqual(FeedbackInbox.backToFeedback, "Back to feedback")
+        XCTAssertEqual(FeedbackInbox.restore, "Restore to the inbox")
         XCTAssertEqual(FeedbackInbox.waitingCount(page.reports), 1)
         XCTAssertEqual(FeedbackInbox.merging([channel], [channel, direct]).map(\.id), [channel.id, direct.id], "pages never repeat a report")
 
@@ -344,6 +374,65 @@ final class FeedbackTests: XCTestCase {
     }
 
     @MainActor
+    func testArchivingRemovesTheThreadAtOnceAndArchivedListSwitches() async throws {
+        var requests: [String] = []
+        var bodies: [[String: Any]] = []
+        var archiveStatus = 204
+        FeedbackMockURLProtocol.handler = { request in
+            let line = "\(request.httpMethod ?? "") \(request.url?.path ?? "")" + (request.url?.query.map { "?\($0)" } ?? "")
+            requests.append(line)
+            switch request.url?.path {
+            case "/api/feedback":
+                if request.url?.query?.contains("archived=true") == true {
+                    return (200, Data(#"{"reports":[],"cursor":null}"#.utf8))
+                }
+                return (200, Data(self.samplePage.utf8))
+            case "/api/feedback/archive":
+                bodies.append(try XCTUnwrap(JSONSerialization.jsonObject(with: feedbackBody(request)) as? [String: Any]))
+                return (archiveStatus, archiveStatus == 204 ? Data() : Data(#"{"error":"unavailable"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: selfID, username: "team", displayName: "Team", feedbackTeam: true)
+        await model.refreshFeedback()
+        let report = try XCTUnwrap(model.feedbackReports.first)
+        XCTAssertEqual(FeedbackInbox.archiveLabel(report), "Archive feedback from Alice")
+
+        requests = []
+        await model.setFeedbackArchived(report, archived: true)
+        XCTAssertEqual(requests, ["PUT /api/feedback/archive", "GET /api/feedback"], "archives, then refreshes")
+        XCTAssertEqual(bodies.first?["channelId"] as? String, channelID)
+        XCTAssertEqual(bodies.first?["threadRootId"] as? String, rootID)
+        XCTAssertEqual(bodies.first?["archived"] as? Bool, true)
+        XCTAssertNil(model.feedbackError)
+
+        archiveStatus = 503
+        await model.setFeedbackArchived(report, archived: true)
+        XCTAssertEqual(model.feedbackError, FeedbackInbox.archiveFailed, "a failure shows why")
+        XCTAssertEqual(model.feedbackReports.count, 2, "and reloads the list")
+
+        requests = []
+        await model.showArchivedFeedback(true)
+        XCTAssertTrue(model.showingArchivedFeedback)
+        XCTAssertEqual(requests, ["GET /api/feedback?archived=true"])
+        XCTAssertEqual(model.feedbackReports, [])
+        XCTAssertTrue(model.feedbackLoaded)
+        XCTAssertNil(model.feedbackError)
+        archiveStatus = 204
+        await model.setFeedbackArchived(report, archived: false)
+        XCTAssertEqual(bodies.last?["archived"] as? Bool, false, "Restore to the inbox")
+        await model.showArchivedFeedback(false)
+        XCTAssertEqual(requests.last, "GET /api/feedback")
+        XCTAssertEqual(model.feedbackReports.count, 2)
+
+        // The API keeps archived and paging together.
+        requests = []
+        _ = try await client().feedbackReports(before: "123", archived: true)
+        XCTAssertEqual(requests, ["GET /api/feedback?archived=true&before=123"])
+    }
+
+    @MainActor
     func testOpeningAReportVisitsWithItsThreadOpen() async throws {
         let history = """
         {"space":{"id":"Space0000001","name":"Studio"},"channel":{"id":"\(channelID)","name":"plans"},
@@ -385,7 +474,7 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(model.visit?.reporter, reporter)
         XCTAssertNil(model.selectedChannelID, "a visit is not a channel in the sidebar")
         XCTAssertNil(model.selectedDirectMessageID)
-        XCTAssertTrue(model.showingFeedback, "Back returns to the inbox, whose row holds voice")
+        XCTAssertTrue(model.showingFeedback, "Back returns to the inbox")
         let channel = try XCTUnwrap(model.visitChannel, "a visited space channel offers voice")
         XCTAssertEqual(channel.spaceId, "Space0000001")
         XCTAssertNil(model.voiceAvailable(in: channel))

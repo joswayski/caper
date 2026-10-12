@@ -978,9 +978,7 @@ private struct ChannelSidebar: View {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
-                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })),
-                       // The expanded Feedback inbox shows a visited channel's call under its row.
-                       narrow || !model.showingFeedback || model.visitChannel == nil || model.visitChannel?.id != model.voice.context?.channelID {
+                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("In voice · \(model.voice.participants.count) · \(model.voice.context?.channelName ?? "general")")
                                 .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -1318,6 +1316,9 @@ private struct SidebarIconButton: ButtonStyle {
 private struct ChannelVoiceSlot: View {
     @Bindable var model: AppModel
     let channel: Channel
+    /// In a visited channel's header: one line, with who is in voice in a
+    /// popover (a sheet on iPhone) instead of below.
+    var inHeader = false
     @State private var collapsed = true
 
     private var active: Bool {
@@ -1392,13 +1393,16 @@ private struct ChannelVoiceSlot: View {
                 }
                 Spacer(minLength: 0)
                 if active && model.voice.phase == .connected {
-                    Color.clear.frame(width: 108)
-                        #if os(iOS)
-                        .frame(height: 44)
-                        #else
-                        .frame(height: 28)
-                        #endif
-                        .accessibilityHidden(true)
+                    // In the header the call's own controls are elsewhere (account bar).
+                    if !inHeader {
+                        Color.clear.frame(width: 108)
+                            #if os(iOS)
+                            .frame(height: 44)
+                            #else
+                            .frame(height: 28)
+                            #endif
+                            .accessibilityHidden(true)
+                    }
                 } else {
                     Button {
                         Task { await model.joinVoice(channel: channel) }
@@ -1416,23 +1420,31 @@ private struct ChannelVoiceSlot: View {
                 }
             }
             .padding(.trailing, 4)
-            if !collapsed {
-                if active {
-                    VoiceRoster(model: model)
-                } else {
-                    ForEach(occupants) { person in
-                        HStack(spacing: 7) {
-                            Avatar(name: person.name, size: 23, avatarID: person.avatarId)
-                            Text(person.name).lineLimit(1)
-                            if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                            if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
-                        }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                            .accessibilityElement(children: .combine)
-                    }
-                }
+            if !collapsed && !inHeader { roster(occupants) }
+        }.padding(.bottom, inHeader ? 0 : 2)
+            .popover(isPresented: Binding(get: { inHeader && !collapsed }, set: { if !$0 { collapsed = true } }),
+                     arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) { roster(occupants) }
+                    .padding(12).frame(minWidth: 220, alignment: .leading)
+                    .presentationCompactAdaptation(.popover)
             }
-        }.padding(.bottom, 2)
             .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+    }
+
+    @ViewBuilder private func roster(_ occupants: [VoiceSpectator]) -> some View {
+        if active {
+            VoiceRoster(model: model)
+        } else {
+            ForEach(occupants) { person in
+                HStack(spacing: 7) {
+                    Avatar(name: person.name, size: 23, avatarID: person.avatarId)
+                    Text(person.name).lineLimit(1)
+                    if person.muted { CaperIcon(name: "mic-off", size: 13) }
+                    if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
+                }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityElement(children: .combine)
+            }
+        }
     }
 }
 
@@ -2331,6 +2343,10 @@ private struct ChatView: View {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
+                }
+                // A visited space channel's voice: Join voice, who is in it.
+                if let channel = model.visitChannel, model.isVisitVoice(channel) {
+                    ChannelVoiceSlot(model: model, channel: channel, inHeader: true).fixedSize()
                 }
                 Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                     .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
@@ -4630,7 +4646,8 @@ private struct FeedbackRow: View {
     let narrow: Bool
     let rowHeight: CGFloat
     var body: some View {
-        let waiting = FeedbackInbox.waitingCount(model.feedbackReports)
+        // The archived list has no waiting count.
+        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
         Button {
             // Phones push the inbox; sidebars expand it in place.
             if narrow { model.showingFeedback = true } else { model.showingFeedback.toggle() }
@@ -4675,18 +4692,12 @@ private struct FeedbackPullToRefresh: ViewModifier {
 
 /// The feedback team's inbox: nested under its row in a sidebar, or a pushed
 /// page in Browse on narrow layouts. Newest first; a row visits its
-/// conversation at the reported message, with its thread open.
+/// conversation at the reported message, with its thread open. "Show
+/// archived" switches it to the threads the team archived.
 private struct FeedbackInboxList: View {
     @Bindable var model: AppModel
     let pushed: Bool
-    /// The row that holds the visited channel's voice: the visited report, or
-    /// another report from that channel.
-    private var voiceReportID: String? {
-        guard let visit = model.visit, model.visitChannel != nil else { return nil }
-        let reports = model.feedbackReports
-        return (reports.first { $0.channel.id == visit.channelID && $0.messageId == visit.reportID }
-            ?? reports.first { $0.channel.id == visit.channelID })?.id
-    }
+    private var archived: Bool { model.showingArchivedFeedback }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if pushed {
@@ -4700,10 +4711,16 @@ private struct FeedbackInboxList: View {
                     }.buttonStyle(.plain).modifier(ControlHover()).accessibilityIdentifier("feedback-back")
                     Spacer()
                 }
-                Text(FeedbackInbox.title).font(CaperTheme.font(15, weight: .bold)).padding(.bottom, 4)
-                Text(FeedbackInbox.subtitle)
-                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(.bottom, 8)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(archived ? FeedbackInbox.archivedTitle : FeedbackInbox.title)
+                    .font(CaperTheme.font(15, weight: .bold)).padding(.bottom, 4)
+                if !archived {
+                    Text(FeedbackInbox.subtitle)
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(.bottom, 8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if archived {
+                Text(FeedbackInbox.archivedTitle).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
             }
             if let error = model.feedbackError {
                 HStack(spacing: 8) {
@@ -4718,18 +4735,15 @@ private struct FeedbackInboxList: View {
                 if !model.feedbackLoaded && model.feedbackLoading {
                     Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
                 } else if model.feedbackLoaded {
-                    Text(FeedbackInbox.empty).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                    Text(archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
                 }
             }
             // Relative times stay current while the inbox is open.
             TimelineView(.everyMinute) { context in
                 VStack(spacing: 2) {
                     ForEach(model.feedbackReports) { report in
-                        FeedbackReportRow(model: model, report: report, pushed: pushed, now: context.date)
-                        // A visited space channel's voice, like a channel row's.
-                        if report.id == voiceReportID, let channel = model.visitChannel {
-                            ChannelVoiceSlot(model: model, channel: channel).padding(.leading, pushed ? 41 : 31)
-                        }
+                        FeedbackReportRow(model: model, report: report, pushed: pushed, archived: archived, now: context.date)
                     }
                 }
             }
@@ -4740,6 +4754,19 @@ private struct FeedbackInboxList: View {
                     .disabled(model.feedbackLoading)
                     .accessibilityIdentifier("feedback-load-older")
             }
+            // Quiet, at the bottom: archived threads, and back.
+            Button(archived ? FeedbackInbox.backToFeedback : FeedbackInbox.showArchived) {
+                Task { await model.showArchivedFeedback(!archived) }
+            }
+                .buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 28)
+                #endif
+                .padding(.horizontal, pushed ? 0 : 9)
+                .contentShape(Rectangle()).modifier(ControlHover())
+                .accessibilityIdentifier("feedback-show-archived")
         }
         .padding(.horizontal, pushed ? 16 : 0).padding(.leading, pushed ? 0 : 16)
         .padding(.vertical, pushed ? 8 : 0)
@@ -4751,16 +4778,50 @@ private struct FeedbackInboxList: View {
     }
 }
 
-/// One report: who asked, where, what, when, and whether the team answered.
+/// One report: who asked, where, what, when, and (in the inbox) whether the
+/// team answered. Archive (Restore in the archived list) is a hover button
+/// on macOS and a context menu (press and hold on iPhone) everywhere.
 private struct FeedbackReportRow: View {
     @Bindable var model: AppModel
     let report: FeedbackReport
     let pushed: Bool
+    let archived: Bool
     let now: Date
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var actionFocused: Bool
+    #endif
     private var selected: Bool { model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId }
+    private var actionLabel: String { archived ? FeedbackInbox.restore : FeedbackInbox.archiveLabel(report) }
+    private func toggleArchive() {
+        Task { await model.setFeedbackArchived(report, archived: !archived) }
+    }
     var body: some View {
+        HStack(alignment: .top, spacing: 2) {
+            rowButton
+            #if os(macOS)
+            Button(action: toggleArchive) {
+                Image(systemName: archived ? "tray.and.arrow.up" : "archivebox").font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
+                .focused($actionFocused)
+                .opacity(hovered || actionFocused ? 1 : 0)
+                .allowsHitTesting(hovered || actionFocused)
+                .modifier(ControlHover(isFocused: actionFocused))
+                .help(actionLabel).accessibilityLabel(actionLabel)
+                .accessibilityIdentifier("feedback-archive-\(report.id)")
+            #endif
+        }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
+        .contextMenu {
+            Button(actionLabel, systemImage: archived ? "tray.and.arrow.up" : "archivebox", action: toggleArchive)
+        }
+    }
+    private var rowButton: some View {
         let preview = FeedbackInbox.preview(report)
-        Button { Task { await model.openFeedback(report) } } label: {
+        return Button { Task { await model.openFeedback(report) } } label: {
             HStack(alignment: .top, spacing: 9) {
                 Avatar(name: report.reporter.displayName, size: pushed ? 32 : 22, avatarID: report.reporter.avatarId)
                 VStack(alignment: .leading, spacing: 2) {
@@ -4776,8 +4837,10 @@ private struct FeedbackReportRow: View {
                         Text(preview).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text).lineLimit(2)
                             .multilineTextAlignment(.leading)
                     }
-                    Text(FeedbackInbox.status(report)).font(CaperTheme.font(10, weight: .bold))
-                        .foregroundStyle(report.answered ? CaperTheme.muted : CaperTheme.terracottaBright)
+                    if !archived {
+                        Text(FeedbackInbox.status(report)).font(CaperTheme.font(10, weight: .bold))
+                            .foregroundStyle(report.answered ? CaperTheme.muted : CaperTheme.terracottaBright)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -4790,9 +4853,10 @@ private struct FeedbackReportRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
-            .accessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now))
+            .accessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now, archived: archived))
             .accessibilityValue(selected ? "Selected" : "")
             .accessibilityIdentifier("feedback-report-\(report.id)")
+            .accessibilityAction(named: Text(actionLabel), toggleArchive)
     }
 }
 

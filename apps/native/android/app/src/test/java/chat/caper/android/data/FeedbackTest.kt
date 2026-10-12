@@ -123,6 +123,19 @@ class FeedbackTest {
         assertEquals("", age("yesterday"))
     }
 
+    @Test fun `archive moves whole threads and says whose feedback it is`() {
+        val (channel, direct) = page.reports
+        assertFalse(channel.archived)
+        assertTrue(json.decodeFromString<FeedbackReports>("""{"reports":[{"id":"message00000004","messageId":"message00000004","threadRootId":"message00000004",
+            "createdAt":"2026-10-11T18:00:00Z","reporter":{"id":"bob000000001"},"channel":{"id":"direct000001","name":"Bob"},"archived":true}]}""").reports.single().archived)
+        // Another report in the same thread goes with it; the same root in another conversation stays.
+        val sameThread = channel.copy(id = "message00000005", messageId = "message00000005")
+        val elsewhere = channel.copy(id = "message00000006", channel = channel.channel.copy(id = "channel00002"))
+        assertEquals(listOf(direct, elsewhere), withoutThread(listOf(channel, direct, sameThread, elsewhere), channel))
+        assertEquals("Archive feedback from Alice", archiveActionLabel(channel, archived = false))
+        assertEquals("Restore feedback from Alice to the inbox", archiveActionLabel(channel, archived = true))
+    }
+
     @Test fun `pages append without duplicates and cursors are decimal`() {
         val loaded = page.reports.take(1)
         assertEquals(page.reports, mergeFeedbackPage(loaded, page, first = false))

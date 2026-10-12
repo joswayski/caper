@@ -3,6 +3,10 @@ package chat.caper.android
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,7 +19,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.ADMIN_BADGE
+import chat.caper.android.data.archiveActionLabel
 import chat.caper.android.data.feedbackAge
 import chat.caper.android.data.feedbackLocation
 import chat.caper.android.data.feedbackPreview
@@ -46,19 +54,22 @@ import chat.caper.android.ui.*
             if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
             }
-            Text("Feedback", Modifier.weight(1f).semantics { heading() }, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(if (inbox.archived) "Archived feedback" else "Feedback", Modifier.weight(1f).semantics { heading() }, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
         HorizontalDivider(color = Border)
         PullToRefreshBox(isRefreshing = inbox.loading && inbox.loaded, onRefresh = viewModel::refreshFeedback, modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 !inbox.loaded && inbox.error != null -> InboxNotice(inbox.error, "Try again", viewModel::refreshFeedback)
                 !inbox.loaded -> InboxNotice("Loading feedback…")
-                inbox.reports.isEmpty() -> InboxNotice("No feedback yet. Reports appear here when someone writes @feedback.")
+                // A failed archive or restore keeps its error on show, even once the list is empty.
+                inbox.reports.isEmpty() -> InboxNotice(inbox.error ?: if (inbox.archived) "Nothing archived." else "No feedback yet. Reports appear here when someone writes @feedback.")
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
                     inbox.error?.let { error -> item("error") {
                         Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), color = ErrorText, fontSize = 12.sp)
                     } }
-                    items(inbox.reports, key = { it.id }) { report -> FeedbackRow(report) { viewModel.openFeedbackReport(report) } }
+                    items(inbox.reports, key = { it.id }) { report ->
+                        FeedbackRow(report, inbox.archived, { viewModel.setFeedbackArchived(report, !inbox.archived) }) { viewModel.openFeedbackReport(report) }
+                    }
                     if (inbox.cursor != null) item("more") {
                         Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                             OutlinedButton(viewModel::loadMoreFeedback, enabled = !inbox.loadingMore && !inbox.loading, shape = MaterialTheme.shapes.small,
@@ -69,6 +80,12 @@ import chat.caper.android.ui.*
                     }
                 }
             }
+        }
+        // A quiet switch between the inbox and threads the team archived.
+        HorizontalDivider(color = Border)
+        TextButton({ viewModel.showArchivedFeedback(!inbox.archived) }, Modifier.align(Alignment.CenterHorizontally).padding(vertical = 2.dp),
+            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = TextMuted)) {
+            Text(if (inbox.archived) "Back to feedback" else "Show archived", fontSize = 12.sp)
         }
     }
 }
@@ -83,29 +100,55 @@ import chat.caper.android.ui.*
     }
 }
 
-/** One report: who, where, what, when, and a quiet status ("Waiting" in terracotta). */
-@Composable private fun FeedbackRow(report: FeedbackReport, open: () -> Unit) {
+/**
+ * One report: who, where, what, when, and a quiet status ("Waiting" in terracotta; none in the
+ * archive). Archive (or Restore to the inbox) is a long-press menu, an icon button while a
+ * pointer hovers, and an accessibility action.
+ */
+@Composable private fun FeedbackRow(report: FeedbackReport, archived: Boolean, toggleArchive: () -> Unit, open: () -> Unit) {
     val name = report.reporter.name
     val location = feedbackLocation(report)
     val preview = feedbackPreview(report)
     val age = feedbackAge(report.createdAt)
     val status = feedbackStatus(report)
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
-        .clickable(role = Role.Button, onClickLabel = "Open conversation", onClick = open)
-        .padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
-        Avatar(name, 34.dp, avatarId = report.reporter.avatarId)
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    Text(name, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (age.isNotEmpty()) { Spacer(Modifier.width(7.dp)); Text(age, color = TextMuted, fontSize = 10.sp, maxLines = 1) }
+    val actionLabel = archiveActionLabel(report, archived)
+    val hover = remember { MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
+    var menuOpen by remember(report.id) { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).hoverable(hover)
+            .combinedClickable(role = Role.Button, onClickLabel = "Open conversation", onLongClickLabel = actionLabel,
+                onLongClick = { menuOpen = true }, onClick = open)
+            .semantics { customActions = listOf(CustomAccessibilityAction(actionLabel) { toggleArchive(); true }) }
+            .padding(start = 18.dp, end = if (hovered) 4.dp else 18.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.Top) {
+            Avatar(name, 34.dp, avatarId = report.reporter.avatarId)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text(name, Modifier.weight(1f, fill = false), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (age.isNotEmpty()) { Spacer(Modifier.width(7.dp)); Text(age, color = TextMuted, fontSize = 10.sp, maxLines = 1) }
+                    }
+                    if (!archived) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(status, color = if (report.answered) TextMuted else TerracottaBright, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
                 }
-                Spacer(Modifier.width(8.dp))
-                Text(status, color = if (report.answered) TextMuted else TerracottaBright, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(location, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (preview.isNotEmpty()) Text(preview, color = MessageText, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            Text(location, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (preview.isNotEmpty()) Text(preview, color = MessageText, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // A mouse or trackpad shows the action on hover; touch uses the long-press menu.
+            if (hovered) IconButton(toggleArchive, Modifier.size(40.dp)) {
+                Icon(painterResource(if (archived) R.drawable.lucide_archive_restore else R.drawable.lucide_archive), actionLabel, Modifier.size(18.dp), tint = TextMuted)
+            }
+        }
+        DropdownMenu(menuOpen, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            DropdownMenuItem(
+                text = { Text(if (archived) "Restore to the inbox" else "Archive", fontSize = 13.sp) },
+                leadingIcon = { Icon(painterResource(if (archived) R.drawable.lucide_archive_restore else R.drawable.lucide_archive), null, Modifier.size(16.dp)) },
+                onClick = { menuOpen = false; toggleArchive() },
+                modifier = Modifier.semantics { contentDescription = actionLabel },
+            )
         }
     }
 }

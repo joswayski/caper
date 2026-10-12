@@ -209,6 +209,8 @@ enum NavIcon {
     Download,
     ExternalLink,
     Volume,
+    Archive,
+    Restore,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2244,6 +2246,11 @@ impl CaperApp {
                     request,
                     result,
                 } if epoch == self.account_epoch => self.feedback.finish(request, result),
+                // Success or failure, the list reloads; a failure stays shown.
+                Event::FeedbackArchived { epoch, result } if epoch == self.account_epoch => {
+                    self.load_feedback(false);
+                    self.feedback.action_error = result.err();
+                }
                 Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
                     if self.unread_refresh_due.is_none() {
                         self.unread_refresh_due = Some(Instant::now() + Duration::from_secs(1));
@@ -3017,8 +3024,33 @@ impl CaperApp {
                 request,
                 token,
                 before,
+                archived: self.feedback.archived,
             });
         }
+    }
+
+    /// Archives (or, in the archived view, restores) a report's whole thread
+    /// for the team. It leaves the list at once; the list then reloads.
+    fn archive_report(&mut self, report: &feedback::Report) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team()) else {
+            return;
+        };
+        let archived = !self.feedback.archived;
+        self.feedback
+            .remove_thread(&report.channel.id, &report.thread_root_id);
+        self.worker.send(Command::ArchiveFeedback {
+            epoch: self.account_epoch,
+            token,
+            channel: report.channel.id.clone(),
+            thread_root: report.thread_root_id.clone(),
+            archived,
+        });
+    }
+
+    /// The quiet toggle under the list: archived threads, or the inbox.
+    fn show_archived_feedback(&mut self, archived: bool) {
+        self.feedback.show_archived(archived);
+        self.load_feedback(false);
     }
 
     /// Where Back returns from a visit opened now.
@@ -10064,6 +10096,12 @@ impl CaperApp {
     /// first, each opening its conversation as a visit.
     fn feedback_inbox(&mut self, ui: &mut egui::Ui, narrow: bool) {
         let mut open = None;
+        let mut archive = None;
+        let title = if self.feedback.archived {
+            "Archived feedback"
+        } else {
+            "Feedback"
+        };
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -10084,7 +10122,7 @@ impl CaperApp {
                             if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
                                 self.navigation_open = true;
                             }
-                            ui.label(RichText::new("Feedback").size(13.76));
+                            ui.label(RichText::new(title).size(13.76));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -10108,6 +10146,10 @@ impl CaperApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(6.0);
+                    let archived_view = self.feedback.archived;
+                    if let Some(error) = self.feedback.action_error.clone() {
+                        history_row(ui, |ui| ui.colored_label(ERROR, error));
+                    }
                     if self.feedback.reports.is_empty() {
                         if let Some(error) = self.feedback.error.clone() {
                             chat_state(ui, 2, |ui| {
@@ -10119,6 +10161,10 @@ impl CaperApp {
                             });
                         } else if !self.feedback.loaded {
                             message_skeleton(ui);
+                        } else if archived_view {
+                            chat_state(ui, 1, |ui| {
+                                ui.label(RichText::new("Nothing archived.").color(MUTED));
+                            });
                         } else {
                             chat_state(ui, 2, |ui| {
                                 ui.label("No feedback yet.");
@@ -10130,39 +10176,61 @@ impl CaperApp {
                                 );
                             });
                         }
-                        return;
-                    }
-                    let now = chrono::Utc::now();
-                    for report in self.feedback.reports.clone() {
-                        if feedback_row(ui, &report, now).clicked() {
-                            open = Some(report.target());
+                    } else {
+                        let now = chrono::Utc::now();
+                        for report in self.feedback.reports.clone() {
+                            let (row, action) = feedback_row(ui, &report, now, archived_view);
+                            if action {
+                                archive = Some(report);
+                            } else if row.clicked() {
+                                open = Some(report.target());
+                            }
+                        }
+                        if let Some(error) = self.feedback.error.clone() {
+                            history_row(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(ERROR, error);
+                                    if ui.small_button("Retry").clicked() {
+                                        self.load_feedback(self.feedback.cursor.is_some());
+                                    }
+                                });
+                            });
+                        }
+                        if self.feedback.cursor.is_some()
+                            && history_row(ui, |ui| {
+                                centered_history_button(
+                                    ui,
+                                    "Load older feedback",
+                                    !self.feedback.loading_more,
+                                )
+                            })
+                            .clicked()
+                        {
+                            self.load_feedback(true);
                         }
                     }
-                    if let Some(error) = self.feedback.error.clone() {
-                        history_row(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(ERROR, error);
-                                if ui.small_button("Retry").clicked() {
-                                    self.load_feedback(self.feedback.cursor.is_some());
-                                }
-                            });
-                        });
-                    }
-                    if self.feedback.cursor.is_some()
-                        && history_row(ui, |ui| {
-                            centered_history_button(
-                                ui,
-                                "Load older feedback",
-                                !self.feedback.loading_more,
-                            )
-                        })
-                        .clicked()
+                    // The quiet way to the archive and back.
+                    if history_row(ui, |ui| {
+                        centered_history_button(
+                            ui,
+                            if archived_view {
+                                "Back to feedback"
+                            } else {
+                                "Show archived"
+                            },
+                            true,
+                        )
+                    })
+                    .clicked()
                     {
-                        self.load_feedback(true);
+                        self.show_archived_feedback(!archived_view);
                     }
                     ui.add_space(12.0);
                 });
         });
+        if let Some(report) = archive {
+            self.archive_report(&report);
+        }
         if let Some(target) = open {
             self.open_report(target, true);
         }
@@ -15299,6 +15367,8 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
+        NavIcon::Archive => egui::include_image!("../resources/icons/archive.svg"),
+        NavIcon::Restore => egui::include_image!("../resources/icons/archive-restore.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -15650,18 +15720,26 @@ fn admin_badge(ui: &mut egui::Ui) {
 }
 
 /// One inbox row: the reporter, where they wrote, a preview, the age and a
-/// quiet status ("Waiting" in terracotta).
+/// quiet status ("Waiting" in terracotta; none for archived threads), with a
+/// hover Archive (or Restore) button. Returns the row and whether that
+/// button was clicked.
 fn feedback_row(
     ui: &mut egui::Ui,
     report: &feedback::Report,
     now: chrono::DateTime<chrono::Utc>,
-) -> egui::Response {
+    archived_view: bool,
+) -> (egui::Response, bool) {
     let tint = ui.painter().add(egui::Shape::Noop);
     let width = ui.available_width();
     let shown = egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(18, 10))
+        .inner_margin(egui::Margin {
+            left: 18,
+            right: 18 + 36,
+            top: 10,
+            bottom: 10,
+        })
         .show(ui, |ui| {
-            ui.set_width(width - 36.0);
+            ui.set_width(width - 36.0 - 36.0);
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 3.0);
             ui.horizontal_top(|ui| {
                 let (rect, _) =
@@ -15700,27 +15778,38 @@ fn feedback_row(
                     let waiting = !report.answered;
                     let replies = match report.reply_count {
                         0 => String::new(),
-                        1 => " · 1 reply".into(),
-                        count => format!(" · {count} replies"),
+                        1 => "1 reply".into(),
+                        count => format!("{count} replies"),
                     };
                     let mut status = egui::text::LayoutJob::default();
-                    status.append(
-                        report.status(),
-                        0.0,
-                        egui::TextFormat::simple(
-                            egui::FontId::new(
-                                11.0,
-                                egui::FontFamily::Name("Satoshi Medium".into()),
+                    // Archived threads carry no Waiting/Answered status.
+                    if !archived_view {
+                        status.append(
+                            report.status(),
+                            0.0,
+                            egui::TextFormat::simple(
+                                egui::FontId::new(
+                                    11.0,
+                                    egui::FontFamily::Name("Satoshi Medium".into()),
+                                ),
+                                if waiting { TERRACOTTA_BRIGHT } else { MUTED },
                             ),
-                            if waiting { TERRACOTTA_BRIGHT } else { MUTED },
-                        ),
-                    );
-                    status.append(
-                        &replies,
-                        0.0,
-                        egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED),
-                    );
-                    ui.label(status);
+                        );
+                    }
+                    if !replies.is_empty() {
+                        status.append(
+                            &if archived_view {
+                                replies
+                            } else {
+                                format!(" · {replies}")
+                            },
+                            0.0,
+                            egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED),
+                        );
+                    }
+                    if !status.text.is_empty() {
+                        ui.label(status);
+                    }
                 });
             });
         });
@@ -15733,21 +15822,61 @@ fn feedback_row(
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     response.widget_info(|| {
+        let status = if archived_view {
+            "archived"
+        } else {
+            report.status()
+        };
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
             format!(
-                "{}, {}, {}",
+                "{}, {}, {status}",
                 report.reporter.display_name,
                 report.place(),
-                report.status()
             ),
         )
     });
-    if response.hovered() || response.has_focus() {
+    // Archive or Restore, over the row so it takes its own clicks.
+    let button_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 18.0 - 14.0, rect.center().y),
+        egui::vec2(28.0, 28.0),
+    );
+    let button = ui
+        .interact(
+            button_rect,
+            ui.id().with(("feedback-archive", &report.id)),
+            egui::Sense::click(),
+        )
+        .on_hover_text(if archived_view {
+            "Restore to the inbox"
+        } else {
+            "Archive"
+        });
+    let label = report.action_label(archived_view);
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    if ui.rect_contains_pointer(rect) || response.has_focus() || button.has_focus() {
         ui.painter().set(
             tint,
             egui::Shape::rect_filled(rect.shrink2(egui::vec2(8.0, 1.0)), 8.0, RAISED),
+        );
+        let lit = button.hovered() || button.has_focus();
+        ui.painter().rect(
+            button_rect,
+            8.0,
+            if lit { RAISED } else { SURFACE },
+            Stroke::new(1.0, if lit { TERRACOTTA } else { BORDER }),
+            egui::StrokeKind::Inside,
+        );
+        paint_icon(
+            ui.painter(),
+            button_rect.shrink(6.0),
+            if archived_view {
+                NavIcon::Restore
+            } else {
+                NavIcon::Archive
+            },
+            if lit { TEXT } else { MUTED },
         );
     }
     if response.has_focus() {
@@ -15758,7 +15887,8 @@ fn feedback_row(
             egui::StrokeKind::Inside,
         );
     }
-    response
+    let clicked = button.clicked();
+    (response, clicked)
 }
 
 /// A message row: avatar, then the name and time above the body. A grouped
@@ -23697,6 +23827,50 @@ mod tests {
         // Any other navigation drops it.
         app.select_channel("chan00000001".into(), false);
         assert!(app.visit_request.is_none());
+    }
+
+    #[test]
+    fn archiving_leaves_the_inbox_and_the_toggle_lists_archived_threads() {
+        let (context, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Show archived"));
+        let report = app.feedback.reports[1].clone();
+        app.archive_report(&report);
+        assert_eq!(app.feedback.reports.len(), 1, "it leaves the list at once");
+        events
+            .send(crate::worker::Event::FeedbackArchived {
+                epoch: app.account_epoch,
+                result: Err("Archiving failed.".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.feedback.loading, "the list reloads");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Archiving failed."));
+        click_at(&mut app, &context, text_position(&output, "Show archived"));
+        assert!(app.feedback.archived && app.feedback.reports.is_empty());
+        let (request, _) = app.feedback.start(false).unwrap();
+        app.feedback.finish(
+            request,
+            Ok(serde_json::from_value(serde_json::json!({"reports": [], "cursor": null})).unwrap()),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in ["Archived feedback", "Nothing archived.", "Back to feedback"] {
+            assert!(labels.contains(&label), "{label}: {labels:?}");
+        }
+        assert!(!labels.contains(&"Waiting") && !labels.contains(&"Archiving failed."));
+        click_at(
+            &mut app,
+            &context,
+            text_position(&output, "Back to feedback"),
+        );
+        assert!(!app.feedback.archived);
     }
 
     #[test]

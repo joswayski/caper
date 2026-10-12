@@ -78,6 +78,8 @@ public final class AppModel {
     /// The inbox is open: a pushed page in Browse on narrow layouts, an
     /// expanded sidebar section otherwise.
     public var showingFeedback = false
+    /// The inbox lists archived threads instead ("Show archived").
+    public private(set) var showingArchivedFeedback = false
     /// A conversation the feedback team is visiting without joining it. It is
     /// open while no channel or DM is selected, and any other navigation ends it.
     public private(set) var visit: FeedbackVisit? {
@@ -1786,7 +1788,7 @@ extension AppModel {
         feedbackLoading = true
         defer { if generation == attempt, feedbackRequest == request { feedbackLoading = false } }
         do {
-            let page = try await api.feedbackReports(before: before)
+            let page = try await api.feedbackReports(before: before, archived: showingArchivedFeedback)
             guard generation == attempt, feedbackRequest == request, account != nil else { return }
             feedbackReports = before == nil ? page.reports : FeedbackInbox.merging(feedbackReports, page.reports)
             feedbackCursor = page.cursor
@@ -1797,10 +1799,40 @@ extension AppModel {
                 // No longer on the team: the inbox goes away.
                 account?.feedbackTeam = nil
                 feedbackReports = []; feedbackCursor = nil; feedbackLoaded = false; feedbackError = nil
-                showingFeedback = false
+                showingFeedback = false; showingArchivedFeedback = false
                 return
             }
             feedbackError = FeedbackInbox.loadFailed
+        }
+    }
+
+    /// "Show archived" / "Back to feedback": switches the list and reloads it.
+    public func showArchivedFeedback(_ archived: Bool) async {
+        guard archived != showingArchivedFeedback else { return }
+        showingArchivedFeedback = archived
+        feedbackRequest += 1
+        feedbackReports = []; feedbackCursor = nil; feedbackLoaded = false; feedbackError = nil; feedbackLoading = false
+        await refreshFeedback()
+    }
+
+    /// Archives (or restores) a report's whole thread for the team. It leaves
+    /// the list at once, then the list refreshes; a failure shows the error
+    /// and reloads.
+    public func setFeedbackArchived(_ report: FeedbackReport, archived: Bool) async {
+        guard account != nil, isFeedbackTeam else { return }
+        let attempt = generation
+        feedbackRequest += 1
+        feedbackReports.removeAll { $0.sharesThread(with: report) }
+        feedbackError = nil
+        do {
+            try await api.setFeedbackArchived(channelID: report.channel.id, threadRootID: report.threadRootId, archived: archived)
+            guard generation == attempt else { return }
+            await refreshFeedback()
+        } catch is CancellationError {} catch {
+            guard generation == attempt else { return }
+            await refreshFeedback()
+            guard generation == attempt else { return }
+            feedbackError = archived ? FeedbackInbox.archiveFailed : FeedbackInbox.restoreFailed
         }
     }
 
@@ -1854,7 +1886,7 @@ extension AppModel {
                                   direct: direct, reportID: target.messageID, reporter: target.reporter)
             selectedDirectMessageID = nil; selectedChannelID = nil
             navigationOpen = false
-            // Back (phones) returns to the inbox, where the visited row offers voice.
+            // Back (phones) returns to the inbox.
             if isFeedbackTeam { showingFeedback = true }
             Task { [weak self] in await self?.refreshPeople() }
             chat.directPeerID = nil
@@ -1959,7 +1991,7 @@ extension AppModel {
     private func clearFeedbackState() {
         feedbackRequest += 1
         feedbackReports = []; feedbackCursor = nil; feedbackLoading = false; feedbackLoaded = false; feedbackError = nil
-        showingFeedback = false
+        showingFeedback = false; showingArchivedFeedback = false
         visit = nil; visitReturn = nil
     }
 }

@@ -561,7 +561,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pendingFocus = null
         ++generation
         closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(feedbackShown = true, error = null, openError = null, busy = false)
+        // The sidebar row always opens the inbox, not the archive.
+        val inbox = mutable.value.feedback.let { if (it.archived) FeedbackInboxUi() else it }
+        mutable.value = mutable.value.copy(feedbackShown = true, feedback = inbox, error = null, openError = null, busy = false)
         refreshFeedback()
     }
 
@@ -570,25 +572,53 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadMoreFeedback() = loadFeedback(first = false)
 
-    private fun loadFeedback(first: Boolean) {
+    /** The inbox, or archived threads ([archived]), from their first page. */
+    fun showArchivedFeedback(archived: Boolean) {
+        if (mutable.value.feedback.archived == archived) return
+        mutable.value = mutable.value.copy(feedback = FeedbackInboxUi(archived = archived))
+        refreshFeedback()
+    }
+
+    /**
+     * Archives (or, from the archive, restores) [report]'s whole thread for the team. The
+     * thread leaves the list at once; the list then reloads, keeping any error on show.
+     */
+    fun setFeedbackArchived(report: FeedbackReport, archived: Boolean) {
+        val token = accountToken ?: return
+        val account = accountGeneration
+        val inbox = mutable.value.feedback
+        // Drops any page in flight, which could still list the thread.
+        ++feedbackRequest
+        mutable.value = mutable.value.copy(feedback = inbox.copy(reports = withoutThread(inbox.reports, report), loading = false, loadingMore = false, error = null))
+        viewModelScope.launch {
+            val error = try { api.archiveFeedback(token, report.channel.id, report.threadRootId, archived); null }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Throwable) { failure }
+            if (account != accountGeneration) return@launch
+            loadFeedback(first = true, notice = error?.let { message(it) })
+        }
+    }
+
+    private fun loadFeedback(first: Boolean, notice: String? = null) {
         val token = accountToken ?: return
         val current = mutable.value
         if (current.account?.feedbackTeam != true) return
         val inbox = current.feedback
         val cursor = inbox.cursor
+        val archived = inbox.archived
         if (!first && (cursor == null || inbox.loading || inbox.loadingMore)) return
         // A first page supersedes anything in flight; a next page waits for it.
         val request = ++feedbackRequest
         val account = accountGeneration
-        mutable.value = current.copy(feedback = if (first) inbox.copy(loading = true, loadingMore = false, error = null) else inbox.copy(loadingMore = true, error = null))
+        mutable.value = current.copy(feedback = if (first) inbox.copy(loading = true, loadingMore = false, error = notice) else inbox.copy(loadingMore = true, error = null))
         viewModelScope.launch {
             try {
-                val page = api.feedback(token, if (first) null else cursor)
-                if (account != accountGeneration || request != feedbackRequest) return@launch
+                val page = api.feedback(token, if (first) null else cursor, archived)
+                if (account != accountGeneration || request != feedbackRequest || mutable.value.feedback.archived != archived) return@launch
                 val shown = mutable.value.feedback
                 mutable.value = mutable.value.copy(feedback = shown.copy(
                     reports = mergeFeedbackPage(shown.reports, page, first), cursor = validFeedbackCursor(page.cursor),
-                    loaded = true, loading = false, loadingMore = false, error = null,
+                    loaded = true, loading = false, loadingMore = false, error = notice,
                 ))
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
@@ -598,7 +628,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = mutable.value.copy(
                         account = mutable.value.account?.copy(feedbackTeam = false), feedback = FeedbackInboxUi(), feedbackShown = false,
                     )
-                } else mutable.value = mutable.value.copy(feedback = mutable.value.feedback.copy(loading = false, loadingMore = false, error = message(error)))
+                } else mutable.value = mutable.value.copy(feedback = mutable.value.feedback.copy(loading = false, loadingMore = false, error = notice ?: message(error)))
             }
         }
     }

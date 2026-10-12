@@ -44,6 +44,16 @@ pub enum Command {
         request: u64,
         token: String,
         before: Option<String>,
+        /// The archived view instead of the inbox.
+        archived: bool,
+    },
+    /// `PUT /api/feedback/archive` for one reported thread.
+    ArchiveFeedback {
+        epoch: u64,
+        token: String,
+        channel: String,
+        thread_root: String,
+        archived: bool,
     },
     /// `GET /api/people`, for `@` suggestions in DMs.
     LoadPeople {
@@ -517,6 +527,10 @@ pub enum Event {
         epoch: u64,
         request: u64,
         result: Result<crate::feedback::Page, String>,
+    },
+    FeedbackArchived {
+        epoch: u64,
+        result: Result<(), String>,
     },
     PeopleLoaded {
         generation: u64,
@@ -1259,11 +1273,24 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             request,
             token,
             before,
+            archived,
         } => Event::FeedbackLoaded {
             epoch,
             request,
             result: api
-                .feedback(&token, before.as_deref())
+                .feedback(&token, before.as_deref(), archived)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ArchiveFeedback {
+            epoch,
+            token,
+            channel,
+            thread_root,
+            archived,
+        } => Event::FeedbackArchived {
+            epoch,
+            result: api
+                .archive_feedback(&token, &channel, &thread_root, archived)
                 .map_err(|error| error.to_string()),
         },
         Command::LoadPeople { generation, token } => Event::PeopleLoaded {
@@ -2058,9 +2085,14 @@ mod tests {
     }
 
     /// A tiny HTTP server answering each expected request line in order.
+    type Bodies = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// Also collects request bodies.
     fn serve(
         exchanges: Vec<(&'static str, &'static str, &'static str)>,
-    ) -> (crate::api::Api, std::thread::JoinHandle<()>) {
+    ) -> (crate::api::Api, std::thread::JoinHandle<()>, Bodies) {
+        let bodies = Bodies::default();
+        let received = bodies.clone();
         use std::io::{BufRead, BufReader, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let api =
@@ -2075,17 +2107,29 @@ mod tests {
                 let mut request = String::new();
                 reader.read_line(&mut request).unwrap();
                 assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                let mut length = 0;
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
                     if line == "\r\n" {
                         break;
                     }
                 }
+                let mut sent = vec![0; length];
+                std::io::Read::read_exact(&mut reader, &mut sent).unwrap();
+                if !sent.is_empty() {
+                    received
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8(sent).unwrap());
+                }
                 write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        (api, worker)
+        (api, worker, bodies)
     }
 
     #[test]
@@ -2093,7 +2137,7 @@ mod tests {
         let channel = r#"{"space":{"id":"space0000001","name":"Studio"},"channel":{"id":"chan00000001","name":"plans"},"messages":[],"pinnedMessages":[],"cursor":"4","hasMore":false,"visitor":true}"#;
         let session =
             r#"{"token":"chat","author":{"id":"u","name":"Jose","isGuest":false,"admin":true}}"#;
-        let (api, worker) = serve(vec![
+        let (api, worker, _bodies) = serve(vec![
             (
                 "GET /api/chat/channels/chan00000001/messages",
                 "200 OK",
@@ -2143,7 +2187,7 @@ mod tests {
     #[test]
     fn feedback_pages_load_with_the_account_bearer_and_their_cursor() {
         let page = r#"{"reports":[{"id":"m2","messageId":"m2","threadRootId":"m1","createdAt":"2026-10-11T19:00:00Z","text":"@feedback hi","attachments":0,"reporter":{"id":"u1","username":"alice","displayName":"Alice","avatarId":3},"channel":{"id":"c1","name":"general","direct":false},"space":{"id":"s1","name":"Studio"},"replyCount":1,"answered":false}],"cursor":"41"}"#;
-        let (api, worker) = serve(vec![
+        let (api, worker, bodies) = serve(vec![
             ("GET /api/feedback", "200 OK", page),
             (
                 "GET /api/feedback?before=41",
@@ -2155,9 +2199,19 @@ mod tests {
                 "404 Not Found",
                 r#"{"error":"not found"}"#,
             ),
+            (
+                "GET /api/feedback?archived=true&before=7",
+                "200 OK",
+                r#"{"reports":[],"cursor":null}"#,
+            ),
         ]);
         let (events, receiver) = std::sync::mpsc::channel();
-        for before in [None, Some("41".to_owned()), None] {
+        for (before, archived) in [
+            (None, false),
+            (Some("41".to_owned()), false),
+            (None, false),
+            (Some("7".to_owned()), true),
+        ] {
             super::execute(
                 &api,
                 super::Command::LoadFeedback {
@@ -2165,6 +2219,7 @@ mod tests {
                     request: 5,
                     token: "account".into(),
                     before,
+                    archived,
                 },
                 &events,
                 &eframe::egui::Context::default(),
@@ -2184,7 +2239,58 @@ mod tests {
         let last = results.next().unwrap().unwrap();
         assert!(last.reports.is_empty() && last.cursor.is_none());
         assert!(results.next().unwrap().is_err(), "not on the team");
+        assert!(results.next().unwrap().unwrap().reports.is_empty());
         worker.join().unwrap();
+        assert!(bodies.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn archiving_puts_the_thread_and_reports_failures() {
+        let (api, worker, bodies) = serve(vec![
+            ("PUT /api/feedback/archive", "204 No Content", ""),
+            (
+                "PUT /api/feedback/archive",
+                "404 Not Found",
+                r#"{"error":"not found"}"#,
+            ),
+        ]);
+        let (events, receiver) = std::sync::mpsc::channel();
+        for archived in [true, false] {
+            super::execute(
+                &api,
+                super::Command::ArchiveFeedback {
+                    epoch: 3,
+                    token: "account".into(),
+                    channel: "chan00000001".into(),
+                    thread_root: "msg000000001".into(),
+                    archived,
+                },
+                &events,
+                &eframe::egui::Context::default(),
+            );
+        }
+        let results: Vec<_> = receiver
+            .try_iter()
+            .map(|event| match event {
+                super::Event::FeedbackArchived { epoch: 3, result } => result.is_ok(),
+                _ => panic!("expected an archive result"),
+            })
+            .collect();
+        assert_eq!(results, [true, false]);
+        worker.join().unwrap();
+        let bodies: Vec<serde_json::Value> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                serde_json::json!({"channelId": "chan00000001", "threadRootId": "msg000000001", "archived": true}),
+                serde_json::json!({"channelId": "chan00000001", "threadRootId": "msg000000001", "archived": false}),
+            ]
+        );
     }
 
     #[test]

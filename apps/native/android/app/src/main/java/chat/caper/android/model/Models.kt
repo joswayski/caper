@@ -215,7 +215,8 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class FeedbackSpace(val id: String, val name: String)
 /**
  * One `@feedback` report. [threadRootId] is where replies go: the message itself when it
- * was top-level, else its thread root. [answered]: the team replied in that thread since.
+ * was top-level, else its thread root. [answered]: the newest message in that thread is the
+ * team's. [archived]: the team archived the thread (shared by the whole team).
  */
 @Serializable data class FeedbackReport(
     val id: String,
@@ -229,6 +230,7 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val space: FeedbackSpace? = null,
     val replyCount: Int = 0,
     val answered: Boolean = false,
+    val archived: Boolean = false,
 )
 /** A page of reports, newest first; pass [cursor] as `?before=` for the next one (null at the end). */
 @Serializable data class FeedbackReports(val reports: List<FeedbackReport>, val cursor: String? = null)
@@ -556,6 +558,8 @@ data class FeedbackInboxUi(
     val loading: Boolean = false,
     val loadingMore: Boolean = false,
     val error: String? = null,
+    /** Shows archived threads (`?archived=true`) instead of the inbox. */
+    val archived: Boolean = false,
 )
 
 /**

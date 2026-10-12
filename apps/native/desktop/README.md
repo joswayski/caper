@@ -126,7 +126,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   **Feedback** row by the DMs that opens the inbox (`GET /api/feedback`,
   refreshed on open, by Refresh and after a reply; older pages on demand):
   reporter, "#channel · Space" or "DM · …", preview or "Sent N files", age,
-  and "Answered" or "Waiting". A report, or a `feedback` notification click,
+  and "Answered" (the team wrote last in the thread) or "Waiting". A hover
+  Archive button archives the report's whole thread for the team
+  (`PUT /api/feedback/archive`; it leaves the list at once, then the list
+  reloads, keeping any error). "Show archived" at the bottom lists archived
+  threads (`?archived=true`) under "Archived feedback", without a status and
+  with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
   opens the conversation by channel id at the message and in its thread.
   Without membership (`visitor: true`) the team takes part like a member
   (replies, files, reactions, typing, pins, forwarding, and a visited space

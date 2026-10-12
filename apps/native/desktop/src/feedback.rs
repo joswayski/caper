@@ -56,9 +56,13 @@ pub struct Report {
     pub space: Option<ReportSpace>,
     #[serde(default)]
     pub reply_count: u64,
-    /// Someone on the team replied in its thread after the report.
+    /// The newest message in its thread is from the team; a later reply
+    /// from anyone else makes it Waiting again.
     #[serde(default)]
     pub answered: bool,
+    /// Its thread is archived for the whole team.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// `GET /api/feedback[?before=<cursor>]`: 50 reports and the next cursor.
@@ -112,6 +116,18 @@ impl Report {
         if self.answered { "Answered" } else { "Waiting" }
     }
 
+    /// Archive or restore: "Archive feedback from Alice".
+    pub fn action_label(&self, archived_view: bool) -> String {
+        if archived_view {
+            format!(
+                "Restore feedback from {} to the inbox",
+                self.reporter.display_name
+            )
+        } else {
+            format!("Archive feedback from {}", self.reporter.display_name)
+        }
+    }
+
     /// Opens at the report, in its thread, so replies land there by default.
     pub fn target(&self) -> VisitTarget {
         VisitTarget {
@@ -160,6 +176,10 @@ pub struct Inbox {
     /// An older page is in flight.
     pub loading_more: bool,
     pub error: Option<String>,
+    /// The archived threads instead of the inbox.
+    pub archived: bool,
+    /// A failed archive or restore, kept across the reload that follows.
+    pub action_error: Option<String>,
     request: u64,
 }
 
@@ -181,6 +201,27 @@ impl Inbox {
         self.loading_more = more;
         self.error = None;
         Some((self.request, before))
+    }
+
+    /// Switches between the inbox and archived threads; the caller loads.
+    pub fn show_archived(&mut self, archived: bool) {
+        if self.archived != archived {
+            self.archived = archived;
+            self.reports.clear();
+            self.cursor = None;
+            self.loaded = false;
+        }
+        self.action_error = None;
+    }
+
+    /// Takes a thread out of the list at once, ahead of the server's answer.
+    /// Returns whether anything was listed for it.
+    pub fn remove_thread(&mut self, channel: &str, thread_root: &str) -> bool {
+        let before = self.reports.len();
+        self.reports
+            .retain(|report| report.channel.id != channel || report.thread_root_id != thread_root);
+        self.action_error = None;
+        self.reports.len() != before
     }
 
     /// Takes a page for the latest request; older answers are dropped. A
@@ -335,7 +376,7 @@ mod tests {
                 "text": "", "attachments": 1,
                 "reporter": {"id": "user00000002", "username": "bob", "displayName": "Bob"},
                 "channel": {"id": "dm0000000001", "name": "Alice & Bob", "direct": true},
-                "space": null, "replyCount": 0, "answered": false
+                "space": null, "replyCount": 0, "answered": false, "archived": true
             }],
             "cursor": "123"
         }))
@@ -358,6 +399,13 @@ mod tests {
         assert_eq!(direct.place(), "DM · Alice & Bob");
         assert_eq!(direct.preview(), "Sent 1 file");
         assert_eq!(direct.status(), "Waiting");
+        assert!(!channel.archived, "absent means not archived");
+        assert!(direct.archived);
+        assert_eq!(channel.action_label(false), "Archive feedback from Alice");
+        assert_eq!(
+            channel.action_label(true),
+            "Restore feedback from Alice to the inbox"
+        );
         assert_eq!(direct.space, None);
         assert_eq!(direct.reporter.avatar_id, None);
         let mut files = direct.clone();
@@ -433,6 +481,20 @@ mod tests {
         let (refresh, _) = inbox.start(false).unwrap();
         inbox.finish(more, Ok(page()));
         assert!(inbox.loading, "the stale page is dropped");
+        // Archiving takes the whole thread out at once.
+        let mut archived = Inbox::default();
+        let (request, _) = archived.start(false).unwrap();
+        let mut two = page();
+        two.reports.push(two.reports[0].clone());
+        two.reports[2].id = "msg000000004".into();
+        archived.finish(request, Ok(two));
+        assert!(archived.remove_thread("chan00000001", "msg000000001"));
+        assert_eq!(archived.reports.len(), 1, "both reports in that thread");
+        assert!(!archived.remove_thread("chan00000001", "msg000000001"));
+        archived.action_error = Some("offline".into());
+        archived.show_archived(true);
+        assert!(archived.archived && archived.reports.is_empty() && !archived.loaded);
+        assert_eq!(archived.action_error, None);
         let mut fresh = page();
         fresh.reports.truncate(1);
         fresh.cursor = None;

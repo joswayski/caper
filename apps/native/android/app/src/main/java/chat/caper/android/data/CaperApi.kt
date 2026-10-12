@@ -69,10 +69,21 @@ class CaperApi(
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
     }
-    /** Feedback team only (404 for everyone else): `@feedback` reports, newest first, 50 per page. */
-    suspend fun feedback(token: String, before: String? = null): FeedbackReports {
+    /**
+     * Feedback team only (404 for everyone else): `@feedback` reports, newest first, 50 per
+     * page; the inbox, or only archived threads with [archived].
+     */
+    suspend fun feedback(token: String, before: String? = null, archived: Boolean = false): FeedbackReports {
         val cursor = before?.let { requireNotNull(validFeedbackCursor(it)) { "Invalid cursor." } }
-        return get("/api/feedback" + (cursor?.let { "?before=$it" } ?: ""), token)
+        val query = listOfNotNull("archived=true".takeIf { archived }, cursor?.let { "before=$it" }).joinToString("&")
+        return get("/api/feedback" + (if (query.isEmpty()) "" else "?$query"), token)
+    }
+    /** Archives or restores every report in a thread, for the whole team. */
+    suspend fun archiveFeedback(token: String, channel: String, threadRoot: String, archived: Boolean) {
+        require(messageId.matches(threadRoot)) { "Invalid message ID." }
+        request<Unit>("/api/feedback/archive", "PUT", token, buildJsonObject {
+            put("channelId", channel.pathId()); put("threadRootId", threadRoot); put("archived", archived)
+        }.toString())
     }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
     /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */

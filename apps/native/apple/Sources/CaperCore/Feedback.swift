@@ -48,18 +48,21 @@ public struct FeedbackReport: Decodable, Equatable, Identifiable, Sendable {
     /// nil for DMs and personal notes.
     public let space: SpaceReference?
     public let replyCount: Int
-    /// Someone on the team replied in the thread after the report.
+    /// The newest message in the thread is from the team.
     public let answered: Bool
+    /// The team archived its thread (`GET /api/feedback?archived=true` lists these).
+    public let archived: Bool
 
     public init(id: String, messageId: String, threadRootId: String, createdAt: String, text: String, attachments: Int = 0,
-                reporter: Reporter, channel: Conversation, space: SpaceReference?, replyCount: Int = 0, answered: Bool = false) {
+                reporter: Reporter, channel: Conversation, space: SpaceReference?, replyCount: Int = 0, answered: Bool = false,
+                archived: Bool = false) {
         self.id = id; self.messageId = messageId; self.threadRootId = threadRootId; self.createdAt = createdAt
         self.text = text; self.attachments = attachments; self.reporter = reporter; self.channel = channel
-        self.space = space; self.replyCount = replyCount; self.answered = answered
+        self.space = space; self.replyCount = replyCount; self.answered = answered; self.archived = archived
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, messageId, threadRootId, createdAt, text, attachments, reporter, channel, space, replyCount, answered
+        case id, messageId, threadRootId, createdAt, text, attachments, reporter, channel, space, replyCount, answered, archived
     }
 
     public init(from decoder: Decoder) throws {
@@ -77,6 +80,12 @@ public struct FeedbackReport: Decodable, Equatable, Identifiable, Sendable {
         space = decodedSpace.flatMap { $0.id.isEmpty ? nil : $0 }
         replyCount = max(0, (try? values.decodeIfPresent(Int.self, forKey: .replyCount)) ?? 0)
         answered = (try? values.decodeIfPresent(Bool.self, forKey: .answered)) ?? false
+        archived = (try? values.decodeIfPresent(Bool.self, forKey: .archived)) ?? false
+    }
+
+    /// Whether `other` is a report in the same thread (archiving acts on threads).
+    public func sharesThread(with other: FeedbackReport) -> Bool {
+        channel.id == other.channel.id && threadRootId == other.threadRootId
     }
 
     /// What opening this report visits.
@@ -165,6 +174,16 @@ public enum FeedbackInbox {
     public static let title = "Feedback"
     public static let subtitle = "Conversations where someone asked the Caper team. Replies post there, for everyone in it."
     public static let empty = "No feedback yet."
+    public static let archivedTitle = "Archived feedback"
+    public static let archivedEmpty = "Nothing archived."
+    public static let showArchived = "Show archived"
+    public static let backToFeedback = "Back to feedback"
+    public static let restore = "Restore to the inbox"
+    public static let archiveFailed = "Couldn’t archive feedback. Try again."
+    public static let restoreFailed = "Couldn’t restore feedback. Try again."
+
+    /// The Archive action's label.
+    public static func archiveLabel(_ report: FeedbackReport) -> String { "Archive feedback from \(report.reporter.displayName)" }
     public static let loadFailed = "Couldn’t load feedback."
     /// Under a message that asked the Caper team (`@feedback`, `@caper`, `@admin`…).
     public static let notified = "Caper team has been notified 🫡"
@@ -223,9 +242,10 @@ public enum FeedbackInbox {
         return ISO8601DateFormatter().date(from: String(value[..<dot]) + String(value[end...]))
     }
 
-    /// The row's VoiceOver label.
-    public static func accessibilityLabel(_ report: FeedbackReport, now: Date = Date()) -> String {
-        [report.reporter.displayName, location(report), preview(report), relativeTime(report.createdAt, now: now), status(report)]
+    /// The row's VoiceOver label; archived rows have no status.
+    public static func accessibilityLabel(_ report: FeedbackReport, now: Date = Date(), archived: Bool = false) -> String {
+        [report.reporter.displayName, location(report), preview(report), relativeTime(report.createdAt, now: now),
+         archived ? "" : status(report)]
             .filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
