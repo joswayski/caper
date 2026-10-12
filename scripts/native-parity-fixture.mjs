@@ -1193,14 +1193,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             createdAt: new Date().toISOString(),
             clientMessageId,
           };
-          if (target)
+          if (target) {
+            const text = target.content.text || (target.forward ? "Forwarded message" : "");
+            const characters = Array.from(text);
             message.replyTo = {
               id: target.id,
               author: clone(target.author),
-              text: [...(target.content.text || (target.forward ? "Forwarded message" : ""))].slice(0, 200).join(""),
+              text: characters.slice(0, 200).join(""),
+              ...(characters.length > 200 ? { fullText: text } : {}),
               hasAttachments: !!target.content.attachments?.length,
               ...(target.threadRootId ? { threadRootId: target.threadRootId } : {}),
             };
+          }
           if (root) {
             const participants = [...(root.thread?.participants ?? [])];
             const index = participants.findIndex((person) => person.id === who.id);

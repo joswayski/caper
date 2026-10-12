@@ -44,6 +44,7 @@ internal fun ChatMessage.validated(
     require(!broadcast || threadRootId != null) { "Invalid broadcast reply." }
     replyTo?.let {
         require(it.id.isNotEmpty() && it.author.id.isNotEmpty() && it.text.codePointCount(0, it.text.length) <= 200 && it.threadRootId != "") { "Invalid reply reference." }
+        it.fullText?.let { text -> require(text.codePointCount(0, text.length) <= 4000) { "Invalid reply text." } }
     }
     thread?.let {
         require(it.replyCount > 0 && it.participants.size <= 5 && it.participants.map { person -> person.id }.distinct().size == it.participants.size && sequencePattern.matches(it.seq)) { "Invalid thread summary." }

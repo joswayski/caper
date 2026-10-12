@@ -8,7 +8,14 @@ import {
   type ChatViewState,
 } from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
-import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
+import {
+  isChatMessage,
+  type ChatEvent,
+  type ChatMessage,
+  type ChatTypingEvent,
+  type GeneralChatHistory,
+} from "../chat/types.ts";
+import { replyReference } from "../chat/Replies.tsx";
 import { AttachmentUpload, type UploadTransport } from "../chat/uploads.ts";
 import { DEFAULT_COMPRESSION } from "../chat/prepare.ts";
 
@@ -2389,9 +2396,12 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
 
 test("inline replies freeze their target on retry, stay in the channel and confirm only matching references", async (t) => {
   const f = await sendingFixture(t);
-  const parent = committed({ clientMessageId: "parent", text: "Earlier message" }, "1");
+  const fullText = `${"a".repeat(199)}🙂🚀${"z".repeat(3799)}`;
+  const parent = committed({ clientMessageId: "parent", text: fullText }, "1");
   f.sockets[0].message(parent);
-  const replyTo = { id: parent.id, author: parent.author, text: parent.content.text, hasAttachments: false };
+  const replyTo = replyReference(parent);
+  assert.equal(replyTo.text, `${"a".repeat(199)}🙂`);
+  assert.equal(replyTo.fullText, fullText);
   const bodies: Array<Record<string, unknown>> = [];
   let fail = true;
   let echoed = replyTo;
@@ -2405,6 +2415,7 @@ test("inline replies freeze their target on retry, stay in the channel and confi
   assert.equal(bodies[0].replyToId, parent.id);
   assert.equal(bodies[0].threadRootId, undefined);
   assert.equal(f.state.pendingSend?.replyTo?.id, parent.id);
+  assert.equal(f.state.pendingSend?.replyTo?.fullText, fullText);
   fail = false;
   echoed = { ...replyTo, id: "wrong-target" };
   assert.equal(await f.client.send("Changed draft"), false);
@@ -2416,10 +2427,19 @@ test("inline replies freeze their target on retry, stay in the channel and confi
   assert.deepEqual(bodies[2], bodies[0]);
   assert.deepEqual(
     f.state.channelMessages?.map((message) => message.content.text),
-    ["Earlier message", "New reply"],
+    [fullText, "New reply"],
   );
   assert.equal(f.state.messages[0].thread, undefined);
   const reply = f.state.messages[1];
+  assert.equal(reply.replyTo?.fullText, fullText);
+  assert.equal(isChatMessage(reply), true, "4000 Unicode scalars are accepted, including surrogate pairs");
+  assert.equal(isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: `${fullText}x` } }), false);
+  assert.equal(isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: 42 } }), false);
+  assert.equal(
+    isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: undefined } }),
+    true,
+    "legacy snapshots still load",
+  );
   f.sockets[0].message(reply);
   assert.equal(f.state.messages.length, 2);
 });

@@ -468,12 +468,14 @@ public struct MessageReply: Codable, Equatable, Sendable {
     public let id: String
     public let author: ChatAuthor
     public let text: String
+    public let fullText: String?
     public let hasAttachments: Bool
     public let threadRootId: String?
     public init(message: ChatMessage) {
         id = message.id; author = message.author; threadRootId = message.threadRootId
         let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message" : message.content.text
         text = String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
+        fullText = source.unicodeScalars.count > 200 ? source : nil
         hasAttachments = !(message.content.attachments ?? []).isEmpty
     }
 }

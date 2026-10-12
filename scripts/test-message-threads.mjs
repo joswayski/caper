@@ -1,6 +1,7 @@
 // Disposable loopback fixture + Chromium. Narrow/touch checks are not native-device acceptance.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -324,6 +325,123 @@ const checkReplyDelivery = async (root, other, layout) => {
     );
   }
   evaluate("window.restoreReplyFetch()");
+};
+
+const checkLongQuotePreview = async (layout) => {
+  const session = async (token) => {
+    const auth = { authorization: `Bearer ${token}`, "content-type": "application/json", connection: "close" };
+    const response = await fetch(`${api}/api/chat/session`, { method: "POST", headers: auth, body: "{}" });
+    assert.equal(response.status, 200);
+    return { ...auth, "x-caper-chat-token": (await response.json()).token };
+  };
+  const peer = await session("fixture-member-token");
+  const own = await session("fixture-owner-token");
+  const fullText =
+    "TEST FIXTURE — Replies bring an earlier message back into the conversation without moving the original.\nThe quote preserves the original wording and line breaks, even if the source is edited later. This longer paragraph makes the three-line preview wrap on both wide and narrow screens.\nShow more reveals the complete saved quote; View original jumps to the live message. 🙂🚀\nhttps://example.test/" +
+    "a-long-unbroken-path-".repeat(9) +
+    "END-OF-QUOTE";
+  const send = async (auth, text, replyToId) => {
+    const response = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ text, clientMessageId: randomUUID(), ...(replyToId ? { replyToId } : {}) }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const source = await send(peer, fullText);
+  const quoted = await send(
+    own,
+    "TEST FIXTURE — Following up on this message, with the full original available in the quote.",
+    source.id,
+  );
+  assert.equal(quoted.replyTo.fullText, fullText);
+  assert.equal([...quoted.replyTo.text].length, 200);
+  const selector = channel(quoted.clientMessageId);
+  wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
+  browser("scrollintoview", selector);
+  const geometry = () =>
+    evaluate(`(() => {
+    const row = document.querySelector('${selector}');
+    const quote = row.querySelector('.chat-reply-context');
+    const excerpt = quote.querySelector('.chat-reply-excerpt');
+    const avatar = row.querySelector(':scope > .chat-avatar').getBoundingClientRect();
+    const line = quote.querySelector('svg').getBoundingClientRect();
+    return { clamp: getComputedStyle(excerpt).webkitLineClamp, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
+      connection: Math.abs(line.bottom - avatar.top - 1), overflow: document.documentElement.scrollWidth > innerWidth,
+      quoteHeight: quote.getBoundingClientRect().height };
+  })()`);
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
+  const collapsed = geometry();
+  assert.equal(collapsed.clamp, "3");
+  assert.ok(collapsed.natural > collapsed.height);
+  assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
+  assert.equal(collapsed.overflow, false);
+  screenshot(`reply-preview-${layout}-collapsed`);
+  browser("click", `${selector} .chat-reply-expand`);
+  wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'true'`);
+  const expanded = geometry();
+  assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
+  assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
+  assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
+  assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
+  browser("scrollintoview", selector);
+  screenshot(`reply-preview-${layout}-expanded`);
+  browser("click", `${selector} .chat-reply-expand`);
+  wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'false'`);
+  if (layout === "desktop") {
+    browser("mouse", "move", "10", "10");
+    evaluate("document.activeElement.blur()");
+    browser("focus", `${selector} .chat-reply-source`);
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationIterationCount`),
+      "1",
+    );
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationName`),
+      "chat-reply-sweep",
+    );
+    browser("set", "media", "dark", "reduced-motion");
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationName`),
+      "none",
+    );
+    browser("set", "media", "dark");
+    assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
+  }
+  const edited = "TEST FIXTURE — The original was edited after this reply was sent.";
+  const edit = await fetch(`${api}/api/chat/channels/chan00000001/messages/${source.id}`, {
+    method: "PUT",
+    headers: peer,
+    body: JSON.stringify({ text: edited, expectedRevision: 1 }),
+  });
+  assert.equal(edit.status, 200);
+  wait(`document.querySelector('${channel(source.clientMessageId)} p')?.textContent === ${JSON.stringify(edited)}`);
+  assert.equal(
+    evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`),
+    fullText,
+    "Source edits do not rewrite a quote",
+  );
+  browser("click", `${selector} .chat-reply-source`);
+  wait(`document.querySelector('${channel(source.clientMessageId)}')?.classList.contains('chat-message-jump-target')`);
+  const block = await fetch(`${api}/api/blocks/member000001`, { method: "PUT", headers: own, body: "{}" });
+  assert.equal(block.status, 204);
+  browser("open", `${web}/spaces`);
+  wait(`document.querySelector('${selector} .chat-reply-context')?.textContent.includes('Blocked message')`);
+  assert.equal(
+    evaluate(
+      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar')`,
+    ),
+    false,
+    "Blocked quote text, expansion and identity stay hidden",
+  );
+  const unblock = await fetch(`${api}/api/blocks/member000001`, { method: "DELETE", headers: own });
+  assert.equal(unblock.status, 204);
+  browser("open", `${web}/spaces`);
+  wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
+  console.log(
+    `PASS: ${layout}: full immutable quote, three-line wrapping, expand/collapse, connected avatar, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", one-shot motion and reduced motion" : ""}.`,
+  );
 };
 
 let socket;
@@ -694,6 +812,14 @@ try {
   browser("set", "viewport", "390", "844", "2");
   evaluate("document.querySelector('.chat-thread-messages').scrollTop = 1e9");
   await checkReactionFollow(root, "narrow");
+  close();
+  await cdp("Emulation.setTouchEmulationEnabled", { enabled: false }, sessionId);
+  browser("set", "viewport", "1440", "900", "2");
+  await checkLongQuotePreview("desktop");
+  await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
+  browser("set", "viewport", "390", "844", "2");
+  assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
+  await checkLongQuotePreview("mobile");
   console.log(
     "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment; Reply in thread hidden inside existing threads and retained in the channel; quick Reply selection/focus/cancel, quoted thread send, source navigation and touch long-press Reply; isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );

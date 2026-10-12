@@ -1009,11 +1009,16 @@ pub(crate) async fn send_message(
         let target = enrich_author(target, avatar, name.as_deref());
         let text = target["content"]["text"].as_str().unwrap_or_default();
         let text = if text.is_empty() && target.get("forward").is_some() {
-            "Forwarded message".to_owned()
+            "Forwarded message"
         } else {
-            text.chars().take(200).collect::<String>()
+            text
         };
-        let mut reference = json!({"id":reply_to,"author":target["author"],"text":text,"hasAttachments":target["content"]["attachments"].as_array().is_some_and(|files| !files.is_empty())});
+        // Older clients reject quotes whose legacy preview exceeds 200 scalars.
+        let preview = text.chars().take(200).collect::<String>();
+        let mut reference = json!({"id":reply_to,"author":target["author"],"text":preview,"hasAttachments":target["content"]["attachments"].as_array().is_some_and(|files| !files.is_empty())});
+        if text.chars().count() > 200 {
+            reference["fullText"] = json!(text);
+        }
         if let Some(root) = target["threadRootId"].as_str() {
             reference["threadRootId"] = json!(root);
         }

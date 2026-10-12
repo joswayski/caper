@@ -114,6 +114,7 @@ export interface ChatReplyReference {
   id: string;
   author: ChatAuthor;
   text: string;
+  fullText?: string;
   hasAttachments: boolean;
   threadRootId?: string;
 }
@@ -220,6 +221,8 @@ export function isChatMessage(value: unknown): value is ChatMessage {
         isChatAuthor(message.replyTo.author) &&
         typeof message.replyTo.text === "string" &&
         Array.from(message.replyTo.text).length <= 200 &&
+        (message.replyTo.fullText === undefined ||
+          (typeof message.replyTo.fullText === "string" && Array.from(message.replyTo.fullText).length <= 4000)) &&
         typeof message.replyTo.hasAttachments === "boolean" &&
         (message.replyTo.threadRootId === undefined ||
           (typeof message.replyTo.threadRootId === "string" && !!message.replyTo.threadRootId)))) &&

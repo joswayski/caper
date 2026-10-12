@@ -6622,13 +6622,17 @@ or have its own thread. **Reply in thread** remains a separate action. Channel
 composers retain their normal attachment support; thread composers remain
 text-only. Replying does not implicitly mention or ping the source author.
 
-Reply source rows use a right-facing context arrow and a visible **View
-original** affordance. Replies retain a faint neutral background; mentions,
+Reply source rows connect the quoted author to the reply's avatar with a thin
+elbow and a visible **View original** affordance. Quotes wrap to three lines;
+**Show more / Show less** reveals the complete saved text separately from source
+navigation. Web, Android and Apple give the connector a single gentle directional
+sweep on interaction, disabled under reduced motion; Rust desktop keeps it
+static. Replies retain a faint neutral background; mentions,
 selected threads and source-jump highlights keep their stronger colors. Desktop
 message toolbars expose **Reply** beside **Reply in thread**, including Reply
 inside existing threads. Mobile long-press message actions offer both where
-applicable, and source rows keep a 44px touch target. Excerpts truncate before
-the source-view label on narrow layouts.
+applicable, and source/expansion controls keep a 44px touch target. Long URLs and
+line breaks wrap within the quote, including on narrow layouts.
 
 `POST /api/chat/channels/:id/messages` accepts optional `replyToId`, independent
 of `threadRootId` and `broadcast`. The API resolves it within the authorized,
@@ -6639,10 +6643,14 @@ existing command identity; changing it returns 409. A definitive attachment
 refusal permits reuploading with a new command ID while retaining the original
 reply target and snapshot; unknown-outcome retries never replace them.
 
-The optional `replyTo` message field contains `{id, author, text,
-hasAttachments, threadRootId?}`. It is a send-time snapshot with at most 200
-Unicode scalars, no recursive quotes, resolved mentions or media URLs. Source
-edits do not rewrite existing quotes. Clicking a quote loads the source through
+The optional `replyTo` message field contains `{id, author, text, fullText?,
+hasAttachments, threadRootId?}`. It is a send-time snapshot with no recursive
+quotes, resolved mentions or media URLs. The legacy `text` preview remains
+bounded to 200 Unicode scalars, so older reply-capable clients still accept the
+whole message. New snapshots add `fullText` only when needed, up to the normal
+4,000-scalar message limit; updated clients display `fullText ?? text`. Existing
+snapshots are not backfilled or rewritten. Source edits do not rewrite existing
+quotes. Clicking a quote loads the source through
 the existing authorized history path. Clients hide the quoted name/excerpt for
 blocked authors. Forward projections remove the quote to avoid sharing source
 conversation context with another audience. Normal outbox/gateway delivery and
@@ -6650,9 +6658,9 @@ push rules are unchanged.
 
 | Platform | Validation boundary |
 | --- | --- |
-| API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, Unicode truncation and transactional outbox snapshots. Low-memory builds use one job and zero debug information. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files after merging current main. Labelled loopback-fixture browser checks cover replies, own threads, source navigation, Pins, cancellation, pending/rejected restoration, immutable quotes after source edits and frozen unknown-outcome retries. Upload-recovery regression retains the original quote despite a changed next-draft target. Extended `scripts/test-message-threads.mjs` passes, including channel/thread quick Reply, source jumps and touch long-press Reply selection. Inspected desktop, 390px and 320px Chromium renders of the updated source rows, composer, Pins, thread and action sheet. Coarse pointer, 44px source targets, non-overlapping desktop actions, zero horizontal overflow and stronger source-jump styling verified; not Safari or physical-device acceptance. |
-| Rust desktop | 417 tests pass after merging current main; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Inspected the labelled 2x Linux reply/reply-to-reply/composer fixture, right-facing source arrows, source-view labels and hovered controls; clicking quick Reply selects the source while retaining the existing draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
+| API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, 200/4,000-scalar Unicode quote boundaries and transactional full-text outbox snapshots. Low-memory builds use one job and zero debug information. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files. `scripts/test-message-threads.mjs` passes, including the existing channel/thread/source/Pins/retry cases and new desktop/touch-emulated checks for full immutable quotes, three-line wrapping, expand/collapse, connected avatars, long URLs, source jumps, blocked-source privacy, one-shot motion and reduced motion. Upload-recovery regression retains the original quote despite a changed next-draft target. Inspected 2x desktop/390px collapsed and expanded quotes, expanded thread/Pins/320px renders, and recording frames showing the sweep reach the avatar then stop. Initial-reply validation also covered composer and action sheet states. Not Safari or physical-device acceptance. |
+| Rust desktop | 417 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. Quote tests cover legacy compatibility, full Unicode snapshots and frozen retries. Inspected 2x Linux collapsed/expanded long-quote fixtures, including the end marker, connected avatar and unobscured hover controls; exercised Show more. Initial-reply validation also exercised quick Reply while retaining the draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |
@@ -6664,7 +6672,8 @@ push rules are unchanged.
    Keep the established API replica/Valkey configuration. Merging deploys
    nothing. Set `MERGED_SHA` to the full merged revision and wait for that
    revision's immutable API/web images.
-2. Deploy the API before releasing clients that send `replyToId`:
+2. Deploy the API before releasing clients that send `replyToId` or expect full
+   saved quote text:
 
    ```bash
    gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
@@ -6673,9 +6682,9 @@ push rules are unchanged.
    ```
 
 3. No gateway, SFU or TURN rollout is required; existing gateway delivery passes
-   the optional field unchanged. Older clients remain compatible but do not
-   display reply context. After API readiness, web and native releases can
-   deploy independently:
+   the optional fields unchanged. Pre-reply clients ignore the context; older
+   reply-capable clients display the 200-scalar preview. After API readiness,
+   web and native releases can deploy independently:
 
    ```bash
    gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
@@ -6685,8 +6694,9 @@ push rules are unchanged.
 
 4. Compile/test Android and Apple on supported hosts before distributing native
    clients. Verify multi-account replies in spaces and DMs, replies to replies,
-   own threads, attachments, offline retry, source navigation, blocking and
-   private access removal. After native acceptance:
+   own threads, attachments, offline retry, long/expanded quotes, source
+   navigation, reduced motion, blocking and private access removal. After native
+   acceptance:
 
    ```bash
    gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"

@@ -676,15 +676,10 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
         .status,
         StatusCode::NOT_FOUND
     );
-    let long_source = persist(
-        &pool,
-        channel,
-        "alice",
-        Uuid::new_v4(),
-        &format!("{}🙂🚀", "a".repeat(199)),
-    )
-    .await
-    .unwrap();
+    let full_text = format!("{}🙂🚀{}", "a".repeat(199), "z".repeat(3799));
+    let long_source = persist(&pool, channel, "alice", Uuid::new_v4(), &full_text)
+        .await
+        .unwrap();
     let quoted = send_message(
         &pool,
         channel,
@@ -699,6 +694,7 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
     .await
     .unwrap();
     assert_eq!(quoted["replyTo"]["text"], format!("{}🙂", "a".repeat(199)));
+    assert_eq!(quoted["replyTo"]["fullText"], full_text);
     let event: Value = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND seq=$2")
         .bind(channel).bind(quoted["seq"].as_str().unwrap().parse::<i64>().unwrap()).fetch_one(&pool).await.unwrap();
     assert_eq!(event["message"]["replyTo"], quoted["replyTo"]);

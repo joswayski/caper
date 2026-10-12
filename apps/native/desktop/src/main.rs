@@ -1125,6 +1125,12 @@ impl CaperApp {
                         token: "fixture-token".into(),
                         author: messages[0].author.clone(),
                     });
+                    messages[1].content.text = concat!(
+                        "TEST FIXTURE — Replies stay in the conversation, so an older message can be brought back into view without moving it or changing its thread.\n",
+                        "The quote keeps the original wording, including line breaks. A longer preview gives everyone enough context to understand the follow-up without opening another panel.\n",
+                        "Show more reveals the rest of this saved quote, while View original jumps to the actual message.\n",
+                        "Quotes are saved when the reply is sent, so editing the original later does not silently rewrite this context. END OF QUOTED TEXT"
+                    ).into();
                     messages[2].reply_to = Some(model::MessageReply::from_message(&messages[1]));
                     messages[2].content.text =
                         "TEST FIXTURE — A reply is its own message in the conversation.".into();
@@ -10196,7 +10202,7 @@ impl CaperApp {
                 self.reply_draft(ui, &root);
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
-                    if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference); }
+                    if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference, &pending.id); }
                     ui.label(&pending.text);
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
@@ -10798,7 +10804,10 @@ impl CaperApp {
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
-                        if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference); }
+                        if let Some(reference) = &pending.reply_to {
+                            let source = self.reply_context(ui, reference, &pending.id);
+                            reply_connector(ui, source, ui.cursor().top() + 11.0);
+                        }
                         message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
                             if !pending.text.is_empty() {
@@ -11001,23 +11010,18 @@ impl CaperApp {
 
     /// A timeline or thread row; `grouped` rows continue the row above
     /// (see `grouping`).
-    fn reply_context(&mut self, ui: &mut egui::Ui, reference: &model::MessageReply) {
+    fn reply_context(
+        &mut self,
+        ui: &mut egui::Ui,
+        reference: &model::MessageReply,
+        key: &str,
+    ) -> egui::Pos2 {
         let blocked = self.is_blocked(&reference.author.id);
-        let label = if blocked {
-            "Blocked message".into()
-        } else {
-            format!(
-                "{} · {}{}",
-                reference.author.name,
-                reference.text.replace('\n', " "),
-                if reference.has_attachments {
-                    " · Attachment"
-                } else {
-                    ""
-                }
-            )
-        };
-        egui::Frame::new()
+        let expanded_id = ui.id().with(("reply-expanded", key));
+        let mut expanded = ui
+            .data(|data| data.get_temp::<bool>(expanded_id))
+            .unwrap_or(false);
+        let shown = egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
                 right: 18,
@@ -11025,25 +11029,91 @@ impl CaperApp {
                 bottom: 0,
             })
             .show(ui, |ui| {
-                if ui
-                    .add_enabled(
+                let heading = ui.horizontal(|ui| {
+                    if !blocked {
+                        let (avatar, _) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        paint_avatar(
+                            ui,
+                            avatar,
+                            &reference.author.name,
+                            reference.author.avatar_id,
+                        );
+                    }
+                    ui.add_enabled(
                         !blocked && !self.context_loading,
-                        egui::Button::image_and_text(
-                            egui::Image::new(egui::include_image!(
-                                "../resources/icons/corner-up-right.svg"
-                            ))
-                            .fit_to_exact_size(egui::vec2(14.0, 14.0))
-                            .tint(MUTED),
-                            RichText::new(label).size(11.0).color(MUTED),
+                        egui::Button::new(
+                            RichText::new(if blocked {
+                                "Blocked message"
+                            } else {
+                                &reference.author.name
+                            })
+                            .size(12.0)
+                            .strong()
+                            .color(MUTED),
                         )
                         .right_text(RichText::new("View original").size(11.0).color(MUTED))
-                        .min_size(egui::vec2(ui.available_width(), 24.0))
+                        .min_size(egui::vec2(ui.available_width(), 20.0))
                         .frame(false)
                         .truncate(),
                     )
                     .on_hover_text("View original message")
                     .clicked()
-                {
+                });
+                let mut open = heading.inner;
+                if !blocked {
+                    let text = reference.full_text.as_deref().unwrap_or(&reference.text);
+                    let text = if text.is_empty() {
+                        if reference.has_attachments {
+                            "Attachment"
+                        } else {
+                            "Message"
+                        }
+                    } else {
+                        text
+                    };
+                    let mut job = egui::text::LayoutJob::simple(
+                        text.to_owned(),
+                        egui::FontId::proportional(12.0),
+                        MUTED,
+                        ui.available_width(),
+                    );
+                    let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
+                    let clipped = full.rows.len() > 3;
+                    let galley = if expanded || !clipped {
+                        full
+                    } else {
+                        job.wrap.max_rows = 3;
+                        ui.fonts_mut(|fonts| fonts.layout_job(job))
+                    };
+                    open |= ui
+                        .add_enabled(
+                            !self.context_loading,
+                            egui::Label::new(galley)
+                                .sense(egui::Sense::click())
+                                .show_tooltip_when_elided(false)
+                                .selectable(false),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked();
+                    if clipped
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(if expanded { "Show less" } else { "Show more" })
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(0.0, 24.0)),
+                            )
+                            .clicked()
+                    {
+                        expanded = !expanded;
+                        ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
+                    }
+                }
+                if open {
                     self.showing_pins = false;
                     self.load_context(
                         reference.thread_root_id.clone(),
@@ -11051,7 +11121,9 @@ impl CaperApp {
                         false,
                     );
                 }
+                heading.response.rect.left_center()
             });
+        shown.inner
     }
 
     fn reply_draft(&mut self, ui: &mut egui::Ui, key: &str) {
@@ -11168,10 +11240,10 @@ impl CaperApp {
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if let Some(reference) = &message.reply_to {
-                self.reply_context(ui, reference);
-                actions_y = Some(ui.cursor().top());
-            }
+            let quote = message
+                .reply_to
+                .as_ref()
+                .map(|reference| self.reply_context(ui, reference, &message.id));
             if in_pins && let Some(pin) = pinned {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -11214,6 +11286,10 @@ impl CaperApp {
                             );
                         }
                     });
+            }
+            if let Some(source) = quote {
+                actions_y = Some(ui.cursor().top());
+                reply_connector(ui, source, ui.cursor().top() + 11.0);
             }
             let (timestamp, profile, body) =
                 message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
@@ -15586,6 +15662,23 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     } else {
         "Show member list"
     })
+}
+
+fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32) {
+    let stroke = Stroke::new(1.5, MUTED.gamma_multiply(0.8));
+    let bend = source - egui::vec2(20.0, 0.0);
+    let column = source.x - 27.0;
+    let below = egui::pos2(column, source.y + 7.0);
+    ui.painter().line_segment([source, bend], stroke);
+    ui.painter()
+        .add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+            [bend, egui::pos2(column, source.y), below],
+            false,
+            Color32::TRANSPARENT,
+            stroke,
+        ));
+    ui.painter()
+        .line_segment([below, egui::pos2(column, avatar_top)], stroke);
 }
 
 /// A message row: avatar, then the name and time above the body. A grouped
@@ -27320,7 +27413,12 @@ mod tests {
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
-        let source = model::MessageReply::from_message(&message);
+        let full_text = format!("{}🙂🚀{}", "a".repeat(199), "z".repeat(3799));
+        let mut original = message.clone();
+        original.content.text = full_text.clone();
+        let source = model::MessageReply::from_message(&original);
+        assert_eq!(source.text, format!("{}🙂", "a".repeat(199)));
+        assert_eq!(source.full_text.as_deref(), Some(full_text.as_str()));
         let mut quoted = pending.clone();
         quoted.reply_to = Some(source.clone());
         assert_eq!(
@@ -27331,6 +27429,11 @@ mod tests {
         let mut delivered = message.clone();
         delivered.reply_to = Some(source);
         assert!(quoted.confirmed_by(&delivered, "author"));
+        assert!(delivered.validate().is_ok());
+        delivered.reply_to.as_mut().unwrap().full_text = Some(format!("{full_text}x"));
+        assert!(delivered.validate().is_err());
+        delivered.reply_to.as_mut().unwrap().full_text = None;
+        assert!(delivered.validate().is_ok(), "legacy quotes remain valid");
         delivered.reply_to.as_mut().unwrap().id = "wrong-target".into();
         assert!(!quoted.confirmed_by(&delivered, "author"));
     }

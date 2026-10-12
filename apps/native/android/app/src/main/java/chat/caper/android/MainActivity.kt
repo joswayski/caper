@@ -80,7 +80,11 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
@@ -2472,14 +2476,53 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 }
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
-    val text = if (hidden) "Blocked message" else "${reference.author.name} · ${reference.text.ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }}"
-    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
-    Row(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp).padding(start = 32.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("↱", color = TextMuted, fontSize = 14.sp)
-        Spacer(Modifier.width(16.dp))
-        if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
-        Text(text, Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+    val text = (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
+    var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
+    var clipped by remember(reference.id, hidden) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val sweep = remember { Animatable(0f) }
+    var sweepTrigger by remember { mutableIntStateOf(0) }
+    val hover = remember { MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
+    LaunchedEffect(hovered) { if (hovered) sweepTrigger++ }
+    LaunchedEffect(sweepTrigger, still) {
+        if (sweepTrigger == 0 || still) return@LaunchedEffect
+        sweep.snapTo(0f)
+        sweep.animateTo(1f, tween(1300))
+    }
+    val action = if (onOpen == null) Modifier else Modifier.onFocusChanged { if (it.isFocused) sweepTrigger++ }
+        .clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
+    Column(Modifier.fillMaxWidth().hoverable(hover).drawBehind {
+        val path = Path().apply {
+            moveTo(62.dp.toPx(), 14.dp.toPx())
+            lineTo(42.dp.toPx(), 14.dp.toPx())
+            quadraticTo(35.dp.toPx(), 14.dp.toPx(), 35.dp.toPx(), 21.dp.toPx())
+            lineTo(35.dp.toPx(), size.height + 10.dp.toPx())
+        }
+        val stroke = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round)
+        drawPath(path, TextMuted.copy(alpha = 0.8f), style = stroke)
+        if (!still && sweep.value > 0f && sweep.value < 1f) {
+            val measure = PathMeasure().apply { setPath(path, false) }
+            val tip = sweep.value * (measure.length + 24.dp.toPx())
+            val segment = Path()
+            measure.getSegment((tip - 24.dp.toPx()).coerceAtLeast(0f), tip.coerceAtMost(measure.length), segment, true)
+            drawPath(segment, Terracotta.copy(alpha = (1f - sweep.value) * 0.8f), style = stroke)
+        }
+    }.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
+        Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
+                Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+            }
+            if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
+                maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
+                onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
+        }
+        if (!hidden && clipped) TextButton({ expanded = !expanded; sweepTrigger++ }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
+            Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp)
+        }
     }
 }
 

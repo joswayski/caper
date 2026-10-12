@@ -270,7 +270,7 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val editSeq: String? = null,
     val replyTo: MessageReply? = null,
 )
-@Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null)
+@Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null, val fullText: String? = null)
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 @Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false)
 data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,

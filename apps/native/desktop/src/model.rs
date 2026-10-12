@@ -749,6 +749,8 @@ pub struct MessageReply {
     pub id: String,
     pub author: Author,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_text: Option<String>,
     pub has_attachments: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_root_id: Option<String>,
@@ -764,6 +766,8 @@ impl MessageReply {
             } else {
                 message.content.text.chars().take(200).collect()
             },
+            full_text: (message.content.text.chars().count() > 200)
+                .then(|| message.content.text.clone()),
             has_attachments: !message.content.attachments.is_empty(),
             thread_root_id: message.thread_root_id.clone(),
         }
@@ -912,6 +916,10 @@ impl Message {
             && (reply.id.is_empty()
                 || reply.author.id.is_empty()
                 || reply.text.chars().count() > 200
+                || reply
+                    .full_text
+                    .as_ref()
+                    .is_some_and(|text| text.chars().count() > 4000)
                 || reply.thread_root_id.as_ref().is_some_and(String::is_empty))
         {
             return Err("invalid reply reference".into());

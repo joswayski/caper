@@ -3092,6 +3092,7 @@ private struct MessageRow: View {
     /// (Reply in thread, Reply, Add reaction and ⋯), plus a gap.
     private var actionsInset: CGFloat { inThread ? 82 : 108 }
     @State private var controlsHovered = false
+    @State private var actionsTop: CGFloat = 6
     @FocusState private var replyFocused: Bool
     @FocusState private var replyMessageFocused: Bool
     @FocusState private var reactionFocused: Bool
@@ -3103,7 +3104,6 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
-            if let reference = message.replyTo { NativeReplyContext(reference: reference, chat: chat) }
             if inPins, let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
@@ -3127,6 +3127,7 @@ private struct MessageRow: View {
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
+            if let reference = message.replyTo { NativeReplyContext(reference: reference, chat: chat) }
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
@@ -3199,8 +3200,12 @@ private struct MessageRow: View {
                 }
             }
             }
+            #if os(macOS)
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("reply-row-\(message.id)")).minY } action: { if message.replyTo != nil { actionsTop = max(0, $0 - 4) } }
+            #endif
         // As on web, a run reads as one block: 2pt instead of 10 between its rows.
         }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
+            .coordinateSpace(name: "reply-row-\(message.id)")
             .background(rowBackground(mentionsMe: mentionsMe))
             .overlay(alignment: .leading) {
                 if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
@@ -3251,7 +3256,7 @@ private struct MessageRow: View {
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : 35)
+                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : actionsTop)
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.
@@ -4455,28 +4460,92 @@ private struct ReactionPicker: View {
 private struct NativeReplyContext: View {
     let reference: MessageReply
     @Bindable var chat: ChatModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expanded = false
+    @State private var fullHeight: CGFloat = 0
+    @State private var collapsedHeight: CGFloat = 0
+    @State private var sweepStart: Date?
+    @FocusState private var sourceFocused: Bool
     private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
+    private var excerpt: String {
+        let text = reference.fullText ?? reference.text
+        return text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text
+    }
     var body: some View {
-        Button { Task { _ = await chat.goToReply(reference) } } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.turn.up.right").frame(width: 34)
-                if hidden { Text("Blocked message") }
-                else {
-                    Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
-                    Text(reference.author.name).fontWeight(.bold)
-                    Text(reference.text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : reference.text)
-                    if reference.hasAttachments { Image(systemName: "paperclip") }
+        VStack(alignment: .leading, spacing: 0) {
+            Button { Task { _ = await chat.goToReply(reference) } } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        if hidden { Text("Blocked message").lineLimit(1) }
+                        else {
+                            Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
+                            Text(reference.author.name).fontWeight(.bold).lineLimit(1)
+                            if reference.hasAttachments { Image(systemName: "paperclip") }
+                        }
+                        Spacer(minLength: 4)
+                        Text("View original").font(CaperTheme.font(11)).fixedSize()
+                    }.frame(minHeight: 20)
+                    if !hidden {
+                        Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
+                            .background {
+                                Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                            }
+                    }
                 }
-                Spacer(minLength: 4)
-                Text("View original").font(CaperTheme.font(11)).fixedSize()
-            }.lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 #if os(iOS)
-                .frame(minHeight: 44)
+                .frame(minHeight: 44, alignment: .topLeading)
                 #else
-                .frame(minHeight: 24)
+                .frame(minHeight: 24, alignment: .topLeading)
                 #endif
-        }.buttonStyle(.plain).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
+            }.buttonStyle(.plain).focused($sourceFocused)
+                .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
+                .accessibilityHint(hidden ? "" : excerpt)
+            if !hidden && (expanded || fullHeight > collapsedHeight + 1) {
+                Button {
+                    expanded.toggle()
+                    if !reduceMotion { sweepStart = .now }
+                } label: { Text(expanded ? "Show less" : "Show more").font(CaperTheme.font(11)).underline() }
+                    .buttonStyle(.plain)
+                    #if os(iOS)
+                    .frame(minHeight: 44)
+                    #else
+                    .frame(minHeight: 24)
+                    #endif
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            }
+        }.padding(.leading, 44).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            .background(alignment: .topLeading) {
+                GeometryReader { geometry in
+                    TimelineView(.animation(paused: reduceMotion || sweepStart == nil)) { timeline in
+                        let progress = CGFloat(sweepStart.map { min(1, max(0, timeline.date.timeIntervalSince($0) / 1.3)) } ?? 0)
+                        let path = Path { path in
+                            path.move(to: CGPoint(x: 44, y: 10))
+                            path.addLine(to: CGPoint(x: 24, y: 10))
+                            path.addQuadCurve(to: CGPoint(x: 17, y: 17), control: CGPoint(x: 17, y: 10))
+                            path.addLine(to: CGPoint(x: 17, y: geometry.size.height + 6))
+                        }
+                        ZStack {
+                            path.stroke(CaperTheme.muted.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            if !reduceMotion, sweepStart != nil {
+                                path.trim(from: max(0, progress - 0.14), to: progress)
+                                    .stroke(CaperTheme.terracottaBright.opacity(Double(0.8 * (1 - progress))), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            }
+                        }.frame(width: 44, height: geometry.size.height + 6)
+                    }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
+            .onHover { if $0 && !reduceMotion { sweepStart = .now } }
+            .onChange(of: sourceFocused) { _, focused in if focused && !reduceMotion { sweepStart = .now } }
+            .task(id: sweepStart) {
+                guard sweepStart != nil else { return }
+                try? await Task.sleep(for: .milliseconds(1300))
+                if !Task.isCancelled { sweepStart = nil }
+            }
     }
 }
 
