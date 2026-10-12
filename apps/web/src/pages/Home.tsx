@@ -101,12 +101,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             <span className="experimental-warning">
               Caper is a work in progress and may contain bugs or incomplete features.
             </span>{" "}
-            {mobileBetas.ios && mobileBetas.android ? (
-              "Have feedback? Reach out on"
-            ) : (
-              <>Mobile apps are available. If you&apos;d like access to them or have feedback, reach out on</>
-            )}{" "}
-            <ContactLinks />
+            Have feedback? Reach out on <ContactLinks />
           </p>
           <p className="made-by">
             Made by{" "}
