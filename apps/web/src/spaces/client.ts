@@ -98,9 +98,7 @@ export function listFeedback(before?: string, archived = false) {
   const query = new URLSearchParams();
   if (before) query.set("before", before);
   if (archived) query.set("archived", "true");
-  return request<{ reports: FeedbackReport[]; cursor: string | null }>(
-    `/api/feedback${query.size ? `?${query}` : ""}`,
-  );
+  return request<{ reports: FeedbackReport[]; cursor: string | null }>(`/api/feedback${query.size ? `?${query}` : ""}`);
 }
 
 /** Hides a reported thread from the whole team's inbox, or brings it back. */

@@ -2300,9 +2300,14 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   member, ignoring mutes. See [notifications](notifications.md#who-gets-a-notification).
 - **Inbox.** `GET /api/feedback[?before=cursor]` (404 unless on the team) lists
   reports newest first, 50 per page, with reporter, place, a 280-character
-  preview, reply count and `answered` (a team member replied in that thread
-  since). `GET /api/account/me` adds `feedbackTeam: true` for team members.
-  Clients group reports by thread.
+  preview, reply count, `archived` and `answered`. `answered` is computed on read,
+  not stored: it is true while the newest message in the report's thread is from
+  the team, so anyone replying afterwards makes it wait again. Clients group
+  reports by thread. `PUT /api/feedback/archive {channelId, threadRootId, archived}`
+  archives or restores a whole thread for the whole team (`archived_at` on its
+  reports; a later report arrives unarchived, so the thread returns), and
+  `?archived=true` lists archived threads. `GET /api/account/me` adds
+  `feedbackTeam: true` for team members.
 
 **Privacy.** Tagging the team is consent for it to read that conversation, the
 earlier context included. The `@feedback` suggestion says so: *Caper team · can
@@ -2321,8 +2326,8 @@ SELECT u.username, t.created_at FROM feedback_team t JOIN users u ON u.id = t.us
 ```
 
 Migration `202610110003_feedback.sql` adds the two tables and the function.
-`--migrate` grants the runtime role `SELECT` on `feedback_team`, `SELECT, INSERT`
-on `feedback_reports`, its sequence and `EXECUTE` on `feedback_access`. Every
+`--migrate` grants the runtime role `SELECT` on `feedback_team`, `SELECT, INSERT,
+UPDATE` on `feedback_reports`, its sequence and `EXECUTE` on `feedback_access`. Every
 access check calls the function, so **run the migration before rolling out the
 API image**: an older API keeps working against the new schema.
 

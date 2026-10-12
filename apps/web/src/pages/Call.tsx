@@ -1344,6 +1344,7 @@ export default function Call({
         ) : null,
     };
   };
+  const visitVoice = channel?.visitor && !channel.direct ? voiceFor(channel.id) : null;
   let navigation: ReactNode;
   if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor);
   else if (channelNavigation) navigation = channelNavigation;
@@ -1688,6 +1689,14 @@ export default function Call({
                     </div>
                   )}
                   {channelJoined && channelActions}
+                  {visitVoice && (
+                    // A visited channel isn't in the sidebar, so its voice sits here.
+                    <span className="visit-voice">
+                      {visitVoice.timer}
+                      {visitVoice.summary}
+                      {visitVoice.list}
+                    </span>
+                  )}
                   {membersPanel && (
                     <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}>
                       <button

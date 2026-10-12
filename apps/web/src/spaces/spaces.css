@@ -2658,12 +2658,12 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   color: var(--text-muted);
   font-size: 0.74rem;
 }
-/* Like a channel row: voice in the visited channel sits under its report. */
+/* A report row with its archive action, which appears on hover like a DM's menu. */
 .feedback-line {
   flex: 1 1 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   border-radius: var(--radius-control);
 }
@@ -2672,4 +2672,39 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
 }
 .feedback-line .feedback-select[aria-current="page"] {
   background: transparent;
+}
+@media (hover: hover) {
+  .feedback-line:hover:not(:has(.feedback-select[aria-current="page"])) {
+    background: var(--surface-hover);
+  }
+  .feedback-line .feedback-select:hover {
+    background: transparent;
+  }
+  .feedback-line:not(:hover, :has(:focus-visible)) .feedback-archive {
+    opacity: 0;
+  }
+}
+.feedback-archive {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.feedback-archive:hover,
+.feedback-archive:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.feedback-archive svg {
+  width: 15px;
+  height: 15px;
+}
+.feedback-toggle {
+  color: var(--text-muted);
 }

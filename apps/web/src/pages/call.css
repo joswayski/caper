@@ -1760,3 +1760,26 @@
     transition: none;
   }
 }
+/* Voice for a conversation the feedback team visits, in its header. */
+.visit-voice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.visit-voice .channel-voice {
+  padding: 0;
+}
+.visit-voice .voice-occupants {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.visit-voice .voice-occupants:not([data-open]) {
+  display: none;
+}
