@@ -513,6 +513,10 @@ final class CaperParityUITests: XCTestCase {
 
         let short = "Compact draft"
         composer.typeText(short)
+        // Typing can finish before the accessibility snapshot has the full value.
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", short), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 3), .completed,
+                       "The typed draft must reach the composer's accessibility value")
         XCTAssertEqual(composer.value as? String, short,
                        "The tapped composer must receive keyboard input")
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
