@@ -2340,6 +2340,17 @@ final class CaperParityUITests: XCTestCase {
             thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        // A swipe along a full-width Browse row lifts inside that row: it must
+        // navigate without also tapping it (which opened New message / Invite people).
+        navigation.tap()
+        let invite = app.buttons["invite-people"], newMessage = app.buttons["new-message"]
+        XCTAssertTrue(invite.waitForExistence(timeout: 3) || newMessage.exists)
+        let row = invite.exists ? invite : newMessage
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swiping along a Browse row returns to chat")
+        XCTAssertFalse(app.textFields["dm-username"].waitForExistence(timeout: 1), "Lifting a swipe must not tap the row under the finger")
+        XCTAssertTrue(navigation.isHittable, "No dialog opens over the conversation after a swipe")
         navigation.tap()
         app.descendants(matching: .any)["selected-space-name"].tap()
         app.buttons["Browse channels"].tap()
