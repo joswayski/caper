@@ -357,7 +357,15 @@ const checkLongQuotePreview = async (layout) => {
   );
   assert.equal(quoted.replyTo.fullText, fullText);
   assert.equal([...quoted.replyTo.text].length, 200);
-  const selector = channel(quoted.clientMessageId);
+  const selector = `.chat-panel .chat-scroller ${row(quoted.clientMessageId)}`;
+  // Source navigation and a viewport change can leave the virtualized list at
+  // a history anchor. Use the normal latest-message shortcut, not its temporary
+  // hydration preview, before interacting with the newly delivered quote.
+  wait(
+    '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
+  );
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   browser("scrollintoview", selector);
   const geometry = () =>
@@ -367,8 +375,15 @@ const checkLongQuotePreview = async (layout) => {
     const excerpt = quote.querySelector('.chat-reply-excerpt');
     const avatar = row.querySelector(':scope > .chat-avatar').getBoundingClientRect();
     const line = quote.querySelector('svg').getBoundingClientRect();
+    const source = quote.querySelector('.chat-reply-avatar').getBoundingClientRect();
+    const beam = quote.querySelector('.chat-reply-flow:not(.chat-reply-glow)');
+    const end = beam.getPointAtLength(beam.getTotalLength()).matrixTransform(beam.getScreenCTM());
+    const start = beam.getPointAtLength(0).matrixTransform(beam.getScreenCTM());
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
       connection: Math.abs(line.bottom - avatar.top - 1), overflow: document.documentElement.scrollWidth > innerWidth,
+      sourceConnection: Math.hypot(end.x - source.left, end.y - source.top - source.height / 2),
+      replyConnection: Math.hypot(start.x - avatar.left - avatar.width / 2, start.y - avatar.top - 1),
+      separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
       quoteHeight: quote.getBoundingClientRect().height };
   })()`);
   assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
@@ -376,6 +391,11 @@ const checkLongQuotePreview = async (layout) => {
   assert.equal(collapsed.clamp, "3");
   assert.ok(collapsed.natural > collapsed.height);
   assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
+  assert.ok(
+    collapsed.sourceConnection < 1 && collapsed.replyConnection < 1,
+    "Both avatar attachments match their rendered boundaries",
+  );
+  assert.ok(collapsed.separation >= 8, "The quote card stays separate from the replying author");
   assert.equal(collapsed.overflow, false);
   screenshot(`reply-preview-${layout}-collapsed`);
   browser("click", `${selector} .chat-reply-expand`);
@@ -384,6 +404,8 @@ const checkLongQuotePreview = async (layout) => {
   assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
   assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
+  assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
+  assert.ok(expanded.separation >= 8);
   assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
   browser("scrollintoview", selector);
   screenshot(`reply-preview-${layout}-expanded`);
@@ -392,20 +414,46 @@ const checkLongQuotePreview = async (layout) => {
   if (layout === "desktop") {
     browser("mouse", "move", "10", "10");
     evaluate("document.activeElement.blur()");
-    browser("focus", `${selector} .chat-reply-source`);
     assert.equal(
       evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationIterationCount`),
-      "1",
+      "infinite",
+      "The visible motion does not require a hover or focus trigger",
     );
-    assert.equal(
-      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationName`),
-      "chat-reply-sweep",
+    const samples = evaluate(`new Promise(resolve => {
+      const beam = document.querySelector('${selector} .chat-reply-flow:not(.chat-reply-glow)');
+      const samples = []; const start = performance.now();
+      const sample = () => {
+        const style = getComputedStyle(beam); const offset = parseFloat(style.strokeDashoffset);
+        const position = beam.getPointAtLength(Math.max(0, Math.min(1, (11 - offset) / 100)) * beam.getTotalLength());
+        samples.push({ offset, opacity: parseFloat(style.opacity), y: position.y });
+        if (performance.now() - start < 4400) requestAnimationFrame(sample); else resolve(samples);
+      }; requestAnimationFrame(sample);
+    })`);
+    assert.ok(
+      samples.some((sample) => sample.opacity > 0.8),
+      "The warm beam is visible while idle",
+    );
+    assert.ok(
+      samples.some((sample) => sample.opacity === 0),
+      "There is a quiet pause between passes",
+    );
+    assert.ok(
+      samples.some(
+        (sample, index) =>
+          index > 0 &&
+          sample.opacity > 0.8 &&
+          samples[index - 1].opacity > 0.8 &&
+          sample.offset < samples[index - 1].offset &&
+          sample.y < samples[index - 1].y - 0.1,
+      ),
+      "The light moves up from the replying avatar toward the quoted source",
+    );
+    assert.ok(
+      samples.some((sample, index) => index > 0 && sample.offset > samples[index - 1].offset + 50),
+      "The motion repeats after its pause",
     );
     browser("set", "media", "dark", "reduced-motion");
-    assert.equal(
-      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationName`),
-      "none",
-    );
+    assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-flow').getAnimations().length`), 0);
     browser("set", "media", "dark");
     assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
   }
@@ -430,7 +478,7 @@ const checkLongQuotePreview = async (layout) => {
   wait(`document.querySelector('${selector} .chat-reply-context')?.textContent.includes('Blocked message')`);
   assert.equal(
     evaluate(
-      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar')`,
+      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar, ${selector} .chat-reply-flow')`,
     ),
     false,
     "Blocked quote text, expansion and identity stay hidden",
@@ -440,7 +488,7 @@ const checkLongQuotePreview = async (layout) => {
   browser("open", `${web}/spaces`);
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
-    `PASS: ${layout}: full immutable quote, three-line wrapping, expand/collapse, connected avatar, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", one-shot motion and reduced motion" : ""}.`,
+    `PASS: ${layout}: full immutable quote, three-line wrapping, expand/collapse, both avatar attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", automatic upward motion, pause, repeat and reduced motion" : ""}.`,
   );
 };
 

@@ -11026,102 +11026,116 @@ impl CaperApp {
                 left: 62,
                 right: 18,
                 top: 4,
-                bottom: 0,
+                bottom: 8,
             })
             .show(ui, |ui| {
-                let heading = ui.horizontal(|ui| {
-                    if !blocked {
-                        let (avatar, _) =
-                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                        paint_avatar(
-                            ui,
-                            avatar,
-                            &reference.author.name,
-                            reference.author.avatar_id,
-                        );
-                    }
-                    ui.add_enabled(
-                        !blocked && !self.context_loading,
-                        egui::Button::new(
-                            RichText::new(if blocked {
-                                "Blocked message"
-                            } else {
-                                &reference.author.name
-                            })
-                            .size(12.0)
-                            .strong()
-                            .color(MUTED),
-                        )
-                        .right_text(RichText::new("View original").size(11.0).color(MUTED))
-                        .min_size(egui::vec2(ui.available_width(), 20.0))
-                        .frame(false)
-                        .truncate(),
-                    )
-                    .on_hover_text("View original message")
-                    .clicked()
-                });
-                let mut open = heading.inner;
-                if !blocked {
-                    let text = reference.full_text.as_deref().unwrap_or(&reference.text);
-                    let text = if text.is_empty() {
-                        if reference.has_attachments {
-                            "Attachment"
-                        } else {
-                            "Message"
-                        }
-                    } else {
-                        text
-                    };
-                    let mut job = egui::text::LayoutJob::simple(
-                        text.to_owned(),
-                        egui::FontId::proportional(12.0),
-                        MUTED,
-                        ui.available_width(),
-                    );
-                    let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
-                    let clipped = full.rows.len() > 3;
-                    let galley = if expanded || !clipped {
-                        full
-                    } else {
-                        job.wrap.max_rows = 3;
-                        ui.fonts_mut(|fonts| fonts.layout_job(job))
-                    };
-                    open |= ui
-                        .add_enabled(
-                            !self.context_loading,
-                            egui::Label::new(galley)
-                                .sense(egui::Sense::click())
-                                .show_tooltip_when_elided(false)
-                                .selectable(false),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked();
-                    if clipped
-                        && ui
-                            .add(
+                let panel = egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER.gamma_multiply(0.7)))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        let heading = ui.horizontal(|ui| {
+                            if !blocked {
+                                let (avatar, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
+                                paint_avatar(
+                                    ui,
+                                    avatar,
+                                    &reference.author.name,
+                                    reference.author.avatar_id,
+                                );
+                            }
+                            ui.add_enabled(
+                                !blocked && !self.context_loading,
                                 egui::Button::new(
-                                    RichText::new(if expanded { "Show less" } else { "Show more" })
-                                        .size(11.0)
-                                        .color(MUTED),
+                                    RichText::new(if blocked {
+                                        "Blocked message"
+                                    } else {
+                                        &reference.author.name
+                                    })
+                                    .size(12.0)
+                                    .strong()
+                                    .color(MUTED),
                                 )
+                                .right_text(RichText::new("View original").size(11.0).color(MUTED))
+                                .min_size(egui::vec2(ui.available_width(), 20.0))
                                 .frame(false)
-                                .min_size(egui::vec2(0.0, 24.0)),
+                                .truncate(),
                             )
+                            .on_hover_text("View original message")
                             .clicked()
-                    {
-                        expanded = !expanded;
-                        ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
-                    }
-                }
-                if open {
-                    self.showing_pins = false;
-                    self.load_context(
-                        reference.thread_root_id.clone(),
-                        reference.id.clone(),
-                        false,
-                    );
-                }
-                heading.response.rect.left_center()
+                        });
+                        let mut open = heading.inner;
+                        if !blocked {
+                            let text = reference.full_text.as_deref().unwrap_or(&reference.text);
+                            let text = if text.is_empty() {
+                                if reference.has_attachments {
+                                    "Attachment"
+                                } else {
+                                    "Message"
+                                }
+                            } else {
+                                text
+                            };
+                            let mut job = egui::text::LayoutJob::simple(
+                                text.to_owned(),
+                                egui::FontId::proportional(12.0),
+                                MUTED,
+                                ui.available_width(),
+                            );
+                            let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
+                            let clipped = full.rows.len() > 3;
+                            let galley = if expanded || !clipped {
+                                full
+                            } else {
+                                job.wrap.max_rows = 3;
+                                ui.fonts_mut(|fonts| fonts.layout_job(job))
+                            };
+                            open |= ui
+                                .add_enabled(
+                                    !self.context_loading,
+                                    egui::Label::new(galley)
+                                        .sense(egui::Sense::click())
+                                        .show_tooltip_when_elided(false)
+                                        .selectable(false),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked();
+                            if clipped
+                                && ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new(if expanded {
+                                                "Show less"
+                                            } else {
+                                                "Show more"
+                                            })
+                                            .size(11.0)
+                                            .color(MUTED),
+                                        )
+                                        .frame(false)
+                                        .min_size(egui::vec2(0.0, 24.0)),
+                                    )
+                                    .clicked()
+                            {
+                                expanded = !expanded;
+                                ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
+                            }
+                        }
+                        if open {
+                            self.showing_pins = false;
+                            self.load_context(
+                                reference.thread_root_id.clone(),
+                                reference.id.clone(),
+                                false,
+                            );
+                        }
+                        heading.response.rect.left_center()
+                    });
+                panel.inner
             });
         shown.inner
     }
@@ -15665,20 +15679,46 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 }
 
 fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32) {
-    let stroke = Stroke::new(1.5, MUTED.gamma_multiply(0.8));
-    let bend = source - egui::vec2(20.0, 0.0);
-    let column = source.x - 27.0;
-    let below = egui::pos2(column, source.y + 7.0);
-    ui.painter().line_segment([source, bend], stroke);
-    ui.painter()
-        .add(egui::epaint::QuadraticBezierShape::from_points_stroke(
-            [bend, egui::pos2(column, source.y), below],
-            false,
-            Color32::TRANSPARENT,
-            stroke,
+    let column = ui.cursor().left() + 35.0;
+    let bend = source - egui::vec2(12.0, 0.0);
+    let control = egui::pos2(column, source.y);
+    let below = egui::pos2(column, source.y + 28.0);
+    let mut points = vec![source, bend];
+    for step in 1..=12 {
+        let t = step as f32 / 12.0;
+        points.push(egui::pos2(
+            (1.0 - t).powi(2) * bend.x + 2.0 * t * (1.0 - t) * control.x + t * t * below.x,
+            (1.0 - t).powi(2) * bend.y + 2.0 * t * (1.0 - t) * control.y + t * t * below.y,
         ));
+    }
+    points.push(egui::pos2(column, avatar_top));
+    let length: f32 = points
+        .windows(2)
+        .map(|pair| pair[0].distance(pair[1]))
+        .sum();
+    let mut distance = 0.0;
+    let mut mesh = egui::Mesh::default();
+    for (index, point) in points.iter().enumerate() {
+        if index > 0 {
+            distance += point.distance(points[index - 1]);
+        }
+        let tangent = points[(index + 1).min(points.len() - 1)] - points[index.saturating_sub(1)];
+        let normal = egui::vec2(-tangent.y, tangent.x).normalized();
+        let width = 2.0 - 1.45 * distance / length;
+        mesh.colored_vertex(*point + normal * width, MUTED.gamma_multiply(0.65));
+        mesh.colored_vertex(*point - normal * width, MUTED.gamma_multiply(0.65));
+        if index > 0 {
+            let index = index as u32 * 2;
+            mesh.add_triangle(index - 2, index - 1, index);
+            mesh.add_triangle(index, index - 1, index + 1);
+        }
+    }
+    ui.painter().add(mesh);
+    let ring = Stroke::new(1.0, MUTED.gamma_multiply(0.4));
     ui.painter()
-        .line_segment([below, egui::pos2(column, avatar_top)], stroke);
+        .circle_stroke(source + egui::vec2(8.0, 0.0), 8.5, ring);
+    ui.painter()
+        .circle_stroke(egui::pos2(column, avatar_top + 16.0), 17.5, ring);
 }
 
 /// A message row: avatar, then the name and time above the body. A grouped

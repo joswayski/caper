@@ -477,7 +477,6 @@
   outline-offset: 2px;
 }
 .chat-message {
-  --reply-context-height: 24px;
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -499,12 +498,16 @@
   grid-column: 1 / -1;
   width: 100%;
   min-height: 24px;
-  margin-bottom: -5px;
+  margin-bottom: 8px;
   padding-left: 44px;
 }
 .chat-reply-body {
   min-width: 0;
   width: 100%;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
 }
 .chat-reply-source {
   display: flex;
@@ -531,55 +534,61 @@
   position: absolute;
   top: 0;
   left: 0;
-  width: 44px;
+  z-index: 1;
   overflow: visible;
   fill: none;
-  stroke: var(--text-muted);
-  stroke-width: 1.5px;
   stroke-linecap: round;
-  opacity: 0.8;
   pointer-events: none;
+}
+.chat-reply-line {
+  fill: var(--text-muted);
+  opacity: 0.65;
+}
+.chat-reply-avatar,
+.chat-message:has(> .chat-reply-context) > .chat-avatar {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-muted) 40%, transparent);
 }
 .chat-reply-connector .chat-reply-flow {
   stroke: var(--terracotta-bright);
-  stroke-dasharray: 14 100;
-  stroke-dashoffset: 14;
+  stroke-width: 4px;
+  stroke-dasharray: 22 100;
+  stroke-dashoffset: 22;
   opacity: 0;
-  filter: drop-shadow(0 0 2px rgb(182 77 50 / 25%));
+}
+.chat-reply-connector .chat-reply-glow {
+  stroke-width: 5px;
+  filter: blur(2px);
 }
 @keyframes chat-reply-sweep {
   0% {
-    stroke-dashoffset: 14;
+    stroke-dashoffset: 22;
     opacity: 0;
   }
-  15% {
-    opacity: 0.8;
+  7% {
+    opacity: 0.95;
   }
-  80% {
-    opacity: 0.5;
+  45% {
+    stroke-dashoffset: -100;
+    opacity: 0.95;
   }
+  53%,
   100% {
     stroke-dashoffset: -100;
     opacity: 0;
   }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .chat-reply-context:focus-within .chat-reply-flow {
-    animation: chat-reply-sweep 1.3s ease-out;
-  }
-}
-@media (hover: hover) and (prefers-reduced-motion: no-preference) {
-  .chat-message:hover .chat-reply-flow {
-    animation: chat-reply-sweep 1.3s ease-out;
+  .chat-reply-flow {
+    animation: chat-reply-sweep 4.2s linear infinite;
   }
 }
 .chat-message:has(> .chat-reply-context)
   > div
   > :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread, .chat-reply-message) {
-  margin-top: calc(var(--reply-context-height) + 8px);
+  top: var(--reply-actions-top);
 }
 .chat-pinned-message:has(> .chat-reply-context) > .chat-message-actions-trigger {
-  margin-top: calc(var(--reply-context-height) + 10px);
+  top: var(--reply-actions-top);
 }
 .chat-reply-context > svg,
 .chat-reply-draft > svg,

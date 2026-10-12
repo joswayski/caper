@@ -4464,8 +4464,7 @@ private struct NativeReplyContext: View {
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var collapsedHeight: CGFloat = 0
-    @State private var sweepStart: Date?
-    @FocusState private var sourceFocused: Bool
+    @State private var sweepStart = Date()
     private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
     private var excerpt: String {
         let text = reference.fullText ?? reference.text
@@ -4502,14 +4501,11 @@ private struct NativeReplyContext: View {
                 #else
                 .frame(minHeight: 24, alignment: .topLeading)
                 #endif
-            }.buttonStyle(.plain).focused($sourceFocused)
+            }.buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
             if !hidden && (expanded || fullHeight > collapsedHeight + 1) {
-                Button {
-                    expanded.toggle()
-                    if !reduceMotion { sweepStart = .now }
-                } label: { Text(expanded ? "Show less" : "Show more").font(CaperTheme.font(11)).underline() }
+                Button { expanded.toggle() } label: { Text(expanded ? "Show less" : "Show more").font(CaperTheme.font(11)).underline() }
                     .buttonStyle(.plain)
                     #if os(iOS)
                     .frame(minHeight: 44)
@@ -4518,34 +4514,48 @@ private struct NativeReplyContext: View {
                     #endif
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
-        }.padding(.leading, 44).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            .background(alignment: .topLeading) {
+        }.padding(.horizontal, 12).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(CaperTheme.surface))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border.opacity(0.7), lineWidth: 1))
+            .padding(.leading, 44).padding(.bottom, 13)
+            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            .overlay(alignment: .topLeading) {
                 GeometryReader { geometry in
-                    TimelineView(.animation(paused: reduceMotion || sweepStart == nil)) { timeline in
-                        let progress = CGFloat(sweepStart.map { min(1, max(0, timeline.date.timeIntervalSince($0) / 1.3)) } ?? 0)
+                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || hidden)) { timeline in
+                        let progress = CGFloat(min(1, max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 4.2) / 2.2)))
+                        let bottom = geometry.size.height + 6
+                        let ribbon = Path { path in
+                            path.move(to: CGPoint(x: 16.45, y: bottom))
+                            path.addLine(to: CGPoint(x: 15.4, y: 48))
+                            path.addQuadCurve(to: CGPoint(x: 44, y: 18), control: CGPoint(x: 15.4, y: 18))
+                            path.addLine(to: CGPoint(x: 56, y: 18)); path.addLine(to: CGPoint(x: 56, y: 22)); path.addLine(to: CGPoint(x: 44, y: 22))
+                            path.addQuadCurve(to: CGPoint(x: 18.6, y: 48), control: CGPoint(x: 18.6, y: 22))
+                            path.addLine(to: CGPoint(x: 17.55, y: bottom)); path.closeSubpath()
+                        }
                         let path = Path { path in
-                            path.move(to: CGPoint(x: 44, y: 10))
-                            path.addLine(to: CGPoint(x: 24, y: 10))
-                            path.addQuadCurve(to: CGPoint(x: 17, y: 17), control: CGPoint(x: 17, y: 10))
-                            path.addLine(to: CGPoint(x: 17, y: geometry.size.height + 6))
+                            path.move(to: CGPoint(x: 17, y: bottom))
+                            path.addLine(to: CGPoint(x: 17, y: 48))
+                            path.addQuadCurve(to: CGPoint(x: 44, y: 20), control: CGPoint(x: 17, y: 20))
+                            path.addLine(to: CGPoint(x: 56, y: 20))
+                        }
+                        let rings = Path { path in
+                            path.addEllipse(in: CGRect(x: -0.5, y: bottom - 1.5, width: 35, height: 35))
+                            if !hidden { path.addEllipse(in: CGRect(x: 55.5, y: 11.5, width: 17, height: 17)) }
                         }
                         ZStack {
-                            path.stroke(CaperTheme.muted.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                            if !reduceMotion, sweepStart != nil {
-                                path.trim(from: max(0, progress - 0.14), to: progress)
-                                    .stroke(CaperTheme.terracottaBright.opacity(Double(0.8 * (1 - progress))), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            ribbon.fill(CaperTheme.muted.opacity(0.65))
+                            rings.stroke(CaperTheme.muted.opacity(0.4), lineWidth: 1)
+                            if !reduceMotion && !hidden && progress > 0 && progress < 1 {
+                                let tip = progress * 1.22
+                                let segment = path.trim(from: max(0, tip - 0.22), to: min(1, tip))
+                                segment.stroke(CaperTheme.terracottaBright.opacity(0.3), style: StrokeStyle(lineWidth: 5, lineCap: .round)).blur(radius: 2)
+                                segment.stroke(CaperTheme.terracottaBright.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round)).clipShape(ribbon)
                             }
-                        }.frame(width: 44, height: geometry.size.height + 6)
+                        }.frame(width: 57, height: geometry.size.height + 40)
                     }
                 }.allowsHitTesting(false).accessibilityHidden(true)
             }
-            .onHover { if $0 && !reduceMotion { sweepStart = .now } }
-            .onChange(of: sourceFocused) { _, focused in if focused && !reduceMotion { sweepStart = .now } }
-            .task(id: sweepStart) {
-                guard sweepStart != nil else { return }
-                try? await Task.sleep(for: .milliseconds(1300))
-                if !Task.isCancelled { sweepStart = nil }
-            }
+            .onAppear { sweepStart = .now }
     }
 }
 

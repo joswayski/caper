@@ -30,16 +30,31 @@ export function ReplyContext({
   const excerptId = useId();
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
-  const [height, setHeight] = useState(44);
+  const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 17, height: 100 });
   const text = reference.fullText ?? reference.text;
   useLayoutEffect(() => {
     const element = root.current!;
     const update = () => {
       const bounds = element.getBoundingClientRect();
       const avatar = element.parentElement!.querySelector<HTMLElement>(":scope > .chat-avatar");
-      setHeight(avatar ? avatar.getBoundingClientRect().top - bounds.top + 1 : bounds.height + 6);
+      const target = avatar?.getBoundingClientRect();
+      const source = element
+        .querySelector<HTMLElement>(".chat-reply-avatar, .chat-reply-heading")!
+        .getBoundingClientRect();
+      setConnection({
+        sourceX: source.left - bounds.left,
+        sourceY: source.top + source.height / 2 - bounds.top,
+        targetX: target ? target.left + target.width / 2 - bounds.left : 17,
+        height: target ? target.top - bounds.top + 1 : bounds.height + 18,
+      });
       // The same context appears in the timeline, threads, pending rows and Pins.
-      element.parentElement!.style.setProperty("--reply-context-height", `${bounds.height}px`);
+      const actions =
+        element.parentElement!.querySelector<HTMLElement>(":scope > .chat-pin-marker")?.getBoundingClientRect() ??
+        target;
+      element.parentElement!.style.setProperty(
+        "--reply-actions-top",
+        `${(actions?.top ?? bounds.bottom + 18) - element.parentElement!.getBoundingClientRect().top - 6}px`,
+      );
       const content = excerpt.current;
       setClipped(!!content && content.scrollHeight > parseFloat(getComputedStyle(content).lineHeight) * 3 + 1);
     };
@@ -49,15 +64,31 @@ export function ReplyContext({
     observer.observe(element.parentElement!);
     return () => {
       observer.disconnect();
-      element.parentElement?.style.removeProperty("--reply-context-height");
+      element.parentElement?.style.removeProperty("--reply-actions-top");
     };
   }, [hidden, text]);
-  const path = `M44 10H24Q17 10 17 17V${height}`;
+  const { sourceX, sourceY, targetX, height } = connection;
+  const bendX = sourceX - 12;
+  const bendY = sourceY + 28;
+  const path = `M${targetX} ${height}V${bendY}Q${targetX} ${sourceY} ${bendX} ${sourceY}H${sourceX}`;
+  const ribbon = `M${targetX - 0.55} ${height}L${targetX - 1.6} ${bendY}Q${targetX - 1.6} ${sourceY - 2} ${bendX} ${sourceY - 2}H${sourceX}V${sourceY + 2}H${bendX}Q${targetX + 1.6} ${sourceY + 2} ${targetX + 1.6} ${bendY}L${targetX + 0.55} ${height}Z`;
+  const clipId = `reply-ribbon-${excerptId}`;
   return (
     <div ref={root} className="chat-reply-context" data-expanded={expanded && !hidden}>
-      <svg className="chat-reply-connector" style={{ height }} viewBox={`0 0 44 ${height}`} aria-hidden="true">
-        <path d={path} />
-        <path className="chat-reply-flow" d={path} pathLength="100" />
+      <svg
+        className="chat-reply-connector"
+        style={{ width: sourceX + 1, height }}
+        viewBox={`0 0 ${sourceX + 1} ${height}`}
+        aria-hidden="true"
+      >
+        <defs>
+          <clipPath id={clipId}>
+            <path d={ribbon} />
+          </clipPath>
+        </defs>
+        <path className="chat-reply-line" d={ribbon} />
+        {!hidden && <path className="chat-reply-flow chat-reply-glow" d={path} pathLength="100" />}
+        {!hidden && <path className="chat-reply-flow" d={path} pathLength="100" clipPath={`url(#${clipId})`} />}
       </svg>
       <div className="chat-reply-body">
         <button

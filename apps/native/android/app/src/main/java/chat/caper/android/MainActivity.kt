@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -78,6 +79,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -85,6 +87,7 @@ import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
@@ -2482,46 +2485,62 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     val context = LocalContext.current
     val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
     val sweep = remember { Animatable(0f) }
-    var sweepTrigger by remember { mutableIntStateOf(0) }
-    val hover = remember { MutableInteractionSource() }
-    val hovered by hover.collectIsHoveredAsState()
-    LaunchedEffect(hovered) { if (hovered) sweepTrigger++ }
-    LaunchedEffect(sweepTrigger, still) {
-        if (sweepTrigger == 0 || still) return@LaunchedEffect
-        sweep.snapTo(0f)
-        sweep.animateTo(1f, tween(1300))
+    LaunchedEffect(still, hidden) {
+        if (still || hidden) return@LaunchedEffect
+        while (isActive) {
+            sweep.snapTo(0f)
+            sweep.animateTo(1f, tween(2200, easing = LinearEasing))
+            delay(2000)
+        }
     }
-    val action = if (onOpen == null) Modifier else Modifier.onFocusChanged { if (it.isFocused) sweepTrigger++ }
-        .clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
-    Column(Modifier.fillMaxWidth().hoverable(hover).drawBehind {
+    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
+    Column(Modifier.fillMaxWidth().drawWithContent {
+        drawContent()
+        val sourceX = 74.dp.toPx(); val sourceY = 24.dp.toPx()
+        val column = 35.dp.toPx(); val bottom = size.height + 10.dp.toPx()
+        val bendX = sourceX - 12.dp.toPx(); val bendY = sourceY + 28.dp.toPx()
+        val ribbon = Path().apply {
+            moveTo(column - 0.55.dp.toPx(), bottom)
+            lineTo(column - 1.6.dp.toPx(), bendY)
+            quadraticTo(column - 1.6.dp.toPx(), sourceY - 2.dp.toPx(), bendX, sourceY - 2.dp.toPx())
+            lineTo(sourceX, sourceY - 2.dp.toPx()); lineTo(sourceX, sourceY + 2.dp.toPx()); lineTo(bendX, sourceY + 2.dp.toPx())
+            quadraticTo(column + 1.6.dp.toPx(), sourceY + 2.dp.toPx(), column + 1.6.dp.toPx(), bendY)
+            lineTo(column + 0.55.dp.toPx(), bottom); close()
+        }
         val path = Path().apply {
-            moveTo(62.dp.toPx(), 14.dp.toPx())
-            lineTo(42.dp.toPx(), 14.dp.toPx())
-            quadraticTo(35.dp.toPx(), 14.dp.toPx(), 35.dp.toPx(), 21.dp.toPx())
-            lineTo(35.dp.toPx(), size.height + 10.dp.toPx())
+            moveTo(column, bottom); lineTo(column, bendY)
+            quadraticTo(column, sourceY, bendX, sourceY); lineTo(sourceX, sourceY)
         }
-        val stroke = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round)
-        drawPath(path, TextMuted.copy(alpha = 0.8f), style = stroke)
-        if (!still && sweep.value > 0f && sweep.value < 1f) {
+        drawPath(ribbon, TextMuted.copy(alpha = 0.65f))
+        drawCircle(TextMuted.copy(alpha = 0.4f), 17.5.dp.toPx(), Offset(column, bottom + 17.dp.toPx()), style = Stroke(1.dp.toPx()))
+        if (!hidden) drawCircle(TextMuted.copy(alpha = 0.4f), 8.5.dp.toPx(), Offset(sourceX + 8.dp.toPx(), sourceY), style = Stroke(1.dp.toPx()))
+        if (!hidden && !still && sweep.value > 0f && sweep.value < 1f) {
             val measure = PathMeasure().apply { setPath(path, false) }
-            val tip = sweep.value * (measure.length + 24.dp.toPx())
+            val length = measure.length * 0.22f
+            val tip = sweep.value * (measure.length + length)
             val segment = Path()
-            measure.getSegment((tip - 24.dp.toPx()).coerceAtLeast(0f), tip.coerceAtMost(measure.length), segment, true)
-            drawPath(segment, Terracotta.copy(alpha = (1f - sweep.value) * 0.8f), style = stroke)
+            measure.getSegment((tip - length).coerceAtLeast(0f), tip.coerceAtMost(measure.length), segment, true)
+            drawPath(segment, TerracottaBright.copy(alpha = 0.12f), style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(segment, TerracottaBright.copy(alpha = 0.2f), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
+            clipPath(ribbon) { drawPath(segment, TerracottaBright.copy(alpha = 0.95f), style = Stroke(4.dp.toPx(), cap = StrokeCap.Round)) }
         }
-    }.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
-        Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
-                Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+    }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
+        Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
+                        Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+                    }
+                    if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
+                        maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
+                }
+                if (!hidden && clipped) TextButton({ expanded = !expanded }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
+                    Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp)
+                }
             }
-            if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
-                maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
-                onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
-        }
-        if (!hidden && clipped) TextButton({ expanded = !expanded; sweepTrigger++ }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
-            Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp)
         }
     }
 }
