@@ -2503,7 +2503,7 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   the team, so anyone replying afterwards makes it wait again. Clients group
   reports by thread. `PUT /api/feedback/archive {channelId, threadRootId, archived}`
   archives or restores a whole thread for the whole team (`archived_at` on its
-  reports; a later report arrives unarchived, so the thread returns), and
+  reports). Anyone but the team posting in the thread afterwards brings it back, and
   `?archived=true` lists archived threads. `GET /api/account/me` adds
   `feedbackTeam: true` for team members.
 
