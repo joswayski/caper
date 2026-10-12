@@ -1456,14 +1456,17 @@
   padding: 0;
   border: 0;
   border-radius: 8px;
-  background: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  color: var(--on-action);
   cursor: pointer;
 }
 @media (hover: hover) {
   .chat-composer-send:hover:not(:disabled) {
-    background: var(--terracotta-bright);
+    background: var(--action-hover);
   }
+}
+.chat-composer-send:active:not(:disabled) {
+  background: var(--action-press);
 }
 @media (pointer: coarse) {
   .chat-profile-header-actions button,

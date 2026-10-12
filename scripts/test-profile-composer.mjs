@@ -196,10 +196,9 @@ try {
   wait('document.querySelectorAll(".chat-profile-composer .chat-drafts li").length === 1');
   capture("profile-narrow-files");
   assert.equal(evaluate('return !!document.querySelector(".chat-mention-card-drawer")'), true);
-  assert.ok(
-    evaluate(
-      'const card=document.querySelector(".chat-mention-card").getBoundingClientRect(); return card.left>=0 && card.right<=innerWidth && card.bottom<=innerHeight',
-    ),
+  // The sheet slides in; wait for it to settle inside the viewport.
+  wait(
+    '(() => { const card=document.querySelector(".chat-mention-card").getBoundingClientRect(); return card.left>=0 && card.right<=innerWidth && card.bottom<=innerHeight + 0.5; })()',
   );
   assert.equal(value(), "Rejected draft");
   browser("click", '.chat-profile-composer [aria-label="Insert emoji"]');

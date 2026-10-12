@@ -6964,7 +6964,7 @@ Layout, the same on every client: the header has the avatar, name and
 `@username` with Open conversation (speech bubble) and Close icons at the end;
 Invite to space and Block share one row; a full-width divider separates the
 composer. The composer reuses the channel composer's shell (Attach at the
-start, then the field, Emoji and a terracotta Send) with staged files above it
+start, then the field, Emoji and an eggshell primary Send) with staged files above it
 as the channel's draft chips, including image thumbnails and sizes. Delivery
 uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit
 there. Keyboard hints stay in accessible descriptions, not visible text.
@@ -6993,10 +6993,10 @@ smileys first and flags last, approximating web's category order.
 
 | Platform | Validation and remaining acceptance |
 | --- | --- |
-| Web | `npm run check` and 578 `npm test` tests pass. `PROFILE_TEST_WEB_URL=… node scripts/test-profile-composer.mjs` against the local parity fixture passes (text/emoji/files, file-only send, chooser cancellation/caret, outside clicks, per-person drafts, lost acknowledgment with identical retry and one persisted message, rejection, retained channel text, incoming-request isolation, wide/narrow layouts). Channel and thread emoji insertion at the caret checked in Chromium. Rendered desktop/narrow and picker states inspected. File paste uses a synthetic browser event, not the OS clipboard. |
-| Android | `:app:compileDebugKotlin` passes with platform/build-tools 36. `:app:testDebugUnitTest` (317 JVM tests) passes. `:app:compileDebugAndroidTestKotlin` compiled the updated profile composer UI tests before the latest rebase; on current main it stops in the untouched `ReactionUiTest`/`VoiceRosterUiTest`, whose call sites predate main's newer signatures. Instrumentation was not run. No emulator (no KVM): no rendered, keyboard, picker, clipboard or device acceptance. |
+| Web | `npm run check` and 584 `npm test` tests pass. `PROFILE_TEST_WEB_URL=… node scripts/test-profile-composer.mjs` against the local parity fixture passes (text/emoji/files, file-only send, chooser cancellation/caret, outside clicks, per-person drafts, lost acknowledgment with identical retry and one persisted message, rejection, retained channel text, incoming-request isolation, wide/narrow layouts). Channel and thread emoji insertion at the caret checked in Chromium. Rendered desktop/narrow and picker states inspected. File paste uses a synthetic browser event, not the OS clipboard. |
+| Android | `:app:compileDebugKotlin`, `:app:testDebugUnitTest` (329 JVM tests) and `:app:compileDebugAndroidTestKotlin` (including the updated profile composer UI tests) pass with platform/build-tools 36. Instrumentation was compiled, not run; no emulator here (no KVM), so no rendered, keyboard, picker, clipboard or device acceptance. |
 | iOS/macOS | Changed Swift files parse with Linux Swift 6.1; the picker-order logic was compiled and run standalone. No Apple SDK typecheck, XCTest, render or device/picker/clipboard acceptance. |
-| Rust desktop | 426 tests pass (12 device/audio ignored), including new channel emoji insertion, image thumbnail and picker-order tests; fmt passes. Clippy is clean for this change; on current main it reports two `collapsible_if` lints in main's own-profile refresh code (#527), untouched here. Linux X11 renders inspected: card layout, real clipboard image pasted through the Attach menu with its thumbnail, profile and channel pickers anchored at their buttons. Windows, Wayland, native file picker and live storage acceptance remain separate. |
+| Rust desktop | 439 tests pass (12 device/audio ignored), including new channel emoji insertion, image thumbnail and picker-order tests; fmt and Clippy pass. Linux X11 renders inspected: card layout, real clipboard image pasted through the Attach menu with its thumbnail, profile and channel pickers anchored at their buttons. Windows, Wayland, native file picker and live storage acceptance remain separate. |
 | API/containers | No API changes; no Docker image changes. No live storage, multi-account production or physical-device checks. |
 
 **Deployment order.**

@@ -17168,7 +17168,8 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
     (preview, removed)
 }
 
-/// Web's composer Send: a terracotta square with the Send icon, muted while unavailable.
+/// Web's composer Send: the eggshell primary action with the Send icon,
+/// neutral while unavailable.
 fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(28.0, 28.0),
@@ -17179,10 +17180,12 @@ fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Resp
         },
     );
     if enabled {
-        let fill = if response.hovered() || response.has_focus() {
-            TERRACOTTA_BRIGHT
+        let fill = if response.is_pointer_button_down_on() {
+            ACTION_PRESS
+        } else if response.hovered() || response.has_focus() {
+            ACTION_HOVER
         } else {
-            TERRACOTTA
+            ACTION
         };
         ui.painter().rect_filled(rect, 6.0, fill);
     }
@@ -17191,7 +17194,7 @@ fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Resp
         rect.shrink(7.0),
         NavIcon::Send,
         if enabled {
-            TEXT
+            ON_ACTION
         } else {
             MUTED.gamma_multiply(0.5)
         },
