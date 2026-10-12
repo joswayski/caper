@@ -4465,6 +4465,7 @@ private struct NativeReplyContext: View {
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var collapsedHeight: CGFloat = 0
+    @State private var buttonHeight: CGFloat = 0
     @State private var previousY: CGFloat?
     @State private var displacement: CGFloat = 0
     @State private var velocity: CGFloat = 0
@@ -4476,7 +4477,13 @@ private struct NativeReplyContext: View {
     }
     private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let canExpand = !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1)
+        #if os(iOS)
+        let previewMinHeight: CGFloat = 54
+        #else
+        let previewMinHeight: CGFloat = 36
+        #endif
+        ZStack(alignment: .bottom) {
             Button { Task { _ = await chat.goToReply(reference) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -4493,6 +4500,7 @@ private struct NativeReplyContext: View {
                         Text(expanded ? excerpt : preview + (preview != excerpt ? "…" : "")).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
+                            .frame(minHeight: !expanded && canExpand ? previewMinHeight : 0, alignment: .topLeading)
                             .overlay {
                                 if !expanded && (preview != excerpt || fullHeight > collapsedHeight + 1) {
                                     LinearGradient(stops: [
@@ -4518,10 +4526,13 @@ private struct NativeReplyContext: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
-            if !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1) {
+                .padding(.bottom, expanded && canExpand ? buttonHeight + 6 : 0)
+            if canExpand {
                 Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                     .buttonStyle(ReplyExpandButton())
-                    .frame(maxWidth: .infinity, alignment: .center).padding(.top, 6)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { buttonHeight = $0 }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .offset(y: expanded ? 0 : buttonHeight / 2 - max(collapsedHeight, previewMinHeight) * 0.3)
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
@@ -4624,8 +4635,8 @@ private struct ReplyExpandButton: ButtonStyle {
             .frame(minHeight: 32)
             #endif
             .background(configuration.isPressed ? CaperTheme.text.opacity(0.85) : hovered ? Color.white : CaperTheme.text)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
             .onHover { hovered = $0 }.modifier(ControlPointer())
     }
 }

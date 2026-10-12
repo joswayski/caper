@@ -502,6 +502,7 @@
   padding-left: 44px;
 }
 .chat-reply-body {
+  position: relative;
   min-width: 0;
   width: 100%;
   padding: 10px 12px;
@@ -586,6 +587,7 @@
   line-height: 18px;
 }
 .chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
+  min-height: 36px;
   mask-image: linear-gradient(to bottom, #000 40%, transparent);
 }
 .chat-reply-context[data-expanded="true"] .chat-reply-excerpt {
@@ -599,7 +601,7 @@
   margin: 6px auto 0;
   padding: 6px 14px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 999px;
   background: var(--text);
   color: var(--blackout);
   font: inherit;
@@ -607,6 +609,13 @@
   font-weight: 700;
   cursor: pointer;
   transition: background-color 140ms ease;
+}
+.chat-reply-context[data-expanded="false"] .chat-reply-expand {
+  position: absolute;
+  top: var(--reply-expand-top);
+  left: 50%;
+  margin: 0;
+  translate: -50% -50%;
 }
 @media (hover: hover) {
   .chat-reply-expand:hover {
@@ -665,6 +674,9 @@
   .chat-reply-source,
   .chat-reply-expand {
     min-height: 44px;
+  }
+  .chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
+    min-height: 54px;
   }
   .chat-reply-draft-excerpt {
     display: none;

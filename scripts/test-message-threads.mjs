@@ -389,8 +389,12 @@ const checkLongQuotePreview = async (layout) => {
     const targetBack = new DOMPoint(-12, 0).matrixTransform(targetSocket);
     const card = quote.querySelector('.chat-reply-body').getBoundingClientRect();
     const expand = quote.querySelector('.chat-reply-expand').getBoundingClientRect();
+    const excerptBounds = excerpt.getBoundingClientRect();
+    const heading = quote.querySelector('.chat-reply-heading').getBoundingClientRect();
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
       expandCenter: Math.abs(expand.left + expand.width / 2 - card.left - card.width / 2), expandHeight: expand.height,
+      fadeCenter: Math.abs(expand.top + expand.height / 2 - excerptBounds.top - excerptBounds.height * 0.7),
+      footerHeight: card.bottom - excerptBounds.bottom, headingGap: expand.top - heading.bottom,
       connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
       sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
       replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
@@ -404,6 +408,9 @@ const checkLongQuotePreview = async (layout) => {
   assert.ok(collapsed.height <= 54);
   assert.notEqual(collapsed.mask, "none", "The collapsed quote fades into its dark card");
   assert.ok(collapsed.expandCenter < 1, "Show more is centered in the quote card");
+  assert.ok(collapsed.fadeCenter < 1, "Show more floats at the midpoint of the lower-60% fade");
+  assert.ok(collapsed.footerHeight <= 12, "Show more does not allocate a separate footer row");
+  assert.ok(collapsed.headingGap >= 1, "The floating pill stays below the original author heading");
   assert.ok(
     collapsed.expandHeight >= (layout === "desktop" ? 32 : 44),
     "The expansion button keeps its pointer/touch target",
@@ -495,7 +502,7 @@ const checkLongQuotePreview = async (layout) => {
     preview,
     "Source edits do not rewrite a quote",
   );
-  browser("click", `${selector} .chat-reply-source`);
+  browser("click", `${selector} .chat-reply-view`);
   wait(`document.querySelector('${channel(source.clientMessageId)}')?.classList.contains('chat-message-jump-target')`);
   const block = await fetch(`${api}/api/blocks/member000001`, { method: "PUT", headers: own, body: "{}" });
   assert.equal(block.status, 204);

@@ -63,6 +63,14 @@ export function ReplyContext({
       );
       const content = excerpt.current;
       setClipped(!!content && content.scrollHeight > parseFloat(getComputedStyle(content).lineHeight) * 3 + 1);
+      if (content) {
+        const body = element.querySelector<HTMLElement>(".chat-reply-body")!;
+        const previewBounds = content.getBoundingClientRect();
+        element.style.setProperty(
+          "--reply-expand-top",
+          `${previewBounds.top - body.getBoundingClientRect().top - body.clientTop + previewBounds.height * 0.7}px`,
+        );
+      }
     };
     update();
     const observer = new ResizeObserver(update);

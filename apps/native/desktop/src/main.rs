@@ -11110,8 +11110,12 @@ impl CaperApp {
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand);
                             open |= excerpt.clicked();
+                            let mut preview_rect = excerpt.rect;
                             if clipped && !expanded {
-                                let rect = excerpt.rect;
+                                let height = preview_rect.height().max(36.0);
+                                ui.add_space(height - preview_rect.height());
+                                preview_rect.set_height(height);
+                                let rect = preview_rect;
                                 let top = rect.top() + rect.height() * 0.4;
                                 let mut fade = egui::Mesh::default();
                                 fade.colored_vertex(
@@ -11129,45 +11133,47 @@ impl CaperApp {
                                 ui.painter().add(egui::Shape::mesh(fade));
                             }
                             if clipped {
-                                ui.add_space(6.0);
-                                let clicked = ui
-                                    .horizontal(|ui| {
-                                        let label =
-                                            if expanded { "Show less" } else { "Show more" };
-                                        let font = history_button_font();
-                                        let width = ui.fonts_mut(|fonts| {
-                                            fonts
-                                                .layout_no_wrap(
-                                                    label.into(),
-                                                    font.clone(),
-                                                    BLACKOUT,
-                                                )
-                                                .size()
-                                                .x
-                                        }) + 28.0;
-                                        ui.add_space(
-                                            ((ui.available_width() - width) / 2.0).max(0.0),
-                                        );
-                                        ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
-                                        toned(
-                                            ui,
-                                            Tone {
-                                                rest: (TEXT, TEXT, BLACKOUT),
-                                                hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
-                                                press: (
-                                                    TEXT.gamma_multiply(0.85),
-                                                    TERRACOTTA,
-                                                    BLACKOUT,
-                                                ),
-                                            },
-                                            true,
-                                            egui::Button::new(RichText::new(label).font(font))
-                                                .min_size(egui::vec2(width, 32.0)),
-                                        )
-                                        .clicked()
-                                    })
-                                    .inner;
-                                if clicked {
+                                let label = if expanded { "Show less" } else { "Show more" };
+                                let font = history_button_font();
+                                let width = ui.fonts_mut(|fonts| {
+                                    fonts
+                                        .layout_no_wrap(label.into(), font.clone(), BLACKOUT)
+                                        .size()
+                                        .x
+                                }) + 28.0;
+                                let height = ui.spacing().interact_size.y.max(32.0);
+                                let top = if expanded {
+                                    ui.add_space(6.0);
+                                    ui.next_widget_position().y
+                                } else {
+                                    preview_rect.top() + preview_rect.height() * 0.7 - height / 2.0
+                                };
+                                let rect = egui::Rect::from_min_size(
+                                    egui::pos2(ui.max_rect().center().x - width / 2.0, top),
+                                    egui::vec2(width, height),
+                                );
+                                let mut controls = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .id_salt("reply-expand")
+                                        .max_rect(rect),
+                                );
+                                controls.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
+                                let button = toned_rounded(
+                                    &mut controls,
+                                    Tone {
+                                        rest: (TEXT, TEXT, BLACKOUT),
+                                        hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
+                                        press: (TEXT.gamma_multiply(0.85), TERRACOTTA, BLACKOUT),
+                                    },
+                                    255,
+                                    true,
+                                    egui::Button::new(RichText::new(label).font(font))
+                                        .min_size(egui::vec2(width, height)),
+                                );
+                                if expanded {
+                                    ui.advance_cursor_after_rect(button.rect);
+                                }
+                                if button.clicked() {
                                     expanded = !expanded;
                                     ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
                                 }

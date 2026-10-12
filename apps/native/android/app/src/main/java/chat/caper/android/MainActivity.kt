@@ -138,6 +138,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -2503,6 +2504,9 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
+    val canExpand = !hidden && (preview != text || clipped)
+    var excerptHeight by remember(reference.id) { mutableIntStateOf((54 * density).toInt()) }
+    var buttonHeight by remember(reference.id) { mutableIntStateOf((48 * density).toInt()) }
     var previousY by remember(reference.id) { mutableStateOf<Float?>(null) }
     var displacement by remember(reference.id) { mutableFloatStateOf(0f) }
     var velocity by remember(reference.id) { mutableFloatStateOf(0f) }
@@ -2551,14 +2555,17 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         replySocket(Offset(targetX, bottom), -angle * 180f / kotlin.math.PI.toFloat())
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Column(Modifier.padding(bottom = if (expanded && canExpand) (buttonHeight / density).dp + 6.dp else 0.dp)
+                    .fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
-                    if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier.drawWithContent {
+                    if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier
+                        .heightIn(min = if (!expanded && canExpand) 54.dp else 0.dp)
+                        .onSizeChanged { if (!expanded) excerptHeight = it.height }.drawWithContent {
                         drawContent()
                         if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
                             listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.4f, endY = size.height,
@@ -2567,11 +2574,13 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                 }
-                if (!hidden && (preview != text || clipped)) {
+                if (canExpand) {
                     val interaction = remember { MutableInteractionSource() }
                     val hovered by interaction.collectIsHoveredAsState()
-                    Button({ expanded = !expanded }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp).heightIn(min = 44.dp),
-                        shape = MaterialTheme.shapes.small, interactionSource = interaction,
+                    Button({ expanded = !expanded }, Modifier.align(Alignment.BottomCenter)
+                        .offset { IntOffset(0, if (expanded) 0 else (buttonHeight / 2f - excerptHeight * 0.3f).toInt()) }
+                        .heightIn(min = 44.dp).onSizeChanged { buttonHeight = it.height },
+                        shape = RoundedCornerShape(percent = 50), interactionSource = interaction,
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = if (hovered) Color.White else chat.caper.android.ui.Text, contentColor = Blackout)) {
                         Text(if (expanded) "Show less" else "Show more", fontWeight = FontWeight.Bold, fontSize = 11.sp)
