@@ -496,7 +496,10 @@ final class CaperParityUITests: XCTestCase {
                        "Messages must scroll up to the input, without an empty clipping strip")
         XCTAssertLessThan(restingBottom, app.frame.maxY, "The home-indicator safe area must remain when the keyboard is closed")
         capture("composer-empty-keyboard-closed", app: app)
-        XCTAssertTrue(focus(composer))
+        // The empty UITextView can report hasKeyboardFocus=false with a visible
+        // caret and keyboard. Repeated taps then open AutoFill; verify focus by
+        // typing into this exact composer below instead.
+        composer.tap()
         // Hosted simulators can take several seconds to raise the keyboard.
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
@@ -510,6 +513,8 @@ final class CaperParityUITests: XCTestCase {
 
         let short = "Compact draft"
         composer.typeText(short)
+        XCTAssertEqual(composer.value as? String, short,
+                       "The tapped composer must receive keyboard input")
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
