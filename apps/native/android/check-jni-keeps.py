@@ -14,9 +14,10 @@ import re
 import sys
 import zipfile
 
-# Package segments are lowercase and the class name is capitalized; signatures
-# add a leading "L". Anything R8 never saw (java.*, android.*, prose) is ignored.
-CLASS_NAME = re.compile(rb"(?<![A-Za-z0-9_/.$])L?((?:[a-z][a-z0-9_]*[/.])+[A-Z][A-Za-z0-9_$]*)")
+# At least two lowercase package segments, then a capitalized class name;
+# signatures add a leading "L". Names R8 never saw (java.*, android.*, stray
+# bytes) are ignored below, so only real program classes are judged.
+CLASS_NAME = re.compile(rb"(?<![A-Za-z0-9_/.$])L?((?:[a-z][a-z0-9_]*[/.]){2,}[A-Z][A-Za-z0-9_$]*)")
 MAPPED = re.compile(r"^(\S+) -> (\S+):$")
 
 
