@@ -60,17 +60,25 @@ function checkEmojiCategories(layout) {
     ),
     true,
   );
-  for (const [category, firstEmoji] of [
-    ["animals_nature", "1f435"],
-    ["food_drink", "1f347"],
-    ["travel_places", "1f30d"],
-    ["activities", "1f383"],
-    ["objects", "1f453"],
-    ["symbols", "1f3e7"],
-    ["flags", "1f3c1"],
-    ["smileys_people", "1f600"],
+  wait(
+    'document.querySelectorAll(".chat-emoji-categories img").length === 8 && [...document.querySelectorAll(".chat-emoji-categories img")].every(image => image.complete && image.naturalWidth > 0)',
+  );
+  for (const [category, firstEmoji, icon] of [
+    ["animals_nature", "1f435", "1f431"],
+    ["food_drink", "1f347", "1f354"],
+    ["travel_places", "1f30d", "1f68c"],
+    ["activities", "1f383", "26bd"],
+    ["objects", "1f453", "1f455"],
+    ["symbols", "1f3e7", "1f3b5"],
+    ["flags", "1f3c1", "1f3c1"],
+    ["smileys_people", "1f600", "1f600"],
   ]) {
     const tab = `[data-category="${category}"]`;
+    assert.equal(
+      evaluate(`document.querySelector('${tab} img').getAttribute('src')`),
+      emojiAsset(icon),
+      "Category artwork must match the native Twemoji icons",
+    );
     browser("click", tab);
     wait(
       `document.querySelector('${tab}').getAttribute('aria-pressed') === 'true' && !!document.querySelector('.chat-emoji-grid button[data-unified="${firstEmoji}"]')`,
@@ -222,6 +230,9 @@ try {
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
+  wait(
+    '[...document.querySelectorAll(".chat-emoji-categories img")].every(image => image.complete && image.naturalWidth > 0)',
+  );
   // The grid eagerly loads its overscan. Chromium can reuse those images
   // without a new Resource Timing entry, so count only genuinely cold assets.
   const loadedAssets = new Set(evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`));
@@ -244,8 +255,8 @@ try {
     const assets = codes.map(emojiAsset);
     const coldAssets = assets.filter((asset) => !loadedAssets.has(asset));
     evaluate("performance.clearResourceTimings()");
-    // Hover the nested SVG, not just the button, to exercise target resolution.
-    browser(intent, `[data-category="${category}"]${intent === "hover" ? " svg" : ""}`);
+    // Hover the nested artwork, not just the button, to exercise category intent.
+    browser(intent, `[data-category="${category}"]${intent === "hover" ? " img" : ""}`);
     wait(
       `${JSON.stringify(coldAssets)}.every(asset => ${preloadedImages}.some(resource => new URL(resource.name).pathname === asset && resource.responseEnd > 0 && resource.responseStatus === 200))`,
     );
@@ -302,7 +313,7 @@ try {
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
   evaluate("performance.clearResourceTimings()");
-  browser("hover", '[data-category="travel_places"] svg');
+  browser("hover", '[data-category="travel_places"] img');
   browser("focus", '[data-category="flags"]');
   await delay(100);
   assert.equal(
