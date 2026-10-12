@@ -497,7 +497,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(restingBottom, app.frame.maxY, "The home-indicator safe area must remain when the keyboard is closed")
         capture("composer-empty-keyboard-closed", app: app)
         XCTAssertTrue(focus(composer))
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        // Hosted simulators can take several seconds to raise the keyboard.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
@@ -2367,9 +2368,10 @@ final class CaperParityUITests: XCTestCase {
                 thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
             XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
         }
-        // A plain tap still opens it, once the swipe has lifted.
+        // A plain tap still opens it, once the swipe has lifted. By coordinate:
+        // hosted simulators can fail the link's scroll-to-visible after swipes.
         Thread.sleep(forTimeInterval: 0.3)
-        pill.tap()
+        pill.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
     }
 
@@ -2422,9 +2424,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.isHittable, "A vertical scroll must stay in chat")
         start.press(forDuration: 0.01, thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline center opens Browse")
-        let browser = app.descendants(matching: .any)["channel-browser"]
-        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
-            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        // Browse fills the phone. Its list's "channel-browser" identifier is
+        // intermittently missing from hosted simulators' snapshots, so swipe on the screen.
+        func swipeBrowseLeft(at height: CGFloat) {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: height)).press(forDuration: 0.01,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: height)), withVelocity: .fast, thenHoldForDuration: 0)
+        }
+        swipeBrowseLeft(at: 0.5)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         // A swipe along a full-width Browse row lifts inside that row: it must
@@ -2446,8 +2452,8 @@ final class CaperParityUITests: XCTestCase {
         search.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: search.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(app.buttons["Close navigation"].isHittable, "The search editor keeps its horizontal gestures")
-        browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).press(forDuration: 0.01,
-            thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.85)), withVelocity: .fast, thenHoldForDuration: 0)
+        // Below the search field, above the account bar.
+        swipeBrowseLeft(at: 0.6)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
