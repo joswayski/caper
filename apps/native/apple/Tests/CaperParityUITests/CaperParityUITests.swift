@@ -1003,6 +1003,7 @@ final class CaperParityUITests: XCTestCase {
         let generalFrame = general.frame
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
         let voiceFrame = generalVoice.frame
         #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
@@ -1012,6 +1013,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
         XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move the join shortcut")
         #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
@@ -1167,7 +1169,8 @@ final class CaperParityUITests: XCTestCase {
         #endif
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
-        XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists, "Hover reveals the occupied channel's join shortcut")
+        // The shortcut is transparent (absent from accessibility) until SwiftUI applies the hover.
+        XCTAssertTrue(app.buttons["join-voice-chan00000002"].waitForExistence(timeout: 3), "Hover reveals the occupied channel's join shortcut")
         #else
         XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists, "Touch joins from the conversation header")
         #endif
@@ -1194,7 +1197,7 @@ final class CaperParityUITests: XCTestCase {
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
         let deniedAction = app.buttons["join-voice-chan00000002"]
-        XCTAssertTrue(deniedAction.exists, "Revocation keeps the shortcut's slot")
+        XCTAssertTrue(deniedAction.waitForExistence(timeout: 3), "Revocation keeps the shortcut's slot")
         XCTAssertFalse(deniedAction.isEnabled, "A revoked channel cannot be joined")
         #endif
         #if os(iOS)
