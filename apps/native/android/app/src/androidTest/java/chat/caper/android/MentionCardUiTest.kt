@@ -137,6 +137,10 @@ class MentionCardUiTest {
             }
         }
         fun back() {
+            // Reopening recomposes on the next frame. Back sent before the sheet's
+            // window exists reaches the activity instead and finishes it.
+            compose.waitForIdle()
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("Profile sheet test").fetchSemanticsNodes().isNotEmpty() }
             InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
             compose.waitForIdle()
         }
