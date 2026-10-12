@@ -58,11 +58,32 @@ notarize() {
     exit 1
   fi
 }
+
+# Both operations contact Apple's ticket service. EX_NOHOST (68) can be a
+# transient network failure even after notarization was accepted; never retry
+# invalid/missing tickets or revoked signatures, and never bypass validation.
+stapler() {
+  local attempt=1 status
+  while true; do
+    if xcrun stapler "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+    if [[ "$status" -ne 68 || "$attempt" -ge 5 ]]; then
+      return "$status"
+    fi
+    echo "::warning::Apple ticket service failed during stapler $1 (attempt $attempt/5); retrying." >&2
+    sleep "$((attempt * 10))"
+    attempt=$((attempt + 1))
+  done
+}
+
 ditto -c -k --keepParent "$APP" "$work/Caper.zip"
 notarize "$work/Caper.zip"
 
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+stapler staple "$APP"
+stapler validate "$APP"
 # What a friend's Mac checks when they open the download.
 spctl --assess --type execute --verbose=2 "$APP" 2>&1 | tee "$work/spctl.txt"
 grep -q 'source=Notarized Developer ID' "$work/spctl.txt"
@@ -79,7 +100,7 @@ dmgbuild -s "$ROOT/dmg-settings.py" -D "app=$APP" "Caper" "$dmg"
 codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
 codesign --verify --strict "$dmg"
 notarize "$dmg"
-xcrun stapler staple "$dmg"
-xcrun stapler validate "$dmg"
+stapler staple "$dmg"
+stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 printf '%s\n%s\n' "$dmg" "$out"
