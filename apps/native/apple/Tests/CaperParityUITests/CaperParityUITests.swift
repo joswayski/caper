@@ -944,7 +944,22 @@ final class CaperParityUITests: XCTestCase {
             try await Self.fixtureControl(["incomingMessage": ["channelId": "chan00000001", "text": lastText]])
             try require(search, timeout: 2, "Live delivery must not dismiss the reaction picker")
             XCTAssertEqual(search.value as? String, "rocket", "Live delivery must not reset the search")
+            #if os(iOS)
+            // The private focus predicate can be false with a visible caret and
+            // keyboard. Type through the app without retapping the search field;
+            // unique input also rejects a stale value from an earlier iteration.
+            let input = String(index)
+            app.typeText(input)
+            let received = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "rocket" + input), object: search)
+            XCTAssertEqual(XCTWaiter.wait(for: [received], timeout: 3), .completed,
+                           "Live scrolling must retain keyboard input in the existing search field")
+            app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: input.count))
+            let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "rocket"), object: search)
+            XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 3), .completed,
+                           "Deleting the focus probe must restore the search without refocusing")
+            #else
             XCTAssertTrue(hasKeyboardFocus(search), "Live scrolling must not replace the sheet")
+            #endif
         }
         capture("reaction-picker-focused-after-live-scroll-fixture", app: app)
         try require(rockets, timeout: 2, "Live delivery must not drop the rocket search result")
