@@ -123,18 +123,25 @@ class CompressionPolicyTest {
     }
 
     @Test fun `video max height bounds the short edge and never upscales`() {
-        assertEquals(1080, AttachmentPolicy.videoTargetHeight(3840, 2160, defaults))
-        assertEquals(1920, AttachmentPolicy.videoTargetHeight(2160, 3840, defaults))
-        assertEquals("portrait 1080p keeps its size", 1920, AttachmentPolicy.videoTargetHeight(1080, 1920, defaults))
+        val hd = defaults.copy(videoMaxHeight = 1080)
+        assertEquals(1080, AttachmentPolicy.videoTargetHeight(3840, 2160, hd))
+        assertEquals(1920, AttachmentPolicy.videoTargetHeight(2160, 3840, hd))
+        assertEquals("portrait 1080p keeps its size", 1920, AttachmentPolicy.videoTargetHeight(1080, 1920, hd))
+        assertEquals("default 1440 short edge", 1440, AttachmentPolicy.videoTargetHeight(3840, 2160, defaults))
+        assertEquals(2560, AttachmentPolicy.videoTargetHeight(2160, 3840, defaults))
+        assertEquals("a Retina screen recording keeps a 1440 short edge", 1440, AttachmentPolicy.videoTargetHeight(2880, 1800, defaults))
         assertEquals(720, AttachmentPolicy.videoTargetHeight(1280, 720, defaults))
         assertNull(AttachmentPolicy.videoTargetHeight(null, 2160, defaults))
         assertNull(AttachmentPolicy.videoTargetHeight(3840, 2160, defaults.copy(videoMaxHeight = 0)))
     }
 
     @Test fun `target bitrate scales with pixels above a floor`() {
-        assertEquals(6000, AttachmentPolicy.videoTargetKbps(1920, 1080, defaults))
-        assertEquals(6000, AttachmentPolicy.videoTargetKbps(1080, 1920, defaults))
-        assertEquals(2667, AttachmentPolicy.videoTargetKbps(1280, 720, defaults))
+        assertEquals(8000, AttachmentPolicy.videoTargetKbps(1920, 1080, defaults))
+        assertEquals(8000, AttachmentPolicy.videoTargetKbps(1080, 1920, defaults))
+        assertEquals(3556, AttachmentPolicy.videoTargetKbps(1280, 720, defaults))
+        assertEquals("never below the 30 fps target", 8000, AttachmentPolicy.videoTargetKbps(1920, 1080, defaults, 24f))
+        assertEquals("60 fps boost capped at 150%", 12_000, AttachmentPolicy.videoTargetKbps(1920, 1080, defaults, 60f))
+        assertEquals(16_000, AttachmentPolicy.videoTargetKbps(1920, 1080, defaults.copy(videoHighFpsBoostPercent = 200), 60f))
         assertEquals("floor", 1500, AttachmentPolicy.videoTargetKbps(640, 360, defaults))
         assertEquals("the floor never exceeds the setting", 800, AttachmentPolicy.videoTargetKbps(320, 240, defaults.copy(videoBitrateKbps = 800)))
     }
@@ -143,18 +150,18 @@ class CompressionPolicyTest {
         VideoFacts(width, height, mime, kbps?.times(1000), hdr, type)
 
     @Test fun `efficient h264 within limits uploads unchanged`() {
-        assertNull(AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 7_500), defaults, toneMapSupported = true))
-        assertNull(AttachmentPolicy.videoPlan(facts(1080, 1920, kbps = 7_500), defaults, toneMapSupported = true))
+        assertNull(AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 10_000), defaults, toneMapSupported = true))
+        assertNull(AttachmentPolicy.videoPlan(facts(1080, 1920, kbps = 10_000), defaults, toneMapSupported = true))
         assertNull("unknown bitrate is not a reason", AttachmentPolicy.videoPlan(facts(1280, 720, kbps = null), defaults, true))
         assertNull("disabled", AttachmentPolicy.videoPlan(facts(3840, 2160, mime = "video/hevc"), defaults.copy(videoMaxHeight = 0), true))
         assertNull("unknown size", AttachmentPolicy.videoPlan(VideoFacts(null, null, "video/hevc", null), defaults, true))
     }
 
     @Test fun `bitrate above 125 percent of target is a size-only transcode`() {
-        val plan = AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 7_501), defaults, true)!!
-        assertTrue(plan.sizeOnly); assertNull(plan.outputHeight); assertEquals(6000, plan.bitrateKbps); assertFalse(plan.toneMap)
-        val small = AttachmentPolicy.videoPlan(facts(1280, 720, kbps = 4_000), defaults, true)!!
-        assertEquals(2667, small.bitrateKbps)
+        val plan = AttachmentPolicy.videoPlan(facts(1920, 1080, kbps = 10_001), defaults, true)!!
+        assertTrue(plan.sizeOnly); assertNull(plan.outputHeight); assertEquals(8000, plan.bitrateKbps); assertFalse(plan.toneMap)
+        val small = AttachmentPolicy.videoPlan(facts(1280, 720, kbps = 4_500), defaults, true)!!
+        assertEquals(3556, small.bitrateKbps)
         assertNull(AttachmentPolicy.videoPlan(facts(1280, 720, kbps = 3_300), defaults, true))
         // Size-only transcodes must save 10%; the audio track is never dropped.
         assertTrue(AttachmentPolicy.keepTranscoded(plan, 1_000, 900, audioBefore = true, audioAfter = true, outputHdr = false))
@@ -165,16 +172,21 @@ class CompressionPolicyTest {
 
     @Test fun `4k and hevc transcode for compatibility whatever the size`() {
         val uhd = AttachmentPolicy.videoPlan(facts(3840, 2160, kbps = 40_000), defaults, true)!!
-        assertEquals(1080, uhd.outputHeight); assertFalse(uhd.sizeOnly); assertEquals(6000, uhd.bitrateKbps)
+        assertEquals(1440, uhd.outputHeight); assertFalse(uhd.sizeOnly); assertEquals(14_222, uhd.bitrateKbps)
         val portrait = AttachmentPolicy.videoPlan(facts(2160, 3840), defaults, true)!!
-        assertEquals(1920, portrait.outputHeight)
+        assertEquals(2560, portrait.outputHeight)
         val hevc = AttachmentPolicy.videoPlan(facts(1920, 1080, mime = "video/hevc", kbps = 3_000), defaults, true)!!
         assertNull(hevc.outputHeight); assertFalse(hevc.sizeOnly)
-        assertEquals("never above the source's own bitrate", 3000, hevc.bitrateKbps)
+        assertEquals("H.264 gets up to twice an HEVC source's bitrate", 6000, hevc.bitrateKbps)
         val iphone = AttachmentPolicy.videoPlan(facts(1440, 1920, mime = "video/hevc", kbps = 10_683), defaults, true)!!
-        assertEquals(1440, iphone.outputHeight); assertEquals(4500, iphone.bitrateKbps)
-        assertEquals(6000, AttachmentPolicy.outputKbps(6000, null, defaults))
-        assertEquals("floor", 1500, AttachmentPolicy.outputKbps(6000, 800_000, defaults))
+        assertNull("an iPhone 1440x1920 clip keeps its size", iphone.outputHeight); assertEquals(10_667, iphone.bitrateKbps)
+        val fast = AttachmentPolicy.videoPlan(facts(1920, 1080, mime = "video/hevc", kbps = 20_000).copy(fps = 60f), defaults, true)!!
+        assertEquals("60 fps gets 150% of the target", 12_000, fast.bitrateKbps)
+        assertEquals(8000, AttachmentPolicy.outputKbps(8000, null, false, defaults))
+        assertEquals(5000, AttachmentPolicy.outputKbps(8000, 2_500_000, false, defaults))
+        assertEquals("more bits cannot improve H.264", 2500, AttachmentPolicy.outputKbps(8000, 2_500_000, true, defaults))
+        assertEquals("floor", 1500, AttachmentPolicy.outputKbps(8000, 600_000, false, defaults))
+        assertEquals("0 removes the cap", 8000, AttachmentPolicy.outputKbps(8000, 2_500_000, false, defaults.copy(videoSourceBitratePercent = 0)))
         assertTrue(AttachmentPolicy.keepTranscoded(hevc, 1_000, 1_500, audioBefore = true, audioAfter = true, outputHdr = false))
         assertFalse(AttachmentPolicy.keepTranscoded(hevc, 1_000, 0, audioBefore = true, audioAfter = true, outputHdr = false))
         assertNotNull("VP9 WebM", AttachmentPolicy.videoPlan(facts(1280, 720, mime = "video/x-vnd.on2.vp9", kbps = 1_000, type = "video/webm"), defaults, true))

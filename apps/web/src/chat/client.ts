@@ -286,7 +286,7 @@ let accountSession:
     }
   | undefined;
 
-function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
+export function sharedAccountSession(accountId: string, name: string): Promise<ChatSession> {
   if (accountSession?.accountId === accountId && accountSession.name === name) return accountSession.session;
   const entry: NonNullable<typeof accountSession> = {
     accountId,
@@ -307,7 +307,7 @@ function sharedAccountSession(accountId: string, name: string): Promise<ChatSess
 }
 
 /** The server refused this capability; the next conversation mints a new one. */
-function forgetAccountSession(token: string) {
+export function forgetAccountSession(token: string) {
   if (accountSession?.token === token) accountSession = undefined;
 }
 

@@ -462,11 +462,17 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(decoded.compression.previewEdge, 320)
         XCTAssertEqual(decoded.compression.videoBitrateKbps, 8000)
         XCTAssertEqual(decoded.compression.imageMaxEdge, 4096)
-        XCTAssertEqual(decoded.compression.videoMaxHeight, 1080)
+        XCTAssertEqual(decoded.compression.videoMaxHeight, 1440)
         XCTAssertEqual(decoded.compression.audioBitrateKbps, 128)
         let legacy = try JSONDecoder().decode(AssetUsage.self, from: Data(#"{"used":0,"limit":10,"maxUploadBytes":5}"#.utf8))
         XCTAssertEqual(legacy.compression, AttachmentCompression())
-        XCTAssertEqual(AttachmentCompression().videoBitrateKbps, 6000, "matches the API default")
+        XCTAssertEqual(AttachmentCompression().videoBitrateKbps, 8000, "matches the API default")
+        XCTAssertEqual(AttachmentCompression().videoSourceBitratePercent, 200)
+        XCTAssertEqual(AttachmentCompression().videoHighFpsBoostPercent, 150)
+        let tuned = try JSONDecoder().decode(AttachmentCompression.self,
+                                             from: Data(#"{"videoSourceBitratePercent":0,"videoHighFpsBoostPercent":99}"#.utf8))
+        XCTAssertEqual(tuned.videoSourceBitratePercent, 0, "0 removes the source cap")
+        XCTAssertEqual(tuned.videoHighFpsBoostPercent, 150, "a boost below 100% falls back")
     }
 
     func testAVIFSettingsDecodeWithDefaults() throws {
@@ -681,10 +687,18 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testOutputBitrateNeverExceedsTheSource() {
-        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: nil), 6000)
-        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 10_683), 6000)
-        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 2500), 2500)
-        XCTAssertEqual(AttachmentPolicy.outputKbps(targetKbps: 6000, sourceKbps: 800), 1500, "floor")
+        let settings = AttachmentCompression()
+        func output(_ source: Double?, h264: Bool = false, _ settings: AttachmentCompression = AttachmentCompression()) -> Int {
+            AttachmentPolicy.outputKbps(targetKbps: 8000, sourceKbps: source, sourceIsH264: h264, settings: settings)
+        }
+        XCTAssertEqual(output(nil), 8000)
+        XCTAssertEqual(output(10_683), 8000)
+        XCTAssertEqual(output(2500), 5000, "HEVC gets twice its bitrate in H.264")
+        XCTAssertEqual(output(2500, h264: true), 2500, "more bits cannot improve H.264")
+        XCTAssertEqual(output(600), 1500, "floor")
+        var uncapped = settings
+        uncapped.videoSourceBitratePercent = 0
+        XCTAssertEqual(output(2500, uncapped), 8000, "0 removes the cap")
     }
 
     func testVideoIsTranscodedOnlyWhenNeeded() {
@@ -699,22 +713,27 @@ final class AttachmentTests: XCTestCase {
             .transcode(width: width, height: height, bitrateKbps: kbps, required: required)
         }
         XCTAssertEqual(plan(facts(1920, 1080)), .keep, "efficient 1080p H.264 is never re-compressed")
-        XCTAssertEqual(plan(facts(1920, 1080, kbps: 7500)), .keep, "up to 1.25 × the 6000 kbps target")
-        XCTAssertEqual(plan(facts(1920, 1080, kbps: 7600)), transcode(1920, 1080, 6000, required: false), "bitrate only: size-only transcode")
-        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), transcode(1920, 1080, 6000, required: false), "short edge above 1080")
-        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), transcode(1080, 1920, 6000, required: false), "portrait 4K")
-        XCTAssertEqual(plan(facts(1080, 1920, h264: false, kbps: 8000)), transcode(1080, 1920, 6000, required: true), "HEVC portrait 1080p keeps its size")
-        XCTAssertEqual(plan(facts(1440, 1920, h264: false, kbps: 10_683)), transcode(1080, 1440, 4500, required: true),
-                       "iPhone 1440×1920 HEVC shrinks at the scaled target")
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false, kbps: 3000)), transcode(1920, 1080, 3000, required: true),
-                       "a lean HEVC clip is never encoded above its own bitrate")
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false, hdr: true, kbps: 10_000)), transcode(1920, 1080, 6000, required: true), "iPhone HDR (HEVC HLG)")
+        XCTAssertEqual(plan(facts(1920, 1080, kbps: 10_000)), .keep, "up to 1.25 × the 8000 kbps target")
+        XCTAssertEqual(plan(facts(1920, 1080, kbps: 10_100)), transcode(1920, 1080, 8000, required: false), "bitrate only: size-only transcode")
+        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), transcode(2560, 1440, 14_222, required: false), "short edge above 1440")
+        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), transcode(1440, 2560, 14_222, required: false), "portrait 4K")
+        XCTAssertEqual(plan(facts(2880, 1800, kbps: 30_000)), transcode(2304, 1440, 12_800, required: false),
+                       "a Retina screen recording keeps a 1440 short edge")
+        XCTAssertEqual(plan(facts(1080, 1920, h264: false, kbps: 8000)), transcode(1080, 1920, 8000, required: true), "HEVC portrait 1080p keeps its size")
+        XCTAssertEqual(plan(facts(1440, 1920, h264: false, kbps: 10_683)), transcode(1440, 1920, 10_667, required: true),
+                       "iPhone 1440×1920 HEVC keeps its size at the scaled target")
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, kbps: 3000)), transcode(1920, 1080, 6000, required: true),
+                       "a lean HEVC clip gets up to twice its own bitrate in H.264")
+        var fast = facts(1920, 1080, h264: false, kbps: 20_000)
+        fast.fps = 60
+        XCTAssertEqual(plan(fast), transcode(1920, 1080, 12_000, required: true), "60 fps gets 150% of the target")
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, hdr: true, kbps: 10_000)), transcode(1920, 1080, 8000, required: true), "iPhone HDR (HEVC HLG)")
         XCTAssertEqual(plan(facts(1920, 1080, hdr: true)), transcode(1920, 1080, 4000, required: true), "HDR H.264 is tone mapped too")
         XCTAssertEqual(plan(facts(640, 360, kbps: 1875)), .keep, "small videos get the 1500 kbps floor")
         XCTAssertEqual(plan(facts(640, 360, kbps: 1900)), transcode(640, 360, 1500, required: false))
         XCTAssertEqual(plan(facts(1920, 1080, kbps: nil)), .keep, "unknown bitrate is not a reason")
         XCTAssertEqual(plan(facts(1920, 1080, playable: false)), .remux, "H.264 in an unplayable container is only rewrapped")
-        XCTAssertEqual(plan(facts(1920, 1080, h264: false, playable: false)), transcode(1920, 1080, 4000, required: true))
+        XCTAssertEqual(plan(facts(1920, 1080, h264: false, playable: false)), transcode(1920, 1080, 8000, required: true))
         var off = settings
         off.videoMaxHeight = 0
         XCTAssertEqual(plan(facts(3840, 2160, h264: false, hdr: true), off), .keep, "0 uploads videos unchanged")
@@ -722,8 +741,10 @@ final class AttachmentTests: XCTestCase {
         tiny.videoMaxHeight = 200
         XCTAssertEqual(plan(facts(1920, 1080, h264: false), tiny), transcode(356, 200, 1500, required: true), "any limit is honoured")
 
-        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1920, height: 1080, settings: settings), 6000)
-        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1280, height: 720, settings: settings), 6000 * 921_600 / 2_073_600, accuracy: 0.001)
+        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1920, height: 1080, settings: settings), 8000)
+        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1280, height: 720, settings: settings), 8000 * 921_600 / 2_073_600, accuracy: 0.001)
+        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1920, height: 1080, settings: settings, fps: 24), 8000)
+        XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 1920, height: 1080, settings: settings, fps: 60), 12_000)
         XCTAssertEqual(AttachmentPolicy.videoTargetKbps(width: 320, height: 240, settings: settings), 1500)
     }
 
@@ -1482,6 +1503,80 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(chat.messages.first?.content.attachments?.first?.id, "Asset0000009")
         await chat.stop()
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path), "staged files are removed when the conversation closes")
+    }
+
+    @MainActor
+    func testProfileFileOnlySendRetriesUploadedAssetAndPreservesActiveDraftFiles() async throws {
+        let api = client()
+        let model = AppModel(api: api)
+        model.account = Account(id: "self", username: "owner", displayName: "Me")
+        model.selectedChannelID = channelID
+        let destination = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "peer00000001", username: "jordan", displayName: "Jordan"), lastSeq: "0", readSeq: "0")
+        let person = MentionCardPerson(id: destination.peer.id, username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let ordinary = composerHandler()
+        var sends: [[String: Any]] = []
+        var sent: ChatMessage?
+        AttachmentURLProtocol.handler = { request, body in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("GET", "/api/dms"): return (200, Data(#"{"conversations":[]}"#.utf8))
+            case ("POST", "/api/dms"): return (200, try JSONEncoder().encode(destination))
+            case ("POST", "/api/assets") where json(body)?["channelId"] as? String == destination.id:
+                return (201, Data(#"{"id":"Asset0000008","upload":{"method":"PUT","url":"https://r2.invalid/original/Asset0000008","headers":{"content-type":"text/plain"}}}"#.utf8))
+            case ("POST", "/api/assets/Asset0000008/complete"):
+                return (200, Data(#"{"id":"Asset0000008","kind":"file","contentType":"text/plain","name":"profile.txt","size":9}"#.utf8))
+            case ("POST", "/api/chat/channels/\(destination.id)/messages"):
+                let input = try XCTUnwrap(json(body))
+                sends.append(input)
+                if sends.count == 1 { return (503, Data(#"{"error":"unavailable"}"#.utf8)) }
+                sent = ChatMessage(id: "Message00000001", channelId: destination.id, seq: "1",
+                    author: ChatAuthor(id: "self", name: "Me", isGuest: false),
+                    content: ChatContent(version: 1, type: "text", text: "", attachments: [
+                        ChatAttachment(id: "Asset0000008", kind: .file, contentType: "text/plain", name: "profile.txt", size: 9),
+                    ]), createdAt: "now", clientMessageId: try XCTUnwrap(input["clientMessageId"] as? String))
+                return (200, try JSONEncoder().encode(sent!))
+            case ("GET", "/api/chat/channels/\(destination.id)/messages"):
+                return (200, try JSONEncoder().encode(ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                    channel: HistoryIdentity(id: destination.id, name: "Jordan", direct: true), messages: [sent].compactMap { $0 }, cursor: "1", hasMore: false)))
+            case ("POST", "/api/auth/logout"), ("POST", "/api/dms/\(destination.id)/read"): return (204, Data())
+            default: return try ordinary(request, body)
+            }
+        }
+        await model.chat.open(channelID: channelID, displayName: "Me")
+        await model.chat.checkUploadAvailability()
+        model.chat.draft = "Active composer text"
+        model.chat.addAttachments([try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")])
+        await waitUntil("active upload") { model.chat.attachmentDrafts.first?.attachment != nil }
+        let draft = model.profileMessageDraft(personID: person.id)
+        let before = AttachmentURLProtocol.requests.count
+        let file = try AttachmentStaging.stage(data: Data("file only".utf8), filename: "profile.txt")
+        draft.add([file])
+        XCTAssertTrue(draft.canSend, "file-only composition is supported")
+        XCTAssertEqual(AttachmentURLProtocol.requests.count, before, "picking only stages, without creating or uploading")
+        XCTAssertTrue(draft === model.profileMessageDraft(personID: person.id))
+        let first = await model.sendProfileMessage(to: person)
+        XCTAssertFalse(first)
+        XCTAssertEqual(model.selectedChannelID, channelID)
+        XCTAssertEqual(model.chat.draft, "Active composer text")
+        XCTAssertEqual(model.chat.attachmentDrafts.first?.name, "notes.txt")
+        XCTAssertEqual(draft.files.first?.local, file)
+        let retry = await model.sendProfileMessage(to: person)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertEqual(sends.first?["text"] as? String, "")
+        XCTAssertEqual(sends.first?["clientMessageId"] as? String, sends.last?["clientMessageId"] as? String)
+        XCTAssertEqual(sends.first?["attachmentIds"] as? [String], ["Asset0000008"])
+        XCTAssertEqual(sends.last?["attachmentIds"] as? [String], ["Asset0000008"])
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" && json($0.body)?["channelId"] as? String == destination.id }.count, 1)
+        XCTAssertTrue(draft.files.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        await model.chat.open(channelID: channelID, displayName: "Me")
+        await model.chat.checkUploadAvailability()
+        XCTAssertEqual(model.chat.draft, "Active composer text")
+        let restored = try XCTUnwrap(model.chat.attachmentDrafts.first)
+        XCTAssertEqual(restored.name, "notes.txt")
+        XCTAssertEqual(try Data(contentsOf: restored.localURL), Data("hello".utf8))
+        await model.logout()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restored.localURL.path))
     }
 
     @MainActor

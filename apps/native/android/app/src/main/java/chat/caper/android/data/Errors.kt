@@ -18,6 +18,7 @@ private val serverErrors = mapOf(
         "This person recently responded to an invitation. You can invite them again after 24 hours.",
     "too many invitation attempts; try again in 10 minutes" to "Too many invitations. Try again in 10 minutes.",
     "pending invitation limit reached" to "Too many invitations are waiting for a response. Try again later.",
+    "invite link is invalid or has expired" to INVALID_INVITE_LINK,
     "membership limit reached" to "You’ve reached the limit of spaces you can join. Leave one to join this space.",
     "space limit reached" to "You’ve reached your space limit.",
     "channel limit reached" to "This space has reached its channel limit.",

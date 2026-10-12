@@ -360,6 +360,20 @@ class CaperApi(
     suspend fun declineSpaceInvitation(token: String, space: String) {
         request<Unit>("/api/spaces/${space.pathId()}/invitation", "DELETE", token)
     }
+    /** Works signed out too; [token] is sent when there is one. */
+    suspend fun invitePreview(code: String, token: String? = null): InvitePreview = get("/api/invites/${code.invitePathCode()}", token)
+    suspend fun joinInvite(token: String, code: String): InviteJoin = post("/api/invites/${code.invitePathCode()}/join", token = token)
+    suspend fun inviteLinks(token: String, space: String): InviteLinkList = get("/api/spaces/${space.pathId()}/invite-links", token)
+    /** Null [channelId] lands in the space's default channel; null [maxAge] (seconds) never expires; null [maxUses] has no limit. */
+    suspend fun createInviteLink(token: String, space: String, channelId: String?, maxAge: Int?, maxUses: Int?): InviteLink = post(
+        "/api/spaces/${space.pathId()}/invite-links",
+        buildJsonObject { put("channelId", channelId); put("maxAge", maxAge); put("maxUses", maxUses) }, token,
+    )
+    suspend fun revokeInviteLink(token: String, space: String, code: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invite-links/${code.invitePathCode()}", "DELETE", token)
+    }
+    /** The shareable URL on this API's origin (production `https://caper.chat/invite/<code>`). */
+    fun inviteUrl(code: String): String = inviteLinkUrl(baseUrl, code)
     suspend fun removeSpaceMember(token: String, space: String, member: String) {
         request<Unit>("/api/spaces/${space.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
@@ -457,6 +471,7 @@ private class StreamingUploadBody(
 }
 private val messageId = Regex("^[A-Za-z0-9]{15}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
+private fun String.invitePathCode(): String = also { require(isInviteCode(it)) { "Invalid invite code." } }
 
 // OkHttp invokes onResponse on its IO dispatcher. Keep body reads and JSON
 // decoding there: a slow body must not block the service's Main owner context.

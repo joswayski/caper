@@ -52,10 +52,17 @@ pub struct Compression {
     /// indexed PNG. 0 disables; at most 256.
     pub palette_colors: u16,
     pub preview_edge: u32,
-    /// Desktop has no bundled transcoder, so video and audio settings are
-    /// not applied.
+    /// Videos whose short edge exceeds this are scaled down; 0 disables
+    /// transcoding (`ffmpeg::video_plan`).
     pub video_max_height: u32,
+    /// Video target at 1080p30, scaled by pixel count and frame rate.
     pub video_bitrate_kbps: u32,
+    /// A re-encode never exceeds this percentage of a non-H.264 source's own
+    /// bitrate (H.264 sources: 100%); 0 removes the cap.
+    pub video_source_bitrate_percent: u32,
+    /// Above 30 fps the target grows with the frame rate, up to this
+    /// percentage; 100 turns it off.
+    pub video_high_fps_boost_percent: u32,
     pub audio_bitrate_kbps: u32,
 }
 
@@ -68,8 +75,10 @@ impl Default for Compression {
             image_max_edge: 4096,
             palette_colors: 256,
             preview_edge: 640,
-            video_max_height: 1080,
-            video_bitrate_kbps: 6000,
+            video_max_height: 1440,
+            video_bitrate_kbps: 8000,
+            video_source_bitrate_percent: 200,
+            video_high_fps_boost_percent: 150,
             audio_bitrate_kbps: 128,
         }
     }

@@ -80,6 +80,18 @@ function fixture() {
           if (request.kind === "chat") socket.frame({ type: "event", id: request.id, event });
       return event;
     },
+    typing(active) {
+      const event = {
+        type: "typing.updated",
+        channelId: channel.id,
+        author,
+        typing: active,
+        revision: String(Date.now()),
+      };
+      for (const socket of sockets)
+        for (const request of socket.subscriptions.values())
+          if (request.kind === "chat") socket.frame({ type: "event", id: request.id, event });
+    },
     append(text = "Fixture live arrival", id, sender) {
       const next = message(messages.length + 1, text, id, sender);
       next.seq = String(base + BigInt(messages.length + 1 + control.reactionRevision));
@@ -267,6 +279,28 @@ const anchorOffset = (key) =>
   );
 
 function quietTimeline(layout) {
+  const composerSeam = () => {
+    const gap = evaluate(`(() => {
+      const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
+      const input = document.querySelector('#chat-message').getBoundingClientRect();
+      return input.top - timeline.bottom;
+    })()`);
+    assert.ok(Math.abs(gap) < 1, `${layout}: messages must scroll right up to the input, not clip ${gap}px above it`);
+  };
+  composerSeam();
+  evaluate("chatHistoryFixture.typing(true)");
+  wait('document.querySelector(".chat-typing-content").getAttribute("data-visible") === "true"');
+  settle();
+  composerSeam();
+  assert.ok(
+    evaluate(
+      'document.querySelector(".chat-typing").getBoundingClientRect().top >= document.querySelector("#chat-message").getBoundingClientRect().bottom',
+    ),
+    `${layout}: typing status belongs below the input`,
+  );
+  evaluate("chatHistoryFixture.typing(false)");
+  wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
+  composerSeam();
   assert.deepEqual(
     evaluate(`(() => {
       const s = document.querySelector('.chat-scroller');
@@ -281,6 +315,7 @@ function quietTimeline(layout) {
   browser("fill", "#chat-message", "TEST FIXTURE taller draft\nSecond line\nThird line\nFourth line");
   settle();
   assert.ok(evaluate('document.querySelector("#chat-message").offsetHeight') > height);
+  composerSeam();
   assert.ok(latestVisible(), `${layout}: growing the composer must retain latest`);
   browser("press", "Control+a");
   browser("press", "Backspace");

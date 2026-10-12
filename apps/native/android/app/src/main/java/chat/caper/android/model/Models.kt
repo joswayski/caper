@@ -86,6 +86,32 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val mutedUntil: String? = null,
 )
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
+/** An invite link's inviter or creator: public identity only. */
+@Serializable data class InvitePerson(val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class InviteNamed(val name: String)
+/** `GET /api/invites/{code}`: what a live link shares before joining. [channel] is its public landing channel. */
+@Serializable data class InvitePreview(
+    val code: String,
+    val space: InviteNamed,
+    val channel: InviteNamed? = null,
+    val inviter: InvitePerson,
+    val memberCount: Int = 0,
+    val expiresAt: String? = null,
+)
+/** `POST /api/invites/{code}/join`: [joined] is false when you already belonged. */
+@Serializable data class InviteJoin(val space: Space, val channelId: String? = null, val joined: Boolean = true)
+@Serializable data class InviteLinkChannel(val id: String, val name: String)
+/** An owner's live invite link. Null [maxUses] has no limit; null [expiresAt] never expires. */
+@Serializable data class InviteLink(
+    val code: String,
+    val channel: InviteLinkChannel? = null,
+    val createdBy: InvitePerson,
+    val uses: Int = 0,
+    val maxUses: Int? = null,
+    val expiresAt: String? = null,
+    val createdAt: String,
+)
+@Serializable data class InviteLinkList(val links: List<InviteLink>)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
     val space: Space,
@@ -179,13 +205,18 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val imageMaxEdge: Int = 4096,
     val paletteColors: Int = 256,
     val previewEdge: Int = 640,
-    val videoMaxHeight: Int = 1080,
-    val videoBitrateKbps: Int = 6000,
+    val videoMaxHeight: Int = 1440,
+    /** Video target at 1080p30, scaled by pixel count and frame rate. */
+    val videoBitrateKbps: Int = 8000,
     val audioBitrateKbps: Int = 128,
     /** Photo format: only exactly `avif` selects AVIF; older servers omit it and keep WebP. */
     val imageFormat: String = "webp",
     /** AVIF photo quality on libavif's `quality` scale. */
     val avifQuality: Int = 85,
+    /** A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264: 100%); 0 removes the cap. */
+    val videoSourceBitratePercent: Int = 200,
+    /** Above 30 fps the target grows with the frame rate, up to this percentage; 100 turns it off. */
+    val videoHighFpsBoostPercent: Int = 150,
 )
 /** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
@@ -478,6 +509,8 @@ data class AppUiState(
     val channelGrants: List<Member> = emptyList(),
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
+    /** The open space's live invite links (owner only), newest first. */
+    val inviteLinks: List<InviteLink> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),

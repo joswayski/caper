@@ -2,7 +2,6 @@ import java.net.URI
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
@@ -74,6 +73,7 @@ android {
             buildConfigField("boolean", "FIXTURE_MODE", "false")
             manifestPlaceholders["usesCleartextTraffic"] = "false"
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (releaseSigningAvailable) signingConfigs.getByName("release") else null
         }
@@ -83,10 +83,16 @@ android {
         compose = true
         buildConfig = true
     }
+    // The prepare scripts generate these inputs before Gradle, not through Gradle tasks.
     sourceSets["main"].apply {
-        assets.srcDirs("../third_party", rootProject.file("../../../shared/emoji"), layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
-        jniLibs.srcDir(layout.buildDirectory.dir("native-inputs/ort/jni"))
-        res.srcDir(layout.buildDirectory.dir("generated/caper-fonts/res"))
+        assets.directories += listOf(
+            "../third_party",
+            rootProject.file("../../../shared/emoji").path,
+            layout.buildDirectory.dir("generated/caper-fonts/assets").get().asFile.path,
+            layout.buildDirectory.dir("native-inputs/assets").get().asFile.path
+        )
+        jniLibs.directories += layout.buildDirectory.dir("native-inputs/ort/jni").get().asFile.path
+        res.directories += layout.buildDirectory.dir("generated/caper-fonts/res").get().asFile.path
     }
     ndkVersion = "27.2.12479018"
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
@@ -96,7 +102,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions.jvmTarget = "17"
     lint.abortOnError = true
 }
 

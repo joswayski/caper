@@ -4,6 +4,8 @@ import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
+import EmojiButton from "./EmojiButton.tsx";
+import { insertEmoji } from "./emoji-autocomplete.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 
@@ -168,6 +170,22 @@ export default function Composer({
     },
   }));
 
+  const chooseEmoji = (emoji: string) => {
+    const input = composerRef.current;
+    const start = input?.selectionStart ?? draft.length;
+    const result = insertEmoji(draft, { start, end: input?.selectionEnd ?? start, query: "" }, emoji);
+    if (!result) {
+      setValidationError("Messages must be 4,000 characters or fewer.");
+      return;
+    }
+    setDraft(result.value);
+    setValidationError(undefined);
+    onTyping(true);
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(result.caret, result.caret);
+    });
+  };
   const characterCount = Array.from(draft).length;
   const error = validationError ?? attachments?.error;
   const canAttach = !!attachments?.enabled;
@@ -253,6 +271,9 @@ export default function Composer({
             }
           }}
         />
+        <div className="chat-composer-tools">
+          <EmojiButton disabled={disabled} onSelect={chooseEmoji} />
+        </div>
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
           suggestions. Enter to send. Shift+Enter for a new line.

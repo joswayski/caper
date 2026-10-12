@@ -40,6 +40,7 @@ import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
+import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
 import {
   feedbackAliases,
   mentionCardPerson,
@@ -732,24 +733,45 @@ export default function Chat({
     };
   }, [signedIn]);
 
-  // Uploads belong to one channel; abandon them when it changes or unmounts.
-  useEffect(
-    () => () => {
-      for (const key of uploads.current.keys()) abandonUpload(key);
-      setDrafts([]);
-    },
-    [channelId, abandonUpload],
-  );
-  useEffect(
-    () => () => {
-      for (const url of objectUrls.current) URL.revokeObjectURL(url);
-    },
-    [],
-  );
-
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+  useEffect(() => {
+    showStagedFiles(updateDraft);
+    return () => showStagedFiles(undefined);
+  }, [updateDraft]);
+
+  // Staged files belong to their conversation, like its text: switching away
+  // keeps them (uploads carry on) and coming back restores them. Only Remove
+  // or Send gives them up. Without an account key there is nowhere to keep them.
+  const draftKey = accountId && channelId ? `${accountId}:${channelId}` : undefined;
+  const latestDrafts = useRef(drafts);
+  latestDrafts.current = drafts;
+  useEffect(() => {
+    const saved = draftKey ? takeStagedFiles(draftKey) : undefined;
+    if (saved) {
+      uploads.current = saved.uploads;
+      // Also the ref: a cleanup before the next render must stash these again.
+      latestDrafts.current = saved.drafts;
+      setDrafts(saved.drafts);
+      // Renew anything that expired or failed while the conversation was closed.
+      for (const upload of saved.uploads.values())
+        if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
+    }
+    return () => {
+      if (draftKey) stashStagedFiles(draftKey, { drafts: latestDrafts.current, uploads: uploads.current });
+      else for (const key of uploads.current.keys()) abandonUpload(key);
+      uploads.current = new Map();
+      setDrafts([]);
+    };
+  }, [draftKey, abandonUpload]);
+  useEffect(
+    () => () => {
+      const kept = stagedUrls();
+      for (const url of objectUrls.current) if (!kept.has(url)) URL.revokeObjectURL(url);
+    },
+    [],
+  );
 
   const retryUpload = (key: string) => {
     void uploads.current
@@ -800,7 +822,7 @@ export default function Chat({
       const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
       objectUrls.current.add(localUrl);
       const upload = new AttachmentUpload(channel, file, settings, (next) => {
-        updateDraft(key, next);
+        stagedFileChanged(key, next);
         if (next.attachment && localKind)
           setLocalPreviews((current) => ({
             ...current,
@@ -1988,22 +2010,6 @@ export default function Chat({
             onClose={closeConversation}
           />
         )}
-
-        <p className="chat-typing" role="status" aria-atomic="true">
-          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
-            {displayedTypingLabel && (
-              <>
-                <span className="chat-typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{displayedTypingLabel}</span>
-              </>
-            )}
-          </span>
-        </p>
-
         {readOnly ? (
           <div className="chat-composer channel-preview">{composerNotice}</div>
         ) : (
@@ -2030,7 +2036,7 @@ export default function Chat({
             <Composer
               ref={composerRef}
               channelName={channelName}
-              draftKey={accountId && channelId ? `${accountId}:${channelId}` : undefined}
+              draftKey={draftKey}
               direct={direct}
               disabled={state.phase !== "ready"}
               identityReady={identityReady}
@@ -2063,6 +2069,21 @@ export default function Chat({
             />
           </div>
         )}
+        {/* Typing belongs below the input so it cannot clip scrolling messages above it. */}
+        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
+          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
+            {displayedTypingLabel && (
+              <>
+                <span className="chat-typing-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>{displayedTypingLabel}</span>
+              </>
+            )}
+          </span>
+        </p>
       </section>
       <ThreadPanel
         state={state}

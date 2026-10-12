@@ -1,5 +1,6 @@
 use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
+use crate::invites::{InviteLink, InvitePreview, JoinedInvite};
 use crate::model::{
     Account, BlockedAccount, Channel, ChatSession, DirectConversation, History, Member, Message,
     NotificationSettings, Person, Space, SpaceDetail, Spaces,
@@ -17,6 +18,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    SendProfile {
+        epoch: u64,
+        person: String,
+        token: String,
+        send: Box<crate::profile_dm::Send>,
+    },
     Forward {
         generation: u64,
         request: u64,
@@ -342,6 +349,30 @@ pub enum AccountOperation {
         scope: Scope,
         change: Change,
     },
+    /// An owner's live invite links for one space.
+    LoadInviteLinks {
+        space: String,
+    },
+    CreateInviteLink {
+        space: String,
+        channel: Option<String>,
+        max_age: Option<u32>,
+        max_uses: Option<u32>,
+    },
+    RevokeInviteLink {
+        space: String,
+        code: String,
+    },
+    /// The "Join with invite link" preview and join; `request` drops answers
+    /// for an input the person has since changed or a dialog they closed.
+    PreviewInvite {
+        request: u64,
+        code: String,
+    },
+    JoinInvite {
+        request: u64,
+        code: String,
+    },
 }
 
 #[derive(Debug)]
@@ -379,6 +410,27 @@ pub enum AccountResult {
     NotificationsSaved {
         scope: Scope,
         result: Result<Saved, String>,
+    },
+    InviteLinks {
+        space: String,
+        result: Result<Vec<InviteLink>, String>,
+    },
+    InviteLinkCreated {
+        space: String,
+        result: Result<InviteLink, String>,
+    },
+    InviteLinkRevoked {
+        space: String,
+        code: String,
+        result: Result<(), String>,
+    },
+    InvitePreview {
+        request: u64,
+        result: Result<InvitePreview, String>,
+    },
+    InviteJoined {
+        request: u64,
+        result: Result<JoinedInvite, String>,
     },
 }
 
@@ -494,6 +546,17 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    ProfileStatus {
+        epoch: u64,
+        person: String,
+        status: String,
+    },
+    ProfileSent {
+        epoch: u64,
+        person: String,
+        send: Box<crate::profile_dm::Send>,
+        result: Result<DirectConversation, crate::profile_dm::Failure>,
+    },
     OpenNotification {
         epoch: u64,
         alert: crate::os_notifications::Alert,
@@ -1275,6 +1338,30 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             }
             return;
         }
+        Command::SendProfile {
+            epoch,
+            person,
+            token,
+            send: mut operation,
+        } => {
+            let result = operation.run(api, &token, &|status| {
+                send(
+                    events,
+                    context,
+                    Event::ProfileStatus {
+                        epoch,
+                        person: person.clone(),
+                        status,
+                    },
+                )
+            });
+            Event::ProfileSent {
+                epoch,
+                person,
+                send: operation,
+                result,
+            }
+        }
         Command::Upload {
             key,
             token,
@@ -1920,6 +2007,34 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 result: result.map_err(text),
             }
         }
+        AccountOperation::LoadInviteLinks { space } => AccountResult::InviteLinks {
+            result: api.invite_links(token, &space).map_err(text),
+            space,
+        },
+        AccountOperation::CreateInviteLink {
+            space,
+            channel,
+            max_age,
+            max_uses,
+        } => AccountResult::InviteLinkCreated {
+            result: api
+                .create_invite_link(token, &space, channel.as_deref(), max_age, max_uses)
+                .map_err(text),
+            space,
+        },
+        AccountOperation::RevokeInviteLink { space, code } => AccountResult::InviteLinkRevoked {
+            result: api.revoke_invite_link(token, &space, &code).map_err(text),
+            space,
+            code,
+        },
+        AccountOperation::PreviewInvite { request, code } => AccountResult::InvitePreview {
+            request,
+            result: api.invite_preview(Some(token), &code).map_err(text),
+        },
+        AccountOperation::JoinInvite { request, code } => AccountResult::InviteJoined {
+            request,
+            result: api.join_invite(token, &code).map_err(text),
+        },
     }
 }
 

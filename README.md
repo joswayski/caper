@@ -8,11 +8,25 @@ Custom photo/GIF avatars and an avatar gallery are not implemented yet.
 
 Signed-in members can attach up to 10 files per message on web, Android,
 iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.
-Clients compress on the device without visible quality loss (lossless for
-screenshots and graphics, high-quality WebP/JPEG for photos, H.264 video where
-the platform can encode it; other files upload unchanged) and upload straight
+Clients compress on the device: screenshots and graphics stay lossless, photos
+are re-encoded at very high quality (AVIF or WebP), and video is converted to
+H.264 up to 1440p so it plays everywhere, which loses some resolution and
+detail from 4K and HDR footage; other files upload unchanged and upload straight
 to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
+
+Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
+style: each link expires after a time you choose (1 minute to 365 days; 7 days by
+default) or never, can cap its uses (1 to 10,000; no limit by default), and opens in
+a chosen public channel. Anyone can preview a live link; signing in returns to it
+to join. Owners list, copy and revoke links in **Manage space**; signed-in people can
+also paste a link to join from web, Android, iPhone/Mac and desktop. Invite links open
+the installed app: iPhone and Android open `caper.chat/invite/...` directly, and the
+invite page's **Open in the Caper app** (`caper://invite/...`) opens the Mac, Windows
+and Linux apps, reusing an open Caper window. Android Play installs open links directly
+only once Play's app-signing fingerprint is published; until then they use that button
+([to do](docs/media.md#invite-links): that fingerprint and the iPhone signing check). See
+[invite links](docs/media.md#invite-links).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
 The new-message and invite fields suggest people you already share a space or DM

@@ -61,15 +61,19 @@ the conversation. Mention ids are the 12-character random account `external_id`,
 never the internal sequence key.
 
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
-pills stay inert): 48px avatar, display name, `@username`, and a **Message** button
-that opens the existing DM or starts one through `POST /api/dms`, then navigates
-there. Message-author avatars/names (channels, DMs, threads and Pins) and member-list
+pills stay inert): avatar, display name, `@username`, and an inline DM composer
+with text, emoji and file attachments. Typing and choosing files stay local;
+**Send** resolves the DM, uploads its files and opens the conversation only after
+confirmed delivery. **Open conversation** opens a DM without sending the draft;
+incoming requests still require explicit acceptance. Message-author avatars/names
+(channels, DMs, threads and Pins) and member-list
 rows open the same card on every client; guest authors stay inert. Your own card
-says "You" and has no button. Card data comes only from what
+says "You" and has no composer. Card data comes only from what
 the client already loaded: space members, then `GET /api/people`, then DM peers;
 someone you share nothing with shows `@username` and the generic avatar, and
-Message still works. Authors absent from that directory retain their message name
-and avatar, without a guessed username or Message action. Wide layouts (web desktop,
+messaging still works when their privacy settings permit it. Authors absent from
+that directory retain their message name and avatar, without a guessed username
+or messaging action. Wide layouts (web desktop,
 macOS, Rust desktop) show a popover by the clicked identity; web narrow/touch,
 Android and iPhone show a bottom sheet. DM errors
 stay inline in the card. No API change. Mentions drive phone push kinds
@@ -647,9 +651,10 @@ Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
-Each channel and DM keeps its own unsent draft while the app stays open on web,
-Android, Apple and Rust desktop: switching conversations and coming back restores
-it, sending clears it, and signing out discards every draft. Drafts stay in memory
+Each channel and DM keeps its own unsent draft (text, staged files and thread
+replies) while the app stays open on web, Android, Apple and Rust desktop:
+switching conversations in any direction and coming back restores it, sending
+clears it, and signing out discards every draft. Drafts stay in memory
 and are never sent to the API. Restoring one does not send a typing indicator.
 `scripts/test-desktop-navigation.mjs` (channels) and
 `scripts/test-direct-messages.mjs` (DMs) check this in Chromium. Desktop, Apple
@@ -816,8 +821,8 @@ cancel pending invitations. Every client confirms before removing a space member
 ("Remove {name}?") or a private-channel member ("Remove {name} from #channel?");
 cancelling an invitation stays one click. Invitees must accept before becoming members.
 Existing memberships are unchanged; the migration does not retroactively ask
-existing members to accept. There are no invite links, custom roles, ownership
-transfers or public space discovery yet.
+existing members to accept. Owners can also share [invite links](#invite-links). There are no custom roles,
+ownership transfers or public space discovery yet.
 
 Username fields suggest people the client already has, on web, Android, Apple and
 Rust desktop. The space invite field offers `GET /api/people` (people you share an
@@ -869,6 +874,78 @@ Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invite links
+
+Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
+random alphanumeric characters (about 59 bits), so the unauthenticated preview
+cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
+Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
+spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
+falls back to the starter channel and is no longer named in previews. Links are
+retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
+recorded in `space_invite_link_uses`.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
+| Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
+| Anyone previews | `GET /api/invites/{code}` (no auth) | space name, landing channel, inviter, member count, expiry |
+| Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
+
+Creating links shares the owner's invitation attempt budget below; a space can
+have at most 100 live links. Joining checks the membership quota under the same
+space lock as invitation acceptance, consumes one use, joins the landing channel,
+and fulfils any pending username invitation. Existing members get the space back
+without consuming a use, so a link doubles as a shortcut. Leaving does not block
+rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
+an owner's block returns 403 until the owner invites the account by username.
+Expired, revoked, exhausted and unknown links all return the same 404.
+
+The web `/invite/<code>` page previews the link and sends signed-out visitors to
+`/login?invite=<code>` (then the profile step if unfinished) and back. Web and
+native apps also accept a pasted link or bare code (web: under **Create a space**).
+
+Opening links in the apps: every native app registers the `caper://` scheme, and
+the invite page links to `caper://invite/<code>` ("Open in the Caper app"). An
+opened link fills in the join dialog and loads its preview, after sign-in and
+the profile step when needed. Platform specifics:
+
+- iPhone: universal links for `https://caper.chat/invite/*` through the
+  `applinks:caper.chat` Associated Domains entitlement and
+  `/.well-known/apple-app-site-association` (team `NAUU43LATL`, `chat.caper.ios`).
+  Automatic signing with `-allowProvisioningUpdates` should add the capability to
+  the App ID; if a TestFlight export fails on the profile, enable Associated
+  Domains for `chat.caper.ios` in the Apple developer portal.
+- Mac: `caper://` only. The Developer ID build has no provisioning profile, which
+  universal links require.
+- Android: verified App Links for `https://caper.chat/invite/` against
+  `/.well-known/assetlinks.json` (`apps/web/src/server/app-links.ts`). It lists the
+  upload key that signs the GitHub APK. Play re-signs store installs, so add the
+  Play app-signing SHA-256 (Play Console → App integrity → App signing) there for
+  Play installs to verify; until then they open the browser.
+- Windows/Linux desktop: `caper://` is registered per user on launch (HKCU
+  `Software\Classes\caper`; `~/.local/share/applications/chat.caper.links.desktop`
+  plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
+  handed to the open window over loopback (a token file in the app data folder)
+  instead of starting a second copy.
+
+**To do (owner): finish automatic app-link opening.**
+
+- [ ] Android Play installs: once Play App Signing exists for `chat.caper.android`
+  (after the first app bundle upload), copy **App signing key certificate →
+  SHA-256** from Play Console → Test and release → App integrity → Play app
+  signing, add it to `ANDROID_CERT_FINGERPRINTS` in
+  `apps/web/src/server/app-links.ts`, and deploy web. Until then Play installs open
+  invite links in the browser ("Open in the Caper app" still works); GitHub APK
+  installs already open directly.
+- [ ] iPhone: confirm the first TestFlight build with `applinks:caper.chat` signs.
+  If the export fails on the provisioning profile, enable **Associated Domains**
+  for `chat.caper.ios` at developer.apple.com → Certificates, IDs & Profiles →
+  Identifiers, then rerun the release. Verify by tapping a `caper.chat/invite/...`
+  link in Messages on a device with the TestFlight build.
 
 ### Invitation consent and abuse limits
 
@@ -1115,9 +1192,36 @@ works until it expires, as with Discord's signed attachment links.
 
 Clients compress before upload, using settings the API serves with
 `GET /api/assets/usage` (`compression`), so operators tune them with
-configuration and an API restart, not a client release. The goal is smaller
-files **without visible quality loss**; when a platform cannot meet a rule it
-uploads the original instead of a worse file.
+configuration and an API restart, not a client release. When a platform cannot
+meet a rule it uploads the original instead of a worse file. What each kind of
+file keeps:
+
+- **Screenshots and graphics** stay lossless (identical pixels).
+- **Photos** are re-encoded at very high quality (SSIMULACRA2 ≈ 83 on 9–14 MP
+  photos): differences are rarely visible at normal size, though not identical
+  at 100% zoom; photos larger than `ASSET_IMAGE_MAX_EDGE` are resized.
+- **Video** is converted to H.264 so it plays in every browser and app. 4K and
+  HDR footage loses resolution (down to a 1440 short edge), some fine detail
+  in busy or dark scenes, and its HDR range compared with the original. The bitrate and
+  frame-rate settings below are the levers, and they are delivered per
+  request, so they could later differ by plan.
+
+Measured in October 2026 with VMAF against the uploaded file (simulated phone
+HEVC originals of Xiph/Netflix test clips; x264 `veryfast` as the client
+encoder, so hardware encoders may score somewhat lower). 50/60 fps footage, so
+the 150% frame-rate boost applies:
+
+| Clip (original) | 6 Mbps, 1080 cap (before) | 8 Mbps, 1080 cap | Defaults: 8 Mbps, 1440 cap | Notes |
+| --- | --- | --- | --- | --- |
+| Park scene, 1080p50, 12 Mbps HEVC | 61 | 81 | 81 | Foliage smeared at 6 Mbps |
+| Crowd running, 1080p50, 12 Mbps HEVC | 56 | 77 | 77 | Deliberately extreme motion and detail |
+| Lean HEVC, 1080p50, 3 Mbps | 89 (78 with #519's 100% cap) | 89 | 89 | 200% cap restores it; output is twice the original's size |
+| Market, 4K60, 50 Mbps HEVC (1080p / 4K screen) | 80 / 74 | 92 / 85 | 95 / 89 | 1440p60 output ≈ 170 MB/min |
+| Driving, 4K60, 50 Mbps HEVC (1080p / 4K screen) | 85 / 78 | 92 / 87 | 95 / 92 | |
+| Retina screen recording, 2880×1800 text, scored at full size | — | 94.5 (7.2 Mbps) | 99.9 (12.8 Mbps) | 1080 visibly softens small text |
+
+VMAF 93+ is close to indistinguishable for most viewers; about 6 points is one
+just-noticeable difference.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -1127,8 +1231,10 @@ uploads the original instead of a worse file.
 | `ASSET_IMAGE_QUALITY` | 92 | WebP photo quality (JPEG where WebP encoding is unavailable). 100 disables lossy photo encoding in either format. |
 | `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
 | `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
-| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
-| `ASSET_VIDEO_BITRATE_KBPS` | 6000 | Target bitrate at 1080p, scaled by pixel count for smaller videos (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1440 | Short-edge cap for videos ("1440p", so portrait phone video and Retina screen recordings keep their detail); 0 uploads videos unchanged. |
+| `ASSET_VIDEO_BITRATE_KBPS` | 8000 | Target bitrate at 1080p30, scaled by pixel count and frame rate (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_VIDEO_SOURCE_BITRATE_PERCENT` | 200 | A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264 sources: 100%, since more bits cannot improve them). H.264 needs about twice HEVC's bitrate for the same quality. 0 removes the cap. |
+| `ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT` | 150 | Above 30 fps the target grows with the frame rate (fps ÷ 30) up to this percentage, so 60 fps video does not get half the bits per frame. 100 turns it off. |
 | `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
 
 Rules shared by every client:
@@ -1157,9 +1263,9 @@ Rules shared by every client:
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
-  never re-compressed. The output bitrate is the target at the output size,
-  but never above the source's own bitrate (floor still applies), so a lean
-  HEVC clip converted only for compatibility does not grow. A size-only
+  never re-compressed. The output bitrate is the target at the output size and
+  frame rate, capped at `ASSET_VIDEO_SOURCE_BITRATE_PERCENT` of the source's
+  own bitrate (100% for H.264 sources; the 1.5 Mbps floor still applies). A size-only
   transcode is kept only when at least 10% smaller; the audio track is never
   dropped.
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
@@ -1350,8 +1456,8 @@ to the app also retries upload failures. No expiry or reselect explanation is
 shown. A timeout still means an unknown send outcome: retry the original command
 first, never cancel or replace its files until acceptance or a definitive refusal.
 
-This retains bytes only for the current open conversation/session, not durable
-attachment drafts across app restarts, page reloads or conversation switches.
+Staged files stay with their conversation across switches for the session
+(see below), not across app restarts or page reloads.
 No new lifetime-renewal endpoint or schema is introduced. Replacement uploads
 reserve quota normally; cancelled bytes remain charged until purge succeeds.
 
@@ -1424,7 +1530,7 @@ the owner's assets when that flow lands.
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
 | `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
 | `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
-| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
+| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_VIDEO_SOURCE_BITRATE_PERCENT`, `ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
 | `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 
 The bucket needs a CORS rule allowing `PUT` from the web origin with the
@@ -6844,3 +6950,165 @@ Before native distribution, check on devices: send and receive at the live end
 (one entrance each, none on channel switch or history), dialogs/menus/thread
 opening, attaching files, upload progress, primary/disabled/pressed/focus button
 states, and Reduce Motion / Remove animations.
+
+## Continuous message scrolling to the composer (October 12, 2026)
+
+Writable conversations and threads no longer reserve a fixed blank strip above
+the input. Typing status appears below the conversation input and takes no space
+when idle. Message-row spacing remains inside the scrolling surface; keyboard
+and home-indicator clearance below the composer is preserved.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (585 tests). Labelled Chromium fixtures at 1280px and 390px verify a 0px timeline-to-input gap (previously 33px), image clipping at the input edge, active/idle typing, multiline drafts and filled threads. Isolated `quietTimeline` checks pass after positioning at latest, including composer growth, focus, PageUp/End and history anchoring. The full `scripts/test-chat-history.mjs` still fails in large-history live-follow/reaction scenarios reproduced on unchanged code; it is not a passing acceptance result. Not Safari or a physical phone. |
+| Android | Main and thread spacing changed; idle typing row removed. `compileDebugKotlin` stops at missing Android SDK, before Kotlin compilation. No device rendering or acceptance. |
+| Apple iOS/macOS | Main and thread spacing changed; typing moved below input. Existing composer UI test now asserts the timeline meets the input with closed/open keyboard and multiline drafts. No Swift compiler or Xcode in this orb: not built, tests not run, no simulator or device acceptance. |
+| Rust desktop | Application tests pass (437 passed, 12 existing ignored), including clipping-edge and growing-draft checks. Formatting, application-package Clippy (`--all-targets --no-deps -D warnings`) and debug build pass. Inspected 2x Linux Xvfb attachment and thread renders. No Windows or macOS run. |
+
+No infrastructure, secrets/configuration, database migration, API or gateway
+rollout is needed. Web and native clients can release independently; merging
+does not deploy them. Before native distribution, verify images, files and text
+scroll to the input edge with the keyboard open/closed, typing on/off, multiline
+drafts and thread replies on real iPhone/Android devices. Roll back web to its
+previous image; native rollback requires a corrected higher-build-number release.
+
+## Staged files and thread replies survive conversation switches (October 12, 2026)
+
+Switching away from a channel or DM no longer gives up its staged files or
+thread reply drafts. Channel to DM, DM to channel, channel to channel and DM to
+DM all keep each conversation's text, files and thread replies until you come
+back, send them, remove them, or sign out. Uploads keep running while their
+conversation is closed and are not re-uploaded on return; files whose upload
+failed, or is older than the 23-hour renewal point, are renewed on return
+(Apple restarts an upload that was still in flight when you switched). Only
+explicit **Remove**, sign-out, or loss of access to that conversation cancels a
+file's reservation. Drafts live in memory: closing or reloading the app still
+discards them.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 594 `npm test` tests pass, including new store tests. In Chromium against the local fixture: #general text, a file and a thread reply, #design text plus a file, then the self-DM and back: each conversation returned with its text, files and thread reply, with no re-upload or cancellation; sending the restored #general draft delivered the file; Remove still cancelled. |
+| Android | `:app:compileDebugKotlin`, `:app:testDebugUnitTest` (329 JVM tests) and `:app:compileDebugAndroidTestKotlin` pass with platform/build-tools 36. No emulator here: no device switch check. |
+| iOS/macOS | Implementation only; Swift sources parse with Linux Swift 6.1. No Apple SDK build, XCTest or device check. |
+| Rust desktop | `cargo test -p caper-desktop`: 449 passed, 12 device/audio ignored, including a new switch test for text, files, background progress and thread replies; fmt and Clippy pass. The one failure, `compress::tests::usage_compression_settings_decode_with_defaults`, comes from #550 on main (it still expects the old 1080 video cap) and is untouched here. |
+| Services | No API, gateway, schema or configuration change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is required. Merging deploys nothing.
+2. Deploy web from the merged revision with the usual workflow; Android, Apple
+   and Rust desktop release independently. Roll back web to the previous image;
+   native rollback requires a corrected higher-build-number release. No data
+   rollback is needed.
+
+## Swipes no longer tap where they end on iOS (October 12, 2026)
+
+On iPhone, a Browse/conversation or member-list swipe also triggered the
+control under the finger when it lifted. Browse rows span the full width, so
+swiping left along **New message** (or **Invite people**) returned to chat and
+then opened the New direct message dialog. In the conversation the content moves
+with the finger, so a link, chip or slow long-press under it could fire too.
+`DrawerSwipe` now stops hit-testing its content once a slide follows the finger,
+so the controls under it drop their press; the swipe keeps its touch through the
+outer content shape. Web (room-level release-click suppression), Android
+(consumed moves cancel the child click) and Rust desktop (the swipe owns the
+drag, so egui sees no click) already behaved this way and are unchanged.
+
+The iOS New direct message dialog's **Start conversation** now uses the primary
+eggshell action, neutral while the username is empty, as on the other clients.
+It previously used the terracotta voice style, which looked enabled while empty.
+
+| Platform | Validation boundary |
+| --- | --- |
+| iOS/macOS | `testNarrowConversationAndBrowse` now swipes along the New message/Invite people row and asserts no dialog opens. Changed sources parse with Linux Swift 6.1. No Apple SDK, Xcode, XCTest, simulator or device run here; needs a physical iPhone check of swipes from Browse rows, timeline links/chips and the member list. |
+| Web, Android, Rust desktop | Unchanged; confirmed by code reading only. |
+| Services | No API, gateway, schema or configuration change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API, gateway,
+   web, Android or Rust desktop rollout is required. Merging deploys nothing.
+2. Release the Apple clients from the merged revision with the usual TestFlight
+   workflow. Rollback requires a corrected higher-build-number release; no data
+   rollback is needed.
+
+### Inline profile DMs (October 11, 2026)
+
+Other people's profile cards have an independent, per-person composer on web,
+Android, iOS/macOS and Rust desktop. It supports text, emoji and up to 10 files,
+including file-only messages. File selection stages locally; Send resolves the
+DM and uses the existing compression, reservation, PUT and completion pipeline.
+Confirmed delivery clears that person's draft and opens the conversation.
+Open conversation navigates without sending; known incoming requests remain
+read-only until accepted. Block and DM privacy refusals keep the draft inline.
+
+Layout, the same on every client: the header has the avatar, name and
+`@username` with Open conversation (speech bubble) and Close icons at the end;
+Invite to space and Block share one row; a full-width divider separates the
+composer. The composer reuses the channel composer's shell (Attach at the
+start, then the field, Emoji and an eggshell primary Send) with staged files above it
+as the channel's draft chips, including image thumbnails and sizes. Delivery
+uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit
+there. Keyboard hints stay in accessible descriptions, not visible text.
+
+Populated cards resist outside dismissal. File/emoji pickers preserve the draft
+and saved insertion point; Close explicitly leaves it saved. Drafts survive
+close/reopen while signed in, not logout or app/page restart. Profile navigation
+retains the underlying conversation's text and, with #544, its staged files and
+thread replies, as for any conversation switch. An unconfirmed POST
+freezes its original text, attachment IDs and client message ID; Retry sends that
+same command and reuses completed uploads. Web's Edit action warns that the
+previous copy may have arrived before allowing changes.
+
+Clipboard files: web accepts files carried by a browser paste event; Apple uses
+its native Paste action for file URLs and image bytes. Android and Rust desktop
+put **Paste from clipboard** in the Attach menu (beside Photos/Files or Choose
+files): Android reads clipboard content URIs, and egui delivers no event for an
+image-only Ctrl+V. Native clipboard formats and provider permissions vary.
+
+Emoji buttons: channel, thread and profile composers on every client have an
+Emoji button beside the existing `:name:` shortcut. It opens the reaction
+picker (a popover above the button on web desktop, Rust desktop and macOS; a
+bottom drawer or sheet on touch layouts) and inserts at the caret or replaces
+the selection, within the 4,000-character limit. Native pickers now list
+smileys first and flags last, approximating web's category order.
+
+| Platform | Validation and remaining acceptance |
+| --- | --- |
+| Web | `npm run check` and 594 `npm test` tests pass. `PROFILE_TEST_WEB_URL=… node scripts/test-profile-composer.mjs` against the local parity fixture passes (text/emoji/files, file-only send, chooser cancellation/caret, outside clicks, per-person drafts, lost acknowledgment with identical retry and one persisted message, rejection, retained channel text/files (no re-upload), incoming-request isolation, wide/narrow layouts). Channel and thread emoji insertion at the caret checked in Chromium. Rendered desktop/narrow and picker states inspected. File paste uses a synthetic browser event, not the OS clipboard. |
+| Android | `:app:compileDebugKotlin`, `:app:testDebugUnitTest` (350 JVM tests) and `:app:compileDebugAndroidTestKotlin` (including the updated profile composer UI tests) pass with platform/build-tools 36. Instrumentation was compiled, not run; no emulator here (no KVM), so no rendered, keyboard, picker, clipboard or device acceptance. |
+| iOS/macOS | Changed Swift files parse with Linux Swift 6.1; the picker-order logic was compiled and run standalone. No Apple SDK typecheck, XCTest, render or device/picker/clipboard acceptance. |
+| Rust desktop | 458 tests pass (12 device/audio ignored), including new channel emoji insertion, image thumbnail and picker-order tests; fmt and Clippy pass. The one failure, `compress::tests::usage_compression_settings_decode_with_defaults`, is on main from #550 and untouched here. Linux X11 renders inspected: card layout, real clipboard image pasted through the Attach menu with its thumbnail, profile and channel pickers anchored at their buttons. Windows, Wayland, native file picker and live storage acceptance remain separate. |
+| API/containers | No API changes; no Docker image changes. No live storage, multi-account production or physical-device checks. |
+
+**Deployment order.**
+
+1. Existing account, DM, chat and asset APIs must be available. No new
+   infrastructure apply, secret/configuration, database migration, API or gateway
+   rollout is required for this feature. File sending needs existing storage
+   configuration. Web and native clients can release independently.
+   Merging does not deploy them; set `MERGED_SHA` to the full merged revision and
+   wait for its immutable web image before rollout.
+2. Deploy web with the existing operator workflow, then wait for readiness:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After that deployment workflow succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+3. Before native distribution, compile/test with Xcode and the Android SDK and
+   complete real picker, clipboard, keyboard/focus and dismissal acceptance on
+   each platform. Then publish signed native clients through the existing release:
+
+   ```bash
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+4. With separate test accounts, verify text, the Emoji buttons, attached/pasted files,
+   file-only send, draft close/reopen, preserved underlying drafts, offline retry
+   without duplication, blocked/private recipients and incoming-request preview.
+   Roll back web using the same workflow with the previous known-good SHA; native
+   rollback requires a corrected higher-build-number release. No database or
+   infrastructure rollback is needed. No deployment or release was performed.

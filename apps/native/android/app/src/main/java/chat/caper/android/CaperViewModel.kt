@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.Manifest
 import android.app.Application
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -30,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -57,6 +59,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
     internal val drafts = ConversationDrafts()
+    /** Staged files of conversations that are not open, by channel or DM ID, still uploading (like their text drafts). */
+    private val stagedFiles = mutableMapOf<String, List<DraftAttachmentUi>>()
+    internal val profileDrafts = ProfileMessageDrafts(api)
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
@@ -123,6 +128,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var unreadRefreshScheduled: Job? = null
     private val channelReads = mutableMapOf<String, String>()
     private var conversationVisible = true
+    private var inviteLinkSequence = 0L
+    /** An opened invite link that has not been shown yet; in memory only, so it never outlives the app. */
+    private val pendingInviteLink = MutableStateFlow<InviteLinkRequest?>(null)
+    /**
+     * The opened invite link for "Join with invite link" to show, once someone with a finished
+     * profile is home: a link opened while signed out or setting up a profile waits until then.
+     */
+    val inviteLinkToOpen: StateFlow<InviteLinkRequest?> =
+        combine(pendingInviteLink, state) { link, current -> link?.takeIf { opensInviteLinks(current) } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         loadHome()
@@ -269,6 +284,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         ++accountGeneration
         ++spaceAccessGeneration
         invalidate()
+        // Signing out gives up every conversation's staged files.
+        stagedFiles.values.flatten().forEach { abandonDraft(it) }
+        stagedFiles.clear()
         accountToken = null
         chatToken = null
         chatAuthor = null
@@ -278,6 +296,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         drafts.clear()
+        profileDrafts.clear().forEach { discardDraftFiles(it.key) }
         notificationEdits = null
         pendingInvitationIntent = null
         pendingChannelIntent = null
@@ -373,6 +392,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (loaded != null) selectChannel(loaded) else selectSpace(spaceId, channelId)
     }
 
+    /**
+     * An invite link opened from another app (`https://caper.chat/invite/<code>` or
+     * `caper://invite/<code>`): "Join with invite link" opens with it and loads its preview, now or
+     * after sign-in and profile setup ([inviteLinkToOpen]). A newer link replaces one still
+     * waiting; anything that is not an invite link is ignored.
+     */
+    fun openInviteLink(url: String) {
+        val code = inviteCode(url) ?: return
+        pendingInviteLink.value = InviteLinkRequest(url.trim(), code, ++inviteLinkSequence)
+    }
+
+    /** The dialog opened for [request]; a newer link that arrived meanwhile still waits. */
+    fun inviteLinkShown(request: InviteLinkRequest) {
+        pendingInviteLink.compareAndSet(request, null)
+    }
+
     fun consumeNotificationInvitation() {
         mutable.value = mutable.value.copy(notificationInvitation = null, notificationBrowseSpace = null)
     }
@@ -443,7 +478,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList())
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList(), inviteLinks = emptyList())
         viewModelScope.launch {
             try {
                 val detail = api.space(requireAccountToken(), id)
@@ -490,6 +525,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        restoreStagedFiles(channel.id)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
@@ -528,6 +564,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 closeChannel(clearPending = true)
                 val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
                 mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id)
+                restoreStagedFiles(channel.id)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(conversation.id, history.cursor, committed)
@@ -582,17 +619,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** `POST /api/dms` by username (it returns an existing DM), then opens it unless you navigated meanwhile. */
-    private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit) {
+    private suspend fun openDirectByUsername(username: String, request: Long, done: () -> Unit, fromProfile: Boolean = false) {
         val navigation = generation
         val directNavigation = directOpeningRevision
-        val conversation = api.startDirectConversation(requireAccountToken(), username)
+        val token = requireAccountToken()
+        // Profile navigation previews even an uncached incoming request. Creating
+        // an existing request would accept it before the user sees its controls.
+        val existing = if (fromProfile) api.directConversations(token).conversations.firstOrNull {
+            it.peer.username.equals(username, ignoreCase = true)
+        } else null
+        if (request != accountGeneration) return
+        val conversation = existing ?: api.startDirectConversation(token, username)
         if (request != accountGeneration) return
         mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
         if (navigation == generation && directNavigation == directOpeningRevision) { done(); selectDirect(conversation) }
     }
 
     /**
-     * The mention card's Message: opens a loaded DM with that person, otherwise the
+     * The mention card's Open conversation: opens a loaded DM with that person, otherwise the
      * same create-by-username flow, reporting failures to the card instead of the app.
      */
     fun messageMentioned(id: String?, username: String, done: () -> Unit, failed: (String) -> Unit) {
@@ -604,9 +648,38 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         val request = accountGeneration
         viewModelScope.launch {
-            try { openDirectByUsername(username, request, done) }
+            try { openDirectByUsername(username, request, done, fromProfile = true) }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
+        }
+    }
+
+    /** Only Send resolves/uploads a profile draft; opening happens after a confirmed message. */
+    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit) {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = directOpeningRevision
+        val files = profileDrafts[person].files
+        viewModelScope.launch {
+            val result = profileDrafts.send(person, id, username, token, session = {
+                val capability = createChatSession(request) ?: error("Chat session is unavailable.")
+                capability to requireNotNull(chatAuthor)
+            }, directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+            if (request != accountGeneration) return@launch
+            if (result == null) {
+                if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
+                return@launch
+            }
+            files.forEach { discardDraftFiles(it.key) }
+            val (conversation, sent) = result
+            mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+            if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
+            directHistories.remove(conversation.id)
+            if (navigation == generation && directNavigation == directOpeningRevision) {
+                done()
+                selectDirect(conversation)
+            }
         }
     }
 
@@ -1177,6 +1250,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
                     busy = false, error = null,
                 )
+                restoreStagedFiles(destination.channel.id)
                 openGateway(channelId, destination.history.cursor, request)
                 onOpened()
             } catch (error: Throwable) {
@@ -1260,6 +1334,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
                         busy = false, error = null, messagesLoading = false,
                     )
+                    restoreStagedFiles(channel.id)
                     openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
                     if (direct != null) refreshPeople()
                 }
@@ -1796,24 +1871,93 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
-    fun addAttachments(uris: List<Uri>) {
+    fun addAttachments(uris: List<Uri>) = addAttachments(uris, null)
+
+    internal fun addProfileAttachments(person: String, uris: List<Uri>) = addAttachments(uris, person)
+
+    /** Clipboard providers grant URI access; copy the bytes locally just like picked files. */
+    internal fun pasteProfileAttachments(person: String) {
+        val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
+        val clip = clipboard.primaryClip
+        val uris = (0 until (clip?.itemCount ?: 0)).mapNotNull { clip?.getItemAt(it)?.uri }
+            .filter { it.scheme == "content" }.distinct()
+        if (uris.isEmpty()) profileDrafts.error(person, "No files on the clipboard. Copy a file or use Attach files.")
+        else addProfileAttachments(person, uris)
+    }
+
+    private fun addAttachments(uris: List<Uri>, person: String?) {
         val current = mutable.value
-        if (current.selectedChannel?.joined != true || accountToken == null) return
+        if ((person == null && current.selectedChannel?.joined != true) || accountToken == null) return
         if (!current.uploadsEnabled || uris.isEmpty()) return
-        val room = AttachmentPolicy.MAX_ATTACHMENTS - current.drafts.size
+        if (person != null && !profileDrafts[person].editable) return
+        val room = AttachmentPolicy.MAX_ATTACHMENTS - (if (person == null) current.drafts else profileDrafts[person].files).size
         if (room <= 0) {
-            mutable.value = current.copy(attachmentError = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+            if (person == null) mutable.value = current.copy(attachmentError = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+            else profileDrafts.error(person, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
             return
         }
-        mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
+        if (person == null) mutable.value = current.copy(attachmentError = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null)
+        val settings = compression
+        val request = accountGeneration
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
             draftDirectories[key] = directory
-            mutable.value = mutable.value.copy(drafts = mutable.value.drafts + DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString()))
-            retryDraft(key)
+            val draft = DraftAttachmentUi(key, "File", "file", pickedUri = uri.toString())
+            if (person == null) {
+                mutable.value = mutable.value.copy(drafts = mutable.value.drafts + draft)
+                retryDraft(key)
+                return@forEach
+            }
+            // Profile files stay local until Send supplies a real DM destination.
+            profileDrafts.add(person, listOf(draft))
+            uploadJobs[key] = viewModelScope.launch {
+                try {
+                    val picked = preparer.copy(uri, directory)
+                    val image = picked.contentType.startsWith("image/")
+                    updateDraft(key, person) {
+                        it.copy(
+                            name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
+                            thumbnail = if (image) Uri.fromFile(picked.source).toString() else null, pickedImage = if (image) uri.toString() else null,
+                        )
+                    }
+                    val prepared = preparer.prepare(picked, settings, directory, progressReporter(key, person))
+                    if (request != accountGeneration) return@launch
+                    profileDrafts.ready(person, key, prepared)
+                    updateDraft(key, person) {
+                        it.copy(
+                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                            localUrl = Uri.fromFile(prepared.file).toString(),
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    updateDraft(key, person) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
+                } finally {
+                    uploadJobs.remove(key)
+                }
+            }
         }
+        if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
     }
+
+    private fun restoreStagedFiles(channelId: String) {
+        val files = stagedFiles.remove(channelId) ?: return
+        mutable.value = mutable.value.copy(drafts = files)
+        // Renew anything that failed or expired while the conversation was closed.
+        files.filter { it.error != null || uploadStale(it) }.forEach { retryDraft(it.key) }
+    }
+
+    /** Gives up the open conversation's staged files when it can no longer be used. */
+    private fun dropOpenDrafts() {
+        mutable.value.drafts.forEach { abandonDraft(it) }
+        mutable.value = mutable.value.copy(drafts = emptyList())
+    }
+
+    /** Open, sending and stashed drafts: an upload continues while its file is in any of them. */
+    private fun knownDrafts() = mutable.value.drafts + pendingDrafts + stagedFiles.values.flatten()
 
     private fun uploadStale(draft: DraftAttachmentUi) = draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
 
@@ -1830,9 +1974,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun uploadDraft(key: String, token: String, channel: String): ChatAttachment {
-        val draft = (mutable.value.drafts + pendingDrafts).find { it.key == key } ?: throw CancellationException()
+        val draft = knownDrafts().find { it.key == key } ?: throw CancellationException()
         if (draft.attachment != null && !uploadStale(draft)) return draft.attachment
-        val request = generation
         updateDraft(key) { it.copy(attachment = null, error = null, progress = 0f) }
         draft.attachment?.let { api.cancelAsset(token, it.id) }
         val prepared = preparedDrafts[key] ?: run {
@@ -1844,7 +1987,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 sourceSize = picked.source.length(), thumbnail = if (image) Uri.fromFile(picked.source).toString() else null,
                 pickedImage = if (image) uri.toString() else null) }
             preparer.prepare(picked, compression, directory, progressReporter(key)).also {
-                if (request != generation || (mutable.value.drafts + pendingDrafts).none { it.key == key }) throw CancellationException()
+                if (knownDrafts().none { it.key == key }) throw CancellationException()
                 preparedDrafts[key] = it
             }
         }
@@ -1852,7 +1995,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             compressing = false, progress = 0f, localUrl = Uri.fromFile(prepared.file).toString(),
             thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail) }
         val attachment = uploader.upload(token, channel, prepared, progressReporter(key))
-        if (request != generation || (mutable.value.drafts + pendingDrafts).none { it.key == key }) {
+        if (knownDrafts().none { it.key == key }) {
             api.cancelAsset(token, attachment.id)
             throw CancellationException()
         }
@@ -1872,6 +2015,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         discardDraftFiles(draft.key)
     }
 
+    internal fun removeProfileAttachment(person: String, key: String) {
+        if (profileDrafts.remove(person, key)) discardDraftFiles(key)
+    }
+
     /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */
     private fun discardDraftFiles(key: String) {
         uploadJobs.remove(key)?.cancel()
@@ -1879,18 +2026,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         draftDirectories.remove(key)?.let { directory -> viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() } }
     }
 
-    private fun updateDraft(key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+    private fun updateDraft(key: String, person: String? = null, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+        if (person != null) { profileDrafts.updateFile(person, key, change); return }
+        stagedFiles.entries.forEach { entry -> if (entry.value.any { it.key == key }) entry.setValue(entry.value.map { if (it.key == key) change(it) else it }) }
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.map { if (it.key == key) change(it) else it })
         pendingDrafts = pendingDrafts.map { if (it.key == key) change(it) else it }
     }
 
     /** Compression/upload progress arrives off the main thread; post at most every 1%. */
-    private fun progressReporter(key: String): (Float) -> Unit {
+    private fun progressReporter(key: String, person: String? = null): (Float) -> Unit {
         var last = -1f
         return { fraction ->
             if (fraction - last >= 0.01f || fraction >= 1f) {
                 last = fraction
-                viewModelScope.launch(Dispatchers.Main) { updateDraft(key) { if (it.attachment == null) it.copy(progress = fraction) else it } }
+                viewModelScope.launch(Dispatchers.Main) { updateDraft(key, person) { if (it.attachment == null) it.copy(progress = fraction) else it } }
             }
         }
     }
@@ -2406,6 +2555,75 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
             mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id })
     }
+    /** The open space's live invite links, for its owner; a failed load is [failed]'s, beside the links. */
+    fun loadInviteLinks(loaded: () -> Unit, failed: (String) -> Unit) {
+        val detail = mutable.value.selectedSpace ?: return
+        val context = AdminMutationContext(accountGeneration, detail.space.id)
+        mutable.value = mutable.value.copy(inviteLinks = emptyList())
+        viewModelScope.launch {
+            try {
+                val links = api.inviteLinks(requireAccountToken(), detail.space.id).links
+                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) { mutable.value = mutable.value.copy(inviteLinks = links); loaded() }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error)) }
+        }
+    }
+    /** Creates a link for the open space; [done] gets it (now first in the list) to copy. */
+    fun createInviteLink(channelId: String?, maxAge: Int?, maxUses: Int?, done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        val link = formRequest(request, failed) { api.createInviteLink(requireAccountToken(), detail.space.id, channelId, maxAge, maxUses) } ?: return@launchAction
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
+        done(link)
+    }
+    /** A link that is already gone (404: revoked elsewhere, expired or used up) leaves the list too. */
+    fun revokeInviteLink(link: InviteLink, failed: (String) -> Unit) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        formRequest(request, failed) {
+            try { api.revokeInviteLink(requireAccountToken(), detail.space.id, link.code) }
+            catch (error: ApiException) { if (error.status != 404) throw error }
+            Unit
+        } ?: return@launchAction
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(inviteLinks = mutable.value.inviteLinks.filter { it.code != link.code })
+    }
+    fun inviteUrl(code: String): String = api.inviteUrl(code)
+    /** What a live invite link shares before joining; an invalid or expired one fails with [INVALID_INVITE_LINK]. */
+    fun previewInvite(code: String, done: (InvitePreview) -> Unit, failed: (String) -> Unit) {
+        val request = accountGeneration
+        viewModelScope.launch {
+            try {
+                val preview = api.invitePreview(code, accountToken)
+                if (request == accountGeneration) done(preview)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { if (request == accountGeneration) failed(inviteError(error)) }
+        }
+    }
+    /**
+     * Joins with an invite link (or, already a member, just opens the space), refreshes the spaces
+     * list and opens the space at the link's channel, else its default.
+     */
+    fun joinInvite(code: String, done: () -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        val token = requireAccountToken()
+        val result = try { api.joinInvite(token, code) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(inviteError(error)); return@launchAction }
+        if (request != accountGeneration) return@launchAction
+        val list = try { api.spaces(token) } catch (error: CancellationException) { throw error } catch (_: Throwable) { null }
+        if (request != accountGeneration) return@launchAction
+        val current = mutable.value
+        mutable.value = current.copy(
+            spaces = list?.spaces?.takeIf { spaces -> spaces.any { it.id == result.space.id } }
+                ?: (current.spaces.filter { it.id != result.space.id } + result.space),
+            invitations = (list?.invitations ?: current.invitations).filter { it.id != result.space.id },
+            limits = list?.limits ?: current.limits,
+        )
+        done(); selectSpace(result.space.id, result.channelId)
+    }
+    private fun inviteError(error: Throwable): String =
+        if (error is ApiException && error.status == 404) INVALID_INVITE_LINK else message(error)
     fun acceptInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
         val accepted = api.acceptSpaceInvitation(requireAccountToken(), invitation.id)
         if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
@@ -2451,6 +2669,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) { if (request == accountGeneration) failed(error.message ?: "That request did not work."); null }
 
+    /** Like [memberRequest], with the readable error text: invite-link forms keep their choices on failure. */
+    private suspend fun <T> formRequest(request: Long, failed: (String) -> Unit, block: suspend () -> T): T? = try { block() }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(message(error)); null }
+
     /** [done] runs only after the removal succeeds, so a failed one keeps its confirmation open. */
     fun removeChannelGrant(channel: Channel, member: Member, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -2494,7 +2717,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         replaceDetail(current.copy(channels = current.channels.mapNotNull {
             if (it.id != channel.id) it else if (privateLoss) null else it.copy(joined = false)
         }))
-        if (selected == channel.id) { ++generation; closeChannel(clearPending = true) }
+        // Leaving a channel gives up its staged files: they could no longer be sent there.
+        stagedFiles.remove(channel.id)?.forEach { abandonDraft(it) }
+        if (selected == channel.id) { ++generation; dropOpenDrafts(); closeChannel(clearPending = true) }
         refreshSpace(detail.space.id, if (selected == channel.id && privateLoss) null else selected)
     }
 
@@ -2548,6 +2773,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // A visit that lost access returns to the Feedback inbox.
         val visiting = mutable.value.visit != null && mutable.value.account?.feedbackTeam == true
         ++generation
+        dropOpenDrafts()
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(error = "You no longer have access to this channel.", feedbackShown = visiting)
     }
@@ -2566,8 +2792,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         unloadedAttachments.clear()
         if (clearPending) {
             pendingSends.clear()
-            // Uploads belong to one conversation; abandon them when it changes.
-            mutable.value.drafts.forEach { abandonDraft(it) }
+            // Staged files stay with their conversation, uploads carrying on, until it is reopened.
+            mutable.value.selectedChannel?.id?.let { id -> if (mutable.value.drafts.isNotEmpty()) stagedFiles[id] = mutable.value.drafts }
             // An uncertain send may still commit; do not cancel its files.
             pendingDrafts.forEach { discardDraftFiles(it.key) }
             pendingDrafts = emptyList()
@@ -2677,6 +2903,16 @@ internal fun mergeDirects(current: List<DirectConversation>, incoming: List<Dire
 
 private fun maxSeq(first: String, second: String): String =
     runCatching { maxOf(first.toBigInteger(), second.toBigInteger()).toString() }.getOrDefault(second)
+
+/** An opened invite link: [url] as opened, its [code], and [id] to tell repeat openings apart. */
+data class InviteLinkRequest(val url: String, val code: String, val id: Long)
+
+/** Home (or Browse) shows for an account with a finished profile, past the launch loading screen. */
+internal fun opensInviteLinks(state: AppUiState): Boolean {
+    val account = state.account ?: return false
+    return account.username != null && account.displayName != null && !state.restoring &&
+        (state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces)
+}
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 

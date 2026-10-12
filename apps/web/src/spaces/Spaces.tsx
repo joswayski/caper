@@ -50,6 +50,7 @@ import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import SpacesLoading from "./SpacesLoading";
 import FeedbackInbox from "./FeedbackInbox";
+import { InviteLinkManager, JoinInviteLinkForm } from "./InviteLinks";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
 import {
@@ -513,6 +514,7 @@ function CreateSpaceForm({
   return onCancel ? (
     <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
       {form}
+      <JoinInviteLinkForm disabled={pending} />
     </Dialog>
   ) : (
     form
@@ -882,12 +884,14 @@ function MemberManager({
 
 function ManageSpaceDialog({
   detail,
+  channelId,
   people,
   onClose,
   onChanged,
   onDeleted,
 }: {
   detail: SpaceDetail;
+  channelId?: string;
   /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
   people?: Person[];
   onClose: () => void;
@@ -964,6 +968,7 @@ function ManageSpaceDialog({
           {error}
         </p>
       )}
+      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
       <MemberManager
         members={members}
         invitations={invitations}
@@ -983,7 +988,7 @@ function ManageSpaceDialog({
         }
         removalCopy={(member) => ({
           title: `Remove ${member.displayName}?`,
-          description: `They’ll lose access to ${detail.space.name} and its channels. You can invite them again later.`,
+          description: `They’ll lose access to ${detail.space.name} and its channels and can’t rejoin with an invite link. You can invite them again by username later.`,
         })}
         onRemove={async (member) =>
           run(async () => {
@@ -2824,6 +2829,7 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
+          <JoinInviteLinkForm />
         </section>
       </main>
     );
@@ -3319,7 +3325,12 @@ export default function Spaces({
   );
 
   const messagePerson = async (username: string) => {
-    const conversation = await createDirectConversation(username);
+    // Creating an existing incoming DM accepts it. Opening a profile's
+    // conversation should show the request, leaving acceptance explicit.
+    const existing = (await listDirectConversations()).conversations.find(
+      (item) => item.peer.username.toLowerCase() === username.toLowerCase(),
+    );
+    const conversation = existing ?? (await createDirectConversation(username));
     setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     openDirect(conversation);
   };
@@ -3513,6 +3524,7 @@ export default function Spaces({
       {dialog === "manage-space" && (
         <ManageSpaceDialog
           detail={detail}
+          channelId={selected.channelId}
           people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}

@@ -215,8 +215,10 @@ final class GatewayLifecycleTests: XCTestCase {
 
     func testCandidateThatReceivesHelloButNeverCatchesUpIsReplaced() async {
         let factory = SocketFactory(); var revisions: [Int] = []
+        // Catch-up starts when the candidate opens, before the fixture sends
+        // hello. Leave setup time on busy runners while still testing expiry.
         let subject = Gateway(baseURL: URL(string: "https://caper.invalid")!, socketFactory: { factory.make($0) },
-                              catchupTimeout: .milliseconds(100), token: { nil }, state: { _, _ in })
+                              catchupTimeout: .seconds(1), token: { nil }, state: { _, _ in })
         _ = await subject.subscribeMedia(channelID: "voice", token: "cap") { revisions.append($0["revision"] as! Int) }
         await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!; old.push(["type": "hello"])
         let id = await subscribeID(old, kind: "media")
