@@ -11826,6 +11826,7 @@ impl CaperApp {
         for member in members {
             let tint = ui.painter().add(egui::Shape::Noop);
             let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui.add_space(16.0);
                 let status = self
@@ -29576,7 +29577,7 @@ mod tests {
             app.members_visible = members_visible;
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
-            let targets: Vec<_> = output
+            let mut targets: Vec<_> = output
                 .platform_output
                 .accesskit_update
                 .as_ref()
@@ -29600,6 +29601,32 @@ mod tests {
                 if members_visible { 3 } else { 2 },
                 "avatar, name, and optionally member row"
             );
+            if members_visible {
+                let member = targets.iter().max_by(|a, b| a.x.total_cmp(&b.x)).unwrap();
+                // The sidebar occupies the final 220px of the 1440px viewport.
+                let trailing = egui::pos2(1432.0, member.y);
+                render(
+                    &mut app,
+                    &context,
+                    vec![egui::Event::PointerMoved(trailing)],
+                );
+                let hovered = render(&mut app, &context, vec![]);
+                assert_eq!(
+                    hovered.platform_output.cursor_icon,
+                    egui::CursorIcon::PointingHand,
+                    "the empty trailing part of a member row is clickable"
+                );
+                assert!(
+                    hovered.shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(rect)
+                        if rect.fill == super::RAISED
+                            && rect.rect.contains(trailing)
+                            && rect.rect.contains(egui::pos2(1228.0, member.y)))
+                    }),
+                    "hover highlights the full member row, not just its contents"
+                );
+                targets.push(trailing);
+            }
             for target in targets {
                 click_at(&mut app, &context, target);
                 let output = render(&mut app, &context, vec![]);
