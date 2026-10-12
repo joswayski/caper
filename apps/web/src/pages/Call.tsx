@@ -29,7 +29,7 @@ import {
 import ProfileForm from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
-import { getAccount, logout, type Account } from "../account/client";
+import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
 import { rosterChanges } from "../audio/roster";
 import {
@@ -499,7 +499,9 @@ export default function Call({
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
-  const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
+  const [loadedAccount, setAccount] = useState<Account | null>(initialAccount ?? null);
+  const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const account = rememberedAccount ?? loadedAccount;
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
   const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
@@ -1075,6 +1077,7 @@ export default function Call({
     >
       {people.map((participant) => {
         const self = participant.id === state.selfId;
+        const participantName = self ? (account?.displayName ?? participant.name) : participant.name;
         const stream = self
           ? state.localMedia
           : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
@@ -1099,12 +1102,12 @@ export default function Call({
           >
             <span className="participant-avatar">
               <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
-                <Avatar avatarId={participant.avatarId} name={participant.name} />
+                <Avatar avatarId={participant.avatarId} name={participantName} />
               </span>
             </span>
             <span className="participant-name">
               <strong>
-                {participant.name}
+                {participantName}
                 {self ? " (you)" : ""}
               </strong>
               {participantStatus && (

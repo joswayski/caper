@@ -952,22 +952,28 @@
 .mic-test-button {
   width: 160px;
   height: 48px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
 .mic-test-button:disabled {
-  opacity: 0.55;
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
   cursor: wait;
 }
 @media (hover: hover) {
   .mic-test-button:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+.mic-test-button:active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
 }
 .mic-comparison {
   display: grid;

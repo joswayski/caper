@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -25,7 +26,15 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
+import {
+  getAccount,
+  getRememberedAccount,
+  normalizeUsername,
+  subscribeAccount,
+  usernameError,
+  withAccountProfile,
+  type Account,
+} from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
@@ -632,8 +641,8 @@ function RemoveMemberDialog({
 }
 
 function MemberManager({
-  members,
-  invitations,
+  members: memberSnapshots,
+  invitations: invitationSnapshots,
   channel = false,
   onCancel,
   onAdd,
@@ -654,6 +663,9 @@ function MemberManager({
   pending: boolean;
   loading?: boolean;
 }) {
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const members = memberSnapshots.map((member) => withAccountProfile(member, account));
+  const invitations = invitationSnapshots?.map((member) => withAccountProfile(member, account));
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -1583,7 +1595,9 @@ export default function Spaces({
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
-  const [account, setAccount] = useState<Account | undefined>(initialAccount);
+  const [loadedAccount, setAccount] = useState<Account | undefined>(initialAccount);
+  const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const account = rememberedAccount ?? loadedAccount;
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
@@ -1625,7 +1639,11 @@ export default function Spaces({
   const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
-  const [directs, setDirects] = useState<DirectConversation[]>([]);
+  const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
+  const directs = directSnapshots.map((conversation) => ({
+    ...conversation,
+    peer: withAccountProfile(conversation.peer, account),
+  }));
   const [directsLoading, setDirectsLoading] = useState(true);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
@@ -1671,11 +1689,15 @@ export default function Spaces({
       current = false;
     };
   }, [directId, account?.id]);
-  const detail =
+  const detailSnapshot =
     view?.detail ??
     (!spaces.length
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
+  const detail = detailSnapshot && {
+    ...detailSnapshot,
+    members: detailSnapshot.members.map((member) => withAccountProfile(member, account)),
+  };
   const navigation = useRef(createSpaceNavigation());
   // The rendered detail, for the poll below whose effect tracks only the space id.
   const shownDetail = useRef(detail);

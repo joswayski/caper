@@ -10,11 +10,30 @@ public final class AppModel {
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
-    public var pendingMembers: [Member] = []
-    public var detail: SpaceDetail?
+    private var pendingMemberSnapshots: [Member] = []
+    public var pendingMembers: [Member] {
+        get { pendingMemberSnapshots.map { $0.withProfile(account) } }
+        set { pendingMemberSnapshots = newValue }
+    }
+    private var detailSnapshot: SpaceDetail?
+    public var detail: SpaceDetail? {
+        get { detailSnapshot?.withProfile(account) }
+        set { detailSnapshot = newValue }
+    }
     public var selectedSpaceID: String?
     public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
-    public var directMessages: [DirectMessageConversation] = []
+    private var directMessageSnapshots: [DirectMessageConversation] = []
+    public var directMessages: [DirectMessageConversation] {
+        get {
+            directMessageSnapshots.map { conversation in
+                guard conversation.peer.id == account?.id, let username = account?.username, let name = account?.displayName else { return conversation }
+                return DirectMessageConversation(id: conversation.id,
+                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId),
+                    lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
+            }
+        }
+        set { directMessageSnapshots = newValue }
+    }
     public private(set) var directMessagesError: String?
     public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { removeShownNotifications() } } }
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
@@ -174,6 +193,7 @@ public final class AppModel {
         voicePresence = VoicePresenceModel(api: api)
         chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
+        chatModel.viewerProfile = { [weak self] in self?.account }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
@@ -279,7 +299,12 @@ public final class AppModel {
             self.account = account
             self.phase = .ready
             if onboarding { await self.loadSpaces(); self.startDirectMessageRefresh() }
-            else { self.chat.updateAuthor(account: account) }
+            else {
+                self.chat.updateAuthor(account: account)
+                if self.selectedDirectMessage?.peer.id == account.id {
+                    self.chat.channelName = account.displayName ?? self.chat.channelName
+                }
+            }
         }
     }
 
@@ -1263,7 +1288,7 @@ public final class AppModel {
         let attempt = generation
         let members = try await api.channelMembers(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return members
+        return members.map { $0.withProfile(account) }
     }
 
     public func channelInvitations(_ channel: Channel) async throws -> [Member] {
@@ -1271,7 +1296,7 @@ public final class AppModel {
         let attempt = generation
         let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return invitations
+        return invitations.map { $0.withProfile(account) }
     }
 
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
@@ -1755,11 +1780,20 @@ public enum ReactorsState: Equatable, Sendable {
 
 @MainActor @Observable
 public final class ChatModel {
-    public var messages: [ChatMessage] = []
-    public var pinnedMessages: [ChatMessage] = []
+    private var messageSnapshots: [ChatMessage] = []
+    public var messages: [ChatMessage] {
+        get { messageSnapshots.map { $0.withProfile(profileAuthor) } }
+        set { messageSnapshots = newValue }
+    }
+    private var pinnedMessageSnapshots: [ChatMessage] = []
+    public var pinnedMessages: [ChatMessage] {
+        get { pinnedMessageSnapshots.map { $0.withProfile(profileAuthor) } }
+        set { pinnedMessageSnapshots = newValue }
+    }
     private var mutations = MessageMutations()
-    public var displayedMessages: [ChatMessage] { messages.map(mutations.project) }
-    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages) }
+    private func project(_ message: ChatMessage) -> ChatMessage { mutations.project(message).withProfile(profileAuthor) }
+    public var displayedMessages: [ChatMessage] { messages.map(project) }
+    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages).map { $0.withProfile(profileAuthor) } }
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -1829,9 +1863,9 @@ public final class ChatModel {
     private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
-    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(mutations.project) }
+    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(project) }
     public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
-    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(mutations.project) }
+    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(project) }
     private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
         (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
         (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)
@@ -1844,7 +1878,15 @@ public final class ChatModel {
         get { threadRootID.flatMap { threadBroadcasts[$0] } ?? false }
         set { if let threadRootID { threadBroadcasts[threadRootID] = newValue } }
     }
-    public var currentAuthor: ChatAuthor? { session?.author }
+    private var profileAuthor: ChatAuthor? {
+        guard let account = viewerProfile(), let name = account.displayName else { return session?.author }
+        return ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId)
+    }
+    public var currentAuthor: ChatAuthor? {
+        guard let author = session?.author else { return nil }
+        guard let profile = profileAuthor, profile.id == author.id else { return author }
+        return profile
+    }
     public private(set) var canForward = false
     public var forwardTarget: ChatMessage?
     public var forwardConversationTarget: ChatMessage?
@@ -1873,6 +1915,7 @@ public final class ChatModel {
     }
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
+    @ObservationIgnored var viewerProfile: () -> Account? = { nil }
     /// Blocks from message actions in panels that only hold the chat model.
     @ObservationIgnored public var blockAccount: ((BlockTarget) async throws -> Void)?
     /// Unblocks from message actions, by account id.
@@ -2511,7 +2554,13 @@ public final class ChatModel {
         let cached = reactorCache[message.id]
         if let list = cached?.list {
             guard let reaction = message.reactions?.first(where: { $0.emoji == emoji }) else { return .loaded([]) }
-            if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) { return .loaded(people) }
+            if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) {
+                let account = viewerProfile()
+                return .loaded(people.map { person in
+                    guard person.id == account?.id else { return person }
+                    return ReactorPerson(id: person.id, username: account?.username, displayName: account?.displayName, avatarId: person.avatarId)
+                })
+            }
         }
         if reactorRequests[message.id] != nil { return .loading }
         if reactorFailures.contains(message.id) { return .failed }
@@ -2579,7 +2628,7 @@ public final class ChatModel {
     /// reaction not yet in the fetched list still reads as "You".
     private func reactorViewer(_ id: String?) -> ReactorPerson? {
         guard let id else { return nil }
-        guard let author = session?.author, author.id == id else { return ReactorPerson(id: id) }
+        guard let author = profileAuthor, author.id == id else { return ReactorPerson(id: id) }
         return ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId)
     }
 

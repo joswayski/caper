@@ -93,15 +93,40 @@ function Privacy() {
 
         <Section title="Your choices">
           <p>
-            You can change your username and display name at any time. To get a copy of your data or delete your account
-            and messages, email{" "}
+            You can change your username and display name at any time. To get a copy of your data, email{" "}
             <a
               className="rounded-[2px] text-content underline underline-offset-4 transition-colors hover:text-terracotta-bright focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
               href={`mailto:${CONTACT}`}
             >
               {CONTACT}
             </a>{" "}
-            from the address you sign in with.
+            from the address you sign in with. To delete your account, see below.
+          </p>
+        </Section>
+
+        <Section title="Delete your account" id="delete-account">
+          <p>
+            Email{" "}
+            <a
+              className="rounded-[2px] text-content underline underline-offset-4 transition-colors hover:text-terracotta-bright focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4"
+              href={`mailto:${CONTACT}?subject=Delete%20my%20Caper%20account`}
+            >
+              {CONTACT}
+            </a>{" "}
+            from the address you sign in with and ask us to delete your Caper account. Privacy settings in every Caper
+            app link here. We&apos;ll reply to confirm, then within 30 days:
+          </p>
+          <ul className="mt-3 list-disc space-y-2 pl-5">
+            <li>remove your email address, username and display name from your account;</li>
+            <li>sign you out everywhere and stop sending you notifications;</li>
+            <li>remove you from your spaces and channels.</li>
+          </ul>
+          <p className="mt-3">
+            Like other chat apps, some things stay so the people you talked with keep their history. Messages and files
+            you sent stay in their conversations, shown as from a deleted account and no longer linked to your email,
+            username or display name, for as long as those conversations exist. We keep a record of past sign-ins, with
+            the one-way IP hash above, for security and to prevent abuse. If you own spaces, tell us whether to delete
+            them or hand them to another member.
           </p>
         </Section>
 
@@ -117,9 +142,9 @@ function Privacy() {
   );
 }
 
-function Section({ title, children }: Readonly<{ title: string; children: ReactNode }>) {
+function Section({ title, id, children }: Readonly<{ title: string; id?: string; children: ReactNode }>) {
   return (
-    <section className="mt-10">
+    <section className="mt-10 scroll-mt-6" id={id}>
       <h2 className="mb-3 text-[1.15rem] font-bold tracking-[-.02em] text-content">{title}</h2>
       {children}
     </section>

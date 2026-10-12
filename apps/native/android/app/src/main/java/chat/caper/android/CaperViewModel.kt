@@ -28,10 +28,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -39,7 +40,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val api = CaperApi()
     private val tokens = TokenStore(application)
     private val mutable = MutableStateFlow(AppUiState())
-    val state: StateFlow<AppUiState> = mutable.asStateFlow()
+    val state: StateFlow<AppUiState> = mutable.map { it.withAccountProfile() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutable.value)
     private var accountToken: String? = null
     private var chatToken: String? = null
     private var chatAuthor: ChatAuthor? = null

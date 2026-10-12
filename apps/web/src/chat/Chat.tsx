@@ -20,6 +20,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
+import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
 import LinkedText from "./LinkedText.tsx";
@@ -464,6 +465,8 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  const arrivals = useRef<Arrivals>(null);
+  arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
   // old first row also changes as an older page lands above it: it can join
   // that page's last group (losing its name and time) and loses its date
@@ -909,6 +912,12 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  arrivals.current.observe(
+    "channel",
+    state.channelId ?? "",
+    messages.map((message) => message.clientMessageId),
+    state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
+  );
   const scrollIndex =
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
@@ -1120,7 +1129,7 @@ export default function Chat({
             </div>
           )}
           <article
-            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
             onPointerDown={(event) => {
@@ -1966,6 +1975,7 @@ export default function Chat({
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         renderMessage={renderMessage}
+        arrivals={arrivals.current}
         onClose={closeThread}
       />
       {state.phase === "ready" && !readOnly && editMessage && clientRef.current && (

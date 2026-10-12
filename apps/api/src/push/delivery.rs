@@ -385,19 +385,63 @@ async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
     }
 }
 
+/// Rows per prune statement: short locks and modest WAL per batch.
+const PRUNE_BATCH: i64 = 5_000;
+/// Batches per table per pass (every 10 minutes): about 14 million rows a day,
+/// far above one delivery per recipient device per message today.
+const PRUNE_BATCHES: usize = 20;
+
 /// Finished deliveries and expanded jobs are operational state: keep a week.
-pub(super) async fn prune(pool: &sqlx::PgPool) {
-    for statement in [
-        "DELETE FROM public.notification_deliveries WHERE id IN (
-             SELECT id FROM public.notification_deliveries
-             WHERE delivered_at < now() - interval '7 days' OR abandoned_at < now() - interval '7 days'
-             LIMIT 1000)",
-        "DELETE FROM public.notification_jobs WHERE id IN (
-             SELECT id FROM public.notification_jobs WHERE expanded_at < now() - interval '7 days'
-             LIMIT 1000)",
+/// Each table is drained in batches until nothing week-old remains or the pass
+/// reaches its cap; the next pass continues. Returns the rows deleted.
+pub(super) async fn prune(pool: &sqlx::PgPool) -> u64 {
+    // Oldest first through the partial indexes notification_deliveries_finished
+    // and notification_jobs_expanded; `= ANY(ARRAY(...))` keeps the delete on
+    // primary-key lookups instead of a hash join over the whole table.
+    let mut total = 0;
+    for (table, statement) in [
+        (
+            "notification_deliveries",
+            "DELETE FROM public.notification_deliveries WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_deliveries
+                 WHERE (delivered_at IS NOT NULL OR abandoned_at IS NOT NULL)
+                   AND LEAST(delivered_at, abandoned_at) < now() - interval '7 days'
+                 ORDER BY LEAST(delivered_at, abandoned_at) LIMIT $1))",
+        ),
+        (
+            "notification_jobs",
+            "DELETE FROM public.notification_jobs WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_jobs
+                 WHERE expanded_at IS NOT NULL AND expanded_at < now() - interval '7 days'
+                 ORDER BY expanded_at LIMIT $1))",
+        ),
     ] {
-        let _ = sqlx::query(statement).execute(pool).await;
+        let mut deleted = 0;
+        let mut drained = false;
+        for _ in 0..PRUNE_BATCHES {
+            let Ok(result) = sqlx::query(statement).bind(PRUNE_BATCH).execute(pool).await else {
+                break;
+            };
+            deleted += result.rows_affected();
+            if result.rows_affected() < PRUNE_BATCH.unsigned_abs() {
+                drained = true;
+                break;
+            }
+            // Let sends and deliveries interleave with a long backlog.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if deleted > 0 {
+            tracing::info!(
+                event_name = "push_pruned",
+                table,
+                deleted,
+                drained,
+                "operational rows pruned"
+            );
+        }
+        total += deleted;
     }
+    total
 }
 
 #[cfg(test)]

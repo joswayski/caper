@@ -1,0 +1,131 @@
+/* Entrances for everything that appears in the app: dialogs, menus, sheets,
+   panels, arriving messages and uploads. Keyframes animate the individual
+   `translate`/`scale` properties, never `transform`, because floating-ui
+   positions popovers with `transform`. Nothing animates on the way out:
+   closing stays instant, so a dismissed control never lingers. */
+
+@keyframes caper-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes caper-rise-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+@keyframes caper-drop-in {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+@keyframes caper-dialog-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+    scale: 0.98;
+  }
+}
+@keyframes caper-sheet-in {
+  from {
+    translate: 0 24px;
+    opacity: 0;
+  }
+}
+@keyframes caper-panel-in {
+  from {
+    opacity: 0;
+    translate: 12px 0;
+  }
+}
+@keyframes caper-message-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+@keyframes caper-chip-in {
+  from {
+    opacity: 0;
+    scale: 0.94;
+  }
+}
+
+/* Modal dialogs and their scrims. */
+.space-dialog[open],
+.chat-edit-dialog[open],
+.chat-forward-dialog {
+  animation: caper-dialog-in var(--motion-base) var(--ease-out);
+}
+.space-dialog[open]::backdrop,
+.chat-edit-dialog[open]::backdrop,
+.chat-forward-overlay,
+.chat-actions-overlay {
+  animation: caper-fade-in var(--motion-fast) ease-out;
+}
+
+/* Menus, cards and tooltips anchored to a control. */
+.chat-message-actions:not(.chat-message-actions-drawer),
+.chat-reaction-picker:not(.chat-reaction-picker-drawer),
+.chat-mention-card:not(.chat-mention-card-drawer),
+.chat-reactors:not(.chat-reactors-drawer),
+.chat-reaction-tooltip,
+.top-layer-tooltip:popover-open,
+:is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions {
+  animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
+/* Menus flipped above their trigger come down from it instead. */
+.channel-menu[data-placement="above"][open] > .space-actions {
+  animation-name: caper-drop-in;
+}
+
+/* Touch sheets rise from the bottom edge. */
+:is(.chat-message-actions-drawer, .chat-reaction-picker-drawer, .chat-mention-card-drawer, .chat-reactors-drawer) {
+  animation: caper-sheet-in var(--motion-slow) var(--ease-out);
+}
+
+/* The thread opens beside the conversation (or over it on phones). */
+.chat-thread-panel {
+  animation: caper-panel-in var(--motion-base) var(--ease-out);
+}
+
+/* A message sent or received while watching the live end settles into place
+   (chat/arrivals.ts decides which rows count). */
+.chat-message-arrive {
+  animation: caper-message-in var(--motion-slow) var(--ease-out);
+}
+
+/* Attached files pop into the composer, and upload progress glides. */
+.chat-drafts li {
+  animation: caper-chip-in var(--motion-base) var(--ease-out);
+}
+.chat-drafts progress::-webkit-progress-value {
+  transition: inline-size var(--motion-base) linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .space-dialog[open],
+  .space-dialog[open]::backdrop,
+  .chat-edit-dialog[open],
+  .chat-edit-dialog[open]::backdrop,
+  .chat-forward-dialog,
+  .chat-forward-overlay,
+  .chat-actions-overlay,
+  .chat-message-actions,
+  .chat-reaction-picker,
+  .chat-mention-card,
+  .chat-reactors,
+  .chat-reaction-tooltip,
+  .top-layer-tooltip,
+  .space-actions,
+  .chat-thread-panel,
+  .chat-message-arrive,
+  .chat-drafts li {
+    animation: none;
+  }
+  .chat-drafts progress::-webkit-progress-value {
+    transition: none;
+  }
+}

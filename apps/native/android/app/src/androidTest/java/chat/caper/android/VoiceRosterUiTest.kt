@@ -55,7 +55,7 @@ class VoiceRosterUiTest {
         compose.setContent {
             CaperTheme {
                 Scaffold(containerColor = Blackout) { padding ->
-                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar).testTag("voice-roster")) { VoiceRoster(voice.value) }
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar).testTag("voice-roster")) { VoiceRoster(voice.value, null) }
                 }
             }
         }
@@ -105,7 +105,7 @@ class VoiceRosterUiTest {
         compose.setContent {
             CaperTheme {
                 Scaffold(containerColor = Blackout) { padding ->
-                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) }
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice, null) }
                 }
             }
         }

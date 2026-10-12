@@ -1364,10 +1364,10 @@
 }
 .chat-mention-card-message {
   min-height: 40px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.82rem;
   font-weight: 700;
@@ -1440,9 +1440,30 @@
   .chat-thread-send-row button:hover:not(:disabled),
   .chat-forward-body .chat-forward-send:hover:not(:disabled),
   .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+:is(
+    .chat-mention-card-message,
+    .chat-thread-send-row button,
+    .chat-forward-body .chat-forward-send,
+    .chat-edit-dialog .chat-edit-save
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .chat-mention-card-message,
+  .chat-thread-send-row button,
+  .chat-forward-body .chat-forward-send,
+  .chat-edit-dialog .chat-edit-save
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 .chat-mention-card-message:focus-visible {
   outline: 2px solid var(--text);
@@ -2686,8 +2707,8 @@ a.chat-draft-preview:focus-visible strong {
   height: 36px;
   border: 0;
   border-radius: 8px;
-  background: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  color: var(--on-action);
   cursor: pointer;
 }
 .chat-thread-send-row button:disabled {
@@ -2930,9 +2951,9 @@ a.chat-draft-preview:focus-visible strong {
 .chat-forward-body .chat-forward-send {
   align-self: end;
   min-width: 100px;
-  background: var(--terracotta);
-  border-color: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--on-action);
   font-weight: 700;
 }
 .chat-forward-dialog button:disabled {
@@ -3068,8 +3089,9 @@ a.chat-draft-preview:focus-visible strong {
   margin-top: 22px;
 }
 .chat-edit-dialog .chat-edit-save {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
