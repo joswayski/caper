@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
+import { androidAssetLinks, appleAppSiteAssociation } from "./app-links.ts";
 import {
+  appInviteUrl,
   createInviteLink,
   INVITE_MAX_AGES,
   INVITE_MAX_USES,
@@ -98,4 +100,16 @@ test("invite requests use the documented endpoints and reject malformed codes lo
     { path: "/api/invites/AbCdE12345/join", method: "POST", body: undefined },
   ]);
   await assert.rejects(() => previewInvite("../x"), SpacesApiError);
+});
+
+test("native apps verify caper.chat invite links and open caper:// links", async () => {
+  const apple = await appleAppSiteAssociation().json();
+  assert.deepEqual(apple.applinks.details[0].appIDs, ["NAUU43LATL.chat.caper.ios"]);
+  assert.deepEqual(apple.applinks.details[0].components[0]["/"], "/invite/*");
+  const android = await androidAssetLinks().json();
+  assert.equal(android[0].target.package_name, "chat.caper.android");
+  for (const fingerprint of android[0].target.sha256_cert_fingerprints)
+    assert.match(fingerprint, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+  assert.equal(appInviteUrl("AbCdE12345"), "caper://invite/AbCdE12345");
+  assert.equal(inviteCode("caper://invite/AbCdE12345"), "AbCdE12345");
 });

@@ -5,6 +5,7 @@ import { primaryButtonClass, Spinner } from "../account/controls";
 import Avatar from "../components/Avatar";
 import Wordmark from "../components/Wordmark";
 import {
+  appInviteUrl,
   invitedSpacePath,
   inviteExpiry,
   type InvitePreview,
@@ -143,6 +144,15 @@ export default function InvitePage({ code }: { code: string }) {
                 </>
               )}
             </button>
+            <p className="mt-5 text-right text-[.85rem] text-content-muted">
+              Have the app?{" "}
+              <a
+                className="rounded-control text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
+                href={appInviteUrl(code)}
+              >
+                Open in the Caper app
+              </a>
+            </p>
           </>
         )}
       </section>

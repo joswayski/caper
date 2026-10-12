@@ -131,6 +131,8 @@ private struct FirstSpaceView: View {
     @State private var error: String?
     @State private var pending = false
     @State private var joining = false
+    /// A link opened from another app, shown in the join dialog.
+    @State private var opened: OpenedInviteLink?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -155,7 +157,7 @@ private struct FirstSpaceView: View {
                 HStack {
                     Text("Have an invite link?").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                     Spacer()
-                    Button("Join with invite link") { joining = true }.buttonStyle(CaperSecondaryButton(minHeight: 42))
+                    Button("Join with invite link") { opened = nil; joining = true }.buttonStyle(CaperSecondaryButton(minHeight: 42))
                         .disabled(pending).accessibilityIdentifier("first-space-join-invite")
                 }
                 HStack {
@@ -166,7 +168,8 @@ private struct FirstSpaceView: View {
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
             .sheet(isPresented: $joining) {
-                JoinInviteSheet(model: model, close: { joining = false })
+                JoinInviteSheet(model: model, opened: opened, close: { joining = false })
+                    .id(opened?.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .background(CaperTheme.surface)
                     #if os(iOS)
@@ -175,6 +178,10 @@ private struct FirstSpaceView: View {
                     .frame(width: 520)
                     .frame(minHeight: 300)
                     #endif
+            }
+            .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
+                guard let link = model.takeInviteLink() else { return }
+                opened = link; joining = true
             }
     }
     private func create() {
@@ -398,13 +405,14 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, joinInvite, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
+    /// `joinInvite` carries a link opened from another app, or nil.
+    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
         case .login: "login"
         case .profile: "profile"
         case .createSpace: "create-space"
-        case .joinInvite: "join-invite"
+        case .joinInvite(let opened): opened.map { "join-invite-\($0.id)" } ?? "join-invite"
         case .createChannel: "create-channel"
         case .newDirectMessage: "new-direct-message"
         case .manageSpace: "manage-space"
@@ -692,6 +700,10 @@ private struct WorkspaceView: View {
         // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
         .modifier(MediaViewerHost())
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
+        // A link opened from another app replaces any open dialog.
+        .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
+            if let link = model.takeInviteLink() { sheet = .joinInvite(link) }
+        }
         .task(id: model.detail?.space.id) {
             guard sheet == nil, model.detail != nil else { return }
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
@@ -4614,8 +4626,8 @@ private struct WorkspaceSheetView: View {
             switch item {
             case .login: EmptyView() // Presented full-screen by LoginPresentation.
             case .profile: ProfileSheet(model: model, close: close)
-            case .createSpace: SpaceEditor(model: model, close: close, managing: false, joinInvite: { show(.joinInvite) })
-            case .joinInvite: JoinInviteSheet(model: model, close: close)
+            case .createSpace: SpaceEditor(model: model, close: close, managing: false, joinInvite: { show(.joinInvite(nil)) })
+            case .joinInvite(let opened): JoinInviteSheet(model: model, opened: opened, close: close)
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
@@ -5425,6 +5437,8 @@ private struct InvitationSheet: View {
 /// "Join with invite link": paste a link or code, preview the space, then join.
 private struct JoinInviteSheet: View {
     @Bindable var model: AppModel
+    /// A link opened from another app: filled in and looked up at once.
+    var opened: OpenedInviteLink? = nil
     let close: () -> Void
     @State private var link = ""
     @State private var preview: InvitePreview?
@@ -5445,7 +5459,10 @@ private struct JoinInviteSheet: View {
                 actions
             }.padding(22)
         }.background(CaperTheme.surface)
-            .onAppear { linkFocused = true }
+            .onAppear {
+                // As if the link had been pasted and Continue pressed.
+                if let opened, link.isEmpty { link = opened.link; lookUp() } else { linkFocused = true }
+            }
             .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
     }
 

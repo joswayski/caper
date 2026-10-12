@@ -133,26 +133,29 @@ import kotlinx.coroutines.delay
 
 /**
  * "Join with invite link": a pasted link (any host), `caper.chat/invite/<code>` or a bare code,
- * previewed before joining. Joining opens the space at the link's channel.
+ * previewed before joining. Joining opens the space at the link's channel. A link [opened] from
+ * another app starts filled in and loads its preview at once, as if Continue was pressed.
  */
-@Composable internal fun JoinInviteDialog(busy: Boolean, viewModel: CaperViewModel, close: () -> Unit) {
-    var input by remember { mutableStateOf("") }
+@Composable internal fun JoinInviteDialog(busy: Boolean, viewModel: CaperViewModel, opened: InviteLinkRequest? = null, close: () -> Unit) {
+    var input by remember { mutableStateOf(opened?.url.orEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<InvitePreview?>(null) }
+    fun submit() {
+        val parsed = inviteCode(input)
+        if (parsed == null) { error = INVALID_INVITE_LINK; return }
+        error = null; checking = true
+        viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
+    }
+    LaunchedEffect(Unit) { if (opened != null) submit() }
     CaperDialog("Join with invite link", close, busy = busy || checking) {
         val shown = preview
         val shownCode = code
         if (shown == null || shownCode == null) {
             val field = remember { FocusRequester() }
-            LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
-            fun submit() {
-                val parsed = inviteCode(input)
-                if (parsed == null) { error = INVALID_INVITE_LINK; return }
-                error = null; checking = true
-                viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
-            }
+            // An opened link is already loading; the keyboard would only cover its preview.
+            LaunchedEffect(Unit) { if (opened == null) runCatching { field.requestFocus() } }
             OutlinedTextField(input, { input = it; error = null }, label = { Text("Invite link") }, placeholder = { Text("https://caper.chat/invite/…") },
                 modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true, readOnly = checking,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),

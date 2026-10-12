@@ -86,6 +86,10 @@ public final class AppModel {
     @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
     /// A tapped push that arrived before spaces loaded; opened in their place.
     @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
+    /// An invite link the system opened the app with, until the join dialog
+    /// takes it (see `openInviteLink`). Memory only: never kept across launches.
+    public private(set) var openedInviteLink: OpenedInviteLink?
+    @ObservationIgnored private var lastOpenedInvite: (code: String, at: Date)?
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
@@ -328,6 +332,7 @@ public final class AppModel {
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
         limits = nil; navigationOpen = false; restoringWorkspace = false
+        openedInviteLink = nil; lastOpenedInvite = nil
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
         await chat.stop(discardingDrafts: true)
@@ -1214,6 +1219,34 @@ public final class AppModel {
 
     /// The shareable URL for a link code, on the configured server's origin.
     public func inviteLinkURL(_ code: String) -> String { InviteLinks.url(code: code, baseURL: api.baseURL) }
+
+    /// Opens "Join with invite link" for a link from another app
+    /// (`caper://invite/<code>`, or `https://caper.chat/invite/<code>` on iPhone)
+    /// with its preview loading. Signed out or before the profile is finished,
+    /// the link waits for sign-in and onboarding. A newer link replaces a
+    /// waiting one; anything that is not an invite link is ignored.
+    public func openInviteLink(_ url: URL) {
+        guard let code = InviteLinks.code(opening: url) else { return }
+        // One universal link can arrive both as a URL and as a browsing activity.
+        let now = Date()
+        if let last = lastOpenedInvite, last.code == code, now.timeIntervalSince(last.at) < 1 { return }
+        lastOpenedInvite = (code, now)
+        openedInviteLink = OpenedInviteLink(link: url.absoluteString)
+    }
+
+    /// The opened link, once the workspace (signed in, profile finished,
+    /// spaces loaded) can show its dialog.
+    public var deliverableInviteLink: OpenedInviteLink? {
+        guard phase == .ready, account != nil, spacesLoaded, !restoringWorkspace else { return nil }
+        return openedInviteLink
+    }
+
+    /// Hands the opened link to the dialog that shows it, exactly once.
+    public func takeInviteLink() -> OpenedInviteLink? {
+        guard let link = deliverableInviteLink else { return nil }
+        openedInviteLink = nil
+        return link
+    }
 
     public func invitePreview(code: String) async throws -> InvitePreview {
         let attempt = generation

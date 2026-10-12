@@ -113,6 +113,14 @@ pub fn invite_code(input: &str) -> Option<String> {
     } else {
         Url::parse(&format!("https://{input}")).ok()?
     };
+    if url.scheme() == "caper" {
+        // `caper://invite/<code>`, from the web invite page's "Open in the Caper app".
+        let segments: Vec<_> = url.path_segments()?.collect();
+        return match (url.host_str(), segments.as_slice()) {
+            (Some("invite"), [code] | [code, ""]) if valid_code(code) => Some((*code).into()),
+            _ => None,
+        };
+    }
     if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
         return None;
     }
@@ -186,7 +194,7 @@ fn grouped(count: u64) -> String {
     let digits = count.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(digit);
@@ -221,6 +229,8 @@ mod tests {
             "caper.chat/invite/AbC123xYz9",
             "caper.chat/invite/AbC123xYz9/",
             "HTTPS://CAPER.CHAT/invite/AbC123xYz9",
+            "caper://invite/AbC123xYz9",
+            "caper://invite/AbC123xYz9/",
         ] {
             assert_eq!(invite_code(input), code, "{input:?}");
         }
@@ -245,6 +255,9 @@ mod tests {
             "caper.chat/invite/AbC123xYz9 now",
             "/invite/AbC123xYz9",
             "https://caper.chat/invite/%41bC123xYz9",
+            "caper://invite/AbC123xYz",
+            "caper://join/AbC123xYz9",
+            "caper://invite/AbC123xYz9/extra",
         ] {
             assert_eq!(invite_code(input), None, "{input:?}");
         }

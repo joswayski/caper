@@ -9,19 +9,7 @@ struct CaperMacOSApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if ready {
-                    CaperRootView()
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(minWidth: parity ? 390 : 840, minHeight: 600)
-            .onAppear {
-                guard !ready else { return }
-                ready = updater.prepareInstallation()
-                if ready { updater.start() }
-            }
+            CaperWindow(parity: parity, updater: updater, ready: $ready)
         }
         // Keep system window controls in their own title bar, outside the space rail.
         .windowStyle(.titleBar)
@@ -35,5 +23,35 @@ struct CaperMacOSApp: App {
         Settings {
             CaperSettingsView()
         }
+    }
+}
+
+/// One Caper window, with its own model as before. It owns the model so a
+/// `caper://invite/<code>` link that arrives before the window is ready still
+/// reaches it.
+private struct CaperWindow: View {
+    let parity: Bool
+    let updater: AppUpdater
+    @Binding var ready: Bool
+    @State private var model = CaperRuntime.makeModel()
+
+    var body: some View {
+        Group {
+            if ready {
+                CaperRootView(model: model)
+            } else {
+                Color.clear
+            }
+        }
+        .frame(minWidth: parity ? 390 : 840, minHeight: 600)
+        .onAppear {
+            guard !ready else { return }
+            ready = updater.prepareInstallation()
+            if ready { updater.start() }
+        }
+        .onOpenURL { model.openInviteLink($0) }
+        // An opened link goes to an open window instead of opening another;
+        // with every window closed, SwiftUI opens one for it.
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
     }
 }

@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -111,6 +112,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var unreadRefreshScheduled: Job? = null
     private val channelReads = mutableMapOf<String, String>()
     private var conversationVisible = true
+    private var inviteLinkSequence = 0L
+    /** An opened invite link that has not been shown yet; in memory only, so it never outlives the app. */
+    private val pendingInviteLink = MutableStateFlow<InviteLinkRequest?>(null)
+    /**
+     * The opened invite link for "Join with invite link" to show, once someone with a finished
+     * profile is home: a link opened while signed out or setting up a profile waits until then.
+     */
+    val inviteLinkToOpen: StateFlow<InviteLinkRequest?> =
+        combine(pendingInviteLink, state) { link, current -> link?.takeIf { opensInviteLinks(current) } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         loadHome()
@@ -277,6 +288,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (current.selectedChannel?.id == channelId) return
         val loaded = current.selectedSpace?.takeIf { it.space.id == spaceId }?.channels?.firstOrNull { it.id == channelId }
         if (loaded != null) selectChannel(loaded) else selectSpace(spaceId, channelId)
+    }
+
+    /**
+     * An invite link opened from another app (`https://caper.chat/invite/<code>` or
+     * `caper://invite/<code>`): "Join with invite link" opens with it and loads its preview, now or
+     * after sign-in and profile setup ([inviteLinkToOpen]). A newer link replaces one still
+     * waiting; anything that is not an invite link is ignored.
+     */
+    fun openInviteLink(url: String) {
+        val code = inviteCode(url) ?: return
+        pendingInviteLink.value = InviteLinkRequest(url.trim(), code, ++inviteLinkSequence)
+    }
+
+    /** The dialog opened for [request]; a newer link that arrived meanwhile still waits. */
+    fun inviteLinkShown(request: InviteLinkRequest) {
+        pendingInviteLink.compareAndSet(request, null)
     }
 
     suspend fun canEnablePush(): Boolean {
@@ -2418,6 +2445,16 @@ internal fun mergeDirects(current: List<DirectConversation>, incoming: List<Dire
 
 private fun maxSeq(first: String, second: String): String =
     runCatching { maxOf(first.toBigInteger(), second.toBigInteger()).toString() }.getOrDefault(second)
+
+/** An opened invite link: [url] as opened, its [code], and [id] to tell repeat openings apart. */
+data class InviteLinkRequest(val url: String, val code: String, val id: Long)
+
+/** Home (or Browse) shows for an account with a finished profile, past the launch loading screen. */
+internal fun opensInviteLinks(state: AppUiState): Boolean {
+    val account = state.account ?: return false
+    return account.username != null && account.displayName != null && !state.restoring &&
+        (state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces)
+}
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 

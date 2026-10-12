@@ -866,9 +866,31 @@ Expired, revoked, exhausted and unknown links all return the same 404.
 
 The web `/invite/<code>` page previews the link and sends signed-out visitors to
 `/login?invite=<code>` (then the profile step if unfinished) and back. Web and
-native apps also accept a pasted link or bare code (web: under **Create a space**); opening
-`https://caper.chat/invite/...` directly in the apps needs universal/app link
-entitlements and is not implemented.
+native apps also accept a pasted link or bare code (web: under **Create a space**).
+
+Opening links in the apps: every native app registers the `caper://` scheme, and
+the invite page links to `caper://invite/<code>` ("Open in the Caper app"). An
+opened link fills in the join dialog and loads its preview, after sign-in and
+the profile step when needed. Platform specifics:
+
+- iPhone: universal links for `https://caper.chat/invite/*` through the
+  `applinks:caper.chat` Associated Domains entitlement and
+  `/.well-known/apple-app-site-association` (team `NAUU43LATL`, `chat.caper.ios`).
+  Automatic signing with `-allowProvisioningUpdates` should add the capability to
+  the App ID; if a TestFlight export fails on the profile, enable Associated
+  Domains for `chat.caper.ios` in the Apple developer portal.
+- Mac: `caper://` only. The Developer ID build has no provisioning profile, which
+  universal links require.
+- Android: verified App Links for `https://caper.chat/invite/` against
+  `/.well-known/assetlinks.json` (`apps/web/src/server/app-links.ts`). It lists the
+  upload key that signs the GitHub APK. Play re-signs store installs, so add the
+  Play app-signing SHA-256 (Play Console → App integrity → App signing) there for
+  Play installs to verify; until then they open the browser.
+- Windows/Linux desktop: `caper://` is registered per user on launch (HKCU
+  `Software\Classes\caper`; `~/.local/share/applications/chat.caper.links.desktop`
+  plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
+  handed to the open window over loopback (a token file in the app data folder)
+  instead of starting a second copy.
 
 ### Invitation consent and abuse limits
 

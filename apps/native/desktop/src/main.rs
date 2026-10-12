@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod app_link;
 mod attachments;
 mod avatar_images;
 mod avif;
@@ -852,6 +853,10 @@ struct CaperApp {
     api_base: url::Url,
     invite_links: InviteLinkPanel,
     invite_join: InviteJoin,
+    /// Invite codes handed off by later launches (`app_link`).
+    app_links: Option<std::sync::mpsc::Receiver<String>>,
+    /// An invite link from the OS, waiting for sign-in and a finished profile.
+    pending_invite: Option<String>,
     persist_preferences: bool,
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
@@ -1056,6 +1061,8 @@ impl CaperApp {
             api_base,
             invite_links: InviteLinkPanel::default(),
             invite_join: InviteJoin::default(),
+            app_links: None,
+            pending_invite: None,
             persist_preferences: fixture.is_none(),
             connection_copy_status: "",
             diagnostics_copied: false,
@@ -3711,6 +3718,47 @@ impl CaperApp {
             channel,
             ..InviteLinkPanel::default()
         };
+    }
+
+    /// Invite links from the OS (a launch argument or a later click handed off
+    /// by `app_link`) open the join dialog once signed in with a profile.
+    fn poll_app_links(&mut self, context: &egui::Context) {
+        let mut arrived = false;
+        if let Some(links) = &self.app_links {
+            while let Ok(code) = links.try_recv() {
+                self.pending_invite = Some(code);
+                arrived = true;
+            }
+        }
+        if arrived {
+            context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        let ready = self
+            .account
+            .as_ref()
+            .is_some_and(|account| account.username.is_some() && account.display_name.is_some());
+        if !ready || matches!(self.dialog, Some(Dialog::SignIn | Dialog::Profile)) {
+            return;
+        }
+        if let Some(code) = self.pending_invite.take() {
+            self.open_invite_link(code);
+        }
+    }
+
+    /// The join dialog with `code` filled in and its preview already loading.
+    fn open_invite_link(&mut self, code: String) {
+        self.open_join_invite();
+        let input = invites::invite_url(&self.api_base, &code);
+        let join = &mut self.invite_join;
+        join.input = input;
+        join.request += 1;
+        join.busy = true;
+        let operation = AccountOperation::PreviewInvite {
+            request: join.request,
+            code,
+        };
+        self.account_op(operation);
     }
 
     fn open_join_invite(&mut self) {
@@ -6492,6 +6540,7 @@ impl eframe::App for CaperApp {
 
 impl CaperApp {
     fn page(&mut self, context: &egui::Context) {
+        self.poll_app_links(context);
         let login = self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn));
         if !login {
             // The next sign-in page focuses its field again.
@@ -17724,6 +17773,18 @@ fn main() -> eframe::Result {
         eprintln!("Caper could not start: {message}");
         std::process::exit(2)
     });
+    let launch_invite = app_link::launch_code(&args);
+    if fixture.is_none() {
+        // A clicked link while Caper is open goes to that window instead.
+        if launch_invite.as_deref().is_some_and(app_link::hand_off) {
+            return Ok(());
+        }
+        if !cfg!(debug_assertions)
+            && let Err(error) = app_link::register()
+        {
+            eprintln!("Caper could not register caper:// links: {error}");
+        }
+    }
     let viewport_size = if fixture.as_deref().is_some_and(|name| {
         matches!(
             name,
@@ -17771,6 +17832,11 @@ fn main() -> eframe::Result {
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);
             }
+            if fixture.is_none() {
+                let context = creation.egui_ctx.clone();
+                app.app_links = app_link::listen(move || context.request_repaint());
+            }
+            app.pending_invite = launch_invite;
             if fixture.is_none() {
                 app.daily_icon = Some(daily_icon::DailyIcon::load(creation.storage));
             }
@@ -23463,6 +23529,37 @@ mod tests {
             "the unjoined channel's settings open"
         );
         assert!(!app.browse_channels, "Browse closes, as on web");
+    }
+
+    #[test]
+    fn os_invite_links_wait_for_sign_in_then_open_the_join_preview() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-admin"),
+        );
+        app.token = Some("fixture-token".into());
+        app.dialog = None;
+        let account = app.account.take();
+        app.pending_invite = Some("AbCdE12345".into());
+        render(&mut app, &context, vec![]);
+        assert!(
+            !matches!(app.dialog, Some(Dialog::JoinInvite)),
+            "signed out: the link waits"
+        );
+        assert_eq!(app.pending_invite.as_deref(), Some("AbCdE12345"));
+
+        app.account = account;
+        app.dialog = None;
+        render(&mut app, &context, vec![]);
+        assert!(matches!(app.dialog, Some(Dialog::JoinInvite)));
+        assert_eq!(app.pending_invite, None);
+        assert_eq!(
+            app.invite_join.input,
+            "http://127.0.0.1:9/invite/AbCdE12345"
+        );
+        assert!(app.invite_join.busy, "the preview is already loading");
     }
 
     #[test]

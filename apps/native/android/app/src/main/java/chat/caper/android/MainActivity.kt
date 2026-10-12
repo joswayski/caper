@@ -200,14 +200,20 @@ class MainActivity : ComponentActivity() {
         val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         CaperEffects.init(applicationContext)
-        // A recreated activity or a relaunch from Recents must not reopen an old tap.
-        if (savedInstanceState == null) openFromNotification(intent)
+        // A recreated activity or a relaunch from Recents must not reopen an old tap or link.
+        if (savedInstanceState == null) openFromIntent(intent)
         setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromNotification(intent) }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromIntent(intent) }
+
+    /** A notification tap, or an invite link from the manifest's VIEW filters. */
+    private fun openFromIntent(intent: Intent) {
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        openFromNotification(intent)
+        if (intent.action == Intent.ACTION_VIEW) intent.dataString?.let(viewModel::openInviteLink)
+    }
 
     private fun openFromNotification(intent: Intent) {
-        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         viewModel.openFromNotification(
             intent.getStringExtra(CaperNotifications.EXTRA_CONVERSATION_ID),
             intent.getStringExtra(CaperNotifications.EXTRA_SPACE_ID),
@@ -239,6 +245,8 @@ class MainActivity : ComponentActivity() {
 private sealed interface Overlay {
     data object CreateSpace : Overlay
     data object JoinInvite : Overlay
+    /** "Join with invite link" for a link opened from another app, already loading its preview. */
+    data class OpenedInviteLink(val request: InviteLinkRequest) : Overlay
     data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
     data object CreateChannel : Overlay
@@ -293,6 +301,11 @@ internal data class VoiceJoinIntent(
     }
 
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
+    // An opened invite link (signed in, or once sign-in finishes) takes over whatever dialog is open.
+    val openedInviteLink by viewModel.inviteLinkToOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(openedInviteLink) {
+        openedInviteLink?.let { overlay = Overlay.OpenedInviteLink(it); viewModel.inviteLinkShown(it) }
+    }
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
@@ -334,6 +347,10 @@ internal data class VoiceJoinIntent(
     when (val shown = overlay) {
         Overlay.CreateSpace -> CreateSpaceDialog(state.busy, state.error, viewModel::clearError, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
         Overlay.JoinInvite -> if (state.account != null) JoinInviteDialog(state.busy, viewModel) { overlay = null }
+        // Keyed by the opening, so another link starts over even while this one is shown.
+        is Overlay.OpenedInviteLink -> if (state.account != null) key(shown.request.id) {
+            JoinInviteDialog(state.busy, viewModel, shown.request) { overlay = null }
+        }
         is Overlay.Invitation -> InvitationDialog(shown.space, state.busy, state.error, { overlay = null },
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })

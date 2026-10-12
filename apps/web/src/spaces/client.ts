@@ -466,10 +466,12 @@ function count(value: number) {
 
 const INVITE_CODE = /^[A-Za-z0-9]{10}$/;
 
-/** The code from a pasted invite: a full or scheme-less `/invite/<code>` URL, or the bare code. */
+/** The code from a pasted invite: a full or scheme-less `/invite/<code>` URL, `caper://invite/<code>`, or the bare code. */
 export function inviteCode(input: string): string | undefined {
   const value = input.trim();
   if (INVITE_CODE.test(value)) return value;
+  const app = /^caper:\/\/invite\/([A-Za-z0-9]{10})\/?(?:[?#].*)?$/i.exec(value);
+  if (app) return app[1];
   const path = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/[?#].*$/, "");
   const match = /^(?:[^/\s]+)?\/invite\/([A-Za-z0-9]{10})\/?$/.exec(path);
   return match?.[1];
@@ -477,6 +479,11 @@ export function inviteCode(input: string): string | undefined {
 
 export function inviteUrl(code: string, origin = window.location.origin) {
   return `${origin}/invite/${code}`;
+}
+
+/** Opens the installed Android, iPhone, Mac, Windows or Linux app, which all register `caper://`. */
+export function appInviteUrl(code: string) {
+  return `caper://invite/${code}`;
 }
 
 /** "#feedback · 3 of 10 uses · Expires in 6 days" */

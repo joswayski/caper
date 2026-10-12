@@ -49,6 +49,12 @@ Section "Caper"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper" "NoRepair" 1
+  ; caper://invite/<code> links from the web invite page open this app. The
+  ; app re-registers on launch, which also covers the portable zip.
+  WriteRegStr HKCU "Software\Classes\caper" "" "URL:Caper"
+  WriteRegStr HKCU "Software\Classes\caper" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\caper\DefaultIcon" "" '"$INSTDIR\app\Caper.exe",0'
+  WriteRegStr HKCU "Software\Classes\caper\shell\open\command" "" '"$INSTDIR\app\Caper.exe" "%1"'
 SectionEnd
 
 Section "Uninstall"
@@ -68,6 +74,10 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Caper.lnk"
   Delete "$DESKTOP\Caper.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Caper"
+  ; Remove the link handler only if it still points at this install.
+  ReadRegStr $0 HKCU "Software\Classes\caper\shell\open\command" ""
+  StrCmp $0 '"$INSTDIR\app\Caper.exe" "%1"' 0 +2
+    DeleteRegKey HKCU "Software\Classes\caper"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

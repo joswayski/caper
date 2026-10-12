@@ -12,18 +12,21 @@ const val INVALID_INVITE_LINK = "This invite link is invalid or has expired."
 private val bareInviteCode = Regex("^[A-Za-z0-9]{10}$")
 /** `[scheme://]host/invite/<code>[/][?query][#fragment]`, on any host. */
 private val inviteUrlPattern = Regex("^(?:[A-Za-z][A-Za-z0-9+.-]*://)?[^/?#\\s]+/invite/([A-Za-z0-9]{10})/?(?:[?#]\\S*)?$")
+/** The app's own scheme, `caper://invite/<code>[/][?query][#fragment]` (scheme and host in any case). */
+private val appInvitePattern = Regex("^(?i:caper)://(?i:invite)/([A-Za-z0-9]{10})/?(?:[?#]\\S*)?$")
 
 internal fun isInviteCode(value: String): Boolean = bareInviteCode.matches(value)
 
 /**
- * The invite code in what someone pasted: a full link on any host (`https://caper.chat/invite/<code>`,
- * with an optional trailing slash, query or fragment), the same without a scheme, or a bare
- * 10-character code. Null when it is none of those.
+ * The invite code in what someone pasted or opened: a full link on any host
+ * (`https://caper.chat/invite/<code>`, with an optional trailing slash, query or fragment), the
+ * same without a scheme, the app link `caper://invite/<code>`, or a bare 10-character code. Null
+ * when it is none of those.
  */
 fun inviteCode(input: String): String? {
     val text = input.trim()
     if (bareInviteCode.matches(text)) return text
-    return inviteUrlPattern.matchEntire(text)?.groupValues?.get(1)
+    return (inviteUrlPattern.matchEntire(text) ?: appInvitePattern.matchEntire(text))?.groupValues?.get(1)
 }
 
 /** `<origin>/invite/<code>`, for the configured API origin. */

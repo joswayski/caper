@@ -41,6 +41,15 @@ public struct InviteLink: Codable, Equatable, Identifiable, Sendable {
 
 struct InviteLinksResponse: Decodable { let links: [InviteLink] }
 
+/// An invite link the system opened the app with, waiting for (or shown in)
+/// the "Join with invite link" dialog. Each opening is distinct, so opening a
+/// link again starts its dialog over.
+public struct OpenedInviteLink: Equatable, Identifiable, Sendable {
+    public let id = UUID()
+    /// The link as opened, for the dialog's field.
+    public let link: String
+}
+
 /// One choice in an invite link picker.
 public struct InviteOption<Value: Hashable & Sendable>: Hashable, Sendable {
     public let label: String
@@ -72,15 +81,23 @@ public enum InviteLinks {
 
     /// The code in what a person pasted: a full link on any host
     /// (`https://caper.chat/invite/<code>`, optionally with a trailing slash,
-    /// query or fragment), the same without a scheme, or the bare code.
+    /// query or fragment), the same without a scheme, the app's own
+    /// `caper://invite/<code>`, or the bare code.
     public static func code(from input: String) -> String? {
         var rest = Substring(input.trimmingCharacters(in: .whitespacesAndNewlines))
         if isCode(rest) { return String(rest) }
         if let end = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) { rest = rest[..<end] }
         if let separator = rest.range(of: "://") {
             let scheme = rest[..<separator.lowerBound].lowercased()
-            guard scheme == "https" || scheme == "http" else { return nil }
             rest = rest[separator.upperBound...]
+            if scheme == appScheme {
+                // `caper://invite/<code>`: "invite" is the URL's host, so it is case-insensitive.
+                var segments = rest.split(separator: "/", omittingEmptySubsequences: false)
+                if segments.count == 3, segments[2].isEmpty { segments.removeLast() }
+                guard segments.count == 2, segments[0].lowercased() == "invite", isCode(segments[1]) else { return nil }
+                return String(segments[1])
+            }
+            guard scheme == "https" || scheme == "http" else { return nil }
         }
         guard let slash = rest.firstIndex(of: "/") else { return nil }
         let host = rest[..<slash]
@@ -89,6 +106,25 @@ public enum InviteLinks {
         if segments.count == 3, segments[2].isEmpty { segments.removeLast() }
         guard segments.count == 2, segments[0] == "invite", isCode(segments[1]) else { return nil }
         return String(segments[1])
+    }
+
+    /// The custom URL scheme both apps register (the web invite page's
+    /// "Open in the Caper app").
+    public static let appScheme = "caper"
+    /// The host iPhone's universal links (Associated Domains) are claimed for.
+    public static let universalLinkHost = "caper.chat"
+
+    /// The code in a link the system opened the app with: `caper://invite/<code>`,
+    /// or a universal link `https://caper.chat/invite/<code>`. Any other URL,
+    /// including invite paths on other hosts, is not an invite to open.
+    public static func code(opening url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased() else { return nil }
+        if scheme == "https" {
+            guard url.host?.lowercased() == universalLinkHost else { return nil }
+        } else if scheme != appScheme {
+            return nil
+        }
+        return code(from: url.absoluteString)
     }
 
     /// `<origin of the API base>/invite/<code>`, e.g. https://caper.chat/invite/<code>.

@@ -40,6 +40,23 @@ class InviteLinksTest {
         ).forEach { assertNull(it, inviteCode(it)) }
     }
 
+    @Test fun `codes come from the app's caper scheme`() {
+        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h"))
+        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h/"))
+        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h?from=web"))
+        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h/#top"))
+        assertEquals("aB3dE5fG7h", inviteCode("CAPER://Invite/aB3dE5fG7h"))
+        assertEquals("aB3dE5fG7h", inviteCode("  caper://invite/aB3dE5fG7h\n"))
+    }
+
+    @Test fun `other caper scheme links are not invites`() {
+        listOf(
+            "caper://invite/", "caper://invite/aB3dE5fG7", "caper://invite/aB3dE5fG7hX", "caper://invite/aB3dE5f-7h",
+            "caper://invites/aB3dE5fG7h", "caper://join/aB3dE5fG7h", "caper:invite/aB3dE5fG7h", "caper:///invite/aB3dE5fG7h",
+            "caper://invite/aB3dE5fG7h/extra", "caper://invite/aB3dE5fG7h trailing", "other://invite/aB3dE5fG7h",
+        ).forEach { assertNull(it, inviteCode(it)) }
+    }
+
     @Test fun `links use the API origin`() {
         assertEquals("https://caper.chat/invite/aB3dE5fG7h", inviteLinkUrl("https://caper.chat", "aB3dE5fG7h"))
         assertEquals("https://caper.chat/invite/aB3dE5fG7h", inviteLinkUrl("https://caper.chat/", "aB3dE5fG7h"))

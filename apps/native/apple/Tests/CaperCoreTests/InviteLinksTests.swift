@@ -17,6 +17,10 @@ final class InviteLinksTests: XCTestCase {
             "caper.chat/invite/\(code)",
             "caper.chat/invite/\(code)/",
             "caper.chat/invite/\(code)?ref=https://elsewhere.test",
+            "caper://invite/\(code)",
+            "caper://invite/\(code)/",
+            "caper://invite/\(code)?from=web",
+            "CAPER://Invite/\(code)",
         ] {
             XCTAssertEqual(InviteLinks.code(from: input), code, input)
         }
@@ -43,8 +47,42 @@ final class InviteLinksTests: XCTestCase {
             "/invite/aB3dE5gH9k",
             "invite/aB3dE5gH9k",
             "caper chat/invite/aB3dE5gH9k",
+            "caper://invite/",
+            "caper://invite/aB3dE5gH9",
+            "caper://invites/aB3dE5gH9k",
+            "caper://invite/aB3dE5gH9k/extra",
+            "caper:///invite/aB3dE5gH9k",
+            "caper://caper.chat/invite/aB3dE5gH9k",
+            "caper://aB3dE5gH9k",
+            "capers://invite/aB3dE5gH9k",
         ] {
             XCTAssertNil(InviteLinks.code(from: input), input)
+        }
+    }
+
+    func testOpenedLinksAreTheAppSchemeOrCaperChatUniversalLinks() throws {
+        let code = "aB3dE5gH9k"
+        for link in [
+            "caper://invite/\(code)",
+            "caper://invite/\(code)/",
+            "https://caper.chat/invite/\(code)",
+            "https://caper.chat/invite/\(code)/?utm=chat",
+            "https://CAPER.chat/invite/\(code)",
+        ] {
+            XCTAssertEqual(InviteLinks.code(opening: try XCTUnwrap(URL(string: link), link)), code, link)
+        }
+        for link in [
+            "http://caper.chat/invite/\(code)",                // universal links are HTTPS only
+            "https://staging.example.test/invite/\(code)",
+            "https://www.caper.chat/invite/\(code)",
+            "https://caper.chat/invites/\(code)",
+            "https://caper.chat/invite/aB3dE5gH9",
+            "caper://invite/aB3dE5gH9",
+            "caper://settings",
+            "mailto:someone@caper.chat",
+            "/invite/\(code)",
+        ] {
+            XCTAssertNil(InviteLinks.code(opening: try XCTUnwrap(URL(string: link), link)), link)
         }
     }
 

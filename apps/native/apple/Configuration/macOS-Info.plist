@@ -13,4 +13,5 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Caper uses your microphone when you join a voice channel.</string>
   <key>ATSApplicationFontsPath</key><string>.</string>
+  <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>chat.caper.invite</string><key>CFBundleURLSchemes</key><array><string>caper</string></array></dict></array>
 </dict></plist>

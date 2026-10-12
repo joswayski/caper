@@ -236,6 +236,11 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         ATSApplicationFontsPath: .
+        # caper://invite/<code> (the web invite page's "Open in the Caper app").
+        # Developer ID builds have no provisioning profile, so no universal links.
+        CFBundleURLTypes:
+          - CFBundleURLName: chat.caper.invite
+            CFBundleURLSchemes: [caper]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_MACOS_BUNDLE_ID)
@@ -276,6 +281,11 @@ targets:
         # The media viewer's share sheet can save photos and videos to the library.
         NSPhotoLibraryAddUsageDescription: Caper saves photos and videos you choose to your library.
         CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
+        # caper://invite/<code>; https://caper.chat/invite/<code> opens through
+        # the Associated Domains entitlement (universal links).
+        CFBundleURLTypes:
+          - CFBundleURLName: chat.caper.invite
+            CFBundleURLSchemes: [caper]
         NSUserActivityTypes: [INSendMessageIntent]
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]

@@ -2,8 +2,9 @@
 Type=Application
 Name=Caper
 Comment=Conversations with your people
-Exec=caper-desktop
+Exec=caper-desktop %u
 Icon=caper
 Terminal=false
 Categories=Network;Chat;
 StartupNotify=true
+MimeType=x-scheme-handler/caper;
