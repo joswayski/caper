@@ -40,8 +40,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   optional public landing channel; the new link is copied at once), then copy or
   revoke live ones. Anyone signed in can paste a link or bare code into **Join with
   invite link** (the rail's link tile or the first-space screen), preview the
-  space and join it. Opening `caper.chat/invite/...` links from the browser in the
-  app (a registered URL handler) is not implemented yet.
+  space and join it. Existing members see **Open space** instead. The browser's
+  **Open in the Caper app** link uses the registered `caper://` handler, bringing
+  the existing window forward. Launches and invite activations open maximized
+  (not fullscreen); the window remains resizable. Saved window sizes no longer
+  control launch size, and new geometry is not saved; account/settings persistence
+  is unchanged.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by

@@ -17,6 +17,7 @@ public struct InvitePreview: Codable, Equatable, Sendable {
     public let inviter: InvitePerson
     public let memberCount: Int
     public let expiresAt: String?
+    public var alreadyMember: Bool? = nil
 }
 
 /// `POST /api/invites/{code}/join`. `joined` is false when already a member.

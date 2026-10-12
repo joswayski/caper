@@ -465,6 +465,7 @@ export interface InvitePreview {
   inviter: InvitePerson;
   memberCount: number;
   expiresAt: string | null;
+  alreadyMember?: boolean;
 }
 
 export interface InviteLinkOptions {

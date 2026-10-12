@@ -357,7 +357,10 @@ function togglePins() {
     browser("click", 'button[aria-label="Close pins"]');
     return;
   }
-  browser("click", ".chat-pins-toggle");
+  if (evaluate('document.querySelector(".chat-title-menu")?.checkVisibility()')) {
+    browser("click", ".chat-title-menu summary");
+    browser("find", "role", "button", "click", "--name", "Pins", "--exact");
+  } else browser("click", ".chat-pins-toggle");
 }
 
 function pinsRoundTrip(name, { incoming = false, atBottom = false } = {}) {
@@ -444,7 +447,10 @@ function initialPosition(layout) {
   const initialShift =
     Math.max(...initialPositions.map((frame) => frame.offset)) -
     Math.min(...initialPositions.map((frame) => frame.offset));
-  assert.ok(initialShift < 1, `${layout}: opening populated history must not shift messages: ${initialShift}px`);
+  assert.ok(
+    initialShift < 1,
+    `${layout}: opening populated history must not shift messages: ${initialShift}px; ${JSON.stringify([...new Set(initialPositions.map((frame) => JSON.stringify(frame)))])}`,
+  );
   console.log(`PASS: ${layout}: preview-to-scroller handoff and one settled second: ${initialShift.toFixed(3)}px.`);
 }
 
@@ -512,6 +518,33 @@ function reactionTimeline(layout) {
 
 try {
   browser("open", "about:blank");
+  // A handful of messages must stay beside the composer even in a maximized
+  // window. End-aligning a scroll index alone cannot align a non-scrolling list.
+  const tinyUrl = new URL(url);
+  tinyUrl.searchParams.set("fixtureCount", "5");
+  tinyUrl.searchParams.set("fixtureAlternate", "1");
+  for (const [layout, width, height] of [
+    ["desktop", 1440, 1000],
+    ["narrow", 390, 844],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("open", tinyUrl.toString());
+    initialPosition(`${layout} five-message history`);
+    for (const resizedHeight of [height, 600, height]) {
+      browser("set", "viewport", String(width), String(resizedHeight), "2");
+      settle();
+      browser("focus", ".chat-scroller");
+      browser("press", "End");
+      settle();
+      const gap = evaluate(`(() => {
+        const last = [...document.querySelectorAll('.chat-scroller .chat-message')].at(-1);
+        return document.querySelector('#chat-message').getBoundingClientRect().top - last.getBoundingClientRect().bottom;
+      })()`);
+      assert.ok(Math.abs(gap) < 1, `${layout} at ${resizedHeight}px: ${gap}px of empty space below newest message`);
+    }
+    screenshot(`chat-short-bottom-${layout}`);
+    console.log(`PASS: ${layout}: short history stays against composer before/after resizing and End.`);
+  }
   for (const [layout, width, height] of [
     ["desktop", 1280, 800],
     ["narrow", 390, 844],

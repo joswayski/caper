@@ -1,6 +1,8 @@
 use super::invite_links::{accept, create_link, list_links, preview, revoke_link};
 use super::*;
 use crate::{Cloudflare, Config, accounts::User};
+use axum::http::HeaderMap;
+use sha2::{Digest, Sha256};
 use sqlx::{
     Connection, Executor,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -58,6 +60,8 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         let external = random_id(12);
         let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$2,$2) RETURNING id")
             .bind(&external).bind(username).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')")
+            .bind(Sha256::digest(username.as_bytes()).to_vec()).bind(id).execute(&pool).await.unwrap();
         people.push(principal(id, &external, username));
     }
     let [owner, member, newcomer, late, leaver, blocked, invited] = people.as_slice() else {
@@ -92,11 +96,12 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     let [general, feedback, staff] = channels.as_slice() else {
         unreachable!()
     };
-    let state = AppState::with_database(
+    let mut state = AppState::with_database(
         Config::test(false),
         Arc::new(Cloudflare::new()),
         Some(pool.clone()),
     );
+    state.auth = crate::auth::AuthVerifier::new();
     let create = |who: &Principal, body: Value| {
         let state = state.clone();
         let who = who.clone();
@@ -125,7 +130,26 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     let view = |code: &str| {
         let state = state.clone();
         let code = code.to_owned();
-        async move { preview(State(state), Path(code)).await.map(|json| json.0) }
+        async move {
+            preview(State(state), Path(code), HeaderMap::new())
+                .await
+                .map(|json| json.0)
+        }
+    };
+    let view_as = |code: &str, token: &str, cookie: bool| {
+        let state = state.clone();
+        let code = code.to_owned();
+        let mut headers = HeaderMap::new();
+        if cookie {
+            headers.insert("cookie", format!("caper_session={token}").parse().unwrap());
+        } else {
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        }
+        async move {
+            preview(State(state), Path(code), headers)
+                .await
+                .map(|json| json.0)
+        }
     };
 
     // Only owners create links, expiring within a minute to a year and capped
@@ -194,6 +218,23 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     assert_eq!(shown["channel"], json!({"name":"feedback"}));
     assert_eq!(shown["inviter"]["username"], "owner");
     assert_eq!(shown["memberCount"], 2);
+    assert_eq!(shown["alreadyMember"], false);
+    for cookie in [false, true] {
+        assert_eq!(
+            view_as(&code, "member", cookie).await.unwrap()["alreadyMember"],
+            true
+        );
+        assert_eq!(
+            view_as(&code, "newcomer", cookie).await.unwrap()["alreadyMember"],
+            false
+        );
+        assert_eq!(
+            view_as(&code, "invalid-session", cookie).await.unwrap()["alreadyMember"],
+            false
+        );
+    }
+    // A preview never joins a space or consumes the invite's single use.
+    assert_eq!(view(&code).await.unwrap()["memberCount"], 2);
     assert_eq!(
         view("aaaaaaaaaa").await.unwrap_err().status,
         StatusCode::NOT_FOUND
@@ -230,6 +271,14 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     assert_eq!(uses, 1);
     // Exhausted: outsiders can neither preview nor join.
     assert_eq!(view(&code).await.unwrap_err().status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        view_as(&code, "member", false).await.unwrap()["alreadyMember"],
+        true
+    );
+    assert_eq!(
+        view_as(&code, "late", true).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         join(late, &code).await.unwrap_err().status,
         StatusCode::NOT_FOUND
@@ -274,6 +323,16 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     .execute(&pool)
     .await
     .unwrap();
+    for dead in [&expired, &revoked] {
+        assert_eq!(
+            view_as(dead, "member", true).await.unwrap()["alreadyMember"],
+            true
+        );
+        assert_eq!(
+            view_as(dead, "late", false).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+    }
     assert_eq!(
         join(late, &expired).await.unwrap_err().status,
         StatusCode::NOT_FOUND
@@ -328,6 +387,14 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        view_as(&open, "late", false).await.unwrap()["alreadyMember"],
+        false
+    );
+    assert_eq!(
+        view_as(&code, "late", true).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         join(late, &open).await.unwrap_err().status,
         StatusCode::FORBIDDEN

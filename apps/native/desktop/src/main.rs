@@ -1954,10 +1954,13 @@ impl CaperApp {
                         .into(),
                     );
                     app.dialog = Some(Dialog::ManageSpace);
-                } else if matches!(name, "parity-invite-join" | "parity-invite-preview") {
+                } else if matches!(
+                    name,
+                    "parity-invite-join" | "parity-invite-preview" | "parity-invite-member"
+                ) {
                     app.dialog = Some(Dialog::JoinInvite);
                     app.invite_join.input = "https://caper.chat/invite/TESTfixt01".into();
-                    if name == "parity-invite-preview" {
+                    if name != "parity-invite-join" {
                         app.invite_join.preview = Some(invites::InvitePreview {
                             code: "TESTfixt01".into(),
                             space: invites::SpaceName {
@@ -1972,6 +1975,7 @@ impl CaperApp {
                             },
                             member_count: 12,
                             expires_at: None,
+                            already_member: name == "parity-invite-member",
                         });
                     }
                 } else if name == "parity-channel" {
@@ -4484,6 +4488,8 @@ impl CaperApp {
         }
         if arrived {
             context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         let ready = self
@@ -16606,7 +16612,18 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::JoinInvite => "Join with invite link",
+            Dialog::JoinInvite => {
+                if self
+                    .invite_join
+                    .preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.already_member)
+                {
+                    "Open space"
+                } else {
+                    "Join with invite link"
+                }
+            }
             Dialog::Invitation(_) => "You’re invited!",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::LeaveChannel { name, .. } => {
@@ -17709,6 +17726,9 @@ impl CaperApp {
                     ui.label(bold(&preview.space.name).size(16.0));
                     ui.add_space(4.0);
                     for line in [
+                        preview
+                            .already_member
+                            .then(|| "You’re already a member".into()),
                         Some(format!("Invited by {}", preview.inviter.display_name)),
                         Some(invites::plural(preview.member_count, "member")),
                         preview
@@ -17730,7 +17750,12 @@ impl CaperApp {
             let (cancel, join) = dialog_buttons(
                 ui,
                 "Cancel",
-                if joining { "Joining…" } else { "Join space" },
+                match (preview.already_member, joining) {
+                    (true, true) => "Opening…",
+                    (true, false) => "Open space",
+                    (false, true) => "Joining…",
+                    (false, false) => "Join space",
+                },
                 PRIMARY_TONE,
                 !joining,
                 !self.invite_join.busy,
@@ -21688,6 +21713,7 @@ fn main() -> eframe::Result {
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size(viewport_size)
         .with_min_inner_size([320.0, 560.0])
+        .with_maximized(fixture.is_none())
         .with_icon(egui::IconData {
             rgba: icon.into_raw(),
             width,
@@ -21700,11 +21726,26 @@ fn main() -> eframe::Result {
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
-            persist_window: fixture.is_none(),
+            // Saved minimized-window geometry can be tiny on Windows and
+            // overrides the builder's maximized flag. Stop saving geometry;
+            // existing saves are overridden after creation below. Account and
+            // settings persistence remain independent.
+            persist_window: false,
             viewport,
             ..Default::default()
         },
         Box::new(move |creation| {
+            if fixture.is_none() {
+                // eframe still loads old geometry with persist_window=false,
+                // and initial maximization can be lost while mapping a hidden
+                // window. Apply once after creation, never on every repaint.
+                creation
+                    .egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                creation
+                    .egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
             motion::watch_reduced(&creation.egui_ctx);
             if let Some(storage) = creation.storage {
@@ -28619,8 +28660,31 @@ mod tests {
         app.token = Some("fixture-token".into());
         app.dialog = None;
         let account = app.account.take();
-        app.pending_invite = Some("AbCdE12345".into());
-        render(&mut app, &context, vec![]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.app_links = Some(receiver);
+        sender.send("AbCdE12345".into()).unwrap();
+        let output = render(&mut app, &context, vec![]);
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Minimized(false)))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(false)))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Maximized(true)))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Focus))
+        );
         assert!(
             !matches!(app.dialog, Some(Dialog::JoinInvite)),
             "signed out: the link waits"

@@ -3,6 +3,7 @@
 //! code can preview the space and join it. Codes are random and unguessable,
 //! so the public preview reveals only what the owner chose to share.
 use super::*;
+use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
@@ -233,33 +234,49 @@ type PreviewRow = (
     i16,
     i64,
     Option<DateTime<Utc>>,
+    bool,
 );
 
-/// Public, unauthenticated preview for the invite page and native join sheet.
-/// Shares only the space name, landing channel, inviter and member count.
+/// Public preview, with the viewer's membership when a valid session is sent.
+/// Existing members can also open exhausted/expired links, just like `accept`.
 pub(crate) async fn preview(
     State(state): State<AppState>,
     Path(code): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     if !valid_code(&code) {
         return Err(not_found());
     }
+    let user = match crate::account_token(&headers) {
+        Some(token) => match state
+            .auth
+            .authenticate(token, state.database.as_ref())
+            .await
+        {
+            Ok(principal) => Some(principal.user.id),
+            Err(error) if error.status == StatusCode::UNAUTHORIZED => None,
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
     let row: Option<PreviewRow> =
         sqlx::query_as(&format!(
             "SELECT s.name,c.name,u.username,u.display_name,u.avatar_id,
                 (SELECT count(*) FROM public.space_members sm JOIN public.users mu ON mu.id=sm.user_id
                  WHERE sm.space_id=s.id AND sm.deleted_at IS NULL AND mu.deleted_at IS NULL),
-                l.expires_at
+                l.expires_at,sm.user_id IS NOT NULL
              FROM public.space_invite_links l JOIN public.spaces s ON s.id=l.space_id
              JOIN public.users u ON u.id=l.created_by
              LEFT JOIN public.channels c ON c.id=l.channel_id AND c.deleted_at IS NULL AND NOT c.private
-             WHERE l.code=$1 AND s.deleted_at IS NULL AND NOT s.demo AND {LIVE}"
+             LEFT JOIN public.space_members sm ON sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL
+             WHERE l.code=$1 AND s.deleted_at IS NULL AND NOT s.demo AND (({LIVE}) OR sm.user_id IS NOT NULL)"
         ))
         .bind(&code)
+        .bind(user)
         .fetch_optional(pool(&state)?)
         .await
         .map_err(database_error)?;
-    let (space, channel, username, display_name, avatar_id, members, expires_at) =
+    let (space, channel, username, display_name, avatar_id, members, expires_at, already_member) =
         row.ok_or_else(invalid_link)?;
     Ok(Json(json!({
         "code": code,
@@ -268,6 +285,7 @@ pub(crate) async fn preview(
         "inviter": Person { username, display_name, avatar_id },
         "memberCount": members,
         "expiresAt": expires_at,
+        "alreadyMember": already_member,
     })))
 }
 

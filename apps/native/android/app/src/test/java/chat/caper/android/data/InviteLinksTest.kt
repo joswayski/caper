@@ -11,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InviteLinksTest {
@@ -136,7 +137,7 @@ class InviteLinksTest {
 
     @Test fun `invite link requests use the spec's routes and bodies`() = runTest {
         val link = """{"code":"aB3dE5fG7h","channel":null,"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":0,"maxUses":null,"expiresAt":null,"createdAt":"2026-10-11T12:00:00Z"}"""
-        server.enqueue(MockResponse().setBody("""{"code":"aB3dE5fG7h","space":{"name":"Studio"},"channel":{"name":"feedback"},"inviter":{"username":"mira","displayName":"Mira","avatarId":3},"memberCount":4,"expiresAt":null}"""))
+        server.enqueue(MockResponse().setBody("""{"code":"aB3dE5fG7h","space":{"name":"Studio"},"channel":{"name":"feedback"},"inviter":{"username":"mira","displayName":"Mira","avatarId":3},"memberCount":4,"expiresAt":null,"alreadyMember":true}"""))
         server.enqueue(MockResponse().setBody("""{"space":{"id":"space0000001","name":"Studio","ownerId":"account00001"},"channelId":null,"joined":false}"""))
         server.enqueue(MockResponse().setBody("""{"links":[$link]}"""))
         server.enqueue(MockResponse().setResponseCode(201).setBody(link))
@@ -144,10 +145,11 @@ class InviteLinksTest {
         server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"invite link is invalid or has expired"}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
 
-        val preview = api.invitePreview("aB3dE5fG7h")
+        val preview = api.invitePreview("aB3dE5fG7h", "account-secret")
         assertEquals("Studio", preview.space.name)
         assertEquals("feedback", preview.channel?.name)
         assertEquals(4, preview.memberCount)
+        assertTrue(preview.alreadyMember)
         val joined = api.joinInvite("account-secret", "aB3dE5fG7h")
         assertEquals("space0000001", joined.space.id)
         assertNull(joined.channelId)
@@ -161,7 +163,7 @@ class InviteLinksTest {
         val previewRequest = server.takeRequest()
         assertEquals("GET", previewRequest.method)
         assertEquals("/api/invites/aB3dE5fG7h", previewRequest.path)
-        assertNull(previewRequest.headers["Authorization"])
+        assertEquals("Bearer account-secret", previewRequest.headers["Authorization"])
         val join = server.takeRequest()
         assertEquals("POST", join.method)
         assertEquals("/api/invites/aB3dE5fG7h/join", join.path)

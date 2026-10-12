@@ -921,7 +921,7 @@ recorded in `space_invite_link_uses`.
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
-| Anyone previews | `GET /api/invites/{code}` (no auth) | space name, landing channel, inviter, member count, expiry |
+| Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
 | Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
 
 Creating links shares the owner's invitation attempt budget below; a space can
@@ -931,11 +931,21 @@ and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block
 rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
 an owner's block returns 403 until the owner invites the account by username.
-Expired, revoked, exhausted and unknown links all return the same 404.
+Expired, revoked and exhausted links return the same 404 to outsiders; existing
+members can still preview and open them as shortcuts. Unknown links and deleted
+spaces return 404 for everyone. The preview checks active membership using the
+cookie/bearer session, never space names or the client's cached space list, and
+does not join or consume a use. Like other account responses it is `no-store`.
 
 The web `/invite/<code>` page previews the link and sends signed-out visitors to
 `/login?invite=<code>` (then the profile step if unfinished) and back. Web and
 native apps also accept a pasted link or bare code (web: under **Create a space**).
+Existing members see **You’re already a member** and **Open space**, not a join
+prompt. Clicking it uses the idempotent join endpoint to open the landing channel;
+newcomers still explicitly choose **Join space**. Older servers that omit
+`alreadyMember` keep the previous join presentation. Deploy API before web/native
+clients to enable membership-aware previews; no migration or configuration change
+is required. The gateway needs no update for this change.
 
 Opening links in the apps: every native app registers the `caper://` scheme, and
 the invite page links to `caper://invite/<code>` ("Open in the Caper app"). An
@@ -959,7 +969,10 @@ the profile step when needed. Platform specifics:
   `Software\Classes\caper`; `~/.local/share/applications/chat.caper.links.desktop`
   plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
   handed to the open window over loopback (a token file in the app data folder)
-  instead of starting a second copy.
+  instead of starting a second copy. Real launches and invite activations maximize
+  the resizable window, not exclusive fullscreen. Native window geometry is no
+  longer saved, and startup overrides previously saved sizes after window creation;
+  other app preferences and account persistence remain independent.
 
 **To do (owner): finish automatic app-link opening.**
 

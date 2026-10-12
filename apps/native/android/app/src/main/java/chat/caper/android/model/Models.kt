@@ -97,6 +97,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val inviter: InvitePerson,
     val memberCount: Int = 0,
     val expiresAt: String? = null,
+    val alreadyMember: Boolean = false,
 )
 /** `POST /api/invites/{code}/join`: [joined] is false when you already belonged. */
 @Serializable data class InviteJoin(val space: Space, val channelId: String? = null, val joined: Boolean = true)

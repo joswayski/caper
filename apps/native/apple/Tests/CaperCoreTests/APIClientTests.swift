@@ -434,7 +434,7 @@ final class APIClientTests: XCTestCase {
             if let body = try requestBodyData(request) { bodies.append(String(decoding: body, as: UTF8.self)) }
             switch (request.httpMethod, request.url?.path) {
             case ("GET", "/api/invites/\(code)"):
-                return (200, Data(#"{"code":"aB3dE5gH9k","space":{"name":"Studio"},"channel":null,"inviter":{"username":"owner","displayName":"Owner","avatarId":2},"memberCount":3,"expiresAt":null}"#.utf8))
+                return (200, Data(#"{"code":"aB3dE5gH9k","space":{"name":"Studio"},"channel":null,"inviter":{"username":"owner","displayName":"Owner","avatarId":2},"memberCount":3,"expiresAt":null,"alreadyMember":true}"#.utf8))
             case ("POST", "/api/invites/\(code)/join"):
                 return (200, Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channelId":null,"joined":true}"#.utf8))
             case ("GET", "/api/spaces/\(spaceID)/invite-links"):
@@ -449,6 +449,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(preview.space.name, "Studio")
         XCTAssertNil(preview.channel)
         XCTAssertEqual(preview.memberCount, 3)
+        XCTAssertEqual(preview.alreadyMember, true)
         let joined = try await api.joinInvite(code: code)
         XCTAssertEqual(joined.space.id, spaceID)
         XCTAssertTrue(joined.joined)
