@@ -26888,6 +26888,8 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-desktop"),
             );
+            // These responsive header widths assume the member column is hidden.
+            app.members_visible = false;
             app.token = Some("fixture-only".into());
             app.detail.as_mut().unwrap().channels[0].name = name.into();
             app.channel_rosters
