@@ -1,10 +1,16 @@
 package chat.caper.android
 
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.MessageMention
+import chat.caper.android.ui.Terracotta
 import java.util.Locale
 
 // The @mentions contract shared with the API and every client: an `@` at the
@@ -182,6 +188,29 @@ internal fun mentionSpans(text: String): List<MentionSpan> {
         index = end
     }
     return spans
+}
+
+/** Complete locally known mentions; unresolved/partial names stay plain while typing. */
+internal fun draftMentionSpans(text: String, source: MentionSource): List<MentionSpan> {
+    val people = source.people.map { it.username.lowercase(Locale.ROOT) }.toSet()
+    return mentionSpans(text).filter { span ->
+        when (span.name) {
+            "everyone", "here" -> source.specials
+            in FEEDBACK_NAMES -> source.feedback
+            else -> span.name in people
+        }
+    }
+}
+
+/** Background only: selection, IME offsets and the submitted text are unchanged. */
+internal class MentionVisualTransformation(private val source: MentionSource) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val styled = AnnotatedString.Builder(text)
+        for (span in draftMentionSpans(text.text, source)) {
+            styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
+        }
+        return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
+    }
 }
 
 /**

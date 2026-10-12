@@ -60,6 +60,28 @@ open still cannot read it, and notifications go only to people who can read
 the conversation. Mention ids are the 12-character random account `external_id`,
 never the internal sequence key.
 
+Channel, DM, thread and profile quick-message composers preview complete known
+`@username` tags and the Caper team's aliases (including `@feedback`) with the
+same terracotta background before sending. `@everyone`/`@here` preview only in
+space channels. Partial and unknown names, email addresses and overlong name
+runs stay plain. People come from the composer's loaded directory; the profile
+quick-message field knows its recipient. This is a local preview, not a promise
+of delivery: the server still resolves mentions on send. Drafts and payloads
+remain plain text. Web uses a background-only mirror of the native textarea;
+Android uses identity-mapped text styling; Apple styles text storage outside
+marked-text composition; Rust desktop styles the egui editor's layout without
+changing font metrics.
+
+Composer-highlight validation (2026-10-12): `npm run check` and `npm test`
+(598 tests) passed. Chromium at 1280px and 390px covered channel, DM, thread,
+profile, wrapped and scrolled drafts, insertion, deletion, undo and plain-text
+send. Rust desktop fmt, clippy, the full suite (476 passed, 12 existing ignored)
+and Linux Xvfb channel/thread/profile rendering passed. These used local fixtures,
+not live account or voice traffic. Android's test attempt stopped at the missing
+Android SDK; Apple code/tests require an unavailable Apple toolchain. Physical
+devices, Windows rendering, software keyboards and real IME composition remain
+unverified for this change.
+
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
 pills stay inert): avatar, display name, `@username`, and an inline DM composer
 with text, emoji and file attachments. Typing and choosing files stay local;

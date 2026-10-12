@@ -6,6 +6,7 @@ import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
+import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 
@@ -126,7 +127,7 @@ export default function Composer({
       // Collapsing the textarea to measure it must not shrink the form for that
       // moment: the conversation would grow and clamp its scroll position, so
       // every keystroke in a multi-line draft scrolled the messages up.
-      const form = composer.parentElement;
+      const form = composer.closest("form");
       if (form) form.style.minHeight = `${form.offsetHeight}px`;
       composer.style.height = "0px";
       composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
@@ -243,9 +244,11 @@ export default function Composer({
           Message {channelName}
         </label>
         {suggestions.popup}
-        <textarea
+        <MentionTextarea
           ref={composerRef}
           id="chat-message"
+          people={people}
+          specialMentions={!direct}
           rows={1}
           value={draft}
           disabled={disabled}
