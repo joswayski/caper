@@ -459,7 +459,7 @@ pub(crate) struct Compression {
     /// stored losslessly as an indexed PNG instead. 0 disables, max 256.
     pub palette_colors: u16,
     pub preview_edge: u32,
-    /// Videos whose short edge exceeds this ("1080p") are scaled down; 0
+    /// Videos whose short edge exceeds this ("1440p") are scaled down; 0
     /// disables transcoding.
     pub video_max_height: u32,
     /// Video target at 1080p30, scaled by pixel count and frame rate.
@@ -482,7 +482,7 @@ impl Default for Compression {
             image_max_edge: 4096,
             palette_colors: 256,
             preview_edge: 640,
-            video_max_height: 1080,
+            video_max_height: 1440,
             video_bitrate_kbps: 8000,
             video_source_bitrate_percent: 200,
             video_high_fps_boost_percent: 150,

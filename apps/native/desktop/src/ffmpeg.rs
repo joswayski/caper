@@ -736,15 +736,15 @@ mod tests {
     #[test]
     fn plans_follow_the_web_rules() {
         let settings = Compression::default();
-        // Phone HDR 4K HEVC: portrait keeps a 1080 short edge. 25 Mbps is
+        // Phone HDR 4K HEVC: portrait keeps a 1440 short edge. 25 Mbps is
         // within the 4K target (8 Mbps scaled by pixels), so not "bitrate".
         let plan = video_plan(&parse_probe(IPHONE_HDR), true, &settings).unwrap();
         assert_eq!(
             plan.reasons,
             [Reason::Hdr, Reason::Resolution, Reason::Codec]
         );
-        assert_eq!((plan.width, plan.height), (1080, 1920));
-        assert_eq!(plan.kbps, 8000);
+        assert_eq!((plan.width, plan.height), (1440, 2560));
+        assert_eq!(plan.kbps, 14_222);
         // 1080p H.264 at 16 Mbps: bitrate only.
         let plan = video_plan(&parse_probe(ANDROID), true, &settings).unwrap();
         assert_eq!(plan.reasons, [Reason::Bitrate]);
@@ -796,8 +796,8 @@ mod tests {
         let joined = text.join(" ");
         assert!(joined.contains("-c:v libx264"));
         assert!(joined.contains("tonemap=tonemap=hable"));
-        assert!(joined.contains("zscale=w='if(lte(iw,ih),1080,-2)':h='if(lte(iw,ih),-2,1080)'"));
-        assert!(joined.contains("-b:v 8000k -maxrate 12000k -bufsize 16000k"));
+        assert!(joined.contains("zscale=w='if(lte(iw,ih),1440,-2)':h='if(lte(iw,ih),-2,1440)'"));
+        assert!(joined.contains("-b:v 14222k -maxrate 21333k -bufsize 28444k"));
         assert!(joined.contains("-c:a copy"));
         assert!(joined.contains("-map_metadata -1"));
         assert!(joined.contains("-movflags +faststart"));

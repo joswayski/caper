@@ -32,7 +32,7 @@ const definitions = [
   ["ASSET_IMAGE_MAX_EDGE", "default: 4096"],
   ["ASSET_PALETTE_COLORS", "default: 256"],
   ["ASSET_PREVIEW_EDGE", "default: 640"],
-  ["ASSET_VIDEO_MAX_HEIGHT", "default: 1080"],
+  ["ASSET_VIDEO_MAX_HEIGHT", "default: 1440"],
   ["ASSET_VIDEO_BITRATE_KBPS", "default: 8000"],
   ["ASSET_VIDEO_SOURCE_BITRATE_PERCENT", "default: 200"],
   ["ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT", "default: 150"],

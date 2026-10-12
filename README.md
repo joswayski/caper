@@ -10,7 +10,7 @@ Signed-in members can attach up to 10 files per message on web, Android,
 iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.
 Clients compress on the device: screenshots and graphics stay lossless, photos
 are re-encoded at very high quality (AVIF or WebP), and video is converted to
-H.264 up to 1080p so it plays everywhere, which loses some resolution and
+H.264 up to 1440p so it plays everywhere, which loses some resolution and
 detail from 4K and HDR footage; other files upload unchanged and upload straight
 to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).

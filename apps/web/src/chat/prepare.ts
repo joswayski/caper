@@ -52,7 +52,7 @@ export const DEFAULT_COMPRESSION: CompressionSettings = {
   imageMaxEdge: 4096,
   paletteColors: 256,
   previewEdge: 640,
-  videoMaxHeight: 1080,
+  videoMaxHeight: 1440,
   videoBitrateKbps: 8000,
   videoSourceBitratePercent: 200,
   videoHighFpsBoostPercent: 150,
