@@ -16,14 +16,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -37,8 +35,6 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
-import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -342,7 +338,8 @@ internal data class VoiceJoinIntent(
     }
     Scaffold(containerColor = Blackout) { padding ->
         // The bottom inset Scaffold pads for is part of the keyboard's, so only the rest is added.
-        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+        // A finger that slides off a button, row or image never presses it, on every screen.
+        Box(Modifier.fillMaxSize().swipeCancelsPresses().padding(padding).consumeWindowInsets(padding).imePadding()) {
             CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) { when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
@@ -533,19 +530,17 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 color = Surface,
             ) {
                 if (narrow) {
-                    val drawer = rememberBrowseDrawer(navigationOpen)
+                    val drawer = rememberSlideDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
-                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen, quick = true) }
+                    LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
                     var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
-                    val browseUncovered by remember { derivedStateOf { drawer.progress.value > 0f } }
+                    val browseUncovered by remember { derivedStateOf { drawer.value > 0f } }
                     // The member list slides over the conversation the same way, from the trailing edge.
                     val membersShown = membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null
-                    val members = rememberBrowseDrawer(membersShown)
+                    val members = rememberSlideDrawer(membersShown)
                     LaunchedEffect(membersShown) { if (!members.dragging) members.settle(membersShown) }
-                    val membersInView by remember { derivedStateOf { members.progress.value > 0f } }
-                    var membersTravel by remember { mutableFloatStateOf(1f) }
-                    val membersMargin = with(LocalDensity.current) { MEMBERS_MARGIN.toPx() }
+                    val membersInView by remember { derivedStateOf { members.value > 0f } }
                     CompositionLocalProvider(LocalBrowseDrawer provides drawer, LocalMembersDrawer provides members) {
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
                             // Leaves room for the account bar, which rises over the conversation.
@@ -559,7 +554,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                             }
                             Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
-                                .browseDrag(members, direction = -1f, travel = { membersTravel }) { membersVisible = it }
+                                .browseDrag(members, direction = -1f,
+                                    // Known before the panel is first composed, so the first swipe follows the finger too.
+                                    travel = { width -> membersTravel(width, MEMBERS_MAX_WIDTH.toPx(), MEMBERS_END.toPx(), MEMBERS_MARGIN.toPx()) }) { membersVisible = it }
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: if (state.feedbackShown) "feedback" else "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
@@ -567,7 +564,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                                 // Composed while shown or sliding; it moves with the conversation over Browse.
                                 if (membersShown || membersInView) {
-                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).graphicsLayer { alpha = members.progress.value }
+                                    Box(Modifier.fillMaxSize().padding(top = 54.dp).graphicsLayer { alpha = members.value }
                                         .background(Color.Black.copy(alpha = 0.25f))
                                         .browseSwipeRegion(members, enabled = membersShown)
                                         .then(if (membersShown) Modifier.clickable(
@@ -575,8 +572,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                             indication = null,
                                         ) { membersVisible = false } else Modifier))
                                     MemberPresencePanel(state, viewModel,
-                                        Modifier.padding(top = 62.dp, end = MEMBERS_END, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
-                                            .onSizeChanged { membersTravel = it.width + membersMargin }
+                                        Modifier.padding(top = 62.dp, end = MEMBERS_END, bottom = 8.dp).widthIn(max = MEMBERS_MAX_WIDTH).fillMaxHeight().align(Alignment.CenterEnd)
                                             .membersLayer(members)
                                             .border(1.dp, Border, RoundedCornerShape(16.dp))
                                             .browseSwipeRegion(members, enabled = membersShown)
@@ -608,171 +604,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
     }
 }
-
-/**
- * Phones show the conversation or Browse (spaces and channels), never both.
- * The conversation slides fully off the still Browse, following a finger from
- * the timeline or channel list.
- * Buttons, Back and channel choices animate the same slide.
- */
-@Stable
-private class BrowseDrawer(private val scope: CoroutineScope, open: Boolean) {
-    /** How much of Browse is uncovered: 0 shows the conversation, 1 shows Browse. */
-    val progress = Animatable(if (open) 1f else 0f)
-    var dragging = false
-    /** Set when a touch lands on content or its header; editors and audio controls keep their own drags. */
-    var regionTouched = false
-    /** Set when a touch lands on an editor inside a region, which keeps its own drags. */
-    var regionExcluded = false
-
-    fun drag(value: Float) {
-        scope.launch(start = CoroutineStart.UNDISPATCHED) { progress.snapTo(value.coerceIn(0f, 1f)) }
-    }
-
-    /** Buttons use a quick slide; swipes carry on at `velocity` (progress per second). */
-    fun settle(open: Boolean, velocity: Float? = null, quick: Boolean = false) {
-        val target = if (open) 1f else 0f
-        if (progress.targetValue == target && (progress.isRunning || progress.value == target)) return
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            if (velocity == null) {
-                progress.animateTo(target,
-                    if (quick) tween(220, easing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f))
-                    else spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow), 0f)
-            } else {
-                val remaining = target - progress.value
-                val distance = abs(remaining)
-                val speed = if (remaining > 0f) velocity else -velocity
-                // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
-                val duration = if (speed > 0f) (3000f * distance / speed).coerceIn(160f, 320f).toInt() else 320
-                val slope = if (distance > 0f) (speed * duration / 1000f / distance).coerceIn(0f, 3f) else 0f
-                progress.animateTo(target, tween(duration, easing = CubicBezierEasing(0.2f, 0.2f * slope, 0.35f, 1f)))
-            }
-        }
-    }
-}
-
-@Composable private fun rememberBrowseDrawer(open: Boolean): BrowseDrawer {
-    val scope = rememberCoroutineScope()
-    return remember(scope) { BrowseDrawer(scope, open) }
-}
-
-private val LocalBrowseDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
-/** The phone member list's drawer: 0 hidden, 1 shown. */
-private val LocalMembersDrawer = staticCompositionLocalOf<BrowseDrawer?> { null }
-
-/** The phone member list's inset from the trailing edge. */
-private val MEMBERS_END = 8.dp
-/** How far past its width the member list travels: its inset, plus room for its shadow. */
-private val MEMBERS_MARGIN = MEMBERS_END + 24.dp
-
-/** Moves the conversation over Browse at its full height. */
-private fun Modifier.conversationLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
-    val uncovered = drawer.progress.value
-    translationX = uncovered * size.width
-    shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
-}
-
-/** Raises Browse's account bar from below the bottom edge as Browse is uncovered. */
-private fun Modifier.browseBarLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
-    translationY = (1f - drawer.progress.value) * size.height
-}
-
-/**
- * Slides the phone member list in from the trailing edge, outlined and lifted
- * by the same shadow the conversation casts over Browse.
- */
-private fun Modifier.membersLayer(drawer: BrowseDrawer): Modifier = graphicsLayer {
-    translationX = (1f - drawer.progress.value) * (size.width + MEMBERS_MARGIN.toPx())
-    shape = RoundedCornerShape(16.dp)
-    clip = true
-    shadowElevation = 16.dp.toPx()
-}
-
-// Content, headers and drawer backdrops start this gesture; the composer and audio controls
-// keep their native drags.
-private fun Modifier.browseSwipeRegion(drawer: BrowseDrawer?, enabled: Boolean): Modifier =
-    if (drawer == null || !enabled) this else pointerInput(drawer) {
-        awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false)
-            // An excluded child sees the touch first.
-            drawer.regionTouched = !drawer.regionExcluded
-            drawer.regionExcluded = false
-        }
-    }
-
-// Editors inside a swipe region keep their text drags, as the web's and Apple's excluded starts.
-private fun Modifier.browseSwipeExcluded(drawer: BrowseDrawer?): Modifier =
-    if (drawer == null) this else pointerInput(drawer) {
-        awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false)
-            drawer.regionExcluded = true
-        }
-    }
-
-// Tracks the finger on the unmoving container, since the layers it moves would
-// otherwise move their own touch coordinates. Consumed moves belong to
-// scrolling, selection or a slider. `direction` is the finger's way to open
-// (right for Browse, left for the member list); `travel` defaults to Browse's.
-private fun Modifier.browseDrag(
-    drawer: BrowseDrawer, direction: Float = 1f, travel: (() -> Float)? = null, setOpen: (Boolean) -> Unit,
-): Modifier =
-    pointerInput(drawer) {
-        val tracker = VelocityTracker()
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            val allowed = drawer.regionTouched
-            drawer.regionTouched = false
-            drawer.regionExcluded = false
-            if (!allowed) return@awaitEachGesture
-            val opening = drawer.progress.targetValue < 0.5f
-            val width = (travel?.invoke() ?: size.width.toFloat()).coerceAtLeast(1f)
-            val start = drawer.progress.value
-            var dragging = false
-            var dx = 0f
-            var velocity = 0f
-            tracker.resetTracking()
-            tracker.addPosition(down.uptimeMillis, down.position)
-            try {
-                while (true) {
-                    // Once sliding, take moves before the timeline or channel list
-                    // can scroll with them.
-                    val event = awaitPointerEvent(if (dragging) PointerEventPass.Initial else PointerEventPass.Main)
-                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    dx = (change.position.x - down.position.x) * direction
-                    val dy = change.position.y - down.position.y
-                    if (!dragging) {
-                        if (!change.pressed || event.changes.size != 1 || change.isConsumed ||
-                            (abs(dy) > viewConfiguration.touchSlop && abs(dy) > abs(dx))) break
-                        if (abs(dx) <= viewConfiguration.touchSlop) continue
-                        if ((dx > 0) != opening || abs(dx) < abs(dy) * 1.5f) break
-                        dragging = true
-                        drawer.dragging = true
-                    }
-                    // Includes the batched samples a slow frame coalesces, so flings still register.
-                    tracker.addPointerInputChange(change)
-                    // Lifting flings; a second finger settles where the slide is.
-                    if (!change.pressed || event.changes.size != 1) {
-                        if (!change.pressed) velocity = tracker.calculateVelocity().x * direction
-                        break
-                    }
-                    change.consume() // Cancel a channel row's release click after a drag.
-                    drawer.drag(start + dx / width)
-                }
-            } finally {
-                if (dragging) {
-                    drawer.dragging = false
-                    val toward = if (opening) velocity else -velocity
-                    val travelled = abs(drawer.progress.value - start)
-                    val flingSpeed = 300.dp.toPx()
-                    val commit = toward > -flingSpeed &&
-                        (travelled >= 0.5f || (toward >= flingSpeed && abs(dx) >= 40.dp.toPx()))
-                    val target = if (commit) opening else !opening
-                    drawer.settle(target, velocity / width)
-                    setOpen(target)
-                }
-            }
-        }
-    }
 
 @Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
@@ -1689,7 +1520,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            ThreadConversation(state, viewModel, Modifier.entrance(MOTION_BASE, dx = 12.dp).fillMaxSize().systemBarsPadding().imePadding())
+            ThreadConversation(state, viewModel, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize().systemBarsPadding().imePadding())
         }
     }
 }
@@ -1765,7 +1596,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val channel = state.selectedChannel
     if (channel == null) {
         // Feedback team: the inbox takes the conversation's place.
-        if (state.feedbackShown) FeedbackInbox(state, viewModel, narrow, openNavigation, modifier.fillMaxHeight())
+        // Like a conversation, the inbox swipes back to Browse on phones.
+        if (state.feedbackShown) FeedbackInbox(state, viewModel, narrow, openNavigation,
+            modifier.fillMaxHeight().browseSwipeRegion(LocalBrowseDrawer.current, enabled = narrow))
         else EmptyChannel(state, narrow, show, openNavigation, modifier)
         return
     }
@@ -1774,7 +1607,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val visit = state.visit
     // Back leaves a visit for the inbox, unless phone Browse is showing (Back closes that first).
     val browse = LocalBrowseDrawer.current
-    BackHandler(enabled = visit != null && (browse == null || browse.progress.targetValue == 0f)) { viewModel.closeVisit() }
+    // Derived, so a sliding drawer doesn't recompose the conversation every frame.
+    val browseClosed by remember(browse) { derivedStateOf { browse == null || browse.target == 0f } }
+    BackHandler(enabled = visit != null && browseClosed) { viewModel.closeVisit() }
     var draft by rememberSaveable(channel.id, stateSaver = TextFieldValue.Saver) {
         viewModel.drafts[channel.id].let { mutableStateOf(TextFieldValue(it, TextRange(it.length))) }
     }
@@ -1957,7 +1792,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // Web shows a pending message's status inline, under the message itself.
             val channelPending = state.pendingMessage?.takeIf { it.threadRootId == null }
             if (showingPins) Dialog(onDismissRequest = { showingPins = false }) {
-                Surface(shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
+                Surface(Modifier.swipeCancelsPresses(), shape = MaterialTheme.shapes.medium, color = SurfaceConversation, border = BorderStroke(1.dp, Border)) {
                     Column(Modifier.heightIn(max = 560.dp)) {
                         Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("Pins", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold)
@@ -2754,7 +2589,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         onDismiss()
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
-        Column(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().padding(start = 18.dp, end = 18.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Message actions", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             if (canReact) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -2926,7 +2761,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         if (needle.isEmpty()) catalog else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) }
     }
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.swipeCancelsPresses().fillMaxWidth().heightIn(max = 520.dp)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small) { Text("Close") } }
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
@@ -3807,7 +3642,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog({ if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        BoxWithConstraints(Modifier.padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.swipeCancelsPresses().padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
             // Short dialogs fit their content; long ones scroll below a fixed heading (web).
             Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Column {

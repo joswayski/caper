@@ -547,7 +547,6 @@ export default function Call({
   }, []);
   // Phones show the conversation without the sidebar, so voice errors move into it.
   const inlineVoiceError = narrow && !navigationOpen && !!onNavigationToggle;
-  const navigationSwipe = useBrowseSwipe(narrow && !membersVisible, navigationOpen, onNavigationChange);
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
   useBrowseLayout(roomRef, navigationOpen);
@@ -556,6 +555,12 @@ export default function Call({
     narrow && !navigationOpen && !!membersPanel,
     membersVisible,
     setMembersVisible,
+  );
+  // The drawer owns touches until it has fully slid away.
+  const navigationSwipe = useBrowseSwipe(
+    narrow && !membersVisible && !members.closing,
+    navigationOpen,
+    onNavigationChange,
   );
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");

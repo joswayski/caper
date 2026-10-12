@@ -111,7 +111,7 @@ import java.util.UUID
         catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = friendlyError(reason, "Destinations are unavailable.") }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Forward message", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.", color = TextMuted, fontSize = 12.sp)
             SharedOriginal(message.forward?.message ?: message)
@@ -190,7 +190,7 @@ import java.util.UUID
         finally { loading = false }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             val root = if (conversation != null) conversation?.root else if (error == null) message.forward?.message else null
             root?.let { SharedOriginal(it) }

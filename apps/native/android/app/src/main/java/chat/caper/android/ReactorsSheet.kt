@@ -136,7 +136,7 @@ internal const val ShowReactorsLabel = "Show who reacted"
         ?: fallbackReactionSummary(current.authorIds, selfId, name, current.emoji)
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised, contentColor = Text) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp).semantics { paneTitle = "Reactions" }) {
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().padding(bottom = 24.dp).semantics { paneTitle = "Reactions" }) {
             Text(
                 "Reactions", Modifier.padding(horizontal = 18.dp).semantics { heading() },
                 fontWeight = FontWeight.Bold, fontSize = 16.sp,

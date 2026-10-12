@@ -8,11 +8,14 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
-import { BLOCKING, OWN_GESTURES, releaseTiming, SETTLE } from "./browseTransition";
+import { clampProgress, movesOf, settlesForward, SLOP, Velocity } from "../components/swipe";
+import { BLOCKING, browseSliding, OWN_GESTURES, releaseTiming, SETTLE } from "./browseTransition";
 
 // On phones the member list is a drawer over the conversation. Like Browse, it
 // slides in and out with the same timing and follows a finger: left on the
-// conversation opens it, and right on the panel or backdrop closes it.
+// conversation opens it, and right on the panel or backdrop closes it. A touch
+// on the moving drawer stops it under the finger: dragging carries on from
+// there, and a tap lets it finish without activating anything.
 
 const PANEL = ":scope > .space-member-presence";
 const BACKDROP = ":scope > .member-list-backdrop";
@@ -50,6 +53,8 @@ export function useMembersDrawer(
   const latest = useRef({ enabled, open, setOpen });
   latest.current = { enabled, open, setOpen };
   const animations = useRef<Animation[]>([]);
+  /** Where the running slide is going (true: shown), while one runs. */
+  const heading = useRef<boolean>(undefined);
   /** Where the next slide starts (0 hidden, 1 shown) and its speed toward its end, in progress per millisecond. */
   const start = useRef({ from: 0, velocity: 0, interactive: false });
   /** Set while a finger poses the panel, so state changes do not also animate it. */
@@ -84,6 +89,7 @@ export function useMembersDrawer(
   const reset = () => {
     for (const animation of animations.current) animation.cancel();
     animations.current = [];
+    heading.current = undefined;
     const { panel, backdrop } = parts();
     panel?.style.removeProperty("transform");
     backdrop?.style.removeProperty("opacity");
@@ -96,9 +102,11 @@ export function useMembersDrawer(
     reset();
     const { room, panel, backdrop } = parts();
     if (!room || !panel) return Promise.resolve(true);
-    // A closing panel keeps its place but no longer takes focus or touches.
+    // A closing panel keeps its place but no longer takes focus. Its backdrop
+    // still takes touches, so one meant for the moving drawer catches it
+    // rather than landing on the conversation beneath.
     panel.inert = !show;
-    if (backdrop) backdrop.inert = !show;
+    if (backdrop) backdrop.inert = false;
     const to = show ? 1 : 0;
     const distance = Math.abs(to - from);
     if (still() || distance === 0) return Promise.resolve(true);
@@ -111,6 +119,7 @@ export function useMembersDrawer(
     const current = [panel.animate([place(from), place(to)], { ...timing, fill: "both" })];
     if (backdrop) current.push(backdrop.animate([{ opacity: from }, { opacity: to }], { ...timing, fill: "both" }));
     animations.current = current;
+    heading.current = show;
     return Promise.all(current.map((animation) => animation.finished)).then(
       () => animations.current === current,
       () => false,
@@ -120,10 +129,37 @@ export function useMembersDrawer(
   const settle = (show: boolean) =>
     void slide(show).then((done) => {
       if (!done) return;
+      heading.current = undefined;
       if (show) reset();
       // Unmounting removes the panel with its final pose.
       else setClosing(false);
     });
+
+  /** Stops a running slide where it is, holding the panel there for a finger. */
+  const grab = () => {
+    const { room, panel } = parts();
+    const resume = heading.current;
+    if (resume === undefined || !room || !panel) return undefined;
+    const progress = shown();
+    const length = travel(room, panel);
+    for (const animation of animations.current) animation.cancel();
+    animations.current = [];
+    heading.current = undefined;
+    pose(progress, length);
+    return { progress, resume, length };
+  };
+
+  /** Settles on shown or hidden from `from`, carrying on at `velocity` (progress per millisecond toward that end). */
+  const finish = (show: boolean, from: number, velocity: number) => {
+    dragging.current = false;
+    start.current = { from, velocity, interactive: true };
+    const { open, setOpen } = latest.current;
+    if (show === open) settle(show);
+    else {
+      setClosing(!show && !still());
+      setOpen(show);
+    }
+  };
 
   const change = (next: boolean) => {
     const { enabled, open, setOpen } = latest.current;
@@ -162,28 +198,32 @@ export function useMembersDrawer(
         const { enabled, open } = latest.current;
         const target = event.target as HTMLElement;
         const room = event.currentTarget;
+        // Browse's slide owns touches while it moves.
+        if (!enabled || event.pointerType !== "touch" || !event.isPrimary || browseSliding()) return;
+        const { panel, backdrop } = parts();
+        const caught = target === backdrop || panel?.contains(target) ? grab() : undefined;
         if (
-          !enabled ||
-          event.pointerType !== "touch" ||
-          !event.isPrimary ||
-          document.querySelector(BLOCKING) ||
-          window.getSelection()?.type === "Range" ||
-          target.closest(OWN_GESTURES) ||
-          // The open drawer owns the whole room, including its backdrop.
-          // Closed, only the conversation opens it.
-          !(open ? room : room.querySelector(":scope > .stage"))?.contains(target)
+          !caught &&
+          (document.querySelector(BLOCKING) ||
+            window.getSelection()?.type === "Range" ||
+            target.closest(OWN_GESTURES) ||
+            // The open drawer owns the whole room, including its backdrop.
+            // Closed, only the conversation opens it.
+            !(open ? room : room.querySelector(":scope > .stage"))?.contains(target))
         )
           return;
+        if (caught) dragging.current = true;
         const id = event.pointerId,
           startX = event.clientX,
           startY = event.clientY,
-          // Closing moves the panel right; opening, left.
-          direction = open ? 1 : -1;
-        let length = 1;
-        let moving = false;
-        let samples: Array<{ time: number; distance: number }> = [];
-        const progressAt = (distance: number) =>
-          Math.min(1, Math.max(0, open ? 1 - distance / length : distance / length));
+          base = caught?.progress ?? (open ? 1 : 0);
+        let length = caught?.length ?? 1;
+        /** Where the finger was, toward shown, when the drag began; the panel follows from there. */
+        let origin: number | undefined;
+        const speed = new Velocity();
+        // Moving left shows more of the panel.
+        const along = (point: { clientX: number }) => startX - point.clientX;
+        const progressAt = (point: { clientX: number }) => clampProgress(base + (along(point) - origin!) / length);
 
         const end = (event?: PointerEvent) => {
           window.removeEventListener("pointermove", move);
@@ -191,30 +231,23 @@ export function useMembersDrawer(
           window.removeEventListener("pointercancel", lift);
           document.removeEventListener("visibilitychange", cancel);
           if (stop.current === cancel) stop.current = undefined;
-          if (!moving) return;
-          dragging.current = false;
-          const released = event?.type === "pointerup";
-          const distance = event ? Math.max(0, (event.clientX - startX) * direction) : 0;
-          // Speed over the last 100ms, so a pause before lifting is not a fling.
-          const recent = event
-            ? [...samples, { time: event.timeStamp, distance }].filter((sample) => event.timeStamp - sample.time <= 100)
-            : [];
-          const first = recent[0],
-            last = recent[recent.length - 1];
-          const velocity =
-            first && last.time - first.time >= 8 ? (last.distance - first.distance) / (last.time - first.time) : 0;
-          const commit = released && velocity > -0.3 && (distance >= length / 2 || (velocity >= 0.3 && distance >= 40));
-          const show = open !== commit;
-          start.current = {
-            from: shown(),
-            velocity: (commit ? velocity : -velocity) / length,
-            interactive: true,
-          };
-          if (show === latest.current.open) settle(show);
-          else {
-            setClosing(!show && !still());
-            latest.current.setOpen(show);
+          if (origin === undefined) {
+            // A tap or scroll on the caught drawer lets it carry on; the tap is not a click.
+            if (caught) {
+              suppressClick.current = true;
+              finish(caught.resume, caught.progress, 0);
+            }
+            return;
           }
+          const released = event?.type === "pointerup";
+          const travelled = event ? along(event) : 0;
+          if (event) speed.add(event.timeStamp, travelled);
+          const velocity = event ? speed.speed(event.timeStamp) : 0;
+          const show = released
+            ? settlesForward(progressAt(event), velocity, travelled)
+            : // Interrupted: back where it started, or on to where a caught drawer was going.
+              (caught?.resume ?? open);
+          finish(show, shown(), (show ? velocity : -velocity) / length);
         };
         const cancel = () => end();
         const lift = (event: PointerEvent) => {
@@ -222,38 +255,36 @@ export function useMembersDrawer(
         };
         const move = (event: PointerEvent) => {
           if (event.pointerId !== id) return;
-          const dx = (event.clientX - startX) * direction,
+          const dx = along(event),
             dy = event.clientY - startY;
-          if (!moving) {
+          if (origin === undefined) {
             if (Math.abs(dy) > Math.max(12, Math.abs(dx))) return end();
-            if (Math.abs(dx) < 10) return;
-            if (dx < 0 || Math.abs(dx) < Math.abs(dy) * 1.5) return end();
-            if (document.querySelector(BLOCKING) || window.getSelection()?.type === "Range") return end();
-            moving = true;
+            if (Math.abs(dx) < SLOP) return;
+            // A caught drawer can go either way; otherwise only toward the other state.
+            if ((!caught && (open ? dx > 0 : dx < 0)) || Math.abs(dx) < Math.abs(dy) * 1.5) return end();
+            if (!caught && (document.querySelector(BLOCKING) || window.getSelection()?.type === "Range")) return end();
+            origin = dx;
             dragging.current = true;
             suppressClick.current = true;
-            // Opening mounts the panel first, then holds it off screen.
-            if (!open) {
-              setClosing(false);
-              flushSync(() => latest.current.setOpen(true));
+            if (!caught) {
+              // Opening mounts the panel first, then holds it off screen.
+              if (!open) {
+                setClosing(false);
+                flushSync(() => latest.current.setOpen(true));
+              }
+              for (const animation of animations.current) animation.cancel();
+              animations.current = [];
+              heading.current = undefined;
+              const { room, panel } = parts();
+              if (!room || !panel) return end();
+              length = travel(room, panel);
             }
-            for (const animation of animations.current) animation.cancel();
-            animations.current = [];
-            const { room, panel } = parts();
-            if (!room || !panel) return end();
-            panel.inert = false;
-            length = travel(room, panel);
+            const { panel, backdrop } = parts();
+            if (panel) panel.inert = false;
+            if (backdrop) backdrop.inert = false;
           }
-          const distance = Math.max(0, dx);
-          const moves = event.getCoalescedEvents?.() ?? [];
-          samples = [
-            ...samples.filter((sample) => event.timeStamp - sample.time <= 100),
-            ...(moves.length ? moves : [event]).map((move) => ({
-              time: move.timeStamp,
-              distance: Math.max(0, (move.clientX - startX) * direction),
-            })),
-          ];
-          pose(progressAt(distance), length);
+          for (const point of movesOf(event)) speed.add(point.timeStamp, along(point));
+          pose(progressAt(event), length);
         };
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", lift);

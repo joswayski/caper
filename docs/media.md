@@ -7283,3 +7283,40 @@ earlier composer validation, not acceptance of the new profile menu and dismissa
    Roll back web using the same workflow with the previous known-good SHA; native
    rollback requires a corrected higher-build-number release. No database or
    infrastructure rollback is needed. No deployment or release was performed.
+
+## Swipe release taps, caught slides and smoother drawers (October 12, 2026)
+
+On iPhone a sideways swipe that started on an image opened the media viewer when
+the finger lifted: the conversation moves with the finger, so it lifts on the
+control it started on, and only Browse's rows skipped that tap. Drawers also
+jumped when a finger caught one mid-slide (it restarted from where it was headed),
+jumped by the touch slop as a swipe began, and the phone member list emptied the
+moment it started closing.
+
+- **Release taps:** every control on a swiping surface now ignores the tap a
+  swipe's lift delivers: images, videos, animations, audio and file cards, links,
+  mention pills, avatars and names, reactions (and their hold), thread and edit
+  links, header voice controls, Back, member rows and the space rail. Apple uses a
+  shared `SwipeTapGuard` (following, plus 0.12s after the lift); Android consumes
+  the move once a drag claims it, and a window-level guard cancels presses after
+  twice the touch slop when nothing claimed it. Web already suppressed release
+  clicks.
+- **Caught slides:** a finger that lands on a settling Browse or member slide picks
+  it up where it is drawn, on web, Android, Apple and the Rust desktop. Swipes
+  follow the finger from the slop with no jump.
+- **Media viewer:** swipe-down closing locks its direction on the first move,
+  follows the finger 1:1, and springs back (or carries off) smoothly instead of
+  snapping. Android's backdrop fades as it leaves and double-tap zoom animates.
+- Reduced motion and system animation scale still switch at once.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (604 tests). A focused Chromium touch check against the native-parity fixture at 390px: horizontal swipes starting on avatars and author names open Browse with no click, swiping back along a channel row selects nothing, and a plain tap still clicks. `scripts/test-navigation-release.mjs` fails its intermediate-paint assertion here on unchanged `main` too, and `scripts/test-desktop-navigation.mjs` is stale against the current header; neither is evidence about this change. Not Safari or physical-device acceptance. |
+| Android | With SDK 36 installed locally: `:app:compileDebugKotlin`, `testDebugUnitTest` (379 tests, including the new `SlideMotionTest`) and `lintDebug` pass. No emulator or device run. |
+| Apple iOS/macOS | Swift 6.1 on Linux parses the changed sources and tests, and the new drawer timing and tap-guard code type-checks against a SwiftUI stub. No Xcode build, XCTest, simulator or device run here. New `DrawerMotionTests` and the iOS parity test `testSwipeFromMessageControlsDoesNotTapThem` run on `main`'s native builds. |
+| Rust desktop | `cargo fmt`, `cargo test -p caper-desktop` (483 tests) and `cargo clippy --all-targets -D warnings` pass on Linux with clang 21. Windows built only by CI. |
+
+Before native distribution, verify on physical devices: a horizontal swipe from an
+image, link, avatar and reaction opens Browse or the member list without opening
+it; grabbing a slide mid-flight continues from where it is; vertical and slightly
+diagonal timeline scrolls still scroll; and swipe-down closes the media viewer.

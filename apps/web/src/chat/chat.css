@@ -2606,10 +2606,24 @@ a.chat-draft-preview:focus-visible strong {
 }
 /* Springs back after a swipe that didn't change file or close. */
 .chat-viewer-media {
-  transition: transform 160ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .chat-viewer-media[data-dragging] {
   transition: none;
+}
+/* A paged-to file arrives from the side it was swiped in from, rather than
+   replacing the last one in place. `translate` composes with a drag's transform. */
+.chat-viewer-media[data-enter] {
+  animation: chat-viewer-page-in var(--motion-base) var(--ease-out);
+}
+.chat-viewer-media[data-enter="previous"] {
+  --chat-viewer-enter: -48px;
+}
+@keyframes chat-viewer-page-in {
+  from {
+    opacity: 0;
+    translate: var(--chat-viewer-enter, 48px) 0;
+  }
 }
 .chat-viewer-image {
   position: relative;
@@ -2698,6 +2712,9 @@ a.chat-draft-preview:focus-visible strong {
   .chat-viewer-bar :is(a, button),
   .chat-viewer-nav {
     transition: none;
+  }
+  .chat-viewer-media[data-enter] {
+    animation: none;
   }
 }
 .chat-composer form small {

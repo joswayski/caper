@@ -7,6 +7,7 @@ import {
   type RefObject,
 } from "react";
 import { flushSync } from "react-dom";
+import { clampProgress, movesOf, settlesForward, SLOP, Velocity } from "../components/swipe";
 
 // Phones show the conversation or Browse (spaces and channels), never both.
 // Moving between them slides the conversation fully over or off the still
@@ -23,6 +24,8 @@ const BAR_NAME = "browse-bar";
 /** Browse's account and voice bar, which stays uncovered at the bottom. */
 const BAR = ":scope > .people-panel > .voice-panel";
 export const SETTLE = { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" };
+/** A tapped toggle's slide, which has no finger speed to carry on. */
+const TAP = { duration: 220 };
 
 /** Carries on from a finger without accelerating a held drag or slamming a short remainder into the edge. */
 export function releaseTiming(distance: number, velocity: number) {
@@ -106,6 +109,11 @@ class Slide implements BrowseDrag {
   private readonly travel: number;
   private progress = 0;
   private scrub: Animation[] = [];
+  /** The release's poses while it settles, and the progress it runs between. */
+  private settling?: { animations: Animation[]; from: number; to: number };
+  private keepAlive?: Animation;
+  /** Counts settles, so a stopped one does not end the slide when it is cancelled. */
+  private generation = 0;
   /** Every animation on the transition's pseudo-elements, cancelled when it ends. */
   private readonly animations: Animation[] = [];
   private ready = false;
@@ -114,9 +122,9 @@ class Slide implements BrowseDrag {
   superseded = false;
 
   constructor(
-    private readonly opening: boolean,
+    readonly opening: boolean,
     private readonly update: (open: boolean) => void,
-    private readonly interactive: boolean,
+    private interactive: boolean,
   ) {
     const root = document.documentElement;
     const room = (this.room = document.querySelector<HTMLElement>(ROOM));
@@ -130,11 +138,7 @@ class Slide implements BrowseDrag {
         this.ready = true;
         if (this.released) return this.settle();
         try {
-          this.scrub = this.animate(0, 1, { duration: 1000, fill: "both" });
-          for (const animation of this.scrub) {
-            animation.pause();
-            animation.currentTime = this.progress * 1000;
-          }
+          this.scrub = this.pose(this.progress);
         } catch {
           this.end(this.progress >= 0.5);
         }
@@ -158,6 +162,16 @@ class Slide implements BrowseDrag {
     });
   }
 
+  /** Still moving or held, and not replaced by a newer slide. */
+  get active() {
+    return !this.ended && !this.superseded;
+  }
+
+  /** A finger is posing it. */
+  get held() {
+    return this.active && !this.released;
+  }
+
   move(progress: number) {
     if (this.ended) return;
     this.progress = Math.min(1, Math.max(0, progress));
@@ -170,6 +184,68 @@ class Slide implements BrowseDrag {
     if (this.ended) {
       if (!commit && !this.superseded) void this.transition.updateCallbackDone.then(() => this.update(!this.opening));
     } else if (this.ready) this.settle();
+  }
+
+  /**
+   * Stops a settling slide where it is, so a new finger carries on from there
+   * instead of the slide finishing (or restarting) under it. Returns that
+   * progress and which way it was going.
+   */
+  grab(): { progress: number; heading: boolean } | undefined {
+    if (!this.ready || !this.active || !this.released) return undefined;
+    const heading = this.released.commit;
+    const progress = this.now();
+    try {
+      const scrub = this.pose(progress);
+      this.halt();
+      this.scrub = scrub;
+    } catch {
+      return undefined;
+    }
+    this.progress = progress;
+    this.released = undefined;
+    this.interactive = true;
+    return { progress, heading };
+  }
+
+  /** Turns a settling slide around (or keeps it going) from wherever it is. */
+  redirect(commit: boolean) {
+    if (!this.ready || !this.active || !this.released) return false;
+    if (this.released.commit === commit) return true;
+    const progress = this.now();
+    this.halt();
+    this.progress = progress;
+    this.released = { commit, velocity: 0 };
+    this.interactive = false;
+    this.settle();
+    return true;
+  }
+
+  /** How far the conversation is now, including partway through settling. */
+  private now() {
+    const settling = this.settling;
+    if (!settling) return this.progress;
+    // The eased share of the settle, so this matches what is on screen.
+    const eased = settling.animations[0]?.effect?.getComputedTiming().progress;
+    return eased == null ? settling.to : settling.from + (settling.to - settling.from) * eased;
+  }
+
+  /** Paused poses at `progress`, which `move` scrubs. */
+  private pose(progress: number) {
+    const scrub = this.animate(0, 1, { duration: 1000, fill: "both" });
+    for (const animation of scrub) {
+      animation.pause();
+      animation.currentTime = progress * 1000;
+    }
+    return scrub;
+  }
+
+  /** Stops settling without ending the slide. */
+  private halt() {
+    this.generation++;
+    for (const animation of this.settling?.animations ?? []) animation.cancel();
+    this.keepAlive?.cancel();
+    this.settling = this.keepAlive = undefined;
   }
 
   /**
@@ -197,22 +273,30 @@ class Slide implements BrowseDrag {
 
   private settle() {
     const { commit, velocity } = this.released!;
-    const distance = Math.abs((commit ? 1 : 0) - this.progress),
+    const to = commit ? 1 : 0;
+    const from = this.progress;
+    const distance = Math.abs(to - from),
       speed = commit ? velocity : -velocity;
-    const timing = this.interactive ? releaseTiming(distance, speed) : { duration: 220, easing: SETTLE.easing };
+    // Taps and programmatic changes take the tap timing for the distance left.
+    const timing = this.interactive
+      ? releaseTiming(distance, speed)
+      : { duration: Math.max(160, TAP.duration * distance), easing: SETTLE.easing };
+    const generation = ++this.generation;
     try {
       // Settled poses would end the transition before a cancelled swipe
       // restores its view; this keeps it alive until that update is in.
-      this.animations.push(
-        document.documentElement.animate([{ opacity: 1 }, { opacity: 1 }], {
-          duration: timing.duration + 1000,
-          pseudoElement: "::view-transition",
-        }),
-      );
-      const settling = this.animate(this.progress, commit ? 1 : 0, { ...timing, fill: "both" });
+      this.keepAlive = document.documentElement.animate([{ opacity: 1 }, { opacity: 1 }], {
+        duration: timing.duration + 1000,
+        pseudoElement: "::view-transition",
+      });
+      this.animations.push(this.keepAlive);
+      const settling = this.animate(from, to, { ...timing, fill: "both" });
       for (const animation of this.scrub) animation.cancel();
       this.scrub = [];
-      const end = () => this.end(commit);
+      this.settling = { animations: settling, from, to };
+      const end = () => {
+        if (generation === this.generation) this.end(commit);
+      };
       Promise.all(settling.map((animation) => animation.finished)).then(end, end);
     } catch {
       this.end(commit);
@@ -224,17 +308,24 @@ class Slide implements BrowseDrag {
     if (this.ended) return;
     this.ended = true;
     this.released ??= { commit, velocity: 0 };
-    if (!commit && !this.superseded) flushSync(() => this.update(!this.opening));
+    // Committing re-applies the view too, so the caller's record of it is
+    // right even if something asked for the other view while a finger held it.
+    if (!this.superseded) flushSync(() => this.update(commit ? this.opening : !this.opening));
     this.transition.skipTransition();
   }
 }
 
 /**
  * Shows or hides Browse. On phones the conversation slides over or off it;
- * elsewhere, or with reduced motion, `update` runs at once.
+ * elsewhere, or with reduced motion, `update` runs at once. A slide already
+ * moving turns around from where it is rather than restarting; one a finger
+ * holds keeps the finger's view, and its release decides.
  */
-export function transitionBrowse(open: boolean, update: () => void) {
-  if (!animatable()) return update();
+export function transitionBrowse(open: boolean, update: (open: boolean) => void) {
+  if (!animatable()) return update(open);
+  const slide = current;
+  if (slide?.held) return update(slide.opening);
+  if (slide?.redirect(open === slide.opening)) return;
   start(open, update, false);
 }
 
@@ -242,6 +333,21 @@ export function transitionBrowse(open: boolean, update: () => void) {
 export function dragBrowse(opening: boolean, update: (open: boolean) => void): BrowseDrag | undefined {
   if (!animatable()) return undefined;
   return start(opening, update, true);
+}
+
+/** A slide is moving or held; the member drawer leaves those touches to it. */
+export function browseSliding() {
+  return !!current?.active;
+}
+
+/**
+ * Takes hold of a settling slide for a new finger: where it is (as progress
+ * toward `opening`'s view) and where it was going, or undefined if none moves.
+ */
+function catchBrowse() {
+  const slide = current;
+  const grabbed = slide?.grab();
+  return slide && grabbed && { drag: slide as BrowseDrag, opening: slide.opening, ...grabbed };
 }
 
 export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:popover-open";
@@ -254,6 +360,8 @@ export const OWN_GESTURES =
  * Touch swipes on the room: right from the conversation reveals Browse, left
  * from Browse returns. Text entry, sliders, open menus and selections
  * keep their own gestures. `change` sets Browse at once; the slide animates it.
+ * A touch while a slide settles stops it under the finger: dragging carries on
+ * from there, and a tap lets it finish without activating anything.
  */
 export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: boolean) => void) | undefined) {
   const latest = useRef({ enabled, open, change });
@@ -265,101 +373,115 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
   }, [enabled]);
   useEffect(() => () => stop.current?.(), []);
 
+  const begin = (event: PointerEvent, room: HTMLElement) => {
+    suppressClick.current = false;
+    // A second finger ends the swipe where it is.
+    stop.current?.();
+    const { enabled, open, change } = latest.current;
+    if (!enabled || !change || event.pointerType !== "touch" || !event.isPrimary) return;
+    const caught = catchBrowse();
+    if (
+      !caught &&
+      (document.querySelector(BLOCKING) ||
+        window.getSelection()?.type === "Range" ||
+        !(event.target instanceof Element) ||
+        event.target.closest(OWN_GESTURES))
+    )
+      return;
+    const id = event.pointerId,
+      startX = event.clientX,
+      startY = event.clientY,
+      startTime = event.timeStamp,
+      travel = browseTravel(room),
+      opening = caught ? caught.opening : !open,
+      direction = opening ? 1 : -1,
+      base = caught?.progress ?? 0;
+    let drag = caught?.drag;
+    /** Where the finger was, toward `opening`'s view, when the drag began; the slide follows from there. */
+    let origin: number | undefined;
+    const speed = new Velocity();
+    const along = (point: { clientX: number }) => (point.clientX - startX) * direction;
+
+    const end = (event?: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", lift);
+      window.removeEventListener("pointercancel", lift);
+      document.removeEventListener("visibilitychange", cancel);
+      if (stop.current === cancel) stop.current = undefined;
+      if (origin === undefined) {
+        // A tap or scroll on a caught slide lets it carry on; the tap is not a click.
+        if (caught) {
+          caught.drag.release(caught.heading);
+          suppressClick.current = true;
+        }
+        return;
+      }
+      const released = event?.type === "pointerup";
+      const dx = event ? along(event) : 0;
+      if (event) speed.add(event.timeStamp, dx);
+      const velocity = event ? speed.speed(event.timeStamp) : 0;
+      if (drag)
+        drag.release(
+          released
+            ? settlesForward(clampProgress(base + (dx - origin) / travel), velocity, dx)
+            : // Interrupted: back where it started, or on to where a caught slide was going.
+              (caught?.heading ?? false),
+          velocity / travel,
+        );
+      // Without a slide, keep the original quick-swipe threshold.
+      else if (
+        released &&
+        dx >= 64 &&
+        Math.abs(dx) >= Math.abs(event!.clientY - startY) * 2 &&
+        event!.timeStamp - startTime <= 600 &&
+        !document.querySelector(BLOCKING)
+      )
+        change(opening);
+    };
+    const cancel = () => end();
+    const lift = (event: PointerEvent) => {
+      if (event.pointerId === id) end(event);
+    };
+    const move = (event: PointerEvent) => {
+      if (event.pointerId !== id) return;
+      const dx = along(event),
+        dy = event.clientY - startY;
+      if (origin === undefined) {
+        if (Math.abs(dy) > Math.max(12, Math.abs(dx))) return end();
+        if (Math.abs(dx) < SLOP) return;
+        // A caught slide can go either way; otherwise only toward the other view.
+        if ((!caught && dx < 0) || Math.abs(dx) < Math.abs(dy) * 1.5) return end();
+        if (!caught && (document.querySelector(BLOCKING) || window.getSelection()?.type === "Range")) return end();
+        origin = dx;
+        suppressClick.current = true;
+        drag ??= dragBrowse(opening, change);
+      }
+      for (const point of movesOf(event)) speed.add(point.timeStamp, along(point));
+      drag?.move(base + (dx - origin) / travel);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", lift);
+    window.addEventListener("pointercancel", lift);
+    document.addEventListener("visibilitychange", cancel);
+    stop.current = cancel;
+  };
+
+  // While a slide runs, its snapshots cover the page and touches land on the
+  // root element rather than the room; catch those here.
+  useEffect(() => {
+    if (!enabled) return;
+    const press = (event: PointerEvent) => {
+      const room = document.querySelector<HTMLElement>(ROOM);
+      if (!room || room.contains(event.target as Node)) return;
+      if (browseSliding() || stop.current) begin(event, room);
+    };
+    window.addEventListener("pointerdown", press, true);
+    return () => window.removeEventListener("pointerdown", press, true);
+  }, [enabled]);
+
   return {
     onPointerDownCapture(event: ReactPointerEvent<HTMLElement>) {
-      suppressClick.current = false;
-      // A second finger ends the swipe where it is.
-      stop.current?.();
-      const { enabled, open, change } = latest.current;
-      if (
-        !enabled ||
-        !change ||
-        event.pointerType !== "touch" ||
-        !event.isPrimary ||
-        document.querySelector(BLOCKING) ||
-        window.getSelection()?.type === "Range" ||
-        (event.target as HTMLElement).closest(OWN_GESTURES)
-      )
-        return;
-      const id = event.pointerId,
-        startX = event.clientX,
-        startY = event.clientY,
-        startTime = event.timeStamp,
-        travel = browseTravel(event.currentTarget),
-        opening = !open,
-        direction = opening ? 1 : -1;
-      let drag: BrowseDrag | undefined;
-      let dragging = false;
-      let samples: Array<{ time: number; distance: number }> = [];
-
-      const end = (event?: PointerEvent) => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", lift);
-        window.removeEventListener("pointercancel", lift);
-        document.removeEventListener("visibilitychange", cancel);
-        if (stop.current === cancel) stop.current = undefined;
-        if (!dragging) return;
-        const released = event?.type === "pointerup";
-        const dx = event ? (event.clientX - startX) * direction : 0,
-          dy = event ? event.clientY - startY : 0,
-          distance = Math.max(0, dx);
-        // Speed over the last 100ms, so a pause before lifting is not a fling.
-        const recent = event
-          ? [...samples, { time: event.timeStamp, distance }].filter((sample) => event.timeStamp - sample.time <= 100)
-          : [];
-        const first = recent[0],
-          last = recent[recent.length - 1];
-        const velocity =
-          first && last.time - first.time >= 8 ? (last.distance - first.distance) / (last.time - first.time) : 0;
-        if (drag)
-          drag.release(
-            released && velocity > -0.3 && (distance >= travel / 2 || (velocity >= 0.3 && distance >= 40)),
-            velocity / travel,
-          );
-        // Without a slide, keep the original quick-swipe threshold.
-        else if (
-          released &&
-          distance >= 64 &&
-          Math.abs(dx) >= Math.abs(dy) * 2 &&
-          event!.timeStamp - startTime <= 600 &&
-          !document.querySelector(BLOCKING)
-        )
-          change(opening);
-      };
-      const cancel = () => end();
-      const lift = (event: PointerEvent) => {
-        if (event.pointerId === id) end(event);
-      };
-      const move = (event: PointerEvent) => {
-        if (event.pointerId !== id) return;
-        const dx = (event.clientX - startX) * direction,
-          dy = event.clientY - startY;
-        if (!dragging) {
-          if (Math.abs(dy) > Math.max(12, Math.abs(dx))) return end();
-          if (Math.abs(dx) < 10) return;
-          if (dx < 0 || Math.abs(dx) < Math.abs(dy) * 1.5) return end();
-          if (document.querySelector(BLOCKING) || window.getSelection()?.type === "Range") return end();
-          dragging = true;
-          suppressClick.current = true;
-          drag = dragBrowse(opening, change);
-        }
-        const distance = Math.max(0, dx);
-        // Coalesced moves keep their own times when the page is busy.
-        const moves = event.getCoalescedEvents?.() ?? [];
-        samples = [
-          ...samples.filter((sample) => event.timeStamp - sample.time <= 100),
-          ...(moves.length ? moves : [event]).map((move) => ({
-            time: move.timeStamp,
-            distance: Math.max(0, (move.clientX - startX) * direction),
-          })),
-        ];
-        drag?.move(distance / travel);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", lift);
-      window.addEventListener("pointercancel", lift);
-      document.addEventListener("visibilitychange", cancel);
-      stop.current = cancel;
+      begin(event.nativeEvent, event.currentTarget);
     },
     onKeyDownCapture() {
       suppressClick.current = false;
