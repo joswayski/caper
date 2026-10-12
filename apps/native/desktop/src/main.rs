@@ -770,6 +770,8 @@ struct DraftUpload {
     kind: model::AttachmentKind,
     /// The selected original, available for preview before upload completes.
     local_path: Option<std::path::PathBuf>,
+    /// Keep a pasted image alive through preparation, failed uploads and retries.
+    source_scratch: Option<std::sync::Arc<uploads::Scratch>>,
     /// The picked file's size; 0 until the file was read.
     source_size: u64,
     /// What is stored after compression, once prepared.
@@ -1014,6 +1016,7 @@ struct CaperApp {
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
+    paste_shortcut: profile_dm::PasteShortcut,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
     profile_drafts: BTreeMap<String, profile_dm::Draft>,
@@ -1277,6 +1280,7 @@ impl CaperApp {
             staged_files: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
+            paste_shortcut: profile_dm::PasteShortcut::default(),
             pending: None,
             mention_card: None,
             profile_drafts: BTreeMap::new(),
@@ -2553,6 +2557,7 @@ impl CaperApp {
             name: name.into(),
             kind: model::AttachmentKind::Image,
             local_path: None,
+            source_scratch: None,
             source_size: size,
             stored_size: Some(size),
             compressing: None,
@@ -6364,7 +6369,11 @@ impl CaperApp {
 
     /// Start preparing and uploading picked or dropped files (at most 10).
     fn add_files(&mut self, paths: Vec<std::path::PathBuf>) {
-        if paths.is_empty() || !self.can_attach() {
+        self.add_attachment_files(paths.into_iter().map(profile_dm::File::picked).collect());
+    }
+
+    fn add_attachment_files(&mut self, files: Vec<profile_dm::File>) {
+        if files.is_empty() || !self.can_attach() {
             return;
         }
         let (Some(settings), Some(token), Some(channel)) = (
@@ -6382,23 +6391,22 @@ impl CaperApp {
             ));
             return;
         }
-        self.error = (paths.len() > room).then(|| {
+        self.error = (files.len() > room).then(|| {
             format!(
                 "Only {room} more file{} can be attached.",
                 if room == 1 { "" } else { "s" }
             )
         });
-        for path in paths.into_iter().take(room) {
+        for file in files.into_iter().take(room) {
             self.draft_keys += 1;
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
                 channel: channel.clone(),
-                name: path
-                    .file_name()
-                    .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
+                name: file.name(),
                 kind: model::AttachmentKind::File,
-                local_path: Some(path.clone()),
+                local_path: Some(file.path.clone()),
+                source_scratch: file.scratch.clone(),
                 source_size: 0,
                 stored_size: None,
                 compressing: None,
@@ -6417,7 +6425,8 @@ impl CaperApp {
                 key: self.draft_keys,
                 token: token.clone(),
                 channel: channel.clone(),
-                path,
+                path: file.path,
+                source_scratch: file.scratch,
                 prepared: None,
                 settings: settings.clone(),
                 cancel,
@@ -6454,6 +6463,7 @@ impl CaperApp {
                 name: attachment.name.clone(),
                 kind: attachment.kind,
                 local_path: None,
+                source_scratch: None,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
                 compressing: None,
@@ -6595,6 +6605,7 @@ impl CaperApp {
             token,
             channel: file.channel.clone(),
             path: file.local_path.clone().unwrap_or_default(),
+            source_scratch: file.source_scratch.clone(),
             prepared: file.prepared.clone(),
             settings,
             cancel: file.cancel.clone(),
@@ -7408,6 +7419,7 @@ impl eframe::App for CaperApp {
 
     fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
+        self.paste_shortcut.update(&mut raw_input.events);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -12614,6 +12626,17 @@ impl CaperApp {
                         format!("Message #{}", self.channel_name())
                     };
                     let composer_id = egui::Id::new("message-composer");
+                    if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
+                        && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Paste(_)))) {
+                        match profile_dm::paste_files() {
+                            Ok(files) if !files.is_empty() => {
+                                ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Paste(_))));
+                                self.add_attachment_files(files);
+                            }
+                            Err(error) => self.error = Some(error),
+                            _ => {}
+                        }
+                    }
                     let draft = self.draft.clone();
                     let suggestions = self.suggestion_keys(ui, composer_id, &draft);
                     let (people, specials) = self.mention_people();
@@ -16277,8 +16300,7 @@ impl CaperApp {
                                     "File uploads are not ready yet.".to_owned()
                                 },
                             );
-                        // egui delivers no event for an image-only Ctrl+V, so
-                        // Paste is offered here too, as on Android.
+                        // Also offer an explicit action when no keyboard is available.
                         egui::Popup::menu(&attach).show(|ui| {
                             if ui.button("Choose files…").clicked() {
                                 pick = true;

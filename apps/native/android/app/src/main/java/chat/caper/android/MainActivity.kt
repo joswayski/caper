@@ -1871,7 +1871,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                         OutlinedTextField(
-                            draft, change, modifier = Modifier.weight(1f).then(field),
+                            draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach, viewModel::addAttachments).then(field),
                             placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
                             visualTransformation = MentionVisualTransformation(mentionSource(state)),
                             // Reserve the icon inside the field while uploads/session become ready.

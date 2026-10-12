@@ -3658,6 +3658,17 @@ public final class ChatModel {
         }
     }
 
+    /// Return false for ordinary text/links so the native editor handles them.
+    func pasteAttachments() -> Bool {
+        guard canAttach else { return false }
+        do {
+            let files = try NativeAttachmentPaste.stage()
+            guard !files.isEmpty else { return false }
+            addAttachments(files)
+        } catch { attachmentNotice = "Pasted files couldn’t be added. Try selecting them with Files." }
+        return true
+    }
+
     /// Compresses (with the server's settings) and uploads staged files for
     /// the next message, up to 10.
     public func addAttachments(_ files: [LocalAttachmentFile]) {

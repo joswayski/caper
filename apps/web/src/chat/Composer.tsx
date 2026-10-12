@@ -270,6 +270,12 @@ export default function Composer({
             suggestions.blur();
             onTyping(false);
           }}
+          onPaste={(event) => {
+            if (event.clipboardData.files.length && canAttach && !disabled) {
+              event.preventDefault();
+              attachments.onAdd([...event.clipboardData.files]);
+            }
+          }}
           onKeyDown={(event) => {
             if (suggestions.keyDown(event)) return;
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {

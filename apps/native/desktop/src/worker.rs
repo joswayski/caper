@@ -236,6 +236,7 @@ pub enum Command {
         token: String,
         channel: String,
         path: PathBuf,
+        source_scratch: Option<Arc<crate::uploads::Scratch>>,
         prepared: Option<Arc<crate::uploads::Prepared>>,
         settings: crate::compress::Compression,
         cancel: Arc<AtomicBool>,
@@ -1368,6 +1369,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             channel,
             path,
+            source_scratch,
             prepared,
             settings,
             cancel,
@@ -1375,6 +1377,8 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             upload_file(
                 api, key, &token, &channel, &path, prepared, &settings, cancel, events, context,
             );
+            // Removal can drop the draft while this worker is still reading its source.
+            drop(source_scratch);
             return;
         }
         Command::AssetUsage { token } => Event::AssetUsage {
