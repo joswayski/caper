@@ -495,8 +495,8 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     /// Where the drawer was and the finger's offset (toward open) when it started following.
     @State private var grab: (position: CGFloat, offset: CGFloat)?
     /// The gesture this state belongs to, by where it started, and whether it
-    /// has ended. A move from another start is a new gesture, decided afresh;
-    /// a late move of an ended one is ignored, so neither can leave a stale slide.
+    /// has ended. A move after an end, or from another start, is a new gesture
+    /// decided afresh, so no earlier gesture can leave a stale slide.
     @State private var gesture: (start: CGPoint, ended: Bool)?
     @GestureState private var dragging = false
 
@@ -511,7 +511,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    if gesture?.start != value.startLocation {
+                    if gesture?.start != value.startLocation || gesture?.ended != false {
                         // An abandoned slide of an earlier gesture settles back first.
                         if tracking == true, let drawer, drawer.drag != nil {
                             drawer.settle = nil
@@ -521,7 +521,6 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                         tracking = nil
                         grab = nil
                     }
-                    guard gesture?.ended == false else { return }
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
