@@ -391,7 +391,8 @@ def main() -> None:
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
     # Web: voice joins from the open channel's header, so empty channels stay a single line.
     assert find(desktop, contains="Join voice in #") is None, "Channel rows must not repeat a Join voice action"
-    assert find(desktop, contains="in voice in") is None, "Empty channels must not show a voice row"
+    # The fixture can show people in #design's voice; #general's row is the empty one.
+    assert find(desktop, contains="in voice in general") is None, "Empty channels must not show a voice row"
     header = wait_for(description="Join voice")
     join = find(header, description="Join voice")
     pins = find(header, description="Pins")
