@@ -25286,12 +25286,13 @@ mod tests {
         assert_eq!(
             suggestion_rows(&context, &output, popup),
             [
+                "@feedback Notify the Caper team",
                 "Alex @alex",
                 "Maya @maya",
                 "@everyone Everyone in this channel",
                 "@here Everyone online in this channel",
             ],
-            "stacked rows, never yourself"
+            "stacked rows led by the team, never yourself"
         );
         let maya = |output: &egui::FullOutput| {
             suggestion_rows(&context, output, popup)
@@ -25319,8 +25320,23 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, press(egui::Key::ArrowDown));
         render(&mut app, &context, press(egui::Key::ArrowDown));
+        render(&mut app, &context, press(egui::Key::ArrowDown));
         render(&mut app, &context, press(egui::Key::Tab));
         assert_eq!(app.draft, "(@everyone ");
+
+        place_caret(&context, "help @|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(
+            app.draft, "help @feedback ",
+            "a bare @ + Enter asks the team"
+        );
+        assert!(app.pending.is_none());
+
+        place_caret(&context, "hi @a|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.draft, "hi @alex ", "a typed query picks a person first");
 
         place_caret(&context, "mail bob@ma|", &mut app);
         render(&mut app, &context, vec![]);
@@ -26296,12 +26312,25 @@ mod tests {
         let (events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         // The fixture previews `GET /api/people`: space members and DM peers.
-        assert_eq!(names(&app, ""), ["alex", "maya"], "a bare @ lists people");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "alex", "maya"],
+            "a bare @ leads with the team, then people"
+        );
+        assert_eq!(
+            names(&app, "a"),
+            ["alex", "maya", "admin"],
+            "typed: people first"
+        );
         assert!(names(&app, "every").is_empty(), "no everyone/here in DMs");
         assert_eq!(names(&app, "cap"), ["caper"], "the team, in DMs too");
         assert_eq!(names(&app, "ad"), ["admin"]);
         app.people = None;
-        assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya"],
+            "the peer until people load"
+        );
 
         let person = |id: &str, username: &str| model::Person {
             id: id.into(),
@@ -26320,7 +26349,11 @@ mod tests {
             ))
             .unwrap();
         app.receive();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "people beyond the peer");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya", "sam"],
+            "people beyond the peer"
+        );
         assert_eq!(names(&app, "SA"), ["sam"]);
         events
             .send(loaded(app.generation - 1, Ok(Vec::new())))
@@ -26331,7 +26364,7 @@ mod tests {
         app.receive();
         assert_eq!(
             names(&app, ""),
-            ["maya", "sam"],
+            ["feedback", "maya", "sam"],
             "stale or failed refreshes keep the list"
         );
         app.directs[0].peer = model::DirectPeer {
@@ -26343,26 +26376,34 @@ mod tests {
         };
         assert_eq!(
             names(&app, ""),
-            ["maya", "newbie", "sam"],
+            ["feedback", "maya", "newbie", "sam"],
             "a DM newer than the list still offers its peer"
         );
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "self-notes uses people");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya", "sam"],
+            "self-notes uses people"
+        );
         app.people = None;
-        assert!(
-            names(&app, "").is_empty(),
-            "self-notes suggests nobody before people load"
+        assert_eq!(
+            names(&app, ""),
+            ["feedback"],
+            "self-notes: only the team before people load"
         );
         assert_eq!(names(&app, "fe"), ["feedback"], "personal notes too");
 
         app.selected_direct = None;
         app.selected_channel = Some("chan00000001".into());
-        assert_eq!(names(&app, ""), ["alex", "maya", "everyone", "here"]);
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "alex", "maya", "everyone", "here"]
+        );
         assert_eq!(names(&app, "f"), ["feedback"]);
         app.detail = None;
         assert_eq!(
             names(&app, ""),
-            ["everyone", "here"],
+            ["feedback", "everyone", "here"],
             "only specials until members load"
         );
 
@@ -26385,7 +26426,7 @@ mod tests {
             }),
             origin: crate::feedback::Origin::Inbox,
         });
-        assert_eq!(names(&app, ""), ["zoe"]);
+        assert_eq!(names(&app, ""), ["feedback", "zoe"]);
         assert_eq!(names(&app, "c"), ["caper"]);
         assert!(
             names(&app, "here").is_empty(),

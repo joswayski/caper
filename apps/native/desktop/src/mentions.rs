@@ -192,27 +192,38 @@ pub fn rank<'a>(people: &'a [Person], query: &str, limit: usize) -> Vec<&'a Pers
         .collect()
 }
 
-/// Up to six rows: matching people by rank then username, then the matching
-/// specials (`everyone`, `here`, then one team name), which always keep their
-/// slots. A non-empty query offers the first team name it starts. Callers
-/// pass people without the current user.
+/// Up to six rows. A bare `@` leads with the team (`@feedback`) so it is
+/// easy to find, then people, then `everyone`/`here`. A typed query lists
+/// matching people by rank then username, then the matching specials
+/// (`everyone`, `here`, then the first team name it starts). Specials always
+/// keep their slots. Callers pass people without the current user.
 pub fn suggestions(people: &[Person], specials: Specials, query: &str) -> Vec<Candidate> {
     let query = query.to_ascii_lowercase();
+    let bare = query.is_empty();
     let team = specials
         .feedback
-        .then(|| team_name(&query))
+        .then(|| {
+            if bare {
+                Some(FEEDBACK_ALIASES[0])
+            } else {
+                team_name(&query)
+            }
+        })
         .flatten()
         .map(Candidate::Feedback);
-    let specials: Vec<_> = [Candidate::Everyone, Candidate::Here]
+    let channel: Vec<_> = [Candidate::Everyone, Candidate::Here]
         .into_iter()
         .filter(|special| specials.channel && special.name().starts_with(&query))
-        .chain(team)
         .collect();
-    rank(people, &query, MAX_SUGGESTIONS - specials.len())
+    let slots = MAX_SUGGESTIONS - channel.len() - usize::from(team.is_some());
+    let people = rank(people, &query, slots)
         .into_iter()
-        .map(|person| Candidate::Person(person.clone()))
-        .chain(specials)
-        .collect()
+        .map(|person| Candidate::Person(person.clone()));
+    if bare {
+        team.into_iter().chain(people).chain(channel).collect()
+    } else {
+        people.chain(channel).chain(team).collect()
+    }
 }
 
 /// A username field's rows, ranked as `@` suggestions are: the text trimmed,
@@ -659,10 +670,39 @@ mod tests {
         }
         assert_eq!(
             names(&suggestions(&people, CHANNEL, "")),
-            ["alex", "feedback_fan", "everyone", "here"],
-            "a bare @ never suggests the team"
+            ["feedback", "alex", "feedback_fan", "everyone", "here"],
+            "a bare @ leads with the team"
         );
-        assert!(suggestions(&[], DIRECT, "").is_empty());
+        assert_eq!(names(&suggestions(&[], DIRECT, "")), ["feedback"]);
+        let crowd: Vec<_> = (0..10)
+            .map(|index| person(&format!("user{index}"), "Member"))
+            .collect();
+        for (specials, rows) in [
+            (
+                CHANNEL,
+                vec!["feedback", "user0", "user1", "user2", "everyone", "here"],
+            ),
+            (
+                DIRECT,
+                vec!["feedback", "user0", "user1", "user2", "user3", "user4"],
+            ),
+        ] {
+            let bare = suggestions(&crowd, specials, "");
+            assert_eq!(names(&bare), rows, "people slots shrink by one");
+            assert_eq!(
+                bare.iter()
+                    .filter(|row| matches!(row, Candidate::Feedback(_)))
+                    .count(),
+                1,
+                "the team appears exactly once"
+            );
+        }
+        let typed = [person("alice", "Alice"), person("anna", "Anna")];
+        assert_eq!(
+            names(&suggestions(&typed, DIRECT, "a")),
+            ["alice", "anna", "admin"],
+            "a typed query keeps people first, so @a + Enter picks a person"
+        );
         assert!(
             suggestions(&[], channel(true), "ad").is_empty(),
             "only where the team is offered"

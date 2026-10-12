@@ -127,9 +127,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
 - `@feedback` in place. The team names (`feedback`, `caper`, `admin`, `mod`
-  and the API's other reserved names) work everywhere: once something is
-  typed after `@`, every composer (channels, threads, DMs, notes) suggests
-  the first team name it starts ("Notify the Caper team"). With a server
+  and the API's other reserved names) work everywhere. In every composer
+  (channels, threads, DMs, notes) a bare `@` lists `@feedback` ("Notify the
+  Caper team") first; a typed query lists people first and then the first
+  team name it starts. With a server
   `feedback` entry, each such token renders as a pill without a profile card,
   and "Caper team has been notified 🫡" sits under the message. Messages with
   `author.admin` show a gold ADMIN badge. Accounts with `feedbackTeam` get a
