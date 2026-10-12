@@ -3181,6 +3181,13 @@ private struct ChatView: View {
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { VStack(alignment: .leading, spacing: 8) {
+            if !chat.typingNames.isEmpty {
+                HStack(spacing: 7) {
+                    TypingDots()
+                    Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                    Spacer()
+                }.frame(height: 20)
+            }
             if let reference = chat.replyTargets["channel"] { NativeReplyDraft(reference: reference, chat: chat, root: "channel") }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
@@ -3243,14 +3250,6 @@ private struct ChatView: View {
                 .accessibilityLabel("Send message")
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
-            }
-            // Typing status stays below the input, separate from its top inset.
-            if !chat.typingNames.isEmpty {
-                HStack(spacing: 7) {
-                    TypingDots()
-                    Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                    Spacer()
-                }.frame(height: 20)
             }
             }
             }

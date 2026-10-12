@@ -1065,6 +1065,12 @@ export default function Chat({
     const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
     return () => clearTimeout(timer);
   }, [typingLabel]);
+  useLayoutEffect(() => {
+    // The typing row resizes the viewport; retain live follow without moving history readers.
+    const scroller = scrollerRef.current;
+    if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
+      scroller.scrollTop = scroller.scrollHeight;
+  }, [displayedTypingLabel]);
   const sendDraft = async (text: string) => {
     const client = clientRef.current;
     const sources = !state.pendingSend ? drafts.map((draft) => uploads.current.get(draft.key)!) : [];
@@ -2077,6 +2083,20 @@ export default function Chat({
             onClose={closeConversation}
           />
         )}
+        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
+          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
+            {displayedTypingLabel && (
+              <>
+                <span className="chat-typing-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>{displayedTypingLabel}</span>
+              </>
+            )}
+          </span>
+        </p>
         {readOnly ? (
           <div className="chat-composer channel-preview">{composerNotice}</div>
         ) : (
@@ -2143,21 +2163,6 @@ export default function Chat({
             />
           </div>
         )}
-        {/* Typing belongs below the input so it cannot clip scrolling messages above it. */}
-        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
-          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
-            {displayedTypingLabel && (
-              <>
-                <span className="chat-typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{displayedTypingLabel}</span>
-              </>
-            )}
-          </span>
-        </p>
       </section>
       <ThreadPanel
         state={state}
