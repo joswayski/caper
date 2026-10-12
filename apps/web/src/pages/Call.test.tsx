@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, test, vi } from "vitest";
+import { expect, test } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import { Route as SpacesRoute } from "../routes/spaces";
 import Call from "./Call";
@@ -47,13 +47,11 @@ test("audio controls remain available before joining, with Join in the conversat
   expect(markup).not.toContain('aria-label="Leave voice"');
 });
 
-test("members start closed in the initial markup, before responsive hydration", () => {
-  const membersPanel = vi.fn(() => <aside id="space-member-list">Members</aside>);
-  const markup = renderToStaticMarkup(<Call membersPanel={membersPanel} />);
+test("members start open in the initial markup, before responsive hydration", () => {
+  const markup = renderToStaticMarkup(<Call membersPanel={() => <aside id="space-member-list">Members</aside>} />);
 
-  expect(membersPanel).not.toHaveBeenCalled();
-  expect(markup).not.toContain('id="space-member-list"');
-  expect(markup).toContain('aria-label="Show member list" aria-expanded="false"');
+  expect(markup).toContain('id="space-member-list"');
+  expect(markup).toContain('aria-label="Hide member list" aria-expanded="true"');
 });
 
 test.each([

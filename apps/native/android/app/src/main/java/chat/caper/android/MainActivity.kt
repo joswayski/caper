@@ -522,7 +522,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             LaunchedEffect(narrow, navigationOpen) { viewModel.setConversationVisible(!narrow || !navigationOpen) }
             // 60 rail + 280 channels + 320 minimum chat + 220 members.
             val medium = maxWidth < 880.dp
-            var membersVisible by remember { mutableStateOf(false) }
+            var membersVisible by remember { mutableStateOf(!narrow) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             BackHandler(enabled = narrow && (membersVisible || navigationOpen)) {
                 if (membersVisible && !navigationOpen) membersVisible = false else setNavigationOpen(false)

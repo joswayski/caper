@@ -536,10 +536,11 @@ export default function Call({
     () => setOutputSelectable(typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype),
     [],
   );
-  const [membersVisible, setMembersVisible] = useState(false);
+  const [membersVisible, setMembersVisible] = useState(true);
   const [narrow, setNarrow] = useState(false);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
+    if (media.matches) setMembersVisible(false);
     const update = () => setNarrow(media.matches);
     update();
     media.addEventListener("change", update);

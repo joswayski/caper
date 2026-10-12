@@ -142,10 +142,17 @@ try {
     [0, 0, 0],
     "Account and composer outlines and their upper dividers must align",
   );
-  // The member list starts closed on every client.
+  // Wide layouts show the member list by default.
+  assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");
+  wait('document.querySelector(".space-member-presence .presence-dot")?.dataset.status === "online"');
+  screenshot("desktop-members-default");
+  browser("fill", "#chat-message", "draft survives repeat click");
+  browser("click", ".member-list-toggle");
+  wait('!document.querySelector(".space-member-presence")');
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), "draft survives repeat click");
+  screenshot("desktop-members-hidden");
   browser("click", ".member-list-toggle");
   wait('document.querySelector(".space-member-presence .presence-dot")?.dataset.status === "online"');
-  browser("fill", "#chat-message", "draft survives repeat click");
   evaluate('(window.navigationFixture.messageNode = document.querySelector(".chat-message"), true)');
   const initialPresence = evaluate("navigationFixture.presenceSubscribes");
   const initialGeneralReads = evaluate("navigationFixture.historyReads.general12345");
@@ -610,6 +617,14 @@ try {
   );
   console.log(
     "PASS: desktop navigation/presence; Chromium touch: center-start Browse and Members swipes, header-button and backdrop swipes, finger tracking, fling/halfway/snap-back, direction/vertical/cancel guards, reduced motion, composer and overlays, release-click protection, draft/history retention, Back button, empty Pins and 320px layout.",
+  );
+  browser("open", url.toString());
+  wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
+  assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "false");
+  assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
+  screenshot("mobile-members-default");
+  console.log(
+    "PASS: members start open on desktop, hide without losing the draft, and start closed on a fresh narrow visit.",
   );
 } finally {
   socket?.close();
