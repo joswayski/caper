@@ -34,6 +34,8 @@ test("phones and tablets get their mobile beta, never a desktop installer", () =
 
 test("Android installs come from the Play closed test, never a sideloaded APK", () => {
   assert.equal(playTestingUrl, "https://play.google.com/apps/testing/chat.caper.android");
+  // Google approved the closed test: Android joins the testers group, then opts in on Play.
+  assert.equal(mobileBetas.android?.url, "https://groups.google.com/g/caper-testers");
   for (const beta of Object.values(mobileBetas)) if (beta) assert.doesNotMatch(beta.url, /\.apk$/);
 });
 
