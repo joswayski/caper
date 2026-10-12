@@ -184,8 +184,14 @@ jobs:
         run: |
           # The self-hosted Windows PC installs NSIS at setup; its non-admin runners cannot use choco.
           if ($env:RUNNER_ENVIRONMENT -ne 'self-hosted') {
-            choco install nsis --version=3.11 -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # The Chocolatey feed can return 504 while resolving nsis.install.
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install nsis --version=3.11 -y --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -eq 3) { exit $LASTEXITCODE }
+              Write-Warning "NSIS installation failed (attempt $attempt/3); retrying."
+              Start-Sleep -Seconds (15 * $attempt)
+            }
           }
           ./apps/native/desktop/build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -181,7 +181,7 @@ class MacDiskImageTests(unittest.TestCase):
         self.updater.write_bytes(b"updater")
         binary = self.root / "bin"
         binary.mkdir()
-        for name in ("codesign", "ditto", "xcrun", "spctl", "dmgbuild"):
+        for name in ("codesign", "ditto", "xcrun", "spctl", "dmgbuild", "sleep"):
             tool = binary / name
             tool.write_text("""#!/usr/bin/env python3
 import json
@@ -206,11 +206,17 @@ elif tool == "xcrun" and args[:2] == ["notarytool", "submit"]:
     kind = Path(args[2]).suffix[1:]
     status = "Invalid" if os.environ.get("FAIL_NOTARY") == kind else "Accepted"
     print(json.dumps({"status": status, "id": "fixture-id"}))
-elif tool == "xcrun" and args[:2] == ["stapler", "staple"]:
+elif tool == "xcrun" and args[0] == "stapler":
     kind = "app" if target.suffix == ".app" else "dmg"
-    if os.environ.get("FAIL_STAGE") == kind + "-staple":
+    stage = kind + "-" + args[1]
+    if os.environ.get("FAIL_STAGE") == stage:
         sys.exit(23)
-    if kind == "app":
+    if os.environ.get("FAIL_STAPLER_STAGE") == stage:
+        commands = [json.loads(line) for line in Path(os.environ["TEST_LOG"]).read_text().splitlines()]
+        attempts = commands.count([tool, *args])
+        if attempts <= int(os.environ.get("FAIL_STAPLER_COUNT", "2")):
+            sys.exit(int(os.environ.get("FAIL_STAPLER_CODE", "68")))
+    if kind == "app" and args[1] == "staple":
         (app / "stapled-fixture").touch()
 elif tool == "spctl":
     if target.suffix == ".dmg" and os.environ.get("FAIL_STAGE") == "dmg-assess":
@@ -237,6 +243,7 @@ elif tool == "spctl":
             env={**self.env, **failure},
             capture_output=True,
             text=True,
+            timeout=20,
         )
         commands = [json.loads(line) for line in self.log.read_text().splitlines()]
         return result, commands
@@ -262,6 +269,27 @@ elif tool == "spctl":
         )
         self.assertIn(str(dmg), result.stdout)
 
+    def test_ticket_service_failures_recover_for_app_and_dmg(self):
+        for stage in ("app-staple", "app-validate", "dmg-staple", "dmg-validate"):
+            with self.subTest(stage=stage):
+                self.log.unlink(missing_ok=True)
+                (self.app / "stapled-fixture").unlink(missing_ok=True)
+                result, _ = self.sign(FAIL_STAPLER_STAGE=stage)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.apple / "dist/Caper-macOS-Intel.zip").read_bytes(), b"stapled")
+                self.assertEqual((self.apple / "dist/Caper-macOS-Intel.dmg").read_bytes(), b"disk-image")
+                self.assertIn(str(self.apple / "dist/Caper-macOS-Intel.dmg"), result.stdout)
+
+    def test_persistent_or_invalid_ticket_failures_stop_release(self):
+        for code, count in ((68, 100), (65, 1), (77, 1)):
+            with self.subTest(code=code):
+                self.log.unlink(missing_ok=True)
+                result, _ = self.sign(
+                    FAIL_STAPLER_STAGE="app-validate", FAIL_STAPLER_CODE=str(code), FAIL_STAPLER_COUNT=str(count)
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertNotIn(str(self.apple / "dist/Caper-macOS-Intel.dmg"), result.stdout)
+
     def test_rejected_notarizations_stop_before_stapling_or_reporting_success(self):
         for kind in ("zip", "dmg"):
             with self.subTest(kind=kind):
@@ -274,7 +302,7 @@ elif tool == "spctl":
                 self.assertNotIn(["xcrun", "stapler", "staple", str(target)], commands)
 
     def test_build_staple_and_assessment_failures_are_not_reported_as_success(self):
-        for stage in ("dmg-build", "app-staple", "dmg-staple", "dmg-assess"):
+        for stage in ("dmg-build", "app-staple", "app-validate", "dmg-staple", "dmg-validate", "dmg-assess"):
             with self.subTest(stage=stage):
                 self.log.unlink(missing_ok=True)
                 result, _ = self.sign(FAIL_STAGE=stage)
