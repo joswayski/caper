@@ -463,7 +463,12 @@ final class CaperParityUITests: XCTestCase {
         let block = try require(app.descendants(matching: .any)["mention-card-block"], timeout: 3,
                                 "More profile actions must offer Block")
         block.tap()
+        #if os(macOS)
+        // The alert's Cancel is mirrored in the Touch Bar; take the one in the window.
+        let cancel = try require(app.windows.firstMatch.buttons["Cancel"], timeout: 5, "Block still requires confirmation")
+        #else
         let cancel = try require(app.buttons["Cancel"], timeout: 5, "Block still requires confirmation")
+        #endif
         cancel.tap()
         author.tap()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
