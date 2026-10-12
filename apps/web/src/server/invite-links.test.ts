@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import {
   createInviteLink,
+  INVITE_MAX_AGES,
+  INVITE_MAX_USES,
   inviteCode,
   inviteExpiry,
   inviteLinkSummary,
@@ -63,6 +65,15 @@ test("invite link summaries read like Discord's", () => {
     inviteLinkSummary({ ...link, channel: null, uses: 1, maxUses: null, expiresAt: null }, now),
     "1 use · Never expires",
   );
+  assert.equal(
+    inviteLinkSummary({ ...link, uses: 1_234, maxUses: 10_000, expiresAt: "2026-11-10T00:00:00Z" }, now),
+    "#feedback · 1,234 of 10,000 uses · Expires in 30 days",
+  );
+  assert.deepEqual(
+    INVITE_MAX_AGES.map((option) => option.label),
+    ["1 hour", "1 day", "7 days", "30 days", "Never"],
+  );
+  assert.equal(INVITE_MAX_USES.at(-1)?.label, "10,000 uses");
   assert.equal(inviteExpiry("2026-10-11T00:30:00Z", now), "Expires in 30 minutes");
   assert.equal(inviteExpiry("2026-10-11T01:00:00Z", now), "Expires in 1 hour");
   assert.equal(inviteExpiry("2026-10-10T23:00:00Z", now), "Expires in 1 minute");

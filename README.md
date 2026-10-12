@@ -15,7 +15,7 @@ to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
-style: each link can expire (30 minutes to 7 days, or never), cap its uses, and open
+style: each link can expire (1 hour, 1 day, 7 or 30 days, or never), cap its uses (up to 10,000), and open
 in a chosen public channel. Anyone can preview a live link; signing in returns to it
 to join. Owners list, copy and revoke links in **Manage space**; signed-in people can
 also paste a link to join from web, Android, iPhone/Mac and desktop. Opening links

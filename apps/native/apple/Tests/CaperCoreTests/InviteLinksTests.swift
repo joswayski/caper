@@ -70,6 +70,10 @@ final class InviteLinksTests: XCTestCase {
         }
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: "feedback", uses: 3, maxUses: 10, expiresIn: 6 * 86_400), now: now),
                        "#feedback · 3 of 10 uses · Expires in 6 days")
+        XCTAssertEqual(InviteLinks.useOptions.map(\.value), [nil, 1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000])
+        XCTAssertEqual(InviteLinks.useOptions.last?.label, "10,000 uses")
+        XCTAssertEqual(InviteLinks.expiryOptions.map(\.label), ["1 hour", "1 day", "7 days", "30 days", "Never"])
+        XCTAssertEqual(InviteLinks.grouped(1_234_567), "1,234,567")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 2, maxUses: nil, expiresIn: nil), now: now),
                        "2 uses · Never expires")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 1, maxUses: 1, expiresIn: 1_799), now: now),

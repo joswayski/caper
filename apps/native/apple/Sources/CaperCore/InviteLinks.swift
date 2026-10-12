@@ -55,20 +55,16 @@ public enum InviteLinks {
 
     /// "Expire after": the API's `maxAge` seconds, or nil for Never.
     public static let expiryOptions: [InviteOption<Int?>] = [
-        InviteOption(label: "30 minutes", value: 1_800), InviteOption(label: "1 hour", value: 3_600),
-        InviteOption(label: "6 hours", value: 21_600), InviteOption(label: "12 hours", value: 43_200),
-        InviteOption(label: "1 day", value: 86_400), InviteOption(label: "7 days", value: 604_800),
+        InviteOption(label: "1 hour", value: 3_600), InviteOption(label: "1 day", value: 86_400),
+        InviteOption(label: "7 days", value: 604_800), InviteOption(label: "30 days", value: 2_592_000),
         InviteOption(label: "Never", value: nil),
     ]
     public static let defaultExpiry: Int? = 604_800
 
     /// "Max uses": the API's `maxUses`, or nil for No limit.
-    public static let useOptions: [InviteOption<Int?>] = [
-        InviteOption(label: "No limit", value: nil), InviteOption(label: "1 use", value: 1),
-        InviteOption(label: "5 uses", value: 5), InviteOption(label: "10 uses", value: 10),
-        InviteOption(label: "25 uses", value: 25), InviteOption(label: "50 uses", value: 50),
-        InviteOption(label: "100 uses", value: 100),
-    ]
+    /// Spaces have no member cap, so the largest choice is a practical one.
+    public static let useOptions: [InviteOption<Int?>] = [InviteOption(label: "No limit", value: nil)]
+        + [1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000].map { InviteOption(label: plural($0, "use"), value: $0) }
 
     public static func isCode(_ value: Substring) -> Bool {
         value.count == codeLength && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
@@ -111,8 +107,8 @@ public enum InviteLinks {
     public static func meta(for link: InviteLink, now: Date = Date()) -> String {
         var parts: [String] = []
         if let channel = link.channel { parts.append("#\(channel.name)") }
-        if let maxUses = link.maxUses { parts.append("\(link.uses) of \(maxUses) \(maxUses == 1 ? "use" : "uses")") }
-        else { parts.append("\(link.uses) \(link.uses == 1 ? "use" : "uses")") }
+        if let maxUses = link.maxUses { parts.append("\(grouped(link.uses)) of \(plural(maxUses, "use"))") }
+        else { parts.append(plural(link.uses, "use")) }
         parts.append(expiry(link.expiresAt, now: now))
         return parts.joined(separator: " · ")
     }
@@ -130,7 +126,18 @@ public enum InviteLinks {
         return "Expires in \(plural(Int((seconds / 86_400).rounded()), "day"))"
     }
 
-    private static func plural(_ count: Int, _ unit: String) -> String { "\(count) \(unit)\(count == 1 ? "" : "s")" }
+    private static func plural(_ count: Int, _ unit: String) -> String { "\(grouped(count)) \(unit)\(count == 1 ? "" : "s")" }
+
+    /// "10,000", independent of the device locale like the rest of the copy.
+    static func grouped(_ count: Int) -> String {
+        let digits = Array(String(count.magnitude))
+        var result = count < 0 ? "-" : ""
+        for (index, digit) in digits.enumerated() {
+            if index > 0 && (digits.count - index) % 3 == 0 { result.append(",") }
+            result.append(digit)
+        }
+        return result
+    }
 
     /// RFC 3339 with or without (any number of) fractional digits.
     static func date(_ value: String) -> Date? {

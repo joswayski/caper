@@ -136,8 +136,10 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     );
     for body in [
         json!({"maxAge":60}),
+        json!({"maxAge":1800}),
         json!({"maxUses":0}),
         json!({"maxUses":7}),
+        json!({"maxUses":10001}),
     ] {
         assert_eq!(
             create(owner, body).await.unwrap_err().status,
@@ -251,7 +253,7 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         join(late, &revoked).await.unwrap_err().status,
         StatusCode::NOT_FOUND
     );
-    let (_, expired) = create(owner, json!({"maxAge":1800})).await.unwrap();
+    let (_, expired) = create(owner, json!({"maxAge":3600})).await.unwrap();
     let expired = expired["code"].as_str().unwrap().to_owned();
     sqlx::query(
         "UPDATE public.space_invite_links SET expires_at=now()-interval '1 second' WHERE code=$1",

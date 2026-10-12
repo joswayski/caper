@@ -11,19 +11,18 @@ const CODE_LENGTH: usize = 10;
 
 /// "Expire after" choices in seconds, as the API accepts them; `None` never
 /// expires. Seven days is the default.
-pub const EXPIRY_CHOICES: [(Option<u32>, &str); 7] = [
-    (Some(1_800), "30 minutes"),
+pub const EXPIRY_CHOICES: [(Option<u32>, &str); 5] = [
     (Some(3_600), "1 hour"),
-    (Some(21_600), "6 hours"),
-    (Some(43_200), "12 hours"),
     (Some(86_400), "1 day"),
     (Some(604_800), "7 days"),
+    (Some(2_592_000), "30 days"),
     (None, "Never"),
 ];
 pub const DEFAULT_EXPIRY: Option<u32> = Some(604_800);
 
-/// "Max uses" choices; `None` (the default) allows unlimited joins.
-pub const USE_CHOICES: [(Option<u32>, &str); 7] = [
+/// "Max uses" choices; `None` (the default) allows unlimited joins. Spaces
+/// have no member cap, so the largest choice is a practical one.
+pub const USE_CHOICES: [(Option<u32>, &str); 11] = [
     (None, "No limit"),
     (Some(1), "1 use"),
     (Some(5), "5 uses"),
@@ -31,6 +30,10 @@ pub const USE_CHOICES: [(Option<u32>, &str); 7] = [
     (Some(25), "25 uses"),
     (Some(50), "50 uses"),
     (Some(100), "100 uses"),
+    (Some(500), "500 uses"),
+    (Some(1_000), "1,000 uses"),
+    (Some(5_000), "5,000 uses"),
+    (Some(10_000), "10,000 uses"),
 ];
 
 pub const INVALID_LINK: &str = "This invite link is invalid or has expired.";
@@ -134,7 +137,11 @@ pub fn link_meta(link: &InviteLink, now: DateTime<Utc>) -> String {
         parts.push(format!("#{}", channel.name));
     }
     parts.push(match link.max_uses {
-        Some(max) => format!("{} of {max} uses", link.uses),
+        Some(max) => format!(
+            "{} of {}",
+            grouped(u64::from(link.uses)),
+            plural(u64::from(max), "use")
+        ),
         None => plural(u64::from(link.uses), "use"),
     });
     parts.push(match &link.expires_at {
@@ -170,8 +177,21 @@ pub fn plural(count: u64, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {
-        format!("{count} {noun}s")
+        format!("{} {noun}s", grouped(count))
     }
+}
+
+/// "10,000"
+fn grouped(count: u64) -> String {
+    let digits = count.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 /// The label of a picker choice.
@@ -342,5 +362,11 @@ mod tests {
         assert_eq!(plural(1, "member"), "1 member");
         assert_eq!(plural(0, "member"), "0 members");
         assert_eq!(plural(12, "member"), "12 members");
+        assert_eq!(plural(10_000, "use"), "10,000 uses");
+        assert_eq!(grouped(1_234_567), "1,234,567");
+        assert_eq!(grouped(999), "999");
+        for (value, label) in USE_CHOICES.iter().skip(1) {
+            assert_eq!(plural(u64::from(value.unwrap()), "use"), *label);
+        }
     }
 }

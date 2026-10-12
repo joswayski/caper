@@ -442,21 +442,27 @@ export interface InviteLinkOptions {
   maxUses: number | null;
 }
 
-/** Discord's choices; the API accepts only these. */
+/** The API accepts only these. */
 export const INVITE_MAX_AGES: { label: string; value: number | null }[] = [
-  { label: "30 minutes", value: 1_800 },
   { label: "1 hour", value: 3_600 },
-  { label: "6 hours", value: 21_600 },
-  { label: "12 hours", value: 43_200 },
   { label: "1 day", value: 86_400 },
   { label: "7 days", value: 604_800 },
+  { label: "30 days", value: 2_592_000 },
   { label: "Never", value: null },
 ];
 export const INVITE_MAX_USES: { label: string; value: number | null }[] = [
   { label: "No limit", value: null },
-  ...[1, 5, 10, 25, 50, 100].map((value) => ({ label: `${value} ${value === 1 ? "use" : "uses"}`, value })),
+  ...[1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000].map((value) => ({
+    label: `${count(value)} ${value === 1 ? "use" : "uses"}`,
+    value,
+  })),
 ];
 export const DEFAULT_INVITE_MAX_AGE = 604_800;
+
+/** "10,000" */
+function count(value: number) {
+  return value.toLocaleString("en-US");
+}
 
 const INVITE_CODE = /^[A-Za-z0-9]{10}$/;
 
@@ -477,8 +483,8 @@ export function inviteUrl(code: string, origin = window.location.origin) {
 export function inviteLinkSummary(link: InviteLink, now = Date.now()) {
   const uses =
     link.maxUses === null
-      ? `${link.uses} ${link.uses === 1 ? "use" : "uses"}`
-      : `${link.uses} of ${link.maxUses} ${link.maxUses === 1 ? "use" : "uses"}`;
+      ? `${count(link.uses)} ${link.uses === 1 ? "use" : "uses"}`
+      : `${count(link.uses)} of ${count(link.maxUses)} ${link.maxUses === 1 ? "use" : "uses"}`;
   return [link.channel && `#${link.channel.name}`, uses, inviteExpiry(link.expiresAt, now)].filter(Boolean).join(" · ");
 }
 

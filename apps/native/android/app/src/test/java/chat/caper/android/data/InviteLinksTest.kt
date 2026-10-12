@@ -68,11 +68,14 @@ class InviteLinksTest {
         assertEquals("4 members", inviteMemberCount(4))
     }
 
-    @Test fun `pickers offer Discord's choices with web's defaults`() {
-        assertEquals(listOf(1_800, 3_600, 21_600, 43_200, 86_400, 604_800, null), INVITE_MAX_AGES.map { it.first })
+    @Test fun `pickers offer the API's choices with web's defaults`() {
+        assertEquals(listOf(3_600, 86_400, 604_800, 2_592_000, null), INVITE_MAX_AGES.map { it.first })
         assertEquals(604_800, DEFAULT_INVITE_MAX_AGE)
-        assertEquals(listOf(null, 1, 5, 10, 25, 50, 100), INVITE_MAX_USES.map { it.first })
+        assertEquals(listOf(null, 1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000), INVITE_MAX_USES.map { it.first })
         assertEquals("No limit", INVITE_MAX_USES.first().second)
+        assertEquals("1 use", INVITE_MAX_USES[1].second)
+        assertEquals("10,000 uses", INVITE_MAX_USES.last().second)
+        assertEquals("1,234 of 10,000 uses", inviteUsesLabel(1_234, 10_000))
     }
 
     @Test fun `invalid links read as web's sentence`() {

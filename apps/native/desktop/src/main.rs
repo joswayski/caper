@@ -14504,6 +14504,9 @@ impl CaperApp {
         }
         if manage {
             ui.separator();
+            self.invite_link_section(ui);
+            ui.add_space(14.0);
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.label(bold("Members").size(14.0));
                 egui::Frame::new()
@@ -14546,10 +14549,6 @@ impl CaperApp {
                     }
                 });
             }
-            ui.add_space(14.0);
-            ui.separator();
-            // Below Members on desktop so username invites stay in view.
-            self.invite_link_section(ui);
             ui.add_space(14.0);
             ui.separator();
             ui.label(RichText::new("Delete space").size(14.0));
@@ -23480,8 +23479,8 @@ mod tests {
         let invite = |app: &mut CaperApp, username: &str| {
             app.member_username = username.into();
             render(app, &context, vec![]);
-            let output = render(app, &context, vec![]);
-            click(app, &context, text_position(&output, "Invite"));
+            let position = scrolled_text_position(app, &context, "Invite");
+            click(app, &context, position);
         };
         invite(&mut app, "maya");
         assert_eq!(
@@ -23512,11 +23511,12 @@ mod tests {
             .unwrap();
         app.receive();
         assert!(app.member_username.is_empty());
-        let output = render(&mut app, &context, vec![]);
-        assert!(shows(
-            &output,
-            "Invitation sent. They must accept before joining."
-        ));
+        // Panics unless the confirmation is shown.
+        scrolled_text_position(
+            &mut app,
+            &context,
+            "Invitation sent. They must accept before joining.",
+        );
 
         invite(&mut app, "ghost");
         events
@@ -25476,9 +25476,9 @@ mod tests {
                 Some(fixture),
             );
             render(&mut app, &context, vec![]);
-            let output = render(&mut app, &context, vec![]);
             // The owner has no Remove; the first belongs to Maya.
-            click(&mut app, &context, text_position(&output, "Remove"));
+            let position = scrolled_text_position(&mut app, &context, "Remove");
+            click(&mut app, &context, position);
             assert!(
                 matches!(&app.dialog, Some(Dialog::RemoveMember { member, .. }) if member == "fixture-maya"),
                 "{fixture}"
@@ -25533,8 +25533,8 @@ mod tests {
                 );
                 app.token = Some("account-token".into());
                 render(&mut app, &context, vec![]);
-                let output = render(&mut app, &context, vec![]);
-                click(&mut app, &context, text_position(&output, "Remove"));
+                let position = scrolled_text_position(&mut app, &context, "Remove");
+                click(&mut app, &context, position);
                 render(&mut app, &context, vec![]);
                 let output = render(&mut app, &context, vec![]);
                 click(&mut app, &context, text_position(&output, "Remove"));
@@ -26465,6 +26465,35 @@ mod tests {
             status.top() - divider,
             account_top - status.bottom()
         );
+    }
+
+    /// Like `text_position`, scrolling the open dialog down until `label` is
+    /// painted: Manage space's Invite link section can push Members below
+    /// the fold at the test window size.
+    fn scrolled_text_position(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        label: &str,
+    ) -> egui::Pos2 {
+        for _ in 0..12 {
+            let output = render(app, context, vec![]);
+            if shows(&output, label) {
+                return text_position(&output, label);
+            }
+            render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(720.0, 450.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -200.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        panic!("missing {label} after scrolling")
     }
 
     fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {

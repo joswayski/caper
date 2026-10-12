@@ -29,23 +29,24 @@ fun inviteCode(input: String): String? {
 /** `<origin>/invite/<code>`, for the configured API origin. */
 fun inviteLinkUrl(origin: String, code: String): String = "${origin.trimEnd('/')}/invite/$code"
 
-/** Discord's "Expire after" choices, in seconds; null never expires. */
+/** "Expire after" choices, in seconds; null never expires. */
 val INVITE_MAX_AGES: List<Pair<Int?, String>> = listOf(
-    1_800 to "30 minutes", 3_600 to "1 hour", 21_600 to "6 hours", 43_200 to "12 hours",
-    86_400 to "1 day", 604_800 to "7 days", null to "Never",
+    3_600 to "1 hour", 86_400 to "1 day", 604_800 to "7 days", 2_592_000 to "30 days", null to "Never",
 )
 const val DEFAULT_INVITE_MAX_AGE = 604_800
 
-/** Discord's "Max uses" choices; null has no limit (the default). */
-val INVITE_MAX_USES: List<Pair<Int?, String>> = listOf(
-    null to "No limit", 1 to "1 use", 5 to "5 uses", 10 to "10 uses", 25 to "25 uses", 50 to "50 uses", 100 to "100 uses",
-)
+/** "Max uses" choices; null has no limit (the default). */
+val INVITE_MAX_USES: List<Pair<Int?, String>> = listOf<Pair<Int?, String>>(null to "No limit") +
+    listOf(1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000).map { it to plural(it.toLong(), "use") }
 
-private fun plural(count: Long, one: String, many: String = "${one}s") = "$count ${if (count == 1L) one else many}"
+/** "10,000" */
+private fun grouped(count: Long) = String.format(java.util.Locale.US, "%,d", count)
+
+private fun plural(count: Long, one: String, many: String = "${one}s") = "${grouped(count)} ${if (count == 1L) one else many}"
 
 /** "3 of 10 uses", or "2 uses" without a limit. */
 fun inviteUsesLabel(uses: Int, maxUses: Int?): String =
-    if (maxUses != null) "$uses of $maxUses uses" else plural(uses.toLong(), "use")
+    if (maxUses != null) "${grouped(uses.toLong())} of ${plural(maxUses.toLong(), "use")}" else plural(uses.toLong(), "use")
 
 /** "Expires in 6 days", "Never expires", or "Expired". Null when [expiresAt] can't be read. */
 fun inviteExpiryLabel(expiresAt: String?, now: Instant): String? {

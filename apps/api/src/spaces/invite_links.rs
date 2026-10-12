@@ -6,9 +6,10 @@ use super::*;
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
-/// Same choices Discord offers, in seconds; `None` never expires.
-const MAX_AGES: [i64; 6] = [1_800, 3_600, 21_600, 43_200, 86_400, 604_800];
-const MAX_USES: [i32; 6] = [1, 5, 10, 25, 50, 100];
+/// 1 hour, 1 day, 7 days or 30 days, in seconds; `None` never expires.
+const MAX_AGES: [i64; 4] = [3_600, 86_400, 604_800, 2_592_000];
+/// Spaces have no member cap, so the largest choice is a practical one.
+const MAX_USES: [i32; 10] = [1, 5, 10, 25, 50, 100, 500, 1_000, 5_000, 10_000];
 const ACTIVE_LINKS_PER_SPACE: i64 = 100;
 const LIVE: &str = "l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > now())
      AND (l.max_uses IS NULL OR l.uses < l.max_uses)";
