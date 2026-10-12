@@ -101,7 +101,6 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             <span className="experimental-warning">
               Caper is a work in progress and may contain bugs or incomplete features.
             </span>{" "}
-            {!mobileBetas.android && <>The Android beta is coming soon. </>}
             Have feedback? Reach out on <ContactLinks />
           </p>
           <p className="made-by">
