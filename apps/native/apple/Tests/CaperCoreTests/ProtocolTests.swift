@@ -256,15 +256,35 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
-    func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() {
+    func testThreadRetryKeepsDestinationAndSharedBroadcastIdentity() throws {
         var delivery = ChatDeliveryState(cursor: "41")
-        let command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, makeID: { "stable" })
+        let fullText = String(repeating: "a", count: 199) + "🙂🚀" + String(repeating: "z", count: 3799)
+        let source = MessageReply(message: ChatMessage(id: "quoted", channelId: "channel", seq: "1",
+            author: ChatAuthor(id: "source-author", name: "Source", isGuest: false),
+            content: ChatContent(version: 1, type: "text", text: fullText),
+            createdAt: "2026-10-06T00:00:00Z", clientMessageId: "old"))
+        XCTAssertEqual(source.text, String(repeating: "a", count: 199) + "🙂")
+        XCTAssertEqual(source.fullText, fullText)
+        let encoded = try JSONEncoder().encode(source)
+        XCTAssertEqual(try JSONDecoder().decode(MessageReply.self, from: encoded), source)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "fullText")
+        XCTAssertNil(try JSONDecoder().decode(MessageReply.self, from: JSONSerialization.data(withJSONObject: legacy)).fullText)
+        var command = delivery.begin(text: "original", threadRootId: "root", broadcast: true, replyTo: source, makeID: { "stable" })
         XCTAssertEqual(delivery.begin(text: "edited", threadRootId: "other", broadcast: false), command)
+        command = try XCTUnwrap(delivery.replaceAttachments(id: command.id, attachments: []))
+        XCTAssertNotEqual(command.id, "stable")
+        XCTAssertEqual(command.text, "original")
+        XCTAssertEqual(command.threadRootId, "root")
+        XCTAssertTrue(command.broadcast)
+        XCTAssertEqual(command.replyTo, source, "upload recovery retains the original quote")
         var reply = ChatMessage(id: "reply", channelId: "channel", seq: "42",
             author: ChatAuthor(id: "author", name: "Author", isGuest: false),
             content: ChatContent(version: 1, type: "text", text: "original"),
             createdAt: "2026-10-06T00:00:00Z", clientMessageId: command.id,
             threadRootId: "root", broadcast: true)
+        XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
+        reply.replyTo = source
         XCTAssertTrue(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))
         reply.broadcast = false
         XCTAssertFalse(MessageValidation.acceptsResponse(reply, channelID: "channel", command: command, authorID: "author"))

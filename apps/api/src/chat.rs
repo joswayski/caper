@@ -571,6 +571,7 @@ struct SendInput {
     thread_root_id: Option<String>,
     #[serde(default)]
     broadcast: bool,
+    reply_to_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -737,6 +738,7 @@ async fn send(
         &input.attachment_ids,
         input.thread_root_id.as_deref(),
         input.broadcast,
+        input.reply_to_id.as_deref(),
     )
     .await?;
     chat.wake.notify_one();
@@ -854,7 +856,18 @@ async fn persist(
     client_id: Uuid,
     text: &str,
 ) -> Result<Value, ApiError> {
-    send_message(pool, channel, token, client_id, text, &[], None, false).await
+    send_message(
+        pool,
+        channel,
+        token,
+        client_id,
+        text,
+        &[],
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -867,7 +880,18 @@ async fn persist_message(
     root: Option<&str>,
     broadcast: bool,
 ) -> Result<Value, ApiError> {
-    send_message(pool, channel, token, client_id, text, &[], root, broadcast).await
+    send_message(
+        pool,
+        channel,
+        token,
+        client_id,
+        text,
+        &[],
+        root,
+        broadcast,
+        None,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -880,6 +904,7 @@ pub(crate) async fn send_message(
     attachment_ids: &[String],
     root: Option<&str>,
     broadcast: bool,
+    reply_to: Option<&str>,
 ) -> Result<Value, ApiError> {
     if attachment_ids.len() > assets::MAX_PER_MESSAGE
         || attachment_ids
@@ -959,6 +984,7 @@ pub(crate) async fn send_message(
             && original == hash
             && payload.get("threadRootId").and_then(Value::as_str) == root
             && payload["broadcast"].as_bool().unwrap_or(false) == broadcast
+            && payload["replyTo"]["id"].as_str() == reply_to
         {
             Ok(enrich_author(
                 payload,
@@ -976,6 +1002,43 @@ pub(crate) async fn send_message(
         Some(sqlx::query_as("SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND thread_root_id IS NULL")
             .bind(channel_id).bind(root).fetch_optional(&mut *tx).await.map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "thread not found"))?)
+    } else {
+        None
+    };
+    // A reply is a regular message, not a thread membership or a forward.
+    // Resolve its reference inside the already-authorized, locked channel.
+    // Keep only a bounded snapshot, never nested quotes, media URLs or mentions.
+    let reference = if let Some(reply_to) = reply_to {
+        let target: Option<(Value, Option<i16>, Option<String>)> = sqlx::query_as(
+            "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL
+             WHERE m.channel_id=$1 AND m.external_id=$2 AND
+               (($3::bigint IS NULL AND (m.thread_root_id IS NULL OR m.broadcast)) OR m.id=$3 OR m.thread_root_id=$3)",
+        )
+        .bind(channel_id)
+        .bind(reply_to)
+        .bind(thread_root.as_ref().map(|row| row.0))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        let (target, avatar, name) =
+            target.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
+        let target = enrich_author(target, avatar, name.as_deref());
+        let text = target["content"]["text"].as_str().unwrap_or_default();
+        let text = if text.is_empty() && target.get("forward").is_some() {
+            "Forwarded message"
+        } else {
+            text
+        };
+        // Older clients reject quotes whose legacy preview exceeds 200 scalars.
+        let preview = text.chars().take(200).collect::<String>();
+        let mut reference = json!({"id":reply_to,"author":target["author"],"text":preview,"hasAttachments":target["content"]["attachments"].as_array().is_some_and(|files| !files.is_empty())});
+        if text.chars().count() > 200 {
+            reference["fullText"] = json!(text);
+        }
+        if let Some(root) = target["threadRootId"].as_str() {
+            reference["threadRootId"] = json!(root);
+        }
+        Some(reference)
     } else {
         None
     };
@@ -1015,6 +1078,9 @@ pub(crate) async fn send_message(
     let seq = head + 1;
     let id = random_id(15);
     let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    if let Some(reference) = reference {
+        payload["replyTo"] = reference;
+    }
     // Stamped when sent, so a look-alike display name can never claim it.
     if admin {
         payload["author"]["admin"] = json!(true);

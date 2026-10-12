@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -78,14 +79,23 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -130,6 +140,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -182,6 +193,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -1711,7 +1724,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             pending?.error?.let { error ->
                 Text(error, color = ErrorText)
                 if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending()?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
+                    TextButton({ viewModel.discardPending(restoreReply = true)?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
                     TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
                 } else TextButton(::send, shape = MaterialTheme.shapes.small) { Text("Retry send") }
             }
@@ -1720,6 +1733,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
         if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+            state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
                     visualTransformation = MentionVisualTransformation(mentionSource(state)),
@@ -1986,6 +2000,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // with messages instead of clipping them above a blank strip.
             else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 12.dp)) {
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
+                state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
                 state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
                     pending.threadRootId?.let { root ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2367,6 +2382,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
                         openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
+                        openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId)) {} },
                         openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
@@ -2391,8 +2407,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 // Your unsent message joins your run like a sent one.
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
-                    pending.threadRootId, jumpTarget = state.focusedMessageId)
+                    pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
+                    pending.replyTo?.let { ReplyContext(it, state) }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
@@ -2431,6 +2448,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
             onReply = if (inThread) null else ({ actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) }),
+            onReplyMessage = if (state.canParticipate && state.pendingMessage == null) ({ actionTarget = null; viewModel.replyTo(presented, inThread) }) else null,
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
@@ -2655,6 +2673,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: (MessageMention) -> Unit = {},
     openAuthor: ((ChatAuthor) -> Unit)? = null,
+    openReference: ((MessageReply) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
     openActions: (ChatMessage) -> Unit,
@@ -2664,10 +2683,12 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     // A message that mentions you: terracotta wash with a 2dp leading edge.
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    Column(if (!mentioned) Modifier else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+    val replyWash = message.replyTo != null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    Column(if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }) {
+        message.replyTo?.let { reference -> ReplyContext(reference, state, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
             onClick = {},
@@ -2717,6 +2738,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     openPicker: () -> Unit,
     setPin: (String, Boolean) -> Unit = { _, _ -> },
     onReply: (() -> Unit)? = null,
+    onReplyMessage: (() -> Unit)? = null,
     forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
@@ -2763,6 +2785,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
                         HorizontalDivider(color = Border)
                     }
+                    onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
                     onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
                     onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
                     if (message.forward == null && message.revision > 1) onHistory?.let { SheetAction("View edit history", onClick = it); HorizontalDivider(color = Border) }
@@ -2822,6 +2845,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
+                    openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), close) },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
@@ -2851,6 +2875,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             openPicker = { actionTarget = null; pickerTarget = current },
             setPin = { id, active -> actionTarget = null; viewModel.setPin(id, active) },
             onReply = { actionTarget = null; close(); viewModel.openThread(current.threadRootId ?: current.id) },
+            onReplyMessage = { actionTarget = null; close(); viewModel.replyTo(current) },
             forward = { actionTarget = null; forwardTarget = current },
             onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,
             onHistory = { actionTarget = null; historyTarget = current })
@@ -2915,6 +2940,137 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         }
     }
 }
+@Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
+    val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
+    val text = (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
+    val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
+    val surface = MaterialTheme.colorScheme.surface
+    var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
+    var clipped by remember(reference.id, hidden) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val still by produceState(false, context) {
+        val resolver = context.contentResolver
+        val setting = android.provider.Settings.Global.ANIMATOR_DURATION_SCALE
+        fun disabled() = android.provider.Settings.Global.getFloat(resolver, setting, 1f) == 0f
+        value = disabled()
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { value = disabled() }
+        }
+        resolver.registerContentObserver(android.provider.Settings.Global.getUriFor(setting), false, observer)
+        awaitDispose { resolver.unregisterContentObserver(observer) }
+    }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current.density
+    val canExpand = !hidden && (preview != text || clipped)
+    var excerptHeight by remember(reference.id) { mutableIntStateOf((54 * density).toInt()) }
+    var buttonHeight by remember(reference.id) { mutableIntStateOf((48 * density).toInt()) }
+    var previousY by remember(reference.id) { mutableStateOf<Float?>(null) }
+    var displacement by remember(reference.id) { mutableFloatStateOf(0f) }
+    var velocity by remember(reference.id) { mutableFloatStateOf(0f) }
+    var motion by remember(reference.id) { mutableStateOf<Job?>(null) }
+    DisposableEffect(hidden, still) {
+        onDispose { motion?.cancel(); displacement = 0f; velocity = 0f }
+    }
+    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
+    Column(Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
+        val y = coordinates.positionInWindow().y / density
+        val delta = (previousY ?: y) - y
+        previousY = y
+        if (!hidden && !still && delta != 0f) {
+            velocity = (velocity + delta * 0.8f).coerceIn(-60f, 60f)
+            if (motion?.isActive != true) motion = scope.launch {
+                var previousTime = withFrameNanos { it }
+                while (isActive) {
+                    val time = withFrameNanos { it }
+                    val dt = ((time - previousTime) / 1_000_000_000f).coerceAtMost(0.032f)
+                    previousTime = time
+                    velocity -= (180f * displacement + 20f * velocity) * dt
+                    displacement = (displacement + velocity * dt).coerceIn(-4f, 4f)
+                    if (abs(displacement) < 0.01f && abs(velocity) < 0.05f) break
+                }
+                displacement = 0f; velocity = 0f
+            }
+        }
+    }.drawWithContent {
+        drawContent()
+        if (hidden) return@drawWithContent
+        val sourceX = 74.dp.toPx(); val sourceY = 24.dp.toPx()
+        val targetX = 18.dp.toPx(); val bottom = size.height + 27.dp.toPx()
+        val angle = displacement * 0.025f
+        val dx = 12.dp.toPx() * cos(angle); val dy = 12.dp.toPx() * sin(angle)
+        val start = Offset(targetX - dx, bottom + dy)
+        val end = Offset(sourceX - dx, sourceY - dy)
+        val span = start.y - end.y
+        val offset = displacement.dp.toPx()
+        val path = Path().apply {
+            moveTo(start.x, start.y)
+            cubicTo(start.x - 7.dp.toPx() + offset, start.y - span * 0.3f,
+                end.x - 30.dp.toPx() + offset, end.y + span * 0.3f, end.x, end.y)
+        }
+        drawPath(path, TextMuted.copy(alpha = 0.75f), style = Stroke(1.1.dp.toPx(), cap = StrokeCap.Round))
+        replySocket(Offset(sourceX, sourceY), angle * 180f / kotlin.math.PI.toFloat())
+        replySocket(Offset(targetX, bottom), -angle * 180f / kotlin.math.PI.toFloat())
+    }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
+        Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
+            Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Column(Modifier.padding(bottom = if (expanded && canExpand) (buttonHeight / density).dp + 6.dp else 0.dp)
+                    .fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
+                        Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+                    }
+                    if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier
+                        .heightIn(min = if (!expanded && canExpand) 54.dp else 0.dp)
+                        .onSizeChanged { if (!expanded) excerptHeight = it.height }.drawWithContent {
+                        drawContent()
+                        if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
+                            listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.4f, endY = size.height,
+                        ))
+                    }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
+                        maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
+                }
+                if (canExpand) {
+                    val interaction = remember { MutableInteractionSource() }
+                    val hovered by interaction.collectIsHoveredAsState()
+                    Button({ expanded = !expanded }, Modifier.align(Alignment.BottomCenter)
+                        .offset { IntOffset(0, if (expanded) 0 else (buttonHeight / 2f - excerptHeight * 0.3f).toInt()) }
+                        .heightIn(min = 44.dp).onSizeChanged { buttonHeight = it.height },
+                        shape = RoundedCornerShape(percent = 50), interactionSource = interaction,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (hovered) Color.White else chat.caper.android.ui.Text, contentColor = Blackout)) {
+                        Text(if (expanded) "Show less" else "Show more", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun DrawScope.replySocket(position: Offset, angle: Float) {
+    withTransform({ translate(position.x, position.y); rotate(angle, Offset.Zero); scale(density, density, Offset.Zero) }) {
+        val cup = Path().apply {
+            moveTo(-12f, -2.4f); quadraticTo(-13f, 0f, -12f, 2.4f)
+            lineTo(-1f, 4.5f); lineTo(-1f, -4.5f); close()
+        }
+        drawPath(cup, Brush.verticalGradient(0f to Color(0xFF646B70), 0.32f to Color(0xFFA2A9AD), 0.55f to Color(0xFF70787D), 1f to Color(0xFF30363A), startY = -4.5f, endY = 4.5f))
+        drawPath(cup, Border, style = Stroke(0.6f))
+        drawLine(Color(0xFFC3C8CB).copy(alpha = 0.35f), Offset(-11f, -1.6f), Offset(-3f, -3f), strokeWidth = 0.6f)
+        drawOval(Color(0xFF252A2D), Offset(-2.6f, -4.5f), Size(3.2f, 9f))
+        drawOval(Terracotta, Offset(-2.6f, -4.5f), Size(3.2f, 9f), style = Stroke(0.8f))
+        drawOval(Color(0xFF151719), Offset(-1.7f, -3.4f), Size(1.4f, 6.8f))
+    }
+}
+
+@Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {
+    val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
+    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
+        Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        TextButton(onCancel, shape = MaterialTheme.shapes.small) { Text("Cancel reply") }
+    }
+}
+
 /** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },

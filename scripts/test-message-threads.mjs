@@ -1,6 +1,7 @@
 // Disposable loopback fixture + Chromium. Narrow/touch checks are not native-device acceptance.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -89,6 +90,9 @@ const open = (id) => {
   wait(
     '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
   );
+  evaluate(
+    "Promise.all(document.querySelector('.chat-thread-panel').getAnimations().map(animation => animation.finished))",
+  );
   assert.deepEqual(
     evaluate(`(() => {
       const replies = document.querySelector('.chat-thread-messages');
@@ -100,7 +104,7 @@ const open = (id) => {
 };
 const reply = (text) => {
   browser("fill", "#chat-thread-reply", text);
-  browser("click", ".chat-thread-send-row button");
+  browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
   wait(
     '!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""',
   );
@@ -237,7 +241,7 @@ const checkReplyDelivery = async (root, other, layout) => {
     open(root.clientMessageId);
     browser("fill", "#chat-thread-reply", `TEST FIXTURE — ${layout} reply ${status}`);
     browser(layout === "desktop" ? "check" : "uncheck", ".chat-thread-send-row input");
-    browser("click", ".chat-thread-send-row button");
+    browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
     wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
     assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null, "Normal sends are quiet");
     if (status === 503) screenshot(`threads-${layout}-sending`);
@@ -278,7 +282,7 @@ const checkReplyDelivery = async (root, other, layout) => {
         evaluate('document.querySelector("#chat-thread-reply").value'),
         `TEST FIXTURE — ${layout} reply ${status}`,
       );
-      browser("click", ".chat-thread-send-row button");
+      browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
       wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
       evaluate("window.releaseReply(422)");
       wait('!!document.querySelector(".chat-thread-panel [role=alert]")');
@@ -324,6 +328,203 @@ const checkReplyDelivery = async (root, other, layout) => {
     );
   }
   evaluate("window.restoreReplyFetch()");
+};
+
+const checkLongQuotePreview = async (layout) => {
+  const session = async (token) => {
+    const auth = { authorization: `Bearer ${token}`, "content-type": "application/json", connection: "close" };
+    const response = await fetch(`${api}/api/chat/session`, { method: "POST", headers: auth, body: "{}" });
+    assert.equal(response.status, 200);
+    return { ...auth, "x-caper-chat-token": (await response.json()).token };
+  };
+  const peer = await session("fixture-member-token");
+  const own = await session("fixture-owner-token");
+  const fullText =
+    "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the original.\nThe quote preserves the original wording and line breaks, even if the source is edited later. This longer paragraph makes the three-line preview wrap on both wide and narrow screens.\nShow more reveals the complete saved quote; View original jumps to the live message.\nhttps://example.test/" +
+    "a-long-unbroken-path-".repeat(9) +
+    "END-OF-QUOTE";
+  const preview =
+    "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the ori…";
+  const send = async (auth, text, replyToId) => {
+    const response = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ text, clientMessageId: randomUUID(), ...(replyToId ? { replyToId } : {}) }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const source = await send(peer, fullText);
+  const quoted = await send(
+    own,
+    "TEST FIXTURE — Following up on this message, with the full original available in the quote.",
+    source.id,
+  );
+  assert.equal(quoted.replyTo.fullText, fullText);
+  assert.equal([...quoted.replyTo.text].length, 200);
+  const selector = `.chat-panel .chat-scroller ${row(quoted.clientMessageId)}`;
+  // Source navigation and a viewport change can leave the virtualized list at
+  // a history anchor. Use the normal latest-message shortcut, not its temporary
+  // hydration preview, before interacting with the newly delivered quote.
+  wait(
+    '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
+  );
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
+  wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
+  browser("scrollintoview", selector);
+  const geometry = () =>
+    evaluate(`(() => {
+    const row = document.querySelector('${selector}');
+    const quote = row.querySelector('.chat-reply-context');
+    const excerpt = quote.querySelector('.chat-reply-excerpt');
+    const avatar = row.querySelector(':scope > .chat-avatar').getBoundingClientRect();
+    const line = quote.querySelector('svg').getBoundingClientRect();
+    const source = quote.querySelector('.chat-reply-avatar').getBoundingClientRect();
+    const beam = quote.querySelector('.chat-reply-route');
+    const end = beam.getPointAtLength(beam.getTotalLength()).matrixTransform(beam.getScreenCTM());
+    const start = beam.getPointAtLength(0).matrixTransform(beam.getScreenCTM());
+    const sourceSocket = quote.querySelector('.chat-reply-socket-source').getScreenCTM();
+    const targetSocket = quote.querySelector('.chat-reply-socket-target').getScreenCTM();
+    const sourceMouth = new DOMPoint(0, 0).matrixTransform(sourceSocket);
+    const targetMouth = new DOMPoint(0, 0).matrixTransform(targetSocket);
+    const sourceBack = new DOMPoint(-12, 0).matrixTransform(sourceSocket);
+    const targetBack = new DOMPoint(-12, 0).matrixTransform(targetSocket);
+    const card = quote.querySelector('.chat-reply-body').getBoundingClientRect();
+    const expand = quote.querySelector('.chat-reply-expand').getBoundingClientRect();
+    const excerptBounds = excerpt.getBoundingClientRect();
+    const heading = quote.querySelector('.chat-reply-heading').getBoundingClientRect();
+    return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
+      expandCenter: Math.abs(expand.left + expand.width / 2 - card.left - card.width / 2), expandHeight: expand.height,
+      fadeCenter: Math.abs(expand.top + expand.height / 2 - excerptBounds.top - excerptBounds.height * 0.7),
+      footerHeight: card.bottom - excerptBounds.bottom, headingGap: expand.top - heading.bottom,
+      connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
+      sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
+      replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
+      wireConnection: Math.max(Math.hypot(end.x - sourceBack.x, end.y - sourceBack.y), Math.hypot(start.x - targetBack.x, start.y - targetBack.y)),
+      separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
+      quoteHeight: quote.getBoundingClientRect().height };
+  })()`);
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), preview);
+  const collapsed = geometry();
+  assert.equal(collapsed.clamp, "3");
+  assert.ok(collapsed.height <= 54);
+  assert.notEqual(collapsed.mask, "none", "The collapsed quote fades into its dark card");
+  assert.ok(collapsed.expandCenter < 1, "Show more is centered in the quote card");
+  assert.ok(collapsed.fadeCenter < 1, "Show more floats at the midpoint of the lower-60% fade");
+  assert.ok(collapsed.footerHeight <= 12, "Show more does not allocate a separate footer row");
+  assert.ok(collapsed.headingGap >= 1, "The floating pill stays below the original author heading");
+  assert.ok(
+    collapsed.expandHeight >= (layout === "desktop" ? 32 : 44),
+    "The expansion button keeps its pointer/touch target",
+  );
+  assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
+  assert.ok(
+    collapsed.sourceConnection < 1 && collapsed.replyConnection < 1,
+    "Both avatar attachments match their rendered boundaries",
+  );
+  assert.ok(collapsed.wireConnection < 0.1, "The string stays attached to both cup backs");
+  assert.ok(collapsed.separation >= 8, "The quote card stays separate from the replying author");
+  assert.equal(collapsed.overflow, false);
+  screenshot(`reply-preview-${layout}-collapsed`);
+  browser("click", `${selector} .chat-reply-expand`);
+  wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'true'`);
+  const expanded = geometry();
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
+  assert.equal(expanded.mask, "none", "The expanded original has no fade");
+  assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
+  assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
+  assert.ok(expanded.expandCenter < 1, "Show less stays centered after expansion");
+  assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
+  assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
+  assert.ok(expanded.wireConnection < 0.1);
+  assert.ok(expanded.separation >= 8);
+  assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
+  browser("scrollintoview", selector);
+  screenshot(`reply-preview-${layout}-expanded`);
+  browser("click", `${selector} .chat-reply-expand`);
+  wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'false'`);
+  if (layout === "desktop") {
+    browser("mouse", "move", "10", "10");
+    evaluate("document.activeElement.blur()");
+    browser("wait", "1000");
+    const sampleScroll = () =>
+      evaluate(`new Promise(resolve => {
+      const quote = document.querySelector('${selector} .chat-reply-context');
+      const scroller = quote.closest('.chat-scroller');
+      const cup = quote.querySelector('.chat-reply-socket-target');
+      const wire = quote.querySelector('.chat-reply-route');
+      const initial = wire.getAttribute('d');
+      const samples = []; const start = performance.now();
+      const top = scroller.scrollTop;
+      scroller.scrollTop += top > 80 ? -64 : 64;
+      const sample = () => {
+        const rotation = Math.atan2(cup.getCTM().b, cup.getCTM().a);
+        const back = new DOMPoint(-12, 0).matrixTransform(cup.getScreenCTM());
+        const end = wire.getPointAtLength(0).matrixTransform(wire.getScreenCTM());
+        samples.push({ rotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
+        if (performance.now() - start < 1300) requestAnimationFrame(sample);
+        else resolve({ samples, initial, final: wire.getAttribute('d'), moved: Math.abs(scroller.scrollTop - top) });
+      }; requestAnimationFrame(sample);
+    })`);
+    const motion = sampleScroll();
+    assert.ok(motion.moved >= 60, "The real timeline scrolled");
+    assert.ok(
+      motion.samples.some((sample) => Math.abs(sample.rotation) > 0.008 && sample.changed),
+      "Scrolling flexes the string and tilts the cups",
+    );
+    assert.ok(
+      motion.samples.every((sample) => sample.attached < 0.1),
+      "The string remains attached throughout the spring",
+    );
+    assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
+    assert.ok(
+      motion.samples.slice(-10).every((sample) => sample.rotation === 0 && !sample.changed),
+      "No idle jiggling",
+    );
+    browser("set", "media", "dark", "reduced-motion");
+    const reduced = sampleScroll();
+    assert.ok(reduced.moved >= 60);
+    assert.ok(
+      reduced.samples.every((sample) => sample.rotation === 0 && !sample.changed),
+      "Reduced-motion connections stay still while scrolling",
+    );
+    browser("set", "media", "dark");
+    assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
+  }
+  const edited = "TEST FIXTURE — The original was edited after this reply was sent.";
+  const edit = await fetch(`${api}/api/chat/channels/chan00000001/messages/${source.id}`, {
+    method: "PUT",
+    headers: peer,
+    body: JSON.stringify({ text: edited, expectedRevision: 1 }),
+  });
+  assert.equal(edit.status, 200);
+  wait(`document.querySelector('${channel(source.clientMessageId)} p')?.textContent === ${JSON.stringify(edited)}`);
+  assert.equal(
+    evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`),
+    preview,
+    "Source edits do not rewrite a quote",
+  );
+  browser("click", `${selector} .chat-reply-view`);
+  wait(`document.querySelector('${channel(source.clientMessageId)}')?.classList.contains('chat-message-jump-target')`);
+  const block = await fetch(`${api}/api/blocks/member000001`, { method: "PUT", headers: own, body: "{}" });
+  assert.equal(block.status, 204);
+  browser("open", `${web}/spaces`);
+  wait(`document.querySelector('${selector} .chat-reply-context')?.textContent.includes('Blocked message')`);
+  assert.equal(
+    evaluate(
+      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar, ${selector} .chat-reply-connector')`,
+    ),
+    false,
+    "Blocked quote text, expansion and identity stay hidden",
+  );
+  const unblock = await fetch(`${api}/api/blocks/member000001`, { method: "DELETE", headers: own });
+  assert.equal(unblock.status, 204);
+  browser("open", `${web}/spaces`);
+  wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
+  console.log(
+    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar sockets and string attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", scroll-driven spring, attached endpoints during motion, exact settling, no idle jiggling and static reduced motion" : ""}.`,
+  );
 };
 
 let socket;
@@ -376,15 +577,21 @@ try {
     );
     assert.deepEqual(
       evaluate(
-        `['.chat-reply-thread', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`,
+        `['.chat-reply-thread', '.chat-reply-message', '.chat-add-reaction', '.chat-message-actions-trigger'].map(selector => { const rect = document.querySelector('${channel(root.clientMessageId)} ' + selector).getBoundingClientRect(); return [rect.width, rect.height]; })`,
       ),
       [
+        [24, 24],
         [24, 24],
         [24, 24],
         [24, 24],
       ],
     );
   }
+  browser("click", `${channel(root.clientMessageId)} .chat-reply-message`);
+  wait('!!document.querySelector(".chat-composer .chat-reply-draft")');
+  assert.equal(evaluate('document.activeElement === document.querySelector(".chat-composer textarea")'), true);
+  assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), false, "Reply does not open a thread");
+  browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   actions(channel(root.clientMessageId), true);
   dismissActions();
   open(root.clientMessageId);
@@ -415,7 +622,19 @@ try {
   evaluate(`document.querySelector(".chat-thread-heading span").textContent = ${JSON.stringify(originalName)}`);
   actions(thread(root.clientMessageId), false);
   dismissActions();
+  browser("click", `${thread(root.clientMessageId)} .chat-reply-message`);
+  wait('!!document.querySelector(".chat-thread-panel .chat-reply-draft")');
+  assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
+  const quoted = (
+    await (await fetch(`${api}/api/chat/channels/chan00000001/messages/${root.id}/thread`, { headers })).json()
+  ).messages.at(-1);
+  assert.equal(quoted.replyTo.id, root.id, "The quick reply action quotes the selected thread message");
+  browser("click", `${thread(quoted.clientMessageId)} .chat-reply-context`);
+  wait(
+    `!document.querySelector('.chat-thread-panel, .chat-initial-messages') && document.querySelector('${channel(root.clientMessageId)}')?.classList.contains('chat-message-jump-target') && document.querySelector('${channel(root.clientMessageId)}')?.checkVisibility({ visibilityProperty: true })`,
+  );
+  open(root.clientMessageId);
   wait(
     `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
   );
@@ -647,7 +866,12 @@ try {
   await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
   assertReplyAction(false);
   screenshot("thread-actions-mobile-reply");
-  dismissActions();
+  browser("find", "role", "button", "click", "--name", "Reply", "--exact");
+  wait(
+    '!document.querySelector(".chat-message-actions") && !!document.querySelector(".chat-thread-panel .chat-reply-draft")',
+  );
+  assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
+  browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   evaluate("history.back()");
   wait('!document.querySelector(".chat-thread-panel")');
   assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
@@ -671,8 +895,16 @@ try {
   browser("set", "viewport", "390", "844", "2");
   evaluate("document.querySelector('.chat-thread-messages').scrollTop = 1e9");
   await checkReactionFollow(root, "narrow");
+  close();
+  await cdp("Emulation.setTouchEmulationEnabled", { enabled: false }, sessionId);
+  browser("set", "viewport", "1440", "900", "2");
+  await checkLongQuotePreview("desktop");
+  await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
+  browser("set", "viewport", "390", "844", "2");
+  assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
+  await checkLongQuotePreview("mobile");
   console.log(
-    "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment, reply actions hidden on thread roots/replies and retained in the channel (desktop, narrow and touch long-press); isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
+    "PASS: thread drag/keyboard resizing, bounds, reset, draft retention, saved width after reopen/reload/mobile and window constraints; repeated clicks make zero requests and zero reply-position changes; hover/focus prefetch, cached reopening, cold-load skeletons; aligned 54px headers at 1440/1024/761/390/320px, long-name containment; Reply in thread hidden inside existing threads and retained in the channel; quick Reply selection/focus/cancel, quoted thread send, source navigation and touch long-press Reply; isolated replies, root highlight/count/avatars, shared broadcast/reaction identity, per-root drafts, Pins-return stability, loading/error/retry, quiet in-flight replies, scoped failure recovery, idempotent retry, rejected edit/dismiss, focus restoration, touch target separation, full-screen dialog, inert background and mobile Back.",
   );
 } finally {
   socket?.close();

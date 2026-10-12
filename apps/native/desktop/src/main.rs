@@ -87,8 +87,6 @@ const ON_ACTION: Color32 = BLACKOUT;
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
-/// `--pin-wash`: pin gold at 6%.
-const PIN_WASH: Color32 = Color32::from_rgba_unmultiplied_const(228, 199, 106, 15);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;
@@ -228,6 +226,7 @@ enum NavIcon {
     Users,
     Pin,
     Speech,
+    Reply,
     Mic,
     MicOff,
     Headphones,
@@ -265,6 +264,7 @@ struct PendingSend {
     rejection: Option<String>,
     thread_root_id: Option<String>,
     broadcast: bool,
+    reply_to: Option<model::MessageReply>,
 }
 
 impl PendingSend {
@@ -280,6 +280,7 @@ impl PendingSend {
                 rejection: None,
                 thread_root_id: None,
                 broadcast: false,
+                reply_to: None,
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -291,6 +292,7 @@ impl PendingSend {
                 rejection: None,
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
+                reply_to: pending.reply_to.clone(),
             },
         )
     }
@@ -300,6 +302,8 @@ impl PendingSend {
             && message.author.id == author
             && self.thread_root_id == message.thread_root_id
             && self.broadcast == message.broadcast
+            && self.reply_to.as_ref().map(|reply| &reply.id)
+                == message.reply_to.as_ref().map(|reply| &reply.id)
     }
 }
 
@@ -861,6 +865,7 @@ struct CaperApp {
     thread_request: u64,
     thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
+    reply_targets: BTreeMap<String, model::MessageReply>,
     thread_only_rows: BTreeSet<String>,
     /// Which timeline and thread rows just arrived, to settle them in.
     arrivals: motion::Arrivals,
@@ -1119,6 +1124,7 @@ impl CaperApp {
             thread_request: 0,
             thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
+            reply_targets: BTreeMap::new(),
             thread_only_rows: BTreeSet::new(),
             arrivals: motion::Arrivals::default(),
             reaction_picker: None,
@@ -1322,6 +1328,32 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name == "parity-replies" {
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: messages[0].author.clone(),
+                    });
+                    messages[1].content.text = concat!(
+                        "TEST FIXTURE — Replies stay in the conversation, so an older message can be brought back into view without moving it or changing its thread.\n",
+                        "The quote keeps the original wording, including line breaks. A longer preview gives everyone enough context to understand the follow-up without opening another panel.\n",
+                        "Show more reveals the rest of this saved quote, while View original jumps to the actual message.\n",
+                        "Quotes are saved when the reply is sent, so editing the original later does not silently rewrite this context. END OF QUOTED TEXT"
+                    ).into();
+                    messages[2].reply_to = Some(model::MessageReply::from_message(&messages[1]));
+                    messages[2].content.text =
+                        "TEST FIXTURE — A reply is its own message in the conversation.".into();
+                    messages[3].reply_to = Some(model::MessageReply::from_message(&messages[2]));
+                    messages[3].content.text =
+                        "TEST FIXTURE — This reply can be replied to, too.".into();
+                    app.reply_targets.insert(
+                        "channel".into(),
+                        model::MessageReply::from_message(&messages[3]),
+                    );
+                    app.draft = "TEST FIXTURE — Following up on that reply.".into();
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid reply fixture");
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
                 } else if name.starts_with("parity-file-drop") {
@@ -2152,6 +2184,7 @@ impl CaperApp {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                reply_to: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
@@ -5113,6 +5146,7 @@ impl CaperApp {
         self.thread_view = None;
         self.thread_request += 1;
         self.thread_pages.clear();
+        self.reply_targets.clear();
         self.thread_only_rows.clear();
         self.older_armed = false;
         self.older_anchor = None;
@@ -5698,6 +5732,7 @@ impl CaperApp {
             let timeline = std::mem::take(&mut self.timeline);
             let thread = self.thread_view.take();
             let thread_drafts = std::mem::take(&mut self.thread_drafts);
+            let reply_targets = std::mem::take(&mut self.reply_targets);
             let rows = std::mem::take(&mut self.thread_only_rows);
             let has_more = self.has_more;
             let window = self.context_window;
@@ -5715,6 +5750,7 @@ impl CaperApp {
             self.timeline = timeline;
             self.thread_view = thread;
             self.thread_drafts = thread_drafts;
+            self.reply_targets = reply_targets;
             self.thread_only_rows = rows;
             self.has_more = has_more;
             self.context_window = window;
@@ -5824,6 +5860,7 @@ impl CaperApp {
         self.thread_view = None;
         self.thread_request += 1;
         self.thread_pages.clear();
+        self.reply_targets.clear();
         self.thread_only_rows.clear();
         self.forwarding.close();
         self.older_armed = false;
@@ -6061,6 +6098,9 @@ impl CaperApp {
         if self.pending.is_none() {
             pending.thread_root_id = root.clone();
             pending.broadcast = broadcast;
+            pending.reply_to = self
+                .reply_targets
+                .remove(root.as_deref().unwrap_or("channel"));
         }
         let id = pending.id.clone();
         let attachment_ids: Vec<String> = pending
@@ -6088,6 +6128,9 @@ impl CaperApp {
             self.draft_files = kept;
             self.pending_needs_upload = self.pending_files.iter().any(DraftUpload::needs_upload);
         }
+        let thread_root_id = pending.thread_root_id.clone();
+        let broadcast = pending.broadcast;
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
         self.pending = Some(pending);
         self.pending_recovered = false;
         self.error = None;
@@ -6104,11 +6147,9 @@ impl CaperApp {
             client_id: id,
             text,
             attachment_ids,
-            thread_root_id: root,
-            broadcast: self
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.broadcast),
+            thread_root_id,
+            broadcast,
+            reply_to_id,
         });
     }
 
@@ -6454,6 +6495,7 @@ impl CaperApp {
                 .collect(),
             thread_root_id: pending.thread_root_id.clone(),
             broadcast: pending.broadcast,
+            reply_to_id: pending.reply_to.as_ref().map(|reply| reply.id.clone()),
         });
     }
 
@@ -9555,8 +9597,11 @@ impl CaperApp {
             let count = range.len();
             let draw = |app: &mut Self, ui: &mut egui::Ui| {
                 for message in &messages[range] {
-                    let current =
-                        grouping::Row::new(&message.author.id, &message.created_at, false);
+                    let current = grouping::Row::new(
+                        &message.author.id,
+                        &message.created_at,
+                        message.reply_to.is_some(),
+                    );
                     let grouped = grouping::grouped(previous.as_ref(), &current);
                     // Nothing groups under a highlighted jump target.
                     previous =
@@ -12009,15 +12054,22 @@ impl CaperApp {
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
+                self.reply_draft(ui, &root);
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
                     let arrival = self.arrival(ui.ctx(), &pending.id);
-                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| ui.label(&pending.text));
+                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+                        if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference, &pending.id); }
+                        ui.label(&pending.text);
+                    });
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
                             if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
-                                && let Some(text) = self.discard_rejected() { self.thread_drafts.entry(root.clone()).or_default().0 = text; }
+                                && let Some(rejected) = self.take_rejected() {
+                                    self.thread_drafts.entry(root.clone()).or_default().0 = rejected.text;
+                                    if let Some(reference) = rejected.reply_to { self.reply_targets.insert(root.clone(), reference); }
+                                }
                             if ui.button("Dismiss").clicked() { self.discard_rejected(); }
                         });
                     } else if !pending.sending {
@@ -12371,6 +12423,7 @@ impl CaperApp {
                         self.draft_chips(ui);
                         ui.add_space(8.0);
                     }
+                    self.reply_draft(ui, "channel");
                     let before = self.draft.clone();
                     let placeholder = if self.conversation_is_direct() {
                         format!("Message {}", self.channel_name())
@@ -12617,7 +12670,7 @@ impl CaperApp {
                                 previous = None;
                             }
                             // A "Replied to a thread" broadcast keeps its header.
-                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some());
+                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some() || message.reply_to.is_some());
                             let grouped = grouping::grouped(previous.as_ref(), &current);
                             // Nothing groups under a highlighted jump target.
                             previous = (app.focused_message.as_deref() != Some(&message.id)).then_some(current);
@@ -12650,9 +12703,15 @@ impl CaperApp {
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
-                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
+                        let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
                         let arrival = self.arrival(ui.ctx(), &pending.id);
                         motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+                            if let Some(reference) = &pending.reply_to {
+                                let source = self.reply_context(ui, reference, &pending.id);
+                                if !self.is_blocked(&reference.author.id) {
+                                    reply_connector(ui, source, ui.cursor().top() + 11.0, &pending.id);
+                                }
+                            }
                             message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, |ui| {
                                 // File-only messages have no text row.
                                 if !pending.text.is_empty() {
@@ -12669,6 +12728,7 @@ impl CaperApp {
                                             .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
                                             && let Some(rejected) = self.take_rejected() {
                                             self.draft = rejected.text;
+                                            if let Some(reference) = rejected.reply_to { self.reply_targets.insert("channel".into(), reference); }
                                             self.restore_drafts(rejected.attachments);
                                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
                                         }
@@ -12855,6 +12915,237 @@ impl CaperApp {
 
     /// A timeline or thread row; `grouped` rows continue the row above
     /// (see `grouping`).
+    fn reply_context(
+        &mut self,
+        ui: &mut egui::Ui,
+        reference: &model::MessageReply,
+        key: &str,
+    ) -> egui::Pos2 {
+        let blocked = self.is_blocked(&reference.author.id);
+        let expanded_id = ui.id().with(("reply-expanded", key));
+        let mut expanded = ui
+            .data(|data| data.get_temp::<bool>(expanded_id))
+            .unwrap_or(false);
+        let shown = egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 62,
+                right: 18,
+                top: 4,
+                bottom: 8,
+            })
+            .show(ui, |ui| {
+                let panel = egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER.gamma_multiply(0.7)))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        let heading = ui.horizontal(|ui| {
+                            if !blocked {
+                                let (avatar, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
+                                paint_avatar(
+                                    ui,
+                                    avatar,
+                                    &reference.author.name,
+                                    reference.author.avatar_id,
+                                );
+                            }
+                            ui.add_enabled(
+                                !blocked && !self.context_loading,
+                                egui::Button::new(
+                                    RichText::new(if blocked {
+                                        "Blocked message"
+                                    } else {
+                                        &reference.author.name
+                                    })
+                                    .size(12.0)
+                                    .strong()
+                                    .color(MUTED),
+                                )
+                                .right_text(RichText::new("View original").size(11.0).color(MUTED))
+                                .min_size(egui::vec2(ui.available_width(), 20.0))
+                                .frame(false)
+                                .truncate(),
+                            )
+                            .on_hover_text("View original message")
+                            .clicked()
+                        });
+                        let mut open = heading.inner;
+                        if !blocked {
+                            let text = reference.full_text.as_deref().unwrap_or(&reference.text);
+                            let text = if text.is_empty() {
+                                if reference.has_attachments {
+                                    "Attachment"
+                                } else {
+                                    "Message"
+                                }
+                            } else {
+                                text
+                            };
+                            let preview: String = text.chars().take(100).collect();
+                            let mut job = egui::text::LayoutJob::simple(
+                                if expanded {
+                                    text.to_owned()
+                                } else if preview != text {
+                                    format!("{preview}…")
+                                } else {
+                                    preview.clone()
+                                },
+                                egui::FontId::proportional(12.0),
+                                MUTED,
+                                ui.available_width(),
+                            );
+                            let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
+                            let clipped = preview != text || full.rows.len() > 3;
+                            let galley = if expanded || !clipped {
+                                full
+                            } else {
+                                job.wrap.max_rows = 3;
+                                ui.fonts_mut(|fonts| fonts.layout_job(job))
+                            };
+                            let excerpt = ui
+                                .add_enabled(
+                                    !self.context_loading,
+                                    egui::Label::new(galley)
+                                        .sense(egui::Sense::click())
+                                        .show_tooltip_when_elided(false)
+                                        .selectable(false),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            open |= excerpt.clicked();
+                            let mut preview_rect = excerpt.rect;
+                            if clipped && !expanded {
+                                let height = preview_rect.height().max(36.0);
+                                ui.add_space(height - preview_rect.height());
+                                preview_rect.set_height(height);
+                                let rect = preview_rect;
+                                let top = rect.top() + rect.height() * 0.4;
+                                let mut fade = egui::Mesh::default();
+                                fade.colored_vertex(
+                                    egui::pos2(rect.left(), top),
+                                    Color32::TRANSPARENT,
+                                );
+                                fade.colored_vertex(
+                                    egui::pos2(rect.right(), top),
+                                    Color32::TRANSPARENT,
+                                );
+                                fade.colored_vertex(rect.right_bottom(), SURFACE);
+                                fade.colored_vertex(rect.left_bottom(), SURFACE);
+                                fade.add_triangle(0, 1, 2);
+                                fade.add_triangle(0, 2, 3);
+                                ui.painter().add(egui::Shape::mesh(fade));
+                            }
+                            if clipped {
+                                let label = if expanded { "Show less" } else { "Show more" };
+                                let font = history_button_font();
+                                let width = ui.fonts_mut(|fonts| {
+                                    fonts
+                                        .layout_no_wrap(label.into(), font.clone(), BLACKOUT)
+                                        .size()
+                                        .x
+                                }) + 28.0;
+                                let height = ui.spacing().interact_size.y.max(32.0);
+                                let top = if expanded {
+                                    ui.add_space(6.0);
+                                    ui.next_widget_position().y
+                                } else {
+                                    preview_rect.top() + preview_rect.height() * 0.7 - height / 2.0
+                                };
+                                let rect = egui::Rect::from_min_size(
+                                    egui::pos2(ui.max_rect().center().x - width / 2.0, top),
+                                    egui::vec2(width, height),
+                                );
+                                let mut controls = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .id_salt("reply-expand")
+                                        .max_rect(rect),
+                                );
+                                controls.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
+                                let button = toned_rounded(
+                                    &mut controls,
+                                    Tone {
+                                        rest: (TEXT, TEXT, BLACKOUT),
+                                        hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
+                                        press: (TEXT.gamma_multiply(0.85), TERRACOTTA, BLACKOUT),
+                                    },
+                                    255,
+                                    true,
+                                    egui::Button::new(RichText::new(label).font(font))
+                                        .min_size(egui::vec2(width, height)),
+                                );
+                                if expanded {
+                                    ui.advance_cursor_after_rect(button.rect);
+                                }
+                                if button.clicked() {
+                                    expanded = !expanded;
+                                    ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
+                                }
+                            }
+                        }
+                        if open {
+                            self.showing_pins = false;
+                            self.load_context(
+                                reference.thread_root_id.clone(),
+                                reference.id.clone(),
+                                false,
+                            );
+                        }
+                        heading.response.rect.left_center()
+                    });
+                panel.inner
+            });
+        shown.inner
+    }
+
+    fn reply_draft(&mut self, ui: &mut egui::Ui, key: &str) {
+        if let Some(reference) = self.reply_targets.get(key).cloned() {
+            ui.horizontal(|ui| {
+                let name = if self.is_blocked(&reference.author.id) {
+                    "Blocked message"
+                } else {
+                    &reference.author.name
+                };
+                ui.label(
+                    RichText::new(format!("Replying to {name}"))
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                if ui
+                    .add(egui::Button::new("Cancel reply").min_size(egui::vec2(0.0, 44.0)))
+                    .clicked()
+                {
+                    self.reply_targets.remove(key);
+                }
+            });
+        }
+    }
+
+    fn select_reply(&mut self, context: &egui::Context, message: &model::Message, in_thread: bool) {
+        let root = if in_thread || !message.is_channel_message() {
+            message
+                .thread_root_id
+                .clone()
+                .or_else(|| self.thread_view.as_ref().map(|thread| thread.root.clone()))
+        } else {
+            None
+        };
+        let key = root.as_deref().unwrap_or("channel").to_owned();
+        self.reply_targets
+            .insert(key, model::MessageReply::from_message(message));
+        self.showing_pins = false;
+        if let Some(root) = &root {
+            self.open_thread(root.clone());
+        }
+        let id = root.map_or_else(
+            || egui::Id::new("message-composer"),
+            |root| egui::Id::new(("thread-draft", root)),
+        );
+        context.memory_mut(|memory| memory.request_focus(id));
+    }
+
     fn message(
         &mut self,
         ui: &mut egui::Ui,
@@ -12886,6 +13177,7 @@ impl CaperApp {
     ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
+        let grouped = grouped && message.reply_to.is_none();
         let plain_time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
                 |_| message.created_at.clone(),
@@ -12907,7 +13199,7 @@ impl CaperApp {
         };
         let short = grouped.then(|| short_time(&message.created_at));
         let can_react = self.selected_is_joined() && self.session.is_some();
-        let action_width = if in_thread { 50.0 } else { 76.0 };
+        let action_width = if in_thread { 76.0 } else { 102.0 };
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -12917,6 +13209,7 @@ impl CaperApp {
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
         let mut view_thread = None;
+        let mut actions_y = None;
         // The row's background; its files below are drawn on the same fill.
         let fill = if !in_thread
             && self
@@ -12932,6 +13225,10 @@ impl CaperApp {
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
+            let quote = message.reply_to.as_ref().map(|reference| {
+                let source = self.reply_context(ui, reference, &message.id);
+                (source, !self.is_blocked(&reference.author.id))
+            });
             if in_pins && let Some(pin) = pinned {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -12974,6 +13271,12 @@ impl CaperApp {
                             );
                         }
                     });
+            }
+            if let Some((source, visible)) = quote {
+                actions_y = Some(ui.cursor().top());
+                if visible {
+                    reply_connector(ui, source, ui.cursor().top() + 11.0, &message.id);
+                }
             }
             let (timestamp, profile, body) =
                 message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
@@ -13074,6 +13377,16 @@ impl CaperApp {
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
+                    if ui
+                        .add_enabled(
+                            can_react && self.pending.is_none(),
+                            egui::Button::new("Reply"),
+                        )
+                        .clicked()
+                    {
+                        self.select_reply(ui.ctx(), message, in_thread);
+                        ui.close();
+                    }
                     if ui.button("Forward message").clicked() {
                         self.forwarding.picker(
                             &self.worker,
@@ -13159,7 +13472,7 @@ impl CaperApp {
             let actions_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     message_rect.right() - action_width - 18.0,
-                    message_rect.top() + 4.0,
+                    actions_y.unwrap_or(message_rect.top()) + 4.0,
                 ),
                 egui::vec2(action_width, 24.0),
             );
@@ -13181,6 +13494,16 @@ impl CaperApp {
                         egui::Sense::click(),
                     ))
                 };
+                let reply_message_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                let reply_message = ui.interact(
+                    reply_message_rect,
+                    ui.id().with((&message.id, "reply-action")),
+                    if self.pending.is_none() {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
                 let emoji_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                 let emoji = ui.interact(
                     emoji_rect,
@@ -13204,11 +13527,13 @@ impl CaperApp {
                     || picker_open
                     || emoji.has_focus()
                     || more.has_focus()
+                    || reply_message.has_focus()
                     || reply.as_ref().is_some_and(|reply| reply.has_focus());
                 if visible {
                     // Web's bordered surface buttons.
                     for (button, open) in [
                         (reply.as_ref(), false),
+                        (Some(&reply_message), false),
                         (Some(&emoji), picker_open),
                         (Some(&more), menu_open),
                     ] {
@@ -13239,6 +13564,16 @@ impl CaperApp {
                             icon(reply, false),
                         );
                     }
+                    paint_icon(
+                        ui.painter(),
+                        reply_message_rect.shrink(5.0),
+                        NavIcon::Reply,
+                        if self.pending.is_some() {
+                            MUTED.gamma_multiply(0.5)
+                        } else {
+                            icon(&reply_message, false)
+                        },
+                    );
                     if let Some(entry) = emoji::find("🙂") {
                         self.reaction_textures
                             .image(ui, entry, 14.0)
@@ -13263,6 +13598,16 @@ impl CaperApp {
                                 .unwrap_or_else(|| message.id.clone()),
                         );
                     }
+                }
+                reply_message.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        self.pending.is_none(),
+                        "Reply",
+                    )
+                });
+                if reply_message.on_hover_text("Reply").clicked() && self.pending.is_none() {
+                    self.select_reply(ui.ctx(), message, in_thread);
                 }
                 emoji.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
@@ -13317,6 +13662,13 @@ impl CaperApp {
                         }
                     });
                     ui.separator();
+                    if ui
+                        .add_enabled(self.pending.is_none(), egui::Button::new("Reply"))
+                        .clicked()
+                    {
+                        self.select_reply(ui.ctx(), message, in_thread);
+                        ui.close();
+                    }
                     if ui.button("Forward message").clicked()
                         && let Some(token) = self.token.clone()
                     {
@@ -13547,20 +13899,33 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
-        } else if !in_pins {
-            // Web's faint row highlight while hovered, kept while the row's
-            // menu or picker is open. Thread and jump tints win.
+        } else {
+            // Reply context stays quietly marked. Thread and jump tints win.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
             );
-            let highlighted = self.focused_message.as_deref() == Some(&message.id)
+            let highlighted = (!in_pins && self.focused_message.as_deref() == Some(&message.id))
                 || (!in_thread
                     && self
                         .thread_view
                         .as_ref()
                         .is_some_and(|thread| thread.root == message.id));
-            if !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
+            if !highlighted && message.reply_to.is_some() {
+                ui.painter().set(
+                    tint,
+                    egui::Shape::rect_filled(
+                        rect,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(243, 244, 245, 8),
+                    ),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                    0.0,
+                    BORDER,
+                );
+            } else if !in_pins && !highlighted && (actions_open || ui.rect_contains_pointer(rect)) {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(rect, 0.0, Color32::from_white_alpha(5)),
@@ -18435,6 +18800,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
         NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
+        NavIcon::Reply => egui::include_image!("../resources/icons/reply.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
         NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),
@@ -18807,6 +19173,124 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     } else {
         "Show member list"
     })
+}
+
+#[derive(Clone, Copy)]
+struct ReplyStringMotion {
+    source_y: f32,
+    time: f64,
+    displacement: f32,
+    velocity: f32,
+}
+
+fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str) {
+    let target = egui::pos2(ui.cursor().left() + 18.0, avatar_top + 16.0);
+    let id = ui.id().with(("reply-string", key));
+    let now = ui.input(|input| input.time);
+    let mut motion = ui
+        .data(|data| data.get_temp::<ReplyStringMotion>(id))
+        .unwrap_or(ReplyStringMotion {
+            source_y: source.y,
+            time: now,
+            displacement: 0.0,
+            velocity: 0.0,
+        });
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(reply_motion_enabled) && ui.style().animation_time > 0.0;
+    if enabled && ui.is_rect_visible(egui::Rect::from_two_pos(source, target)) {
+        // Advance elapsed time in stable substeps, even on a slow software-rendered frame.
+        let mut remaining = (now - motion.time).clamp(0.0, 0.25) as f32;
+        while remaining > 0.0 {
+            let dt = remaining.min(1.0 / 120.0);
+            motion.velocity -= (180.0 * motion.displacement + 20.0 * motion.velocity) * dt;
+            motion.displacement = (motion.displacement + motion.velocity * dt).clamp(-4.0, 4.0);
+            remaining -= dt;
+        }
+        // This frame's scroll impulse happens now, not at the previous frame's time.
+        motion.velocity = (motion.velocity + (motion.source_y - source.y) * 0.8).clamp(-60.0, 60.0);
+        if motion.displacement.abs() < 0.01 && motion.velocity.abs() < 0.05 {
+            motion.displacement = 0.0;
+            motion.velocity = 0.0;
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+    } else {
+        motion.displacement = 0.0;
+        motion.velocity = 0.0;
+    }
+    motion.source_y = source.y;
+    motion.time = now;
+    ui.data_mut(|data| data.insert_temp(id, motion));
+    let angle = motion.displacement * 0.025;
+    let dx = 12.0 * angle.cos();
+    let dy = 12.0 * angle.sin();
+    let start = target + egui::vec2(-dx, dy);
+    let end = source + egui::vec2(-dx, -dy);
+    let span = start.y - end.y;
+    ui.painter()
+        .add(egui::epaint::CubicBezierShape::from_points_stroke(
+            [
+                start,
+                start + egui::vec2(-7.0 + motion.displacement, -span * 0.3),
+                end + egui::vec2(-30.0 + motion.displacement, span * 0.3),
+                end,
+            ],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::new(1.1, MUTED.gamma_multiply(0.75)),
+        ));
+    for (position, angle) in [(source, angle), (target, -angle)] {
+        egui::Image::new(egui::include_image!("../../../../shared/reply-socket.svg"))
+            .rotate(angle, egui::vec2(14.0 / 16.0, 0.5))
+            .paint_at(
+                ui,
+                egui::Rect::from_min_size(position - egui::vec2(14.0, 6.0), egui::vec2(16.0, 12.0)),
+            );
+    }
+}
+
+/// Read the desktop preference once, without a subprocess or timer per row/frame.
+fn reply_motion_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SystemParametersInfoW(
+                action: u32,
+                parameter: u32,
+                value: *mut std::ffi::c_void,
+                flags: u32,
+            ) -> i32;
+        }
+        let mut enabled = 1_i32;
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to a live, aligned i32.
+        unsafe {
+            SystemParametersInfoW(0x1042, 0, (&raw mut enabled).cast(), 0);
+        }
+        enabled != 0
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let (command, args, disabled) = (
+            "defaults",
+            &["read", "com.apple.universalaccess", "reduceMotion"][..],
+            "1",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (command, args, disabled) = (
+            "gsettings",
+            &["get", "org.gnome.desktop.interface", "enable-animations"][..],
+            "false",
+        );
+        !std::process::Command::new(command)
+            .args(args)
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == disabled
+            })
+    }
 }
 
 /// Marks a Caper admin's message in the pin gold with a soft glow. The
@@ -32940,12 +33424,36 @@ mod tests {
             thread: None,
             forward: None,
             forward_seq: None,
+            reply_to: None,
             revision: 1,
             edited_at: None,
             edit_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
+        let full_text = format!("{}🙂🚀{}", "a".repeat(199), "z".repeat(3799));
+        let mut original = message.clone();
+        original.content.text = full_text.clone();
+        let source = model::MessageReply::from_message(&original);
+        assert_eq!(source.text, format!("{}🙂", "a".repeat(199)));
+        assert_eq!(source.full_text.as_deref(), Some(full_text.as_str()));
+        let mut quoted = pending.clone();
+        quoted.reply_to = Some(source.clone());
+        assert_eq!(
+            PendingSend::prepare(Some(&quoted), "edited", Vec::new()).reply_to,
+            Some(source.clone())
+        );
+        assert!(!quoted.confirmed_by(&message, "author"));
+        let mut delivered = message.clone();
+        delivered.reply_to = Some(source);
+        assert!(quoted.confirmed_by(&delivered, "author"));
+        assert!(delivered.validate().is_ok());
+        delivered.reply_to.as_mut().unwrap().full_text = Some(format!("{full_text}x"));
+        assert!(delivered.validate().is_err());
+        delivered.reply_to.as_mut().unwrap().full_text = None;
+        assert!(delivered.validate().is_ok(), "legacy quotes remain valid");
+        delivered.reply_to.as_mut().unwrap().id = "wrong-target".into();
+        assert!(!quoted.confirmed_by(&delivered, "author"));
     }
 
     #[test]
@@ -33032,6 +33540,7 @@ mod tests {
                 thread: None,
                 forward: None,
                 forward_seq: None,
+                reply_to: None,
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,

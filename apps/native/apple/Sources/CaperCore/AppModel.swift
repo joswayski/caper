@@ -2320,6 +2320,7 @@ public final class ChatModel {
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
     public var threadRootID: String?
+    public var replyTargets: [String: MessageReply] = [:]
     public var threadLoading = false
     public var threadHasMore = false
     public var threadHasNewer = false
@@ -2812,7 +2813,16 @@ public final class ChatModel {
     public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
 
     public func goToMessage(_ message: ChatMessage) async -> Bool {
-        guard !loading, !jumpingToMessage, message.channelId == channelID else { return false }
+        await goToMessage(id: message.id, channelID: message.channelId, threadRootID: message.threadRootId)
+    }
+
+    public func goToReply(_ reference: MessageReply) async -> Bool {
+        guard let channelID else { return false }
+        return await goToMessage(id: reference.id, channelID: channelID, threadRootID: reference.threadRootId)
+    }
+
+    private func goToMessage(id: String, channelID: String, threadRootID: String?) async -> Bool {
+        guard !loading, !jumpingToMessage, channelID == self.channelID else { return false }
         let requestGeneration = generation
         historyAnchorRequest += 1
         let request = historyAnchorRequest
@@ -2820,20 +2830,20 @@ public final class ChatModel {
         loadingNewer = false; loadingOlder = false
         defer { if generation == requestGeneration && request == historyAnchorRequest { jumpingToMessage = false } }
         do {
-            if let root = message.threadRootId {
-                await openThread(root, around: message.id)
+            if let root = threadRootID {
+                await openThread(root, around: id)
                 guard generation == requestGeneration, request == historyAnchorRequest else { return false }
                 if let error = threadError { throw APIError(status: 502, message: error) }
-                guard threadMessages.contains(where: { $0.id == message.id }) else { return false }
+                guard threadMessages.contains(where: { $0.id == id }) else { return false }
             } else {
-                let page = try await api.history(channelID: message.channelId, around: message.id)
+                let page = try await api.history(channelID: channelID, around: id)
                 guard generation == requestGeneration, request == historyAnchorRequest else { return false }
-                guard page.messages.contains(where: { $0.id == message.id }) else { throw APIError(status: 502, message: "Message context is unavailable.") }
+                guard page.messages.contains(where: { $0.id == id }) else { throw APIError(status: 502, message: "Message context is unavailable.") }
                 windowStart = page.messages.first?.seq; windowEnd = page.hasNewer ? page.messages.last?.seq : nil
                 threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
                 hasMore = page.hasMore; hasNewer = page.hasNewer; closeThread()
             }
-            focusedMessageID = message.id; focusRevision += 1
+            focusedMessageID = id; focusRevision += 1
             return true
         } catch {
             if generation == requestGeneration && request == historyAnchorRequest { jumpError = error.localizedDescription }
@@ -2897,6 +2907,14 @@ public final class ChatModel {
         if request == threadRequest { threadLoading = false }
     }
 
+    public func reply(to message: ChatMessage, inThread: Bool = false) {
+        guard canInteract, delivery.pending == nil, message.channelId == channelID else { return }
+        guard !inThread || threadRootID != nil else { return }
+        let root = inThread ? threadRootID : (message.isChannelMessage ? nil : message.threadRootId)
+        replyTargets[root ?? "channel"] = MessageReply(message: message)
+        if !inThread, let root { Task { await openThread(root) } }
+    }
+
     public func send(inThread: Bool = false) async {
         guard !sending, !delivery.rejected else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
@@ -2925,8 +2943,9 @@ public final class ChatModel {
             attachment.previewUrl = nil
             return attachment
         } : []
-        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast)
+        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"])
         if newSubmission {
+            replyTargets[rootID ?? "channel"] = nil
             pendingDrafts = files
             pendingNeedsUpload = files.contains { $0.needsUpload }
             // "Also send to channel" applies to one reply, so it resets with the draft.
@@ -2973,7 +2992,7 @@ public final class ChatModel {
                 }
                 do {
                     message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                                 attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast)
+                                                 attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
                     break
                 } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
                     guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
@@ -3184,7 +3203,9 @@ public final class ChatModel {
     }
 
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
-        guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
+        let root = delivery.pending?.threadRootId
+        guard !sending, delivery.rejected, !edit || (root == nil ? draft.isEmpty : threadDraft.isEmpty) else { return false }
+        let reference = delivery.pending?.replyTo
         let attachments = delivery.pending?.attachmentIDs ?? []
         guard let text = delivery.discardRejected() else { return false }
         // Only definitively rejected sends may be discarded.
@@ -3194,7 +3215,10 @@ public final class ChatModel {
         }
         pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
         releasePendingUploads()
-        if edit { draft = text }
+        if edit {
+            if root == nil { draft = text } else { threadDraft = text }
+            replyTargets[root ?? "channel"] = reference
+        }
         error = nil
         return true
     }
@@ -3360,6 +3384,7 @@ public final class ChatModel {
                 if newMessage, let author = session?.author, author.id != message.author.id,
                    !BlockedMessages.isHidden(message, blocked: blockedAuthorIDs, viewerID: author.id) { CaperEffects.shared.play(.message) }
                 if message.threadRootId == delivery.pending?.threadRootId,
+                   message.replyTo?.id == delivery.pending?.replyTo?.id,
                    (message.broadcast ?? false) == (delivery.pending?.broadcast ?? false),
                    delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
@@ -3461,6 +3486,7 @@ public final class ChatModel {
         editSnapshots.reset()
         failedPinActions = [:]
         closeThread(); threadPages = [:]; threadOnlyRows = []
+        replyTargets = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil

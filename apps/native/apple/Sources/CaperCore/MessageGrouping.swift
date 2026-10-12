@@ -26,7 +26,7 @@ enum MessageGrouping {
     /// channel keeps its full header; in its thread it is an ordinary reply.
     static func isGrouped(_ message: ChatMessage, after previous: ChatMessage?, inThread: Bool,
                           calendar: Calendar = .current) -> Bool {
-        guard let previous, inThread || message.threadRootId == nil else { return false }
+        guard let previous, message.replyTo == nil, inThread || message.threadRootId == nil else { return false }
         return follows(authorID: message.author.id, at: ChatDateDivider.date(message.createdAt),
                        previousAuthorID: previous.author.id, previousDate: ChatDateDivider.date(previous.createdAt),
                        calendar: calendar)
@@ -42,7 +42,7 @@ enum MessageGrouping {
         var previous: (id: String, authorID: String, date: Date?)?
         func visit(_ message: ChatMessage) {
             let date = ChatDateDivider.date(message.createdAt)
-            if let previous, inThread || message.threadRootId == nil,
+            if let previous, message.replyTo == nil, inThread || message.threadRootId == nil,
                follows(authorID: message.author.id, at: date, previousAuthorID: previous.authorID,
                        previousDate: previous.date, calendar: calendar) {
                 result.grouped.insert(message.id)
@@ -59,7 +59,7 @@ enum MessageGrouping {
                 run.messages.forEach(visit)
             }
         }
-        if let pending, let previous,
+        if let pending, pending.replyTo == nil, let previous,
            follows(authorID: author?.id, at: ChatDateDivider.date(pending.createdAt), previousAuthorID: previous.authorID,
                    previousDate: previous.date, calendar: calendar) {
             result.pendingGrouped = true

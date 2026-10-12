@@ -37,6 +37,7 @@ private struct SendInput: Encodable {
     let attachmentIds: [String]?
     let threadRootId: String?
     let broadcast: Bool?
+    let replyToId: String?
 }
 private struct AttachmentURLsInput: Encodable { let ids: [String] }
 private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
@@ -424,9 +425,9 @@ public actor APIClient {
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
-                     threadRootId: String? = nil, broadcast: Bool = false) async throws -> ChatMessage {
+                     threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
-                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast)
+                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
     }
 

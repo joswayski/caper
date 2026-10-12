@@ -276,6 +276,7 @@ impl Send {
                 &self.text,
                 &ids,
                 (None, false),
+                None,
             )
             .map_err(|error| Failure {
                 // A definitive 4xx refuses the write. Transport/5xx responses

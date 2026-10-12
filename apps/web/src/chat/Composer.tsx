@@ -25,6 +25,7 @@ export interface ComposerAttachments {
 }
 
 export interface ComposerHandle {
+  focus(): void;
   /** Puts a rejected message back into the composer to edit. */
   restore(text: string): void;
   /** Sends the draft, or resends an unconfirmed message. */
@@ -162,6 +163,9 @@ export default function Composer({
     }
   };
   useImperativeHandle(ref, () => ({
+    focus() {
+      composerRef.current?.focus();
+    },
     restore(text: string) {
       setDraft(text);
       composerRef.current?.focus();

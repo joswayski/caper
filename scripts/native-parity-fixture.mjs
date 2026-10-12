@@ -319,7 +319,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sharedMessage = (message) => {
     const shared = clone(message);
     if (shared.threadRootId) delete shared.thread;
-    for (const key of ["threadRootId", "broadcast", "pin", "pinSeq", "forward", "forwardSeq"]) delete shared[key];
+    for (const key of ["threadRootId", "broadcast", "pin", "pinSeq", "forward", "forwardSeq", "replyTo"])
+      delete shared[key];
     return shared;
   };
   const snapshot = (source) => ({
@@ -358,7 +359,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     message.editedAt = new Date().toISOString();
     // Edits re-resolve @mentions like chat::editing.
     const mentions = mentionsFor(channelFor(message.channelId), text);
-    message.content = { version: 1, type: "text", text, ...(mentions.length ? { mentions } : {}) };
+    message.content = {
+      version: 1,
+      type: "text",
+      text,
+      ...(message.content.attachments ? { attachments: message.content.attachments } : {}),
+      ...(mentions.length ? { mentions } : {}),
+    };
     versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
     state.versions.set(message.id, versions);
     const event = {
@@ -546,6 +553,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             ? state.messages.get(channelId)?.find((message) => message.id === messageId)
             : messageFor(messageId);
           if (!message || typeof text !== "string") return reject(response, 400, "Invalid fixture edit.");
+          if (body.incomingEdit.attachments) message.content.attachments = body.incomingEdit.attachments;
           edit(message, text);
         }
         if (body.incomingReaction) {
@@ -1224,6 +1232,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               JSON.stringify(previous.message.content.attachments?.map((attachment) => attachment.id) ?? []) ===
                 JSON.stringify(attachmentIds) &&
               previous.message.threadRootId === body.threadRootId &&
+              previous.message.replyTo?.id === body.replyToId &&
               (previous.message.broadcast ?? false) === (body.broadcast ?? false)
               ? json(response, 200, previous.message)
               : reject(response, 409, "Message ID already used.");
@@ -1232,6 +1241,17 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             : undefined;
           if (body.threadRootId && !root) return reject(response, 404, "Thread not found.");
           if (body.broadcast && !root) return reject(response, 400, "Only replies can broadcast.");
+          const target =
+            body.replyToId === undefined
+              ? undefined
+              : messages.find(
+                  (message) =>
+                    message.id === body.replyToId &&
+                    (root
+                      ? message.id === root.id || message.threadRootId === root.id
+                      : !message.threadRootId || message.broadcast),
+                );
+          if (body.replyToId !== undefined && !target) return reject(response, 404, "Message not found.");
           const mentions = mentionsFor(channel, body.text);
           const message = {
             id: randomUUID().replaceAll("-", "").slice(0, 15),
@@ -1250,6 +1270,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             createdAt: new Date().toISOString(),
             clientMessageId,
           };
+          if (target) {
+            const text = target.content.text || (target.forward ? "Forwarded message" : "");
+            const characters = Array.from(text);
+            message.replyTo = {
+              id: target.id,
+              author: clone(target.author),
+              text: characters.slice(0, 200).join(""),
+              ...(characters.length > 200 ? { fullText: text } : {}),
+              hasAttachments: !!target.content.attachments?.length,
+              ...(target.threadRootId ? { threadRootId: target.threadRootId } : {}),
+            };
+          }
           if (root) {
             const participants = [...(root.thread?.participants ?? [])];
             const index = participants.findIndex((person) => person.id === who.id);

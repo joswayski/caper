@@ -8,7 +8,14 @@ import {
   type ChatViewState,
 } from "../chat/client.ts";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
-import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
+import {
+  isChatMessage,
+  type ChatEvent,
+  type ChatMessage,
+  type ChatTypingEvent,
+  type GeneralChatHistory,
+} from "../chat/types.ts";
+import { replyReference } from "../chat/Replies.tsx";
 import { AttachmentUpload, type UploadTransport } from "../chat/uploads.ts";
 import { DEFAULT_COMPRESSION } from "../chat/prepare.ts";
 
@@ -353,6 +360,7 @@ interface SendBody {
   clientMessageId: string;
   text: string;
   attachmentIds?: string[];
+  replyToId?: string;
 }
 
 function committed(body: SendBody, seq: string): ChatMessage {
@@ -396,11 +404,12 @@ async function sendingFixture(t: TestContext) {
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(
       Object.keys(body)
-        .filter((key) => key !== "attachmentIds")
+        .filter((key) => key !== "attachmentIds" && key !== "replyToId")
         .sort(),
       ["clientMessageId", "text"],
       "local metadata never enters the wire contract",
     );
+    if ("replyToId" in body) assert.equal(typeof body.replyToId, "string");
     if ("attachmentIds" in body)
       assert.ok(
         Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0,
@@ -1065,12 +1074,14 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   const files = retainedUploads();
   const upload = files.create("original bytes");
   const attachment = await upload.ensure();
-  const send = f.client.send("keep my text", { attachments: [attachment], uploads: [upload] });
+  const parent = committed({ clientMessageId: "parent", text: "Earlier message" }, "1");
+  const replyTo = { id: parent.id, author: parent.author, text: parent.content.text, hasAttachments: false };
+  const send = f.client.send("keep my text", { attachments: [attachment], uploads: [upload], replyTo });
   f.posts[0].reject(new TypeError("offline"));
   assert.equal(await send, false);
   assert.equal(f.client.discardRejected(), undefined);
   assert.deepEqual(files.cancelled, []);
-  const retry = f.client.send("a different next draft");
+  const retry = f.client.send("a different next draft", { replyTo: { ...replyTo, id: "other-target" } });
   assert.deepEqual(f.posts[1].body, f.posts[0].body);
   f.posts[1].resolve(
     Response.json({ code: "attachment_unavailable", error: "server detail must stay invisible" }, { status: 409 }),
@@ -1080,10 +1091,13 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   assert.notEqual(f.posts[2].body.clientMessageId, f.posts[0].body.clientMessageId);
   assert.deepEqual(f.posts[2].body.attachmentIds, ["asset2"]);
   assert.equal(f.posts[2].body.text, "keep my text");
+  assert.equal(f.posts[2].body.replyToId, parent.id);
+  assert.deepEqual(f.state.pendingSend?.replyTo, replyTo);
   assert.equal(f.state.sendError, undefined);
   assert.deepEqual(files.bodies, ["original bytes", "original bytes"]);
-  f.posts[2].resolve(Response.json(committed(f.posts[2].body, "1")));
+  f.posts[2].resolve(Response.json({ ...committed(f.posts[2].body, "2"), replyTo }));
   assert.equal(await retry, true);
+  assert.deepEqual(f.state.messages.at(-1)?.replyTo, replyTo);
   assert.deepEqual(files.cancelled, ["asset1"], "confirmed files are not cancelled");
 });
 
@@ -2378,6 +2392,56 @@ test("thread send retry freezes root and broadcast and confirms one shared reply
   f.sockets[0].message(reply);
   assert.equal(f.state.messages.length, 1);
   assert.equal(f.client.snapshotHistory()?.cursor, "1");
+});
+
+test("inline replies freeze their target on retry, stay in the channel and confirm only matching references", async (t) => {
+  const f = await sendingFixture(t);
+  const fullText = `${"a".repeat(199)}🙂🚀${"z".repeat(3799)}`;
+  const parent = committed({ clientMessageId: "parent", text: fullText }, "1");
+  f.sockets[0].message(parent);
+  const replyTo = replyReference(parent);
+  assert.equal(replyTo.text, `${"a".repeat(199)}🙂`);
+  assert.equal(replyTo.fullText, fullText);
+  const bodies: Array<Record<string, unknown>> = [];
+  let fail = true;
+  let echoed = replyTo;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (fail) return Response.json({ error: "temporary" }, { status: 503 });
+    return Response.json({ ...committed(body, "2"), replyTo: echoed });
+  });
+  assert.equal(await f.client.send("New reply", { replyTo }), false);
+  assert.equal(bodies[0].replyToId, parent.id);
+  assert.equal(bodies[0].threadRootId, undefined);
+  assert.equal(f.state.pendingSend?.replyTo?.id, parent.id);
+  assert.equal(f.state.pendingSend?.replyTo?.fullText, fullText);
+  fail = false;
+  echoed = { ...replyTo, id: "wrong-target" };
+  assert.equal(await f.client.send("Changed draft"), false);
+  assert.equal(f.state.pendingSend?.replyTo?.id, parent.id);
+  assert.equal(f.state.messages.length, 1);
+  echoed = replyTo;
+  assert.equal(await f.client.send("Changed draft", { replyTo: { ...replyTo, id: "other" } }), true);
+  assert.deepEqual(bodies[1], bodies[0]);
+  assert.deepEqual(bodies[2], bodies[0]);
+  assert.deepEqual(
+    f.state.channelMessages?.map((message) => message.content.text),
+    [fullText, "New reply"],
+  );
+  assert.equal(f.state.messages[0].thread, undefined);
+  const reply = f.state.messages[1];
+  assert.equal(reply.replyTo?.fullText, fullText);
+  assert.equal(isChatMessage(reply), true, "4000 Unicode scalars are accepted, including surrogate pairs");
+  assert.equal(isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: `${fullText}x` } }), false);
+  assert.equal(isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: 42 } }), false);
+  assert.equal(
+    isChatMessage({ ...reply, replyTo: { ...replyTo, fullText: undefined } }),
+    true,
+    "legacy snapshots still load",
+  );
+  f.sockets[0].message(reply);
+  assert.equal(f.state.messages.length, 2);
 });
 
 test("duplicate delivery and local edits preserve unchanged message references", async (t) => {

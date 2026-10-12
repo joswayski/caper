@@ -1140,6 +1140,7 @@ mod tests {
                 "",
                 &["asset0001".into()],
                 (None, false),
+                None,
             )
             .unwrap();
         assert_eq!(sent.content.attachments.len(), 1);
@@ -1151,6 +1152,7 @@ mod tests {
             "hi",
             &[],
             (None, false),
+            None,
         )
         .unwrap();
         let requests = server.join().unwrap();

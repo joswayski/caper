@@ -77,14 +77,29 @@ try {
   const extraGeneral = allDestinations.find((item) => item.spaceName === "TEST FIXTURE Workshop").id;
   const source = (await request("/api/chat/channels/chan00000003/messages")).value.messages[0];
   await control({
-    incomingEdit: { messageId: source.id, text: "TEST FIXTURE — Live discussion from private planning." },
+    incomingEdit: {
+      messageId: source.id,
+      text: "TEST FIXTURE — Live discussion from private planning.",
+      attachments: [
+        {
+          id: "asset00000000001",
+          kind: "file",
+          contentType: "text/plain",
+          name: "TEST FIXTURE notes.txt",
+          size: 128,
+          status: "ready",
+          url: "https://example.test/fixture-notes.txt",
+        },
+      ],
+    },
   });
   await control({ incomingReply: { rootId: source.id, text: "An existing reply before sharing." } });
   browser("open", "about:blank");
   browser("set", "viewport", "1440", "900", "2");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
-  wait('!!document.querySelector(".channel-select")');
+  // The initial voice roster inserts a row into the channel list. Let it settle before clicking.
+  wait('!!document.querySelector(".channel-select") && !!document.querySelector(".voice-stack-count")');
   browser("find", "role", "button", "click", "--name", "planning", "--exact");
   const sourceRow = `[data-message-key="${source.clientMessageId}"]`;
   wait(
@@ -101,6 +116,10 @@ try {
   );
   browser("find", "role", "button", "click", "--name", "Forward message", "--exact");
   wait('document.querySelectorAll(".chat-forward-destinations input").length > 0');
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-original .chat-file strong")?.textContent'),
+    "TEST FIXTURE notes.txt",
+  );
   assert.equal(evaluate('document.querySelector(".chat-forward-send").disabled'), true);
   assert.equal(evaluate('document.querySelectorAll(".chat-forward-destinations input[type=checkbox]").length'), 5);
   assert.equal(
@@ -204,6 +223,7 @@ try {
   const wrapper = forwards[0];
   assert.equal(wrapper.forward.message.id, source.id);
   assert.equal(wrapper.forward.message.thread.replyCount, 1);
+  assert.equal(wrapper.forward.message.content.attachments[0].name, "TEST FIXTURE notes.txt");
   browser("focus", `${sourceRow} .chat-message-actions-trigger`);
   browser("press", "Enter");
   browser("find", "role", "button", "click", "--name", "Forward message", "--exact");
@@ -253,6 +273,7 @@ try {
     [390, 844, "narrow"],
   ]) {
     browser("set", "viewport", String(width), String(height), "2");
+    browser("scrollintoview", `${wrapperRow} .chat-forward-card > button`);
     browser("click", `${wrapperRow} .chat-forward-card button`);
     wait(
       `document.querySelector('#chat-heading')?.textContent.includes('planning') && !!document.querySelector('${sourceRow}.chat-message-jump-target')`,
@@ -319,8 +340,9 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-forward-body h3, .chat-forward-status")'), null);
   assert.equal(evaluate('document.querySelector(".chat-forward-body [role=status]").className'), "sr-only");
   assert.equal(
-    evaluate('document.querySelector(".chat-forward-notice").textContent'),
-    "Heads up! New reactions and replies appear here automatically.",
+    evaluate('document.querySelector(".chat-forward-body").textContent.includes("Heads up!")'),
+    false,
+    "The forwarded conversation has no update warning",
   );
   screenshot("forward-conversation-fetching-desktop");
   browser("set", "viewport", "390", "844", "2");
@@ -395,6 +417,10 @@ try {
   wait(
     'document.querySelector(".chat-forward-body h3")?.textContent === "2 replies" && document.querySelector(".chat-forward-body").textContent.includes("A future reply") && document.querySelector(".chat-forward-body").textContent.includes("The original changed") && !!document.querySelector(".chat-forward-reactions")',
   );
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-original .chat-file strong")?.textContent'),
+    "TEST FIXTURE notes.txt",
+  );
   screenshot("forward-conversation-desktop");
   checkReactionLayout();
   browser("set", "viewport", "390", "844", "2");
@@ -414,7 +440,7 @@ try {
   browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
   wait('!!document.querySelector("#chat-thread-reply")');
   browser("fill", "#chat-thread-reply", "TEST FIXTURE — Replying only in the destination.");
-  browser("click", ".chat-thread-send-row button");
+  browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
   wait('document.querySelector(".chat-thread-summary strong")?.textContent === "1 reply"');
   const destinationThread = (
     await request(`/api/chat/channels/chan00000001/messages/${wrapper.id}/thread`, undefined, "other")

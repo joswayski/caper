@@ -213,6 +213,7 @@ pub enum Command {
         text: String,
         thread_root_id: Option<String>,
         broadcast: bool,
+        reply_to_id: Option<String>,
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
     },
@@ -1773,6 +1774,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             attachment_ids,
             thread_root_id,
             broadcast,
+            reply_to_id,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
@@ -1786,6 +1788,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &text,
                     &attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
+                    reply_to_id.as_deref(),
                 )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),

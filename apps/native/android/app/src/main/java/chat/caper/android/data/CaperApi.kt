@@ -177,6 +177,7 @@ class CaperApi(
         attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null,
         broadcast: Boolean = false,
+        replyToId: String? = null,
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
         val message: ChatMessage = post(
@@ -186,10 +187,12 @@ class CaperApi(
                 // Only when non-empty: text-only requests keep their original idempotency hash.
                 if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
+                if (replyToId != null) put("replyToId", replyToId)
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
         require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
+        require(message.replyTo?.id == replyToId) { "Reply reference mismatch." }
         return message.validated(channel, author, clientMessageId, text)
     }
 

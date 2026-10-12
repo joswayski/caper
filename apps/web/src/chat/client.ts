@@ -17,6 +17,7 @@ import {
   type ChatAuthor,
   type ChatHistory,
   type ChatMessage,
+  type ChatReplyReference,
   type ChatSession,
   type ChatThreadHistory,
   type ChatTypingEvent,
@@ -35,6 +36,7 @@ export interface PendingChatMessage {
   createdAt: string;
   threadRootId?: string;
   broadcast?: boolean;
+  replyTo?: ChatReplyReference;
 }
 
 export interface ThreadViewState {
@@ -849,6 +851,7 @@ export class ChatClient {
       threadRootId?: string;
       broadcast?: boolean;
       attachments?: ChatAttachment[];
+      replyTo?: ChatReplyReference;
       uploads?: AttachmentUpload[];
     } = {},
   ): Promise<boolean> {
@@ -924,6 +927,7 @@ export class ChatClient {
               clientMessageId: pending.clientMessageId,
               text: pending.text,
               ...(attachmentIds.length ? { attachmentIds } : {}),
+              ...(pending.replyTo ? { replyToId: pending.replyTo.id } : {}),
               ...(pending.threadRootId
                 ? {
                     threadRootId: pending.threadRootId,
@@ -972,6 +976,7 @@ export class ChatClient {
             !isChatMessage(message) ||
             message.channelId !== channelId ||
             message.threadRootId !== pending.threadRootId ||
+            message.replyTo?.id !== pending.replyTo?.id ||
             (message.broadcast ?? false) !== (pending.broadcast ?? false) ||
             message.clientMessageId !== pending.clientMessageId ||
             message.author.id !== session.author.id
@@ -1543,6 +1548,7 @@ export class ChatClient {
         (message) =>
           message.channelId === this.state.channelId &&
           message.threadRootId === pending.threadRootId &&
+          message.replyTo?.id === pending.replyTo?.id &&
           (message.broadcast ?? false) === (pending.broadcast ?? false) &&
           message.clientMessageId === pending.clientMessageId &&
           message.author.id === pending.author?.id,

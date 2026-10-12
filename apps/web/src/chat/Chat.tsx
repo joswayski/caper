@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, Reply, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -23,12 +23,15 @@ import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } f
 import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
+import { replyReference, ReplyContext, ReplyDraft } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
 import {
   attachmentsOf,
   isChannelMessage,
   type ChatAttachment,
   type ChatAuthor,
+  type ChatMessage,
+  type ChatReplyReference,
   type GeneralChatHistory,
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
@@ -266,6 +269,12 @@ export default function Chat({
   // The composer owns the draft; the conversation only needs to know one exists.
   const composerRef = useRef<ComposerHandle>(null);
   const [hasDraft, setHasDraft] = useState(false);
+  const [replyTargets, setReplyTargets] = useState<Record<string, ChatReplyReference | undefined>>({});
+  const setReplyTarget = (root: string, reference?: ChatReplyReference) =>
+    setReplyTargets((current) => ({ ...current, [root]: reference }));
+  useLayoutEffect(() => {
+    if (state.pendingSend) setReplyTarget(state.pendingSend.threadRootId ?? "channel", undefined);
+  }, [state.pendingSend?.clientMessageId]);
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const followUpdatedRows = useRef(false);
   const [actionTarget, setActionTarget] = useState<MessageActionTarget>();
@@ -374,6 +383,7 @@ export default function Chat({
     setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
+    setReplyTargets({});
   }, [state.author?.id, state.channelId]);
   useEffect(() => {
     if (readOnly) setEditTarget(undefined);
@@ -1076,7 +1086,10 @@ export default function Chat({
       ),
     );
     if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
-    if ((await client?.send(text, { attachments, uploads: sources })) && state.hasNewer) {
+    if (
+      (await client?.send(text, { attachments, uploads: sources, replyTo: replyTargets.channel })) &&
+      state.hasNewer
+    ) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
     }
@@ -1113,6 +1126,22 @@ export default function Chat({
       .map((part) => part.value)
       .join("")
       .trim();
+  const replyToMessage = (message: ChatMessage, inThread: boolean) => {
+    const root = inThread
+      ? state.thread?.rootId
+      : message.threadRootId && !message.broadcast
+        ? message.threadRootId
+        : "channel";
+    if (!root) return;
+    setReplyTarget(root, replyReference(message));
+    setActionTarget(undefined);
+    setShowPins(false);
+    if (root !== "channel" && !inThread) openThread(root);
+    requestAnimationFrame(() => {
+      if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
+      else composerRef.current?.focus();
+    });
+  };
   const renderMessage = (
     index: number,
     message: (typeof messages)[number],
@@ -1241,6 +1270,13 @@ export default function Chat({
             }}
             tabIndex={pending ? undefined : -1}
           >
+            {message.replyTo && (
+              <ReplyContext
+                reference={message.replyTo}
+                hidden={blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId}
+                onOpen={() => void goToMessage({ ...message.replyTo!, channelId: state.channelId! })}
+              />
+            )}
             {grouped ? (
               // The run's avatar is above; show the time here on hover instead.
               <div className="chat-grouped-time" aria-hidden="true">
@@ -1348,6 +1384,18 @@ export default function Chat({
                   >
                     <MoreHorizontal size={14} aria-hidden="true" />
                   </button>
+                  {!readOnly && state.author && (
+                    <button
+                      type="button"
+                      className="chat-reply-message"
+                      aria-label={`Reply to ${message.author.name}`}
+                      title="Reply"
+                      disabled={!!state.pendingSend}
+                      onClick={() => replyToMessage(message, inThread)}
+                    >
+                      <Reply size={14} aria-hidden="true" />
+                    </button>
+                  )}
                   {!inThread && (
                     <button
                       type="button"
@@ -1426,6 +1474,7 @@ export default function Chat({
                         disabled={hasDraft}
                         title={hasDraft ? "Clear your current draft to edit this message." : undefined}
                         onClick={() => {
+                          setReplyTarget("channel", state.pendingSend?.replyTo);
                           const text = clientRef.current?.discardRejected();
                           if (text !== undefined) composerRef.current?.restore(text);
                         }}
@@ -1676,6 +1725,13 @@ export default function Chat({
                 ) : (
                   state.pinnedMessages.map((message) => (
                     <article className="chat-message chat-pinned-message" key={message.id}>
+                      {message.replyTo && (
+                        <ReplyContext
+                          reference={message.replyTo}
+                          hidden={blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId}
+                          onOpen={() => void goToMessage({ ...message.replyTo!, channelId: state.channelId! })}
+                        />
+                      )}
                       {message.pin && (
                         <small className="chat-pin-marker">
                           <Pin size={12} aria-hidden="true" />
@@ -1955,6 +2011,11 @@ export default function Chat({
             onReply={
               actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id)
             }
+            onReplyMessage={
+              !readOnly && state.author && !state.pendingSend
+                ? () => replyToMessage(actionMessage, actionTarget.inThread)
+                : undefined
+            }
             // The menu item is removed as the dialog opens; let the dialog return focus to the menu's trigger.
             onEdit={() => {
               actionTarget.anchor.focus({ preventScroll: true });
@@ -2015,6 +2076,13 @@ export default function Chat({
         ) : (
           <div className="chat-composer">
             {composerBanner}
+            {replyTargets.channel && (
+              <ReplyDraft
+                reference={replyTargets.channel}
+                hidden={blockedIds.has(replyTargets.channel.author.id) && replyTargets.channel.author.id !== viewerId}
+                onCancel={() => setReplyTarget("channel", undefined)}
+              />
+            )}
             {state.pendingSend?.threadRootId &&
               state.sendError &&
               state.thread?.rootId !== state.pendingSend.threadRootId && (
@@ -2093,6 +2161,11 @@ export default function Chat({
         readOnly={readOnly}
         mentionPeople={mentionPeople}
         specialMentions={!direct}
+        replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
+        onReplyChange={(reference) => {
+          if (state.thread) setReplyTarget(state.thread.rootId, reference);
+        }}
+        blockedIds={blockedIds}
         renderMessage={renderMessage}
         arrivals={arrivals.current}
         onClose={closeThread}

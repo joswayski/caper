@@ -1723,6 +1723,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun replyTo(message: ChatMessage, inThread: Boolean = false) {
+        val state = mutable.value
+        if (!state.canParticipate || state.pendingMessage != null || message.channelId != state.selectedChannel?.id) return
+        val root = if (inThread) state.thread?.rootId ?: return else if (message.threadRootId != null && !message.broadcast) message.threadRootId else null
+        val key = root ?: "channel"
+        val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else "" }
+        val excerpt = text.substring(0, text.offsetByCodePoints(0, minOf(200, text.codePointCount(0, text.length))))
+        val reference = MessageReply(message.id, message.author, excerpt, message.content.attachments.isNotEmpty(), message.threadRootId,
+            fullText = text.takeIf { it.codePointCount(0, it.length) > 200 })
+        mutable.value = state.copy(replyTargets = state.replyTargets + (key to reference))
+        if (!inThread && root != null) openThread(root)
+    }
+
+    fun cancelReply(root: String = "channel") { mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - root) }
+
     /**
      * Returns false when nothing was sent, so the composer keeps its text. Composer files go
      * with channel messages only: the thread composer is text-only, so its replies leave them.
@@ -1758,7 +1773,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (retry == null && text.isBlank() && files.isEmpty()) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], confirmed)
         if (retry == null) {
             pendingDrafts = drafts
             pendingNeedsUpload = drafts.any { uploadStale(it) }
@@ -1772,9 +1787,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
             )
         }
-        mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
+        mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
             operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
-            threadRootId = operation.threadRootId, broadcast = operation.broadcast,
+            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo,
         ))
         viewModelScope.launch {
             try {
@@ -1798,7 +1813,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         sent = retryUnknownSend {
                             api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text,
-                                operation.attachmentIds, operation.threadRootId, operation.broadcast)
+                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id)
                         }
                         break
                     } catch (error: ApiException) {
@@ -1846,7 +1861,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Edit restores a rejected message's files to the composer; Dismiss drops them. */
-    fun discardPending(restoreFiles: Boolean = false): String? {
+    fun discardPending(restoreFiles: Boolean = false, restoreReply: Boolean = restoreFiles): String? {
         val pending = mutable.value.pendingMessage ?: return null
         if (!pending.rejected) return null
         pendingSends.clear()
@@ -1854,7 +1869,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val kept = candidates.take(AttachmentPolicy.MAX_ATTACHMENTS)
         (pendingDrafts + mutable.value.drafts).filter { it !in kept }.forEach { abandonDraft(it) }
         pendingDrafts = emptyList()
-        mutable.value = mutable.value.copy(pendingMessage = null, drafts = kept)
+        val targets = if (restoreReply && pending.replyTo != null) mutable.value.replyTargets + ((pending.threadRootId ?: "channel") to pending.replyTo) else mutable.value.replyTargets
+        mutable.value = mutable.value.copy(pendingMessage = null, drafts = kept, replyTargets = targets)
         return pending.text
     }
 
@@ -2812,7 +2828,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             visit = null, feedbackShown = false,
-            thread = null, threadOnlyRows = emptySet(),
+            thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(),
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
             focusedMessageId = null, loadingMessageContext = false, messageContextError = null,
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,

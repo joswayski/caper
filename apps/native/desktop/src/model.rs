@@ -748,12 +748,45 @@ pub struct Message {
     pub forward: Option<Box<MessageForward>>,
     #[serde(default)]
     pub forward_seq: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<MessageReply>,
     #[serde(default = "original_revision")]
     pub revision: u32,
     #[serde(default)]
     pub edited_at: Option<String>,
     #[serde(default)]
     pub edit_seq: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReply {
+    pub id: String,
+    pub author: Author,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_text: Option<String>,
+    pub has_attachments: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_root_id: Option<String>,
+}
+
+impl MessageReply {
+    pub fn from_message(message: &Message) -> Self {
+        Self {
+            id: message.id.clone(),
+            author: message.author.clone(),
+            text: if message.content.text.is_empty() && message.forward.is_some() {
+                "Forwarded message".into()
+            } else {
+                message.content.text.chars().take(200).collect()
+            },
+            full_text: (message.content.text.chars().count() > 200)
+                .then(|| message.content.text.clone()),
+            has_attachments: !message.content.attachments.is_empty(),
+            thread_root_id: message.thread_root_id.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -894,6 +927,18 @@ impl Message {
 
     pub fn validate(&self) -> Result<(), String> {
         sequence(&self.seq)?;
+        if let Some(reply) = &self.reply_to
+            && (reply.id.is_empty()
+                || reply.author.id.is_empty()
+                || reply.text.chars().count() > 200
+                || reply
+                    .full_text
+                    .as_ref()
+                    .is_some_and(|text| text.chars().count() > 4000)
+                || reply.thread_root_id.as_ref().is_some_and(String::is_empty))
+        {
+            return Err("invalid reply reference".into());
+        }
         if let Some(forward) = &self.forward {
             sequence(&forward.seq)?;
             if let Some(original) = &forward.message {
@@ -1918,6 +1963,7 @@ mod tests {
             thread: None,
             forward: None,
             forward_seq: None,
+            reply_to: None,
             revision: 1,
             edited_at: None,
             edit_seq: None,

@@ -32,6 +32,8 @@ function render(
       direct={direct}
       readOnly={readOnly}
       specialMentions
+      onReplyChange={() => {}}
+      blockedIds={new Set()}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
       arrivals={new Arrivals()}
       onClose={() => {}}

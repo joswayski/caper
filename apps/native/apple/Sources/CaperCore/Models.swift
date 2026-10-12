@@ -468,6 +468,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var revision: Int? = nil
     public var editedAt: String? = nil
     public var editSeq: String? = nil
+    public var replyTo: MessageReply? = nil
     public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
 
     func withProfile(_ own: ChatAuthor?) -> ChatMessage {
@@ -479,6 +480,22 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
         if let thread { result.thread = ThreadSummary(replyCount: thread.replyCount, participants: thread.participants.map(author), seq: thread.seq) }
         if let forward { result.forward = MessageForward(message: forward.message?.withProfile(own), seq: forward.seq) }
         return result
+    }
+}
+
+public struct MessageReply: Codable, Equatable, Sendable {
+    public let id: String
+    public let author: ChatAuthor
+    public let text: String
+    public let fullText: String?
+    public let hasAttachments: Bool
+    public let threadRootId: String?
+    public init(message: ChatMessage) {
+        id = message.id; author = message.author; threadRootId = message.threadRootId
+        let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message" : message.content.text
+        text = String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
+        fullText = source.unicodeScalars.count > 200 ? source : nil
+        hasAttachments = !(message.content.attachments ?? []).isEmpty
     }
 }
 
@@ -833,6 +850,7 @@ public enum MessageValidation {
             && message.content.type == "text"
             && message.content.text == command.text
             && message.threadRootId == command.threadRootId
+            && message.replyTo?.id == command.replyTo?.id
             && (message.broadcast ?? false) == command.broadcast
             && (try? Sequence.compare(message.seq, "0")) != nil
     }
@@ -847,17 +865,19 @@ public struct PendingMessage: Equatable, Sendable {
     public let createdAt: String
     public let threadRootId: String?
     public let broadcast: Bool
+    public let replyTo: MessageReply?
     /// Ids join the server's idempotency hash, so retries resend the same ids.
     public var attachmentIDs: [String] { attachments.map(\.id) }
 
     public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date()),
-                threadRootId: String? = nil, broadcast: Bool = false) {
+                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil) {
         self.id = id
         self.text = text
         self.attachments = attachments
         self.createdAt = createdAt
         self.threadRootId = threadRootId
         self.broadcast = broadcast
+        self.replyTo = replyTo
     }
 }
 
@@ -871,11 +891,11 @@ public struct ChatDeliveryState: Sendable {
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
-    public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false,
+    public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil,
                                makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast, replyTo: replyTo)
         pending = command
         return command
     }
@@ -884,7 +904,7 @@ public struct ChatDeliveryState: Sendable {
     public mutating func replaceAttachments(id: String, attachments: [ChatAttachment]) -> PendingMessage? {
         guard let old = pending, old.id == id else { return nil }
         let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
-                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast)
+                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo)
         pending = command
         return command
     }
