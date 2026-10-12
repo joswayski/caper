@@ -4488,6 +4488,7 @@ impl CaperApp {
         }
         if arrived {
             context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             context.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
@@ -21726,13 +21727,25 @@ fn main() -> eframe::Result {
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             // Saved minimized-window geometry can be tiny on Windows and
-            // overrides the builder's maximized flag. Keep account/settings
-            // persistence, but start every real launch maximized and resizable.
+            // overrides the builder's maximized flag. Stop saving geometry;
+            // existing saves are overridden after creation below. Account and
+            // settings persistence remain independent.
             persist_window: false,
             viewport,
             ..Default::default()
         },
         Box::new(move |creation| {
+            if fixture.is_none() {
+                // eframe still loads old geometry with persist_window=false,
+                // and initial maximization can be lost while mapping a hidden
+                // window. Apply once after creation, never on every repaint.
+                creation
+                    .egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                creation
+                    .egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
             motion::watch_reduced(&creation.egui_ctx);
             if let Some(storage) = creation.storage {
@@ -28656,6 +28669,11 @@ mod tests {
             commands
                 .iter()
                 .any(|cmd| matches!(cmd, egui::ViewportCommand::Minimized(false)))
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(false)))
         );
         assert!(
             commands

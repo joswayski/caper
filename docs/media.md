@@ -970,9 +970,9 @@ the profile step when needed. Platform specifics:
   plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
   handed to the open window over loopback (a token file in the app data folder)
   instead of starting a second copy. Real launches and invite activations maximize
-  the resizable window, not exclusive fullscreen. Native window geometry is not
-  persisted, avoiding tiny saved sizes from minimized Windows windows; other app
-  preferences and account persistence remain independent.
+  the resizable window, not exclusive fullscreen. Native window geometry is no
+  longer saved, and startup overrides previously saved sizes after window creation;
+  other app preferences and account persistence remain independent.
 
 **To do (owner): finish automatic app-link opening.**
 
