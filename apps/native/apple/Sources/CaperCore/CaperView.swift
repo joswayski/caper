@@ -3239,8 +3239,7 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
-            // Keep the timeline's clipping edge at the input, not above an
-            // empty status strip. Message rows own their scrollable spacing.
+            // Typing status stays below the input, separate from its top inset.
             if !chat.typingNames.isEmpty {
                 HStack(spacing: 7) {
                     TypingDots()
@@ -3250,9 +3249,9 @@ private struct ChatView: View {
             }
             }
             }
-            }.padding(.horizontal, 18).padding(.top, model.previewingChannel ? 12 : 0)
+            }.padding(.horizontal, 18).padding(.top, 12)
             // Keep breathing room above the keyboard/home-indicator safe area.
-            .padding(.bottom, 12)
+            .padding(.bottom, 16)
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -3619,7 +3618,8 @@ private struct NativeThreadView: View {
                     Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
                 }
             }.padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
