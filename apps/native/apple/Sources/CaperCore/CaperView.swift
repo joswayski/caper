@@ -338,6 +338,19 @@ private struct BrowseLayer: ViewModifier {
     }
 }
 
+/// Lifting a drawer swipe also ends the press on the control under the finger,
+/// which then taps it: swiping Browse closed along the New message row opened
+/// the New message dialog. SwiftUI can't cancel a press that has started
+/// (`allowsHitTesting(false)` only stops new ones), so Browse's rows skip a tap
+/// that lands while a swipe follows the finger or just after it lets go, as
+/// the web suppresses a drag's release click.
+@MainActor enum SwipeTapGuard {
+    private static var followedAt = Date.distantPast
+    static func follow() { followedAt = Date() }
+    /// A row was "tapped" by lifting a swipe.
+    static var swiping: Bool { Date().timeIntervalSince(followedAt) < 0.35 }
+}
+
 private typealias BrowseSwipe = DrawerSwipe<BrowseDrawer>
 private typealias MembersSwipe = DrawerSwipe<MembersDrawer>
 
@@ -374,11 +387,13 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                         tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
                     }
                     guard tracking == true, let drawer else { return }
+                    SwipeTapGuard.follow()
                     drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
                 }
                 .onEnded { value in
                     defer { tracking = nil }
                     guard tracking == true, let drawer, let uncovered = drawer.drag else { return }
+                    SwipeTapGuard.follow()
                     // Toward the other view, in points per second.
                     let toward = (open ? -1 : 1) * opening * value.velocity.width
                     let travelled = abs(uncovered - (open ? 1 : 0))
@@ -986,7 +1001,7 @@ private struct ChannelSidebar: View {
                         HStack(spacing: 4) {
                             // Includes unjoined channels, such as one where you were mentioned.
                             let unread = model.channelUnread(channel.id)
-                            Button { Task { await model.select(channel: channel) } } label: {
+                            Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
                                 HStack {
                                     CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer()
                                     if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
@@ -1075,7 +1090,7 @@ private struct ChannelSidebar: View {
                             }
                             if let account = model.account {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
-                                Button { Task { await model.openSelfDirectMessage() } } label: {
+                                Button { if !SwipeTapGuard.swiping { Task { await model.openSelfDirectMessage() } } } label: {
                                     HStack(spacing: 9) {
                                         Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId).frame(width: 24, height: 20)
                                         Text(account.displayName ?? account.username ?? "You").lineLimit(1)
@@ -1100,6 +1115,7 @@ private struct ChannelSidebar: View {
                             }
                         }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
+                        guard !SwipeTapGuard.swiping else { return }
                         if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
                         else { sheet = .newDirectMessage }
                     } label: {
@@ -1167,7 +1183,7 @@ private struct DirectMessageSidebarRow: View {
     }
 
     private var rowButton: some View {
-        Button { Task { await model.select(directMessage: conversation) } } label: { rowLabel }
+        Button { if !SwipeTapGuard.swiping { Task { await model.select(directMessage: conversation) } } } label: { rowLabel }
             .buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
             .modifier(ControlHover())
             .modifier(NavigationPrefetchModifier { model.prefetch(directMessage: conversation) })
@@ -1253,7 +1269,7 @@ private struct ChannelSidebarItem: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
-                Button { Task { await model.select(channel: channel) } } label: {
+                Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
                     HStack(spacing: 6) {
                         CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                             .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
