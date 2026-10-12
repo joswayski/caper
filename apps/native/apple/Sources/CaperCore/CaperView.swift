@@ -3207,10 +3207,7 @@ private struct ChatView: View {
                                 Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                     .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                             }
-                            NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
-                                                  controller: composerAutocomplete, mentions: mentionSource,
-                                                  submit: { Task { await chat.send() } },
-                                                  pasteAttachments: chat.canAttach ? chat.pasteAttachments : nil)
+                            messageComposer
                         }
                         .frame(minHeight: 42, maxHeight: 174)
                         // Measure the text view instead of filling the 174-point maximum.
@@ -3373,6 +3370,20 @@ private struct ChatView: View {
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 showConnectionStatus = true
             }
+    }
+    // Type-check the native editor and its optional callback separately from
+    // channelBody's large SwiftUI builder; keep the editor at the same position.
+    private var messageComposer: NativeMessageComposer {
+        let pasteAttachments: (() -> Bool)?
+        if chat.canAttach {
+            pasteAttachments = { chat.pasteAttachments() }
+        } else {
+            pasteAttachments = nil
+        }
+        return NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
+                                     controller: composerAutocomplete, mentions: mentionSource,
+                                     submit: { Task { await chat.send() } },
+                                     pasteAttachments: pasteAttachments)
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
     /// returned them (only the specials until loaded), or in a DM everyone from
