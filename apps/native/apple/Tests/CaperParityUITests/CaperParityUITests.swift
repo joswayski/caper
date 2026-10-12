@@ -264,11 +264,13 @@ final class CaperParityUITests: XCTestCase {
                        file: file, line: line)
     }
     #else
-    /// Hovers a message on its header text, like `hold` on iPhone. The row's
-    /// centre can fall on a reaction chip, and that chip's "who reacted"
-    /// tooltip then covers the row's own Add reaction button.
-    private func hoverMessage(_ row: XCUIElement) {
-        row.staticTexts.firstMatch.hover()
+    /// Hovers visible text, not a reaction chip whose "who reacted" tooltip
+    /// can cover Add reaction. A grouped row's first static text is its
+    /// hover-only timestamp, which can have a zero frame before hovering.
+    private func hoverMessage(_ row: XCUIElement) throws {
+        let text = try XCTUnwrap(row.staticTexts.allElementsBoundByIndex.first(where: { $0.isHittable }),
+                                "The message has no visible text to hover")
+        text.hover()
     }
     #endif
 
@@ -288,7 +290,7 @@ final class CaperParityUITests: XCTestCase {
         let add = app.buttons["add-reaction-\(messageID)"]
         var shown = false
         for _ in 0..<4 where !shown {
-            hoverMessage(row)
+            try hoverMessage(row)
             shown = add.waitForExistence(timeout: 3) && add.isHittable
         }
         XCTAssertTrue(shown, "Hovering \(messageID) did not reveal Add reaction")
@@ -665,7 +667,7 @@ final class CaperParityUITests: XCTestCase {
         let hoverTargetID = "chan00000001m01"
         let target = app.descendants(matching: .any)["message-row-\(hoverTargetID)"]
         XCTAssertTrue(target.waitForExistence(timeout: 5))
-        hoverMessage(target)
+        try hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
         #else
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
@@ -759,7 +761,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
         let unrelatedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5,
                                        "Missing unrelated hover target")
-        hoverMessage(unrelatedRow)
+        try hoverMessage(unrelatedRow)
         let unrelatedAdd = try require(app.buttons["add-reaction-chan00000001m02"], timeout: 5,
                                        "Hovering another message did not reveal Add reaction")
 
