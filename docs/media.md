@@ -6862,3 +6862,24 @@ Before native distribution, check on devices: send and receive at the live end
 (one entrance each, none on channel switch or history), dialogs/menus/thread
 opening, attaching files, upload progress, primary/disabled/pressed/focus button
 states, and Reduce Motion / Remove animations.
+
+## Continuous message scrolling to the composer (October 12, 2026)
+
+Writable conversations and threads no longer reserve a fixed blank strip above
+the input. Typing status appears below the conversation input and takes no space
+when idle. Message-row spacing remains inside the scrolling surface; keyboard
+and home-indicator clearance below the composer is preserved.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (585 tests). Labelled Chromium fixtures at 1280px and 390px verify a 0px timeline-to-input gap (previously 33px), image clipping at the input edge, active/idle typing, multiline drafts and filled threads. Isolated `quietTimeline` checks pass after positioning at latest, including composer growth, focus, PageUp/End and history anchoring. The full `scripts/test-chat-history.mjs` still fails in large-history live-follow/reaction scenarios reproduced on unchanged code; it is not a passing acceptance result. Not Safari or a physical phone. |
+| Android | Main and thread spacing changed; idle typing row removed. `compileDebugKotlin` stops at missing Android SDK, before Kotlin compilation. No device rendering or acceptance. |
+| Apple iOS/macOS | Main and thread spacing changed; typing moved below input. Existing composer UI test now asserts the timeline meets the input with closed/open keyboard and multiline drafts. No Swift compiler or Xcode in this orb: not built, tests not run, no simulator or device acceptance. |
+| Rust desktop | Application tests pass (437 passed, 12 existing ignored), including clipping-edge and growing-draft checks. Formatting, application-package Clippy (`--all-targets --no-deps -D warnings`) and debug build pass. Inspected 2x Linux Xvfb attachment and thread renders. No Windows or macOS run. |
+
+No infrastructure, secrets/configuration, database migration, API or gateway
+rollout is needed. Web and native clients can release independently; merging
+does not deploy them. Before native distribution, verify images, files and text
+scroll to the input edge with the keyboard open/closed, typing on/off, multiline
+drafts and thread replies on real iPhone/Android devices. Roll back web to its
+previous image; native rollback requires a corrected higher-build-number release.

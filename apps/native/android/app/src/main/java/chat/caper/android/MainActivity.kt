@@ -1690,7 +1690,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
-        if (state.canParticipate) Column(Modifier.padding(12.dp)) {
+        if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
@@ -1929,13 +1929,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
             // Phones show the conversation alone, so voice errors from the dock (behind Browse) come with it, above the composer.
             (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error -> VoiceErrorBanner(error, dismissVoiceError) }
-            if (joined) TypingLine(state.typingAuthors)
-            if (joined) HorizontalDivider(color = Border)
             val request = state.selectedDirect?.takeIf { channel.direct && it.incoming }
             // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-            else if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            // The timeline reaches the input; its own content padding scrolls
+            // with messages instead of clipping them above a blank strip.
+            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 12.dp)) {
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
                     pending.threadRootId?.let { root ->
@@ -1996,6 +1996,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 DraftCounter(draft.text)
+                TypingLine(state.typingAuthors)
             }
         }
         if (dropping.value && canAttach) {
@@ -3024,8 +3025,8 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
     var shown by remember { mutableStateOf("") }
     LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
     val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
-    Row(Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-        if (shown.isNotEmpty()) {
+    if (shown.isNotEmpty()) {
+        Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
             TypingDots()
             Text(shown, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }

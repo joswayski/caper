@@ -450,7 +450,11 @@ final class CaperParityUITests: XCTestCase {
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
                                    "Missing message composer")
         let send = app.buttons["send-message-button"]
+        let timeline = try require(app.descendants(matching: .any)["chat-timeline"], timeout: 5,
+                                   "Missing message timeline")
         let restingBottom = send.frame.maxY
+        XCTAssertEqual(timeline.frame.maxY, composer.frame.minY, accuracy: 2,
+                       "Messages must scroll up to the input, without an empty clipping strip")
         XCTAssertLessThan(restingBottom, app.frame.maxY, "The home-indicator safe area must remain when the keyboard is closed")
         capture("composer-empty-keyboard-closed", app: app)
         XCTAssertTrue(focus(composer))
@@ -459,6 +463,7 @@ final class CaperParityUITests: XCTestCase {
         // The text view already measured 42 points before the fix. Its bottom
         // must align with Send too, or its background can still occupy 174.
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertEqual(timeline.frame.maxY, composer.frame.minY, accuracy: 2)
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
                        "The composer must keep 12 points of breathing room above the keyboard")
         capture("composer-empty-keyboard", app: app)
@@ -476,6 +481,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(composer.frame.height, 62, "The fix must not freeze the composer at one line")
         XCTAssertLessThan(composer.frame.height, 174, "A three-line draft must not jump straight to the cap")
         XCTAssertEqual(composer.frame.maxY, send.frame.maxY, accuracy: 2)
+        XCTAssertEqual(timeline.frame.maxY, composer.frame.minY, accuracy: 2)
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2)
         capture("composer-multiline-keyboard", app: app)
 
