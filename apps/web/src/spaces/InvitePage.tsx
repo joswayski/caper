@@ -92,7 +92,7 @@ export default function InvitePage({ code }: { code: string }) {
         {state.status === "ready" && (
           <>
             <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
-              YOU’RE INVITED TO JOIN
+              {state.preview.alreadyMember ? "YOU’RE ALREADY A MEMBER" : "YOU’RE INVITED TO JOIN"}
             </p>
             <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] wrap-anywhere">
               {state.preview.space.name}
@@ -113,8 +113,8 @@ export default function InvitePage({ code }: { code: string }) {
               </p>
             </div>
             <p className="mt-3 text-[.85rem] text-content-muted">
-              {state.preview.memberCount} {state.preview.memberCount === 1 ? "member" : "members"} ·{" "}
-              {inviteExpiry(state.preview.expiresAt)}
+              {state.preview.memberCount} {state.preview.memberCount === 1 ? "member" : "members"}
+              {!state.preview.alreadyMember && <> · {inviteExpiry(state.preview.expiresAt)}</>}
             </p>
             {error && (
               <p className="mt-6 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">
@@ -131,7 +131,7 @@ export default function InvitePage({ code }: { code: string }) {
               {pending ? (
                 <>
                   <Spinner />
-                  Joining…
+                  {state.preview.alreadyMember ? "Opening…" : "Joining…"}
                 </>
               ) : (
                 <>
@@ -139,7 +139,9 @@ export default function InvitePage({ code }: { code: string }) {
                     ? "Sign in to join"
                     : !state.account.username
                       ? "Finish your profile to join"
-                      : "Join space"}{" "}
+                      : state.preview.alreadyMember
+                        ? "Open space"
+                        : "Join space"}{" "}
                   <span aria-hidden="true">→</span>
                 </>
               )}

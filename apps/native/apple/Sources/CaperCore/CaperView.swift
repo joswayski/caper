@@ -6922,7 +6922,7 @@ private struct JoinInviteSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SheetHeader(title: "Join with invite link", closeDisabled: pending, close: close)
+            SheetHeader(title: preview?.alreadyMember == true ? "Open space" : "Join with invite link", closeDisabled: pending, close: close)
             VStack(alignment: .leading, spacing: 16) {
                 if let preview { InvitePreviewCard(preview: preview) } else { linkField }
                 if let error {
@@ -6968,7 +6968,7 @@ private struct JoinInviteSheet: View {
             } else {
                 Button("Cancel", action: close).buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending)
                     .keyboardShortcut(.cancelAction)
-                Button(pending ? "Joining…" : "Join space", action: join).buttonStyle(CaperPrimaryButton()).frame(width: 140)
+                Button(preview?.alreadyMember == true ? (pending ? "Opening…" : "Open space") : (pending ? "Joining…" : "Join space"), action: join).buttonStyle(CaperPrimaryButton()).frame(width: 140)
                     .disabled(pending).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("invite-link-join")
             }
@@ -7022,6 +7022,7 @@ private struct InvitePreviewCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(preview.space.name).font(CaperTheme.font(18, weight: .bold)).foregroundStyle(CaperTheme.text)
                     .fixedSize(horizontal: false, vertical: true)
+                if preview.alreadyMember == true { Text("You’re already a member") }
                 HStack(spacing: 6) {
                     Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId)
                     Text("Invited by \(preview.inviter.displayName)").lineLimit(1)

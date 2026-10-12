@@ -113,6 +113,8 @@ pub struct InvitePreview {
     pub inviter: Inviter,
     pub member_count: u64,
     pub expires_at: Option<String>,
+    #[serde(default)]
+    pub already_member: bool,
 }
 
 /// `POST /api/invites/{code}/join`. Its `joined` flag (false for an existing
@@ -327,13 +329,14 @@ mod tests {
         let preview: InvitePreview = serde_json::from_str(
             r#"{"code":"AbC123xYz9","space":{"name":"Studio"},"channel":{"name":"feedback"},
                 "inviter":{"username":"owner","displayName":"Owner","avatarId":3},
-                "memberCount":12,"expiresAt":null}"#,
+                "memberCount":12,"expiresAt":null,"alreadyMember":true}"#,
         )
         .unwrap();
         assert_eq!(preview.space.name, "Studio");
         assert_eq!(preview.channel.unwrap().name, "feedback");
         assert_eq!(preview.inviter.display_name, "Owner");
         assert_eq!(preview.member_count, 12);
+        assert!(preview.already_member);
 
         let joined: JoinedInvite = serde_json::from_str(
             r#"{"space":{"id":"space0000001","name":"Studio","ownerId":"owner01"},

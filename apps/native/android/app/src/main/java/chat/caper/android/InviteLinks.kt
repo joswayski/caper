@@ -208,7 +208,7 @@ import kotlinx.coroutines.delay
         viewModel.previewInvite(parsed, { code = parsed; preview = it; checking = false }) { error = it; checking = false }
     }
     LaunchedEffect(Unit) { if (opened != null) submit() }
-    CaperDialog("Join with invite link", close, busy = busy || checking) {
+    CaperDialog(if (preview?.alreadyMember == true) "Open space" else "Join with invite link", close, busy = busy || checking) {
         val shown = preview
         val shownCode = code
         if (shown == null || shownCode == null) {
@@ -232,6 +232,7 @@ import kotlinx.coroutines.delay
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(shown.space.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    if (shown.alreadyMember) Text("You’re already a member", color = TextMuted, fontSize = 12.sp)
                     Text("Invited by ${shown.inviter.displayName}", color = TextMuted, fontSize = 12.sp)
                     Text(listOfNotNull(inviteMemberCount(shown.memberCount), shown.channel?.let { "Opens in #${it.name}" }).joinToString(" · "),
                         color = TextMuted, fontSize = 12.sp)
@@ -241,7 +242,7 @@ import kotlinx.coroutines.delay
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
                 Button({ error = null; viewModel.joinInvite(shownCode, close) { error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small) {
-                    PendingLabel("Join space", "Joining…", busy)
+                    PendingLabel(if (shown.alreadyMember) "Open space" else "Join space", if (shown.alreadyMember) "Opening…" else "Joining…", busy)
                 }
             }
         }

@@ -893,8 +893,8 @@ export default function Chat({
   }, [state.pendingSend?.clientMessageId]);
 
   // An updated row that keeps the list height never reaches totalListHeightChanged.
-  // Drop the follow intent once Virtuoso has measured it (its ResizeObserver
-  // defers size updates by a frame), so a later scrollbar drag is not snapped back.
+  // Drop the follow intent after layout settles, so a later scrollbar drag
+  // is not snapped back by an unrelated row resize.
   useLayoutEffect(() => {
     if (!followUpdatedRows.current) return;
     let frames = 3;
@@ -1862,6 +1862,7 @@ export default function Chat({
                 }}
                 data={messages}
                 firstItemIndex={firstItemIndex}
+                alignToBottom
                 initialTopMostItemIndex={{
                   index: scrollIndex === -1 ? "LAST" : scrollIndex,
                   align: scrollTarget && scrollTarget !== "latest" ? "center" : "end",
@@ -1869,6 +1870,9 @@ export default function Chat({
                 computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
                 defaultItemHeight={70}
                 itemSize={measureItem}
+                // Measure before paint so the preview handoff and live follow
+                // do not use the previous frame's estimated row heights.
+                skipAnimationFrameInResizeObserver
                 increaseViewportBy={{ top: 250, bottom: 150 }}
                 followOutput={allowFollow.current ? "auto" : false}
                 atBottomThreshold={80}
@@ -1930,7 +1934,9 @@ export default function Chat({
                     loadOlder,
                   }}
                 />
-                {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
+                <div className="chat-initial-rows">
+                  {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
+                </div>
               </div>
             )}
             <p className="sr-only" aria-live="polite" aria-atomic="true">
