@@ -484,6 +484,10 @@ struct DraftUpload {
     error: Option<String>,
     attachment: Option<model::Attachment>,
     uploaded_at: Option<Instant>,
+    /// The server no longer has this upload, so it must be uploaded again.
+    /// A flag rather than an `uploaded_at` a day in the past: `Instant` counts
+    /// from boot, so subtracting a day panics on a machine up less than a day.
+    upload_expired: bool,
     uploading: bool,
     prepared: Option<std::sync::Arc<uploads::Prepared>>,
     /// Local decode for the chip and for the sent message before its URL loads.
@@ -495,6 +499,7 @@ struct DraftUpload {
 impl DraftUpload {
     fn needs_upload(&self) -> bool {
         self.attachment.is_none()
+            || self.upload_expired
             || self
                 .uploaded_at
                 .is_some_and(|at| at.elapsed() >= Duration::from_secs(23 * 60 * 60))
@@ -2027,6 +2032,7 @@ impl CaperApp {
             error: error.map(str::to_owned),
             attachment: None,
             uploaded_at: None,
+            upload_expired: false,
             uploading: error.is_none() && progress < 1.0,
             prepared: None,
             thumbnail_image: Some(image.clone()),
@@ -2797,18 +2803,18 @@ impl CaperApp {
                 person.display_name = Some(name.clone());
             }
         }
-        if let Some(session) = &mut self.session {
-            if session.author.id == account.id {
-                session.author.name.clone_from(name);
-            }
+        if let Some(session) = &mut self.session
+            && session.author.id == account.id
+        {
+            session.author.name.clone_from(name);
         }
         self.timeline.refresh_profile(account);
         for (message, pin) in self.mutations.pins.values_mut() {
             message.refresh_profile(account);
-            if let Some(pin) = pin {
-                if pin.author.id == account.id {
-                    pin.author.name.clone_from(name);
-                }
+            if let Some(pin) = pin
+                && pin.author.id == account.id
+            {
+                pin.author.name.clone_from(name);
             }
         }
     }
@@ -4649,7 +4655,7 @@ impl CaperApp {
             {
                 self.pending_needs_upload = true;
                 for file in &mut self.pending_files {
-                    file.uploaded_at = Some(Instant::now() - Duration::from_secs(24 * 60 * 60));
+                    file.upload_expired = true;
                 }
                 if self.pending_recovered || self.pending_files.is_empty() {
                     self.upload_send_failed();
@@ -5180,6 +5186,7 @@ impl CaperApp {
                 error: None,
                 attachment: None,
                 uploaded_at: None,
+                upload_expired: false,
                 uploading: true,
                 prepared: None,
                 thumbnail_image: None,
@@ -5234,6 +5241,7 @@ impl CaperApp {
                 error: None,
                 attachment: Some(attachment),
                 uploaded_at: None,
+                upload_expired: false,
                 uploading: false,
                 prepared: None,
                 thumbnail_image: None,
@@ -5324,6 +5332,7 @@ impl CaperApp {
             worker::UploadUpdate::Finished(Ok(attachment)) => {
                 draft.progress = 1.0;
                 draft.uploaded_at = Some(Instant::now());
+                draft.upload_expired = false;
                 draft.uploading = false;
                 draft.error = None;
                 // The sender sees its own copy without a download.
@@ -26442,7 +26451,7 @@ mod tests {
         app.draft = "keep this text".into();
         app.send_message();
         let first = app.pending.clone().unwrap();
-        app.pending_files[0].uploaded_at = Some(Instant::now() - Duration::from_secs(24 * 60 * 60));
+        app.pending_files[0].upload_expired = true;
         app.sent(Err(crate::worker::SendFailure {
             status: None,
             message: "offline".into(),
