@@ -2561,14 +2561,21 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier.drawWithContent {
                         drawContent()
                         if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
-                            listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.65f, endY = size.height,
+                            listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.4f, endY = size.height,
                         ))
                     }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                 }
-                if (!hidden && (preview != text || clipped)) TextButton({ expanded = !expanded }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
-                    Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp)
+                if (!hidden && (preview != text || clipped)) {
+                    val interaction = remember { MutableInteractionSource() }
+                    val hovered by interaction.collectIsHoveredAsState()
+                    Button({ expanded = !expanded }, Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp).heightIn(min = 44.dp),
+                        shape = MaterialTheme.shapes.small, interactionSource = interaction,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (hovered) Color.White else chat.caper.android.ui.Text, contentColor = Blackout)) {
+                        Text(if (expanded) "Show less" else "Show more", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
                 }
             }
         }

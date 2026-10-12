@@ -11112,7 +11112,7 @@ impl CaperApp {
                             open |= excerpt.clicked();
                             if clipped && !expanded {
                                 let rect = excerpt.rect;
-                                let top = rect.bottom() - (rect.height() * 0.35).min(18.0);
+                                let top = rect.top() + rect.height() * 0.4;
                                 let mut fade = egui::Mesh::default();
                                 fade.colored_vertex(
                                     egui::pos2(rect.left(), top),
@@ -11128,25 +11128,49 @@ impl CaperApp {
                                 fade.add_triangle(0, 2, 3);
                                 ui.painter().add(egui::Shape::mesh(fade));
                             }
-                            if clipped
-                                && ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new(if expanded {
-                                                "Show less"
-                                            } else {
-                                                "Show more"
-                                            })
-                                            .size(11.0)
-                                            .color(MUTED),
+                            if clipped {
+                                ui.add_space(6.0);
+                                let clicked = ui
+                                    .horizontal(|ui| {
+                                        let label =
+                                            if expanded { "Show less" } else { "Show more" };
+                                        let font = history_button_font();
+                                        let width = ui.fonts_mut(|fonts| {
+                                            fonts
+                                                .layout_no_wrap(
+                                                    label.into(),
+                                                    font.clone(),
+                                                    BLACKOUT,
+                                                )
+                                                .size()
+                                                .x
+                                        }) + 28.0;
+                                        ui.add_space(
+                                            ((ui.available_width() - width) / 2.0).max(0.0),
+                                        );
+                                        ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
+                                        toned(
+                                            ui,
+                                            Tone {
+                                                rest: (TEXT, TEXT, BLACKOUT),
+                                                hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
+                                                press: (
+                                                    TEXT.gamma_multiply(0.85),
+                                                    TERRACOTTA,
+                                                    BLACKOUT,
+                                                ),
+                                            },
+                                            true,
+                                            egui::Button::new(RichText::new(label).font(font))
+                                                .min_size(egui::vec2(width, 32.0)),
                                         )
-                                        .frame(false)
-                                        .min_size(egui::vec2(0.0, 24.0)),
-                                    )
-                                    .clicked()
-                            {
-                                expanded = !expanded;
-                                ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
+                                        .clicked()
+                                    })
+                                    .inner;
+                                if clicked {
+                                    expanded = !expanded;
+                                    ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
+                                }
                             }
                         }
                         if open {

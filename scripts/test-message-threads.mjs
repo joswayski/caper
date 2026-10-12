@@ -387,7 +387,10 @@ const checkLongQuotePreview = async (layout) => {
     const targetMouth = new DOMPoint(0, 0).matrixTransform(targetSocket);
     const sourceBack = new DOMPoint(-12, 0).matrixTransform(sourceSocket);
     const targetBack = new DOMPoint(-12, 0).matrixTransform(targetSocket);
+    const card = quote.querySelector('.chat-reply-body').getBoundingClientRect();
+    const expand = quote.querySelector('.chat-reply-expand').getBoundingClientRect();
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
+      expandCenter: Math.abs(expand.left + expand.width / 2 - card.left - card.width / 2), expandHeight: expand.height,
       connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
       sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
       replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
@@ -400,6 +403,11 @@ const checkLongQuotePreview = async (layout) => {
   assert.equal(collapsed.clamp, "3");
   assert.ok(collapsed.height <= 54);
   assert.notEqual(collapsed.mask, "none", "The collapsed quote fades into its dark card");
+  assert.ok(collapsed.expandCenter < 1, "Show more is centered in the quote card");
+  assert.ok(
+    collapsed.expandHeight >= (layout === "desktop" ? 32 : 44),
+    "The expansion button keeps its pointer/touch target",
+  );
   assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
   assert.ok(
     collapsed.sourceConnection < 1 && collapsed.replyConnection < 1,
@@ -416,6 +424,7 @@ const checkLongQuotePreview = async (layout) => {
   assert.equal(expanded.mask, "none", "The expanded original has no fade");
   assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
   assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
+  assert.ok(expanded.expandCenter < 1, "Show less stays centered after expansion");
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
   assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
   assert.ok(expanded.wireConnection < 0.1);

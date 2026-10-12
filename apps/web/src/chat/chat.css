@@ -586,7 +586,7 @@
   line-height: 18px;
 }
 .chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
-  mask-image: linear-gradient(to bottom, #000 max(65%, calc(100% - 18px)), transparent);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent);
 }
 .chat-reply-context[data-expanded="true"] .chat-reply-excerpt {
   display: block;
@@ -594,17 +594,27 @@
   -webkit-line-clamp: unset;
 }
 .chat-reply-expand {
-  min-height: 24px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
+  display: block;
+  min-height: 32px;
+  margin: 6px auto 0;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--blackout);
   font: inherit;
   font-size: 0.68rem;
-  text-decoration: underline;
-  text-decoration-color: var(--border);
-  text-underline-offset: 3px;
+  font-weight: 700;
   cursor: pointer;
+  transition: background-color 140ms ease;
+}
+@media (hover: hover) {
+  .chat-reply-expand:hover {
+    background: #fff;
+  }
+}
+.chat-reply-expand:active {
+  background: color-mix(in srgb, var(--text) 85%, var(--border));
 }
 .chat-reply-view {
   flex-shrink: 0;
@@ -616,9 +626,7 @@
   text-underline-offset: 3px;
 }
 .chat-reply-source:hover,
-.chat-reply-source:focus-visible,
-.chat-reply-expand:hover,
-.chat-reply-expand:focus-visible {
+.chat-reply-source:focus-visible {
   color: var(--text);
 }
 .chat-reply-source:focus-visible,

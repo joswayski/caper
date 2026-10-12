@@ -6628,8 +6628,11 @@ pewter cup sockets touch the left edges of the original and replying avatars,
 joined by one thin curved string in the gutter. Web and Rust desktop share the
 SVG artwork; Android and Apple draw matching vectors. Collapsed quotes show the first 100
 Unicode scalars, wrap to at most three lines and fade into the dark card above
-**Show more**. Expansion reveals the complete saved text separately from source
-navigation. Short quotes have neither a fade nor an expansion control unless
+**Show more**. The fade spans the lower 60% of the preview. **Show more** and
+**Show less** are centered white buttons with black text, 8px corners, hover and
+pressed feedback, and at least 44px touch targets on mobile. Expansion reveals
+the complete saved text separately from source navigation. Short quotes have
+neither a fade nor an expansion control unless
 line breaks overflow the preview. Scrolling flexes the string by a few pixels
 and slightly rotates the cups around their fixed avatar attachment points.
 A damped spring settles back to rest; there is no repeating glow or idle jiggling.
@@ -6677,6 +6680,15 @@ push rules are unchanged.
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |
+
+The expansion-button refinement reruns the web checks (579 tests), browser
+thread suite, and Linux desktop tests (417), Clippy and linked build. Browser
+checks verify centered buttons before/after expansion and 32px desktop/44px
+touch targets. Inspected real hover, pressed and keyboard-focus states retain
+black text on a light button. Fresh 2x desktop/narrow and Linux collapsed and
+expanded captures use disposable local demo conversation data; Linux also
+exercises actual pointer hover, press and click-to-expand. Android compilation
+still stops at the missing SDK, and Apple remains uncompiled/unrendered here.
 
 **Deployment order.**
 

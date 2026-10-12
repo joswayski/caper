@@ -4497,7 +4497,7 @@ private struct NativeReplyContext: View {
                                 if !expanded && (preview != excerpt || fullHeight > collapsedHeight + 1) {
                                     LinearGradient(stops: [
                                         .init(color: CaperTheme.surface.opacity(0), location: 0),
-                                        .init(color: CaperTheme.surface.opacity(0), location: 0.65),
+                                        .init(color: CaperTheme.surface.opacity(0), location: 0.4),
                                         .init(color: CaperTheme.surface, location: 1),
                                     ], startPoint: .top, endPoint: .bottom).allowsHitTesting(false).accessibilityHidden(true)
                                 }
@@ -4519,13 +4519,9 @@ private struct NativeReplyContext: View {
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
             if !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1) {
-                Button { expanded.toggle() } label: { Text(expanded ? "Show less" : "Show more").font(CaperTheme.font(11)).underline() }
-                    .buttonStyle(.plain)
-                    #if os(iOS)
-                    .frame(minHeight: 44)
-                    #else
-                    .frame(minHeight: 24)
-                    #endif
+                Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
+                    .buttonStyle(ReplyExpandButton())
+                    .frame(maxWidth: .infinity, alignment: .center).padding(.top, 6)
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
@@ -4613,6 +4609,24 @@ private struct NativeReplyContext: View {
         socket.fill(rim, with: .color(Color(red: 37/255, green: 42/255, blue: 45/255)))
         socket.stroke(rim, with: .color(CaperTheme.terracotta), lineWidth: 0.8)
         socket.fill(Path(ellipseIn: CGRect(x: -1.7, y: -3.4, width: 1.4, height: 6.8)), with: .color(CaperTheme.surface))
+    }
+}
+
+private struct ReplyExpandButton: ButtonStyle {
+    @State private var hovered = false
+    @Environment(\.isFocused) private var focused
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.blackout)
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #else
+            .frame(minHeight: 32)
+            #endif
+            .background(configuration.isPressed ? CaperTheme.text.opacity(0.85) : hovered ? Color.white : CaperTheme.text)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
+            .onHover { hovered = $0 }.modifier(ControlPointer())
     }
 }
 
