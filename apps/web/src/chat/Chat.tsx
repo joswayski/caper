@@ -1937,22 +1937,6 @@ export default function Chat({
             onClose={closeConversation}
           />
         )}
-
-        <p className="chat-typing" role="status" aria-atomic="true">
-          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
-            {displayedTypingLabel && (
-              <>
-                <span className="chat-typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{displayedTypingLabel}</span>
-              </>
-            )}
-          </span>
-        </p>
-
         {readOnly ? (
           <div className="chat-composer channel-preview">{composerNotice}</div>
         ) : (
@@ -2012,6 +1996,21 @@ export default function Chat({
             />
           </div>
         )}
+        {/* Typing belongs below the input so it cannot clip scrolling messages above it. */}
+        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
+          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
+            {displayedTypingLabel && (
+              <>
+                <span className="chat-typing-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>{displayedTypingLabel}</span>
+              </>
+            )}
+          </span>
+        </p>
       </section>
       <ThreadPanel
         state={state}

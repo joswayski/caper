@@ -2850,14 +2850,6 @@ private struct ChatView: View {
                     Button("Back to latest") { Task { await chat.retryLoad() } }
                 }.font(CaperTheme.font(11)).padding(10)
             }
-            HStack(spacing: 7) {
-                if !chat.typingNames.isEmpty {
-                    TypingDots()
-                    Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                }
-                Spacer()
-            }.padding(.horizontal, 18).frame(height: 20)
-
             if let sessionError = chat.sessionError {
                 HStack(spacing: 8) {
                     Text(sessionError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -2975,9 +2967,18 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
+            // Keep the timeline's clipping edge at the input, not above an
+            // empty status strip. Message rows own their scrollable spacing.
+            if !chat.typingNames.isEmpty {
+                HStack(spacing: 7) {
+                    TypingDots()
+                    Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                    Spacer()
+                }.frame(height: 20)
             }
             }
-            }.padding(.horizontal, 18).padding(.top, 12)
+            }
+            }.padding(.horizontal, 18).padding(.top, model.previewingChannel ? 12 : 0)
             // Keep breathing room above the keyboard/home-indicator safe area.
             .padding(.bottom, 12)
             if chat.draft.unicodeScalars.count >= 3000 {
@@ -3322,7 +3323,7 @@ private struct NativeThreadView: View {
                    !chat.sending, chat.error != nil || chat.sendRejected {
                     Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
                 }
-            }.padding(.horizontal, 12).padding(.top, 12)
+            }.padding(.horizontal, 12)
             .padding(.bottom, 12)
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }

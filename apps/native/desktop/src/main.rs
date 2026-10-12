@@ -10883,9 +10883,14 @@ impl CaperApp {
         // Inset like the channel composer, on the panel's own surface.
         let composer_frame = egui::Frame::new()
             .fill(CONVERSATION)
-            .inner_margin(egui::Margin::symmetric(18, 12));
+            .inner_margin(egui::Margin {
+                left: 18,
+                right: 18,
+                top: 0,
+                bottom: 12,
+            });
         if !read_only {
-            let composer = egui::TopBottomPanel::bottom("thread-composer")
+            egui::TopBottomPanel::bottom("thread-composer")
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -10938,15 +10943,10 @@ impl CaperApp {
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
                 if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
             });
-            ui.painter().hline(
-                composer.response.rect.x_range(),
-                composer.response.rect.top(),
-                Stroke::new(1.0, BORDER),
-            );
         } else {
             let note = egui::TopBottomPanel::bottom("thread-composer")
                 .show_separator_line(false)
-                .frame(composer_frame)
+                .frame(composer_frame.inner_margin(egui::Margin::symmetric(18, 12)))
                 .show_inside(ui, |ui| {
                     ui.label(
                         RichText::new(if direct {
@@ -11157,12 +11157,12 @@ impl CaperApp {
                 (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
             });
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(voice_error_row + if joined { editor_height + 24.0 + session_row + chip_rows * 56.0 } else { 44.0 })
+                .min_height(voice_error_row + if joined { editor_height + 12.0 + session_row + chip_rows * 56.0 } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
-                        .inner_margin(egui::Margin::symmetric(18, 12)),
+                        .inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 12 }),
                 )
                 .show_inside(ui, |ui| {
                     if self.opening || self.navigation_error.is_some() {
@@ -11336,22 +11336,8 @@ impl CaperApp {
                                 .color(counter_tone(count)),
                         );
                     }
-                });
-            self.navigation_swipe_bottom = composer.response.rect.top();
-            ui.painter().hline(
-                composer.response.rect.x_range(),
-                composer.response.rect.top(),
-                Stroke::new(1.0, BORDER),
-            );
-            egui::TopBottomPanel::bottom("typing")
-                .exact_height(20.0)
-                .show_separator_line(false)
-                .frame(
-                    egui::Frame::new()
-                        .fill(CONVERSATION)
-                        .inner_margin(egui::Margin::symmetric(18, 2)),
-                )
-                .show_inside(ui, |ui| {
+                    // Status below the input leaves history free to scroll all
+                    // the way to its edge, with no empty clipping strip.
                     let names: Vec<_> = self
                         .typers
                         .values()
@@ -11359,6 +11345,7 @@ impl CaperApp {
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
+                        ui.add_space(4.0);
                         ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
@@ -11378,6 +11365,7 @@ impl CaperApp {
                         });
                     }
                 });
+            self.navigation_swipe_bottom = composer.response.rect.top();
             // Web's arrivals: the rows below, with the pending send last.
             let pending = self.pending.as_ref().filter(|pending| pending.thread_root_id.is_none());
             self.arrivals.observe(
@@ -18830,15 +18818,47 @@ mod tests {
             render(&mut app, &context, vec![]);
         }
         let newest = "Scroll fixture message 40";
-        let resting = text_position(&render(&mut app, &context, vec![]), newest);
+        let position = |output: &egui::FullOutput| {
+            let timeline_bottom = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == newest => {
+                        Some(shape.clip_rect.bottom())
+                    }
+                    _ => None,
+                })
+                .expect("newest message");
+            let input_top = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.left() == 358.0
+                            && rect.fill == egui::Color32::TRANSPARENT
+                            && rect.stroke.width == 1.0 =>
+                    {
+                        Some(rect.rect.top())
+                    }
+                    _ => None,
+                })
+                .expect("composer outline");
+            // egui expands paint clipping by a few points for antialiasing.
+            assert!(
+                (input_top - timeline_bottom).abs() < 4.0,
+                "history must reach the input: {input_top} vs {timeline_bottom}"
+            );
+            text_position(output, newest)
+        };
+        let resting = position(&render(&mut app, &context, vec![]));
         app.draft = "one\ntwo\nthree\nfour".into();
-        let grown = text_position(&render(&mut app, &context, vec![]), newest);
+        let grown = position(&render(&mut app, &context, vec![]));
         assert!(
             grown.y < resting.y,
             "the newest message rose with the composer"
         );
         for _ in 0..3 {
-            let settled = text_position(&render(&mut app, &context, vec![]), newest);
+            let settled = position(&render(&mut app, &context, vec![]));
             assert_eq!(settled, grown, "the first frame was already settled");
         }
     }
@@ -24018,10 +24038,9 @@ mod tests {
         let dividers: Vec<_> = output.shapes.iter().filter(|shape| matches!(&shape.shape,
             egui::Shape::LineSegment { points, stroke } if stroke.width > 0.0 && points[0].x == 340.0 && points[1].x == 1220.0 && points[0].y > 800.0
         )).collect();
-        assert_eq!(
-            dividers.len(),
-            1,
-            "only one divider above the composer: {dividers:?}"
+        assert!(
+            dividers.is_empty(),
+            "the timeline and input share one surface: {dividers:?}"
         );
     }
 

@@ -1503,9 +1503,13 @@
 }
 .chat-composer {
   position: relative;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
+  /* Row padding scrolls with the messages; no fixed strip above the input. */
+  padding: 0 18px 12px;
   background: var(--surface-conversation);
+}
+.chat-composer.channel-preview,
+.chat-composer:has(> .chat-thread-readonly) {
+  padding-top: 12px;
 }
 .chat-emoji-suggestions {
   position: absolute;
@@ -1606,6 +1610,10 @@
   color: var(--text-muted);
   font-size: 0.7rem;
   line-height: 16px;
+}
+.chat-typing[data-visible="false"] {
+  height: 0;
+  padding-block: 0;
 }
 .chat-typing-content {
   min-width: 0;
