@@ -831,6 +831,7 @@ dependencies = [
  "uuid",
  "webpx",
  "wgpu",
+ "windows 0.61.3",
  "winreg",
  "winresource",
  "winrt-toast-reborn",
