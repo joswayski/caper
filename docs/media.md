@@ -5082,6 +5082,36 @@ database, application-service deployment or client release is required to use
 the hosted route; merging the routing change starts main validation, not a
 release.
 
+**Windows CI runner quarantine, October 12, 2026:** the routing workflow now
+also keeps `windows=false`, even when `SELF_HOSTED_WINDOWS=on` and the runner
+reports online. In [native run 38318994763](https://github.com/joswayski/caper/actions/runs/38318994763/job/115042820729),
+`desktop-caper-1` lost communication during "Build and package Windows". The
+check annotation confirms a runner disconnect, not a compiler/test failure;
+the job log is unavailable. Earlier Windows updater success on the same runner
+did not establish that it could finish the desktop build. Linux-arm routing is
+unchanged. Signed release jobs already use GitHub-hosted runners, so this
+quarantine does not restart or change an in-progress release.
+
+No host, secrets, database, service or client deployment is required. The merged
+routing change triggers main CI and native development builds; verify the exact
+merge commit, including the Windows installer job. To recover the physical PC,
+use its infrastructure checkout in elevated PowerShell:
+
+```powershell
+gh auth status
+gh variable set SELF_HOSTED_WINDOWS --body off --repo joswayski/caper
+.\scripts\windows-ci-runner.ps1 recover
+.\scripts\windows-ci-runner.ps1 status
+```
+
+Inspect the Windows service, network/memory health and runner `_diag` logs before
+restoring routing. These host commands have **not** been run from this orb; no
+live Amp runner is connected, and its GitHub token cannot administer runners.
+Keep the existing Mac/Linux quarantines. Remove the Windows quarantine only in
+a follow-up PR after physical recovery and a complete native build on the
+intended main revision; toggling the repository variable alone does not remove
+it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
+
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
 conversation header on every client; channel rows show voice only while
