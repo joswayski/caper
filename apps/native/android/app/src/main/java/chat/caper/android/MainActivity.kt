@@ -1563,7 +1563,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
         if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
             Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
-        if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+        if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
             state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
             SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
                 OutlinedTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
@@ -1831,9 +1831,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // An incoming request is read-only until you answer it; a blocked DM offers Unblock instead.
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
-            // The timeline reaches the input; its own content padding scrolls
-            // with messages instead of clipping them above a blank strip.
-            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 12.dp)) {
+            // Keep the composer inset from the timeline and the panel edge.
+            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp)) {
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
                 state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->

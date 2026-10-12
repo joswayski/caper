@@ -12241,8 +12241,8 @@ impl CaperApp {
             .inner_margin(egui::Margin {
                 left: 18,
                 right: 18,
-                top: 0,
-                bottom: 12,
+                top: 12,
+                bottom: 16,
             });
         if !read_only {
             egui::TopBottomPanel::bottom("thread-composer")
@@ -12534,12 +12534,12 @@ impl CaperApp {
                 (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
             });
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(voice_error_row + if joined { editor_height + 12.0 + session_row + chip_rows * 56.0 } else { 44.0 })
+                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
-                        .inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 12 }),
+                        .inner_margin(egui::Margin { left: 18, right: 18, top: 12, bottom: 16 }),
                 )
                 .show_inside(ui, |ui| {
                     if self.opening || self.navigation_error.is_some() {
@@ -12745,8 +12745,7 @@ impl CaperApp {
                                 .color(counter_tone(count)),
                         );
                     }
-                    // Status below the input leaves history free to scroll all
-                    // the way to its edge, with no empty clipping strip.
+                    // Typing status stays below the input, separate from its top inset.
                     let names: Vec<_> = self
                         .typers
                         .values()
@@ -22222,8 +22221,8 @@ mod tests {
                 .expect("composer outline");
             // egui expands paint clipping by a few points for antialiasing.
             assert!(
-                (input_top - timeline_bottom).abs() < 4.0,
-                "history must reach the input: {input_top} vs {timeline_bottom}"
+                (input_top - timeline_bottom - 12.0).abs() < 4.0,
+                "keep a gap between history and the input: {input_top} vs {timeline_bottom}"
             );
             text_position(output, newest)
         };

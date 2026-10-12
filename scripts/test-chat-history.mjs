@@ -279,19 +279,24 @@ const anchorOffset = (key) =>
   );
 
 function quietTimeline(layout) {
-  const composerSeam = () => {
-    const gap = evaluate(`(() => {
+  const composerSpacing = () => {
+    const spacing = evaluate(`(() => {
       const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
       const input = document.querySelector('#chat-message').getBoundingClientRect();
-      return input.top - timeline.bottom;
+      const composer = document.querySelector('.chat-panel > .chat-composer').getBoundingClientRect();
+      const form = document.querySelector('.chat-panel > .chat-composer form').getBoundingClientRect();
+      return { above: input.top - timeline.bottom, below: composer.bottom - form.bottom,
+        left: input.left - composer.left, right: composer.right - input.right };
     })()`);
-    assert.ok(Math.abs(gap) < 1, `${layout}: messages must scroll right up to the input, not clip ${gap}px above it`);
+    assert.ok(spacing.above >= 12, `${layout}: keep breathing room above the input: ${JSON.stringify(spacing)}`);
+    assert.ok(spacing.below >= 16, `${layout}: keep the form inset from the panel bottom`);
+    assert.ok(spacing.left >= 14 && spacing.right >= 14, `${layout}: keep both side insets`);
   };
-  composerSeam();
+  composerSpacing();
   evaluate("chatHistoryFixture.typing(true)");
   wait('document.querySelector(".chat-typing-content").getAttribute("data-visible") === "true"');
   settle();
-  composerSeam();
+  composerSpacing();
   assert.ok(
     evaluate(
       'document.querySelector(".chat-typing").getBoundingClientRect().top >= document.querySelector("#chat-message").getBoundingClientRect().bottom',
@@ -300,7 +305,7 @@ function quietTimeline(layout) {
   );
   evaluate("chatHistoryFixture.typing(false)");
   wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
-  composerSeam();
+  composerSpacing();
   assert.deepEqual(
     evaluate(`(() => {
       const s = document.querySelector('.chat-scroller');
@@ -315,7 +320,7 @@ function quietTimeline(layout) {
   browser("fill", "#chat-message", "TEST FIXTURE taller draft\nSecond line\nThird line\nFourth line");
   settle();
   assert.ok(evaluate('document.querySelector("#chat-message").offsetHeight') > height);
-  composerSeam();
+  composerSpacing();
   assert.ok(latestVisible(), `${layout}: growing the composer must retain latest`);
   browser("press", "Control+a");
   browser("press", "Backspace");
@@ -349,7 +354,9 @@ function quietTimeline(layout) {
   browser("press", "End");
   settle();
   assert.ok(latestVisible(), `${layout}: End must still return to latest`);
-  console.log(`PASS: ${layout}: hidden indicators, composer growth, retained focus, PageUp/End and reader anchor.`);
+  console.log(
+    `PASS: ${layout}: composer insets, hidden indicators, composer growth, retained focus, PageUp/End and reader anchor.`,
+  );
 }
 
 function togglePins() {

@@ -1875,13 +1875,9 @@
 }
 .chat-composer {
   position: relative;
-  /* Row padding scrolls with the messages; no fixed strip above the input. */
-  padding: 0 18px 12px;
+  /* Keep the input inset from both the scrolling timeline and the panel edge. */
+  padding: 12px 18px 16px;
   background: var(--surface-conversation);
-}
-.chat-composer.channel-preview,
-.chat-composer:has(> .chat-thread-readonly) {
-  padding-top: 12px;
 }
 .chat-emoji-suggestions {
   position: absolute;
