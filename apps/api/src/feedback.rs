@@ -49,6 +49,21 @@ pub(crate) async fn team_member(
     .map_err(|_| unavailable())
 }
 
+/// Whether `channel` is a DM with the Caper account.
+pub(crate) async fn team_conversation(
+    connection: &mut PgConnection,
+    channel: i64,
+) -> Result<bool, ApiError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM public.direct_conversations d JOIN public.users u
+             ON u.id IN (d.low_user_id,d.high_user_id) WHERE d.channel_id=$1 AND u.team_account)",
+    )
+    .bind(channel)
+    .fetch_one(connection)
+    .await
+    .map_err(|_| unavailable())
+}
+
 /// Records a report in the send transaction. Every team member's access to
 /// the conversation starts with its first report.
 pub(crate) async fn record(
@@ -176,6 +191,8 @@ pub(crate) async fn page(
                 'channel', jsonb_build_object('id', c.external_id, 'direct', c.space_id IS NULL,
                     'name', CASE WHEN c.space_id IS NOT NULL THEN lower(c.name)
                                  WHEN d.low_user_id=d.high_user_id THEN lo.display_name
+                                 WHEN lo.team_account THEN hi.display_name || ' → ' || lo.display_name
+                                 WHEN hi.team_account THEN lo.display_name || ' → ' || hi.display_name
                                  ELSE lo.display_name || ' & ' || hi.display_name END),
                 'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name) END,
                 'replyCount', COALESCE((root.payload->'thread'->>'replyCount')::bigint, 0),

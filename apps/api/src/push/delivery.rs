@@ -182,8 +182,10 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                          OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
                  AND (CASE WHEN ch.space_id IS NULL THEN
                      EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
-                         AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
-                         AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                         AND d.accepted_at IS NOT NULL AND n.user_id IN(d.low_user_id,d.high_user_id)
+                         AND ((d.low_user_id<>d.high_user_id AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                           -- The team answering in a DM it visits, personal notes included.
+                           OR (NOT n.actor_id IN(d.low_user_id,d.high_user_id) AND public.feedback_access(ch.id,n.actor_id))))
                  ELSE
                      NOT s.demo
                      AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)

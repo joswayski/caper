@@ -3477,3 +3477,94 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     );
     assert_eq!(history(&h, &jose, &dm, "").await.0, StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn messaging_caper_sends_each_new_message_to_the_team(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let jose = person(&pool, "jose").await;
+    sqlx::query("INSERT INTO public.feedback_team (user_id) VALUES ($1)")
+        .bind(jose.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Any team name opens the same, already-accepted conversation.
+    let caper = direct(&h, &alice, "feedback").await;
+    assert_eq!(direct(&h, &alice, "Admin").await, caper);
+    let (_, dms) = call(
+        &h.app,
+        "GET",
+        "/api/dms",
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(dms["conversations"][0]["peer"]["displayName"], "Caper");
+    assert_eq!(dms["conversations"][0]["status"], "accepted");
+    assert_eq!(dms["conversations"][0]["peer"]["team"], true);
+
+    let first = send(&h, &alice, &caper, "Uploads hang at 100%", None).await;
+    let (_, stored) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{caper}/messages/{first}"),
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(
+        stored["content"]["mentions"],
+        json!([{"type": "feedback"}]),
+        "marked as sent to the team"
+    );
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &first).await,
+        pairs(&[("jose", "feedback")])
+    );
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(inbox["reports"][0]["messageId"], first.as_str());
+    assert_eq!(inbox["reports"][0]["channel"]["name"], "Alice → Caper");
+    let (_, window) = history(&h, &jose, &caper, "").await;
+    assert_eq!(window["visitor"], true);
+
+    // The team answers as itself; Alice hears it like any DM.
+    let answer = send(&h, &jose, &caper, "Looking now", Some(&first)).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &answer).await,
+        pairs(&[("alice", "direct.message")])
+    );
+    // Replies in that thread are the same feedback; a new message is new feedback.
+    let follow = send(&h, &alice, &caper, "Thanks!", Some(&first)).await;
+    let second = send(&h, &alice, &caper, "Also: dark mode?", None).await;
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    let ids: Vec<&str> = inbox["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["messageId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [second.as_str(), first.as_str()]);
+    assert!(!ids.contains(&follow.as_str()));
+    assert_eq!(inbox["reports"][1]["answered"], false, "Alice spoke last");
+}

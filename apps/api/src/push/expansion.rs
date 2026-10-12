@@ -87,6 +87,8 @@ struct Source {
     thread_reply: bool,
     mentions: Option<Value>,
     sendable: bool,
+    /// `@feedback`, or a new message in the Caper DM.
+    reported: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -136,7 +138,6 @@ struct Mentions {
     users: HashSet<String>,
     everyone: bool,
     here: bool,
-    feedback: bool,
 }
 
 impl Mentions {
@@ -151,7 +152,6 @@ impl Mentions {
                 }
                 Some("everyone") => mentions.everyone = true,
                 Some("here") => mentions.here = true,
-                Some("feedback") => mentions.feedback = true,
                 _ => {}
             }
         }
@@ -215,7 +215,8 @@ pub(super) async fn expand(
                 -- A forward's note shows its mentions but never notifies them.
                 CASE WHEN m.forward_source_id IS NULL THEN m.payload->'content'->'mentions' END AS mentions,
                 (c.deleted_at IS NULL AND (c.space_id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
-                 AND m.created_at > now() - interval '24 hours') AS sendable
+                 AND m.created_at > now() - interval '24 hours') AS sendable,
+                EXISTS(SELECT 1 FROM public.feedback_reports r WHERE r.message_id=m.id) AS reported
          FROM public.messages m
          JOIN public.chat_sessions cs ON cs.id=m.session_id
          JOIN public.channels c ON c.id=m.channel_id
@@ -316,8 +317,16 @@ async fn resolve(
              JOIN public.users u ON u.id = CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END
              WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.low_user_id<>d.high_user_id
                AND $3 IN (d.low_user_id,d.high_user_id) AND d.accepted_at IS NOT NULL AND u.deleted_at IS NULL
+               AND NOT u.team_account
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                    AND ((b.blocker_id=u.id AND b.blocked_id=$3) OR (b.blocker_id=$3 AND b.blocked_id=u.id)))
+             UNION ALL
+             -- The team answering in a DM it visits (the Caper DM, personal
+             -- notes, or two people's DM): everyone in it hears, as from a peer.
+             SELECT u.id, true AS joined FROM public.direct_conversations d
+             JOIN public.users u ON u.id IN (d.low_user_id,d.high_user_id)
+             WHERE $2::bigint IS NULL AND d.channel_id=$1 AND NOT $3 IN (d.low_user_id,d.high_user_id)
+               AND d.accepted_at IS NOT NULL AND u.deleted_at IS NULL AND NOT u.team_account
              UNION ALL
              SELECT u.id, EXISTS(SELECT 1 FROM public.channel_joins cj
                  WHERE cj.channel_id=c.id AND cj.user_id=u.id AND cj.deleted_at IS NULL) AS joined
@@ -364,7 +373,7 @@ async fn resolve(
     let mut here = Vec::new();
     for candidate in candidates {
         let preferences = candidate.preferences();
-        let kind = if mentions.feedback && candidate.team {
+        let kind = if source.reported && candidate.team {
             Kind::Feedback
         } else if candidate.visitor {
             // Named where they only visit: still feedback, so it opens there.

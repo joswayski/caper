@@ -422,6 +422,8 @@ interface CallProps {
     demo?: boolean;
     direct?: boolean;
     directPeerId?: string;
+    /** A DM with the Caper account: messages go to the feedback team. */
+    team?: boolean;
     joined?: boolean;
     /** A feedback team member taking part without having joined. */
     visitor?: boolean;
@@ -1747,6 +1749,7 @@ export default function Call({
               identityReady={identityReady && engaged}
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
+              team={!!channel?.team}
               onReadCursor={onReadCursor}
               readActive={engaged && !browsing}
               readOnly={!channelJoined}

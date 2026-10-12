@@ -3361,6 +3361,7 @@ export default function Spaces({
                 demo: detail.space.demo,
                 direct: !!directView,
                 directPeerId: currentDirect?.peer.id,
+                team: currentDirect?.peer.team,
                 // An open request or a blocked DM replaces the composer.
                 joined: currentDirect ? !directLocked : channel.joined,
               }

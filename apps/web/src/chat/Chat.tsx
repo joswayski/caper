@@ -177,6 +177,7 @@ export default function Chat({
   channelName: expectedChannelName,
   direct = false,
   directPeerId,
+  team = false,
   onReadCursor,
   readActive = true,
   initialHistory,
@@ -215,6 +216,8 @@ export default function Chat({
   channelName?: string;
   direct?: boolean;
   directPeerId?: string;
+  /** A DM with the Caper account, which the feedback team answers. */
+  team?: boolean;
   onReadCursor?: (seq: string) => void;
   readActive?: boolean;
   initialHistory?: GeneralChatHistory;
@@ -1762,9 +1765,11 @@ export default function Chat({
                   <>
                     <p>No messages yet.</p>
                     <small>
-                      {direct
-                        ? `Only you and ${channelName} can read this conversation.`
-                        : `Start the conversation in #${channelName}.`}
+                      {team
+                        ? "Messages here go to the Caper team. They’ll reply in a thread on each one."
+                        : direct
+                          ? `Only you and ${channelName} can read this conversation.`
+                          : `Start the conversation in #${channelName}.`}
                     </small>
                   </>
                 )}

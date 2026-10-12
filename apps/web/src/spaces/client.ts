@@ -31,7 +31,8 @@ export interface Member {
 
 export interface DirectConversation {
   id: string;
-  peer: { id: string; username: string; displayName: string; avatarId?: number };
+  /** `team`: the Caper account, whose DM goes to the feedback team. */
+  peer: { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */

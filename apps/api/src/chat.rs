@@ -391,7 +391,10 @@ async fn signed_conversation_window(
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
         "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL
          UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL
-         UNION ALL SELECT '', 'Direct messages',CASE WHEN d.low_user_id=d.high_user_id THEN lo.display_name ELSE lo.display_name || ' & ' || hi.display_name END
+         UNION ALL SELECT '', 'Direct messages',CASE WHEN d.low_user_id=d.high_user_id THEN lo.display_name
+             WHEN lo.team_account THEN hi.display_name || ' → ' || lo.display_name
+             WHEN hi.team_account THEN lo.display_name || ' → ' || hi.display_name
+             ELSE lo.display_name || ' & ' || hi.display_name END
            FROM public.direct_conversations d JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
            WHERE d.channel_id=$1 AND NOT $3 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL",
     )
@@ -992,18 +995,28 @@ pub(crate) async fn send_message(
         content["attachments"] =
             Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
     }
+    let admin = crate::feedback::team_member(&mut tx, user_id).await?;
     let mut found = mentions::parse(text, space_id.is_some());
     // Only accounts can ask the team for help; a guest's @feedback is text.
-    let reported = user_id.is_some() && found.contains(&Mention::Feedback);
-    if !reported {
+    // In the Caper DM, every new top-level message is feedback by itself.
+    let reported = user_id.is_some()
+        && (found.contains(&Mention::Feedback)
+            || (!admin
+                && root.is_none()
+                && space_id.is_none()
+                && crate::feedback::team_conversation(&mut tx, channel_id).await?));
+    if user_id.is_none() {
         found.retain(|mention| *mention != Mention::Feedback);
+    } else if reported && !found.contains(&Mention::Feedback) {
+        // Every client then marks it "Caper team has been notified".
+        found.push(Mention::Feedback);
     }
     let content = with_mentions(&mut tx, content, &found).await?;
     let seq = head + 1;
     let id = random_id(15);
     let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
     // Stamped when sent, so a look-alike display name can never claim it.
-    if crate::feedback::team_member(&mut tx, user_id).await? {
+    if admin {
         payload["author"]["admin"] = json!(true);
     }
     if let Some((root_id, original)) = &thread_root {
