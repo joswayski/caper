@@ -442,29 +442,21 @@ private struct BrowseLayer: ViewModifier {
 /// which then taps it: the view moves with the finger, so it lifts on the same
 /// image, avatar, reaction or row it started on. SwiftUI can't cancel a press
 /// that has started, so controls on swiping surfaces skip a tap or long press
-/// that lands while a swipe follows the finger or as it lifts, as the web
-/// suppresses a drag's release click. A tap once it has lifted works at once.
+/// that lands while a swipe moves or just after it lifts, as the web suppresses
+/// a drag's release click. It is only a time window, renewed by every move, so
+/// nothing a lost gesture leaves behind can keep controls off.
 @MainActor enum SwipeTapGuard {
-    private static var following: Set<UUID> = []
-    private static var followedAt = Date.distantPast
     private static var quietUntil = Date.distantPast
-    /// A swipe follows the finger.
-    static func follow(_ swipe: UUID) {
-        following.insert(swipe)
-        followedAt = Date()
-    }
+    /// A swipe moved with the finger. A held finger still reports small moves.
+    static func follow() { quiet(for: 0.35) }
     /// The finger lifted, or the system took the touch. The lift's own tap
-    /// arrives with it, in the same touch event, so a moment covers it.
-    static func release(_ swipe: UUID) {
-        guard following.remove(swipe) != nil else { return }
-        quietUntil = max(quietUntil, Date().addingTimeInterval(0.12))
+    /// arrives with it, in the same touch event.
+    static func release() { quiet(for: 0.12) }
+    private static func quiet(for seconds: Double) {
+        quietUntil = max(quietUntil, Date().addingTimeInterval(seconds))
     }
-    /// A control was "tapped" by a swipe. A swipe held still for seconds stops
-    /// counting, so a lost release can't disable controls for good.
-    static var swiping: Bool {
-        let now = Date()
-        return (!following.isEmpty && now.timeIntervalSince(followedAt) < 3) || now < quietUntil
-    }
+    /// A control was "tapped" by a swipe.
+    static var swiping: Bool { Date() < quietUntil }
     /// `action`, skipped when a swipe's lift triggered it.
     static func unlessSwiping(_ action: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
         { if !swiping { action() } }
@@ -502,19 +494,34 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     @State private var tracking: Bool?
     /// Where the drawer was and the finger's offset (toward open) when it started following.
     @State private var grab: (position: CGFloat, offset: CGFloat)?
-    @State private var id = UUID()
+    /// The gesture this state belongs to, by where it started, and whether it
+    /// has ended. A move from another start is a new gesture, decided afresh;
+    /// a late move of an ended one is ignored, so neither can leave a stale slide.
+    @State private var gesture: (start: CGPoint, ended: Bool)?
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
         let opening = Drawer.opening
         // Global coordinates: the view itself moves with the finger. The list
-        // stops scrolling while it follows a slide. Turning off hit-testing
-        // mid-swipe let the system cancel it over a scrolling list, so it slid
-        // back; controls skip the lift's tap instead (`SwipeTapGuard`).
-        content.contentShape(Rectangle()).scrollDisabled(tracking == true)
+        // stops scrolling while it follows a slide, and only while the gesture
+        // lasts. Turning off hit-testing mid-swipe let the system cancel it over
+        // a scrolling list, so it slid back; controls skip the lift's tap instead
+        // (`SwipeTapGuard`).
+        content.contentShape(Rectangle()).scrollDisabled(dragging && tracking == true)
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
+                    if gesture?.start != value.startLocation {
+                        // An abandoned slide of an earlier gesture settles back first.
+                        if tracking == true, let drawer, drawer.drag != nil {
+                            drawer.settle = nil
+                            withAnimation(reduceMotion ? nil : DrawerSettle.Timing.settle.animation) { drawer.drag = nil }
+                        }
+                        gesture = (value.startLocation, false)
+                        tracking = nil
+                        grab = nil
+                    }
+                    guard gesture?.ended == false else { return }
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
@@ -526,17 +533,18 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                         drawer.settle = nil
                     }
                     guard tracking == true, let drawer, let grab else { return }
-                    SwipeTapGuard.follow(id)
+                    SwipeTapGuard.follow()
                     drawer.drag = min(1, max(0, grab.position + (dx - grab.offset) / drawer.travel))
                 }
                 .onEnded { value in
-                    defer { tracking = nil; grab = nil }
-                    guard tracking == true, let drawer, let position = drawer.drag else { SwipeTapGuard.release(id); return }
+                    let followed = tracking == true && gesture?.ended == false && gesture?.start == value.startLocation
+                    defer { tracking = nil; grab = nil; gesture?.ended = true }
+                    guard followed, let drawer, let position = drawer.drag else { return }
                     let release = DrawerRelease(open: open, position: position, velocity: opening * value.velocity.width,
                                                 distance: opening * value.translation.width, travel: drawer.travel)
                     let timing = DrawerSettle.Timing.release(release)
                     drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
-                    SwipeTapGuard.release(id)
+                    SwipeTapGuard.release()
                     withAnimation(reduceMotion ? nil : timing.animation) {
                         drawer.drag = nil
                         if release.commit {
@@ -551,20 +559,20 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                 }, including: enabled ? .all : .subviews)
             .onChange(of: dragging) { _, active in
                 guard !active else { return }
-                // After onEnded, if it runs: a cancelled drag (by a scroll, or the system) slides back.
+                // After onEnded, if it runs: whatever ended the gesture, nothing of it
+                // stays. A cancelled drag (by a scroll, or the system) slides back.
                 DispatchQueue.main.async {
-                    guard let followed = tracking else { return }
+                    let followed = tracking == true
                     tracking = nil
                     grab = nil
-                    guard followed, let drawer, let position = drawer.drag else { SwipeTapGuard.release(id); return }
+                    gesture?.ended = true
+                    guard followed, let drawer, let position = drawer.drag else { return }
                     let timing = DrawerSettle.Timing.settle
                     drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: timing)
-                    SwipeTapGuard.release(id)
+                    SwipeTapGuard.release()
                     withAnimation(reduceMotion ? nil : timing.animation) { drawer.drag = nil }
                 }
             }
-            // A surface that leaves mid-swipe (a conversation switch) must not keep controls off.
-            .onDisappear { SwipeTapGuard.release(id) }
     }
 }
 

@@ -2375,7 +2375,7 @@ final class CaperParityUITests: XCTestCase {
         }
         // A plain tap still opens it, once the swipe has lifted. By coordinate:
         // hosted simulators can fail the link's scroll-to-visible after swipes.
-        Thread.sleep(forTimeInterval: 0.3)
+        Thread.sleep(forTimeInterval: 0.6)
         pill.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
     }
