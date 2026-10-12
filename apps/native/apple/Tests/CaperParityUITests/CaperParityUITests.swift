@@ -1343,14 +1343,17 @@ final class CaperParityUITests: XCTestCase {
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
         let panel = app.descendants(matching: .any)["message-thread"]
+        // The Slider is a synthetic accessibilityRepresentation, not a visible
+        // control. Xcode 16 can fail to compute its hit point: click the actual
+        // handle's midpoint, and keep the Slider for width and keyboard checks.
         // The widest the thread may be: 600, or less when the window leaves the
         // timeline too little room (CI windows are narrower than a desktop's).
-        handle.click()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         handle.typeKey(.end, modifierFlags: [])
         let maximum = try XCTUnwrap(sidebarWidth(of: handle))
         XCTAssertLessThanOrEqual(maximum, 600)
         XCTAssertGreaterThanOrEqual(maximum, 350, "The window leaves room to widen the thread")
-        handle.doubleClick()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         XCTAssertEqual(sidebarWidth(of: handle), 340)
         let initialEdge = panel.frame.minX
         let window = app.windows.firstMatch
@@ -1361,7 +1364,8 @@ final class CaperParityUITests: XCTestCase {
         let dragged = try XCTUnwrap(sidebarWidth(of: handle))
         XCTAssertEqual(Double(dragged), Double(min(403, maximum)), accuracy: 2, "Dragging left widens the thread")
         XCTAssertEqual(initialEdge - panel.frame.minX, CGFloat(dragged - 340), accuracy: 2)
-        handle.doubleClick(); handle.click()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         handle.typeKey(.leftArrow, modifierFlags: [])
         XCTAssertEqual(sidebarWidth(of: handle), 350)
         handle.typeKey(.rightArrow, modifierFlags: [])
@@ -1370,7 +1374,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(sidebarWidth(of: handle), 300)
         handle.typeKey(.end, modifierFlags: [])
         XCTAssertEqual(sidebarWidth(of: handle), maximum)
-        handle.doubleClick()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         handle.typeKey(.leftArrow, modifierFlags: [])
         app.buttons["Back to channel"].click()
         try openThread(app)
@@ -1381,7 +1385,7 @@ final class CaperParityUITests: XCTestCase {
         let saved = try require(reopened.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing saved handle")
         XCTAssertEqual(sidebarWidth(of: saved), 350, "Width survives relaunch")
         capture("thread-resized", app: reopened)
-        saved.doubleClick()
+        saved.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
     }
 
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
