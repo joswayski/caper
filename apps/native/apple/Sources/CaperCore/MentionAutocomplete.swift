@@ -213,15 +213,16 @@ enum MentionAutocomplete {
 
     /// Members ranked by `rankPeople`. Matching specials (`everyone`, `here`,
     /// then the team) follow the members and keep their slots within the cap
-    /// of six. The team special needs a non-empty query: the first team name
-    /// it starts, inserted as is (`@ad` offers `@admin`).
+    /// of six. A bare `@` leads with `@feedback`, so the team is easy to find;
+    /// a typed query offers the first team name it starts after everyone else
+    /// (`@ad` offers `@admin`, but Enter still picks a person first).
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
         var specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
-        // Only once something is typed: a bare `@` stays about people.
+        let leading: [MentionCandidate] = source.feedback && query.isEmpty ? [.feedback] : []
         if source.feedback, !query.isEmpty, let name = feedbackAliases.first(where: { $0.hasPrefix(query) }) { specials.append(.team(name)) }
         let members = rankPeople(query: query, source.members)
-        return Array(members.prefix(max(0, maximumChoices - specials.count))) + specials
+        return leading + Array(members.prefix(max(0, maximumChoices - leading.count - specials.count))) + specials
     }
 
     static func match(text: String, selection: NSRange, markedText: Bool, source: MentionSource) -> MentionAutocompleteMatch? {

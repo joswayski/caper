@@ -241,8 +241,11 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(names("@c", .direct(peer: peer, accountID: selfID)), ["caper"], "DMs")
         let notes = MentionSource.direct(peer: DirectMessagePeer(id: selfID, username: "me", displayName: "Me"), accountID: selfID)
         XCTAssertEqual(names("@c", notes), ["caper"], "personal notes")
-        XCTAssertEqual(names("@", notes), [], "a bare @ stays about people")
-        XCTAssertEqual(names("@", space), ["carol", "everyone", "here"], "no @feedback until something is typed")
+        XCTAssertEqual(names("@", notes), ["feedback"], "a bare @ leads with the team, in notes too")
+        XCTAssertEqual(names("@", space), ["feedback", "carol", "everyone", "here"], "a bare @ starts with @feedback")
+        XCTAssertEqual(names("@", space).filter { $0 == "feedback" }.count, 1)
+        let ada = MentionSource.space(members: [Member(id: "Ada000000001", username: "ada", displayName: "Ada", owner: false)], excluding: selfID)
+        XCTAssertEqual(names("@a", ada), ["ada", "admin"], "a typed query keeps people first; Enter picks the person")
 
         let match = try XCTUnwrap(MentionAutocomplete.match(text: "hi @cap", selection: caret("hi @cap"), markedText: false, source: notes))
         XCTAssertEqual(MentionAutocomplete.inserting(match.choices[0], in: "hi @cap", match: match)?.text, "hi @caper ",
@@ -264,7 +267,7 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(source.members.map(\.username), ["alice", "bob", "dana"],
                        "the reporter, named authors and resolved mentions, never yourself, without duplicates")
         XCTAssertEqual(source.members.first?.avatarId, 12)
-        XCTAssertEqual(names("@", source), ["alice", "bob", "dana"])
+        XCTAssertEqual(names("@", source), ["feedback", "alice", "bob", "dana"])
         XCTAssertEqual(names("@f", source), ["feedback"])
         XCTAssertEqual(names("@f", .visit(reporter: nil, messages: [], people: nil, accountID: selfID)), ["feedback"],
                        "otherwise only @feedback")
