@@ -47,7 +47,8 @@ channel, thread, DM or personal note asks the Caper team to look. The message st
 where it is, marked **Caper team has been notified 🫡**. Feedback team members get a
 push and an inbox of reports, and take part in that conversation like a member
 without joining it: they read it for context and reply in place with an **ADMIN**
-badge, so everyone there sees the answer. Team membership is managed in
+badge, so everyone there sees the answer. Messaging `@caper` (or `@feedback`) from
+**New message** opens a private DM where each message goes to the team. Team membership is managed in
 SQL. See [Feedback](docs/media.md#feedback-in-place).
 
 Authors can edit messages on web, Android, Apple and Rust desktop, including

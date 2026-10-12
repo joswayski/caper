@@ -2507,6 +2507,16 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   `?archived=true` lists archived threads. `GET /api/account/me` adds
   `feedbackTeam: true` for team members.
 
+**Messaging Caper.** Any team name in **New message** opens an accepted DM with
+the Caper account (`users.team_account`, username `caper`, no email, so nobody
+signs in as it; the API maps every alias to it). Each top-level message sent
+there is a report, marked like `@feedback`, so it lands in the inbox as its own
+thread; replies in that thread stay part of it. The team answers in the thread
+as itself. The DM's `peer.team` is true, and clients replace the empty state's
+privacy line with *Messages here go to the Caper team.* When the team posts in
+any DM it visits (the Caper DM, personal notes or two people's DM), everyone in
+the conversation is notified as for a DM message.
+
 **Privacy.** Tagging the team is consent for it to read that conversation, the
 earlier context included. The `@feedback` suggestion says so: *Caper team · can
 read and reply here*. Access is per conversation, never per space. The team cannot
@@ -2523,7 +2533,8 @@ UPDATE feedback_team SET deleted_at = now() WHERE user_id = (SELECT id FROM user
 SELECT u.username, t.created_at FROM feedback_team t JOIN users u ON u.id = t.user_id WHERE t.deleted_at IS NULL;
 ```
 
-Migration `202610120001_feedback.sql` adds the two tables and the function.
+Migration `202610120001_feedback.sql` adds the Caper account, the two tables
+and the function.
 `--migrate` grants the runtime role `SELECT` on `feedback_team`, `SELECT, INSERT,
 UPDATE` on `feedback_reports`, its sequence and `EXECUTE` on `feedback_access`. Every
 access check calls the function, so **run the migration before rolling out the

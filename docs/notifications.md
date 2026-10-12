@@ -66,7 +66,9 @@ Per committed message (edits never notify; demo spaces and guests never do):
    thread replies. Like `mention.user`, it ignores mutes. A team member who only
    visits the conversation through feedback access hears about nothing else
    there, except being @named, which also arrives as `feedback` so that it
-   opens the visit view. See [Feedback](media.md#feedback-in-place).
+   opens the visit view. A new message in the Caper DM is `feedback` too. When a
+   team member posts in a DM they visit, both participants (or the owner of
+   personal notes) get `direct.message`. See [Feedback](media.md#feedback-in-place).
 
 Kinds are `direct.message`, `channel.message`, `mention.user`,
 `mention.everyone` and `feedback`. Clients treat unknown kinds as a generic message.
