@@ -302,7 +302,7 @@ class AttachmentPreparer(private val context: Context) {
     }.getOrNull()
 
     /** Track facts the container declares: video codec, HDR transfer, and whether there is audio. */
-    private data class Tracks(val videoMime: String?, val hdr: Boolean, val audioMime: String?)
+    private data class Tracks(val videoMime: String?, val hdr: Boolean, val audioMime: String?, val fps: Float? = null)
 
     private fun tracks(file: File): Tracks? = runCatching {
         val extractor = MediaExtractor()
@@ -320,7 +320,12 @@ class AttachmentPreparer(private val context: Context) {
             val transfer = video?.takeIf { it.containsKey(MediaFormat.KEY_COLOR_TRANSFER) }?.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
             val hdr = transfer == MediaFormat.COLOR_TRANSFER_ST2084 || transfer == MediaFormat.COLOR_TRANSFER_HLG ||
                 videoMime == MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION
-            Tracks(videoMime, hdr, audio?.getString(MediaFormat.KEY_MIME)?.lowercase(Locale.ROOT))
+            // Containers store the frame rate as an integer or a float.
+            val fps = video?.takeIf { it.containsKey(MediaFormat.KEY_FRAME_RATE) }?.let { format ->
+                runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }
+                    .recoverCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE) }.getOrNull()
+            }?.takeIf { it > 0f }
+            Tracks(videoMime, hdr, audio?.getString(MediaFormat.KEY_MIME)?.lowercase(Locale.ROOT), fps)
         } finally { extractor.release() }
     }.getOrNull()
 
@@ -339,7 +344,7 @@ class AttachmentPreparer(private val context: Context) {
     private suspend fun prepareVideo(base: PreparedAttachment, settings: CompressionSettings, directory: File, progress: (Float) -> Unit): PreparedAttachment {
         val (measured, tracks) = withContext(Dispatchers.IO) { metadata(base.file) to tracks(base.file) }
         var prepared = base.copy(width = measured?.width, height = measured?.height, durationMs = measured?.durationMs)
-        val facts = AttachmentPolicy.VideoFacts(measured?.width, measured?.height, tracks?.videoMime, measured?.bitrate, tracks?.hdr == true, base.contentType)
+        val facts = AttachmentPolicy.VideoFacts(measured?.width, measured?.height, tracks?.videoMime, measured?.bitrate, tracks?.hdr == true, base.contentType, tracks?.fps)
         // OpenGL HDR-to-SDR tone mapping needs API 29; without it HDR uploads unchanged.
         val plan = if (tracks?.videoMime != null) AttachmentPolicy.videoPlan(facts, settings, Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) else null
         if (plan != null) {

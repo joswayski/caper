@@ -154,6 +154,8 @@ object AttachmentPolicy {
         /** HLG or PQ (HDR10) transfer, or Dolby Vision. */
         val hdr: Boolean = false,
         val contentType: String = "video/mp4",
+        /** Frames per second, when the container declares it. */
+        val fps: Float? = null,
     )
 
     /**
@@ -176,20 +178,26 @@ object AttachmentPolicy {
         return maxOf(2, scaled - scaled % 2)
     }
 
-    /** `videoBitrateKbps` at 1080p, scaled by pixel count, never below the hardware-encoder floor. */
-    fun videoTargetKbps(width: Int, height: Int, settings: CompressionSettings): Int {
-        val scaled = (settings.videoBitrateKbps.toDouble() * width.toLong() * height / PIXELS_1080P).roundToInt()
+    /**
+     * `videoBitrateKbps` at 1080p30, scaled by pixel count and (above 30 fps, up to
+     * `videoHighFpsBoostPercent`) frame rate, never below the hardware-encoder floor.
+     */
+    fun videoTargetKbps(width: Int, height: Int, settings: CompressionSettings, fps: Float? = null): Int {
+        val boost = fps?.takeIf { it > 30f }?.let { minOf(it / 30.0, settings.videoHighFpsBoostPercent / 100.0) }?.coerceAtLeast(1.0) ?: 1.0
+        val scaled = (settings.videoBitrateKbps.toDouble() * width.toLong() * height * boost / PIXELS_1080P).roundToInt()
         return max(scaled, minOf(VIDEO_BITRATE_FLOOR_KBPS, settings.videoBitrateKbps))
     }
 
     /**
-     * [targetKbps], but never above the source's own [sourceBitrate] (bits per second): a
-     * compatibility transcode of a lean HEVC clip must not grow it. The floor still applies.
+     * [targetKbps], but never above `videoSourceBitratePercent` of the source's own
+     * [sourceBitrate] (bits per second; 100% for H.264, which more bits cannot improve), as the
+     * web's `outputKbps`. The floor still applies.
      */
-    fun outputKbps(targetKbps: Int, sourceBitrate: Long?, settings: CompressionSettings): Int {
-        if (sourceBitrate == null || sourceBitrate <= 0) return targetKbps
-        val source = (sourceBitrate / 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        return max(minOf(targetKbps, source), minOf(VIDEO_BITRATE_FLOOR_KBPS, settings.videoBitrateKbps))
+    fun outputKbps(targetKbps: Int, sourceBitrate: Long?, sourceIsAvc: Boolean, settings: CompressionSettings): Int {
+        val percent = if (sourceIsAvc) 100 else settings.videoSourceBitratePercent
+        if (sourceBitrate == null || sourceBitrate <= 0 || percent <= 0) return targetKbps
+        val limit = (sourceBitrate / 1000.0 * percent / 100).roundToInt()
+        return max(minOf(targetKbps, limit), minOf(VIDEO_BITRATE_FLOOR_KBPS, settings.videoBitrateKbps))
     }
 
     /**
@@ -203,12 +211,12 @@ object AttachmentPolicy {
         val outputHeight = videoTargetHeight(width, height, settings) ?: return null
         val shrink = outputHeight < height
         val outputWidth = if (shrink) (width.toLong() * outputHeight / height).toInt() else width
-        val target = videoTargetKbps(outputWidth, outputHeight, settings)
+        val target = videoTargetKbps(outputWidth, outputHeight, settings, facts.fps)
         val incompatible = (facts.mimeType != null && facts.mimeType != "video/avc") || kind(facts.contentType) != "video"
         val heavy = facts.bitrate != null && facts.bitrate > target * 1000L * VIDEO_BITRATE_HEADROOM
         if (!shrink && !incompatible && !heavy) return null
         if (facts.hdr && !toneMapSupported) return null
-        return VideoPlan(outputHeight.takeIf { shrink }, outputKbps(target, facts.bitrate, settings), sizeOnly = !shrink && !incompatible, toneMap = facts.hdr)
+        return VideoPlan(outputHeight.takeIf { shrink }, outputKbps(target, facts.bitrate, facts.mimeType == "video/avc", settings), sizeOnly = !shrink && !incompatible, toneMap = facts.hdr)
     }
 
     /**

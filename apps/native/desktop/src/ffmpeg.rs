@@ -267,19 +267,41 @@ pub struct VideoPlan {
     pub kbps: u32,
 }
 
-/// `videoBitrateKbps` at 1080p, scaled by pixel count, with a floor.
-pub fn target_kbps(width: u32, height: u32, settings: &Compression) -> u32 {
-    let scaled = f64::from(settings.video_bitrate_kbps) * f64::from(width) * f64::from(height)
-        / FULL_HD_PIXELS;
+/// `videoBitrateKbps` at 1080p30, scaled by pixel count and (above 30 fps,
+/// up to `videoHighFpsBoostPercent`) frame rate, with a floor (web's
+/// `videoTargetKbps`).
+pub fn target_kbps(width: u32, height: u32, fps: Option<f32>, settings: &Compression) -> u32 {
+    let boost = fps
+        .filter(|fps| *fps > 30.0)
+        .map_or(1.0, |fps| {
+            (f64::from(fps) / 30.0).min(f64::from(settings.video_high_fps_boost_percent) / 100.0)
+        })
+        .max(1.0);
+    let scaled =
+        f64::from(settings.video_bitrate_kbps) * f64::from(width) * f64::from(height) * boost
+            / FULL_HD_PIXELS;
     (scaled.round() as u32).max(MIN_VIDEO_KBPS)
 }
 
-/// The target, but never above the source's own bitrate (web's
-/// `outputKbps`): a compatibility transcode of a lean HEVC clip must not grow
-/// it. The floor still applies.
-pub fn output_kbps(target: u32, source: Option<u32>) -> u32 {
+/// The target, but never above `videoSourceBitratePercent` of the source's
+/// own bitrate (100% for H.264, which more bits cannot improve), as web's
+/// `outputKbps`. The floor still applies.
+pub fn output_kbps(
+    target: u32,
+    source: Option<u32>,
+    source_is_h264: bool,
+    settings: &Compression,
+) -> u32 {
+    let percent = if source_is_h264 {
+        100
+    } else {
+        settings.video_source_bitrate_percent
+    };
     match source {
-        Some(source) if source > 0 => target.min(source).max(MIN_VIDEO_KBPS),
+        Some(source) if source > 0 && percent > 0 => {
+            let limit = (f64::from(source) * f64::from(percent) / 100.0).round() as u32;
+            target.min(limit).max(MIN_VIDEO_KBPS)
+        }
         _ => target,
     }
 }
@@ -327,12 +349,17 @@ pub fn video_plan(
             .unwrap_or(0);
         probe.total_kbps.map(|total| total.saturating_sub(audio))
     });
-    let source_target = f64::from(target_kbps(video.width, video.height, settings));
+    let source_target = f64::from(target_kbps(video.width, video.height, video.fps, settings));
     if kbps.is_some_and(|kbps| f64::from(kbps) > source_target * BITRATE_SLACK) {
         reasons.push(Reason::Bitrate);
     }
     (!reasons.is_empty()).then(|| VideoPlan {
-        kbps: output_kbps(target_kbps(width, height, settings), kbps),
+        kbps: output_kbps(
+            target_kbps(width, height, video.fps, settings),
+            kbps,
+            video.codec == "h264",
+            settings,
+        ),
         reasons,
         width,
         height,
@@ -676,29 +703,52 @@ mod tests {
     }
 
     #[test]
-    fn output_bitrate_never_exceeds_the_source() {
-        assert_eq!(output_kbps(6000, None), 6000);
-        assert_eq!(output_kbps(6000, Some(10_683)), 6000);
-        assert_eq!(output_kbps(6000, Some(2500)), 2500);
-        assert_eq!(output_kbps(6000, Some(800)), MIN_VIDEO_KBPS);
+    fn output_bitrate_follows_the_source_cap_and_frame_rate() {
+        let s = Compression::default();
+        assert_eq!(output_kbps(8000, None, false, &s), 8000);
+        assert_eq!(output_kbps(8000, Some(10_683), false, &s), 8000);
+        assert_eq!(
+            output_kbps(8000, Some(2500), false, &s),
+            5000,
+            "HEVC: twice its bitrate"
+        );
+        assert_eq!(
+            output_kbps(8000, Some(2500), true, &s),
+            2500,
+            "H.264: its own bitrate"
+        );
+        assert_eq!(output_kbps(8000, Some(600), false, &s), MIN_VIDEO_KBPS);
+        let uncapped = Compression {
+            video_source_bitrate_percent: 0,
+            ..Compression::default()
+        };
+        assert_eq!(output_kbps(8000, Some(2500), false, &uncapped), 8000);
+        assert_eq!(target_kbps(1920, 1080, None, &s), 8000);
+        assert_eq!(target_kbps(1920, 1080, Some(24.0), &s), 8000);
+        assert_eq!(
+            target_kbps(1920, 1080, Some(60.0), &s),
+            12_000,
+            "boost capped at 150%"
+        );
+        assert_eq!(target_kbps(1280, 720, Some(30.0), &s), 3556);
     }
 
     #[test]
     fn plans_follow_the_web_rules() {
         let settings = Compression::default();
         // Phone HDR 4K HEVC: portrait keeps a 1080 short edge. 25 Mbps is
-        // within the 4K target (6 Mbps scaled by pixels), so not "bitrate".
+        // within the 4K target (8 Mbps scaled by pixels), so not "bitrate".
         let plan = video_plan(&parse_probe(IPHONE_HDR), true, &settings).unwrap();
         assert_eq!(
             plan.reasons,
             [Reason::Hdr, Reason::Resolution, Reason::Codec]
         );
         assert_eq!((plan.width, plan.height), (1080, 1920));
-        assert_eq!(plan.kbps, 6000);
+        assert_eq!(plan.kbps, 8000);
         // 1080p H.264 at 16 Mbps: bitrate only.
         let plan = video_plan(&parse_probe(ANDROID), true, &settings).unwrap();
         assert_eq!(plan.reasons, [Reason::Bitrate]);
-        assert_eq!((plan.width, plan.height, plan.kbps), (1920, 1080, 6000));
+        assert_eq!((plan.width, plan.height, plan.kbps), (1920, 1080, 8000));
         // Already efficient H.264 MP4 uploads unchanged; the same in MKV is remuxed.
         assert_eq!(video_plan(&parse_probe(EFFICIENT), true, &settings), None);
         assert_eq!(
@@ -747,7 +797,7 @@ mod tests {
         assert!(joined.contains("-c:v libx264"));
         assert!(joined.contains("tonemap=tonemap=hable"));
         assert!(joined.contains("zscale=w='if(lte(iw,ih),1080,-2)':h='if(lte(iw,ih),-2,1080)'"));
-        assert!(joined.contains("-b:v 6000k -maxrate 9000k -bufsize 12000k"));
+        assert!(joined.contains("-b:v 8000k -maxrate 12000k -bufsize 16000k"));
         assert!(joined.contains("-c:a copy"));
         assert!(joined.contains("-map_metadata -1"));
         assert!(joined.contains("-movflags +faststart"));
