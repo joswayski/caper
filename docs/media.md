@@ -4975,6 +4975,44 @@ by toggling the variable alone: a follow-up PR must remove the explicit macOS
 quarantine after recovery, then validate complete ARM/Intel/iOS native suites on
 the intended main revision. Keep hosted routing if that control fails.
 
+**Linux CI runner quarantine, October 12, 2026:** the same routing workflow also
+keeps `linux=false`, even when `SELF_HOSTED_LINUX=on` and the runner reports
+online. In [native run 38304485868](https://github.com/joswayski/caper/actions/runs/38304485868/job/114997812443),
+`ci-linux-caper-1` lost communication during checkout, before any build or test
+step started. GitHub's check annotation confirms lost runner communication; no
+step log is available. This is not evidence of a compiler or app failure, and
+the underlying host cause remains unknown. Windows and the Mac's Linux-arm
+routing remain unchanged. No host setting or service was changed from this orb;
+there is no connected runner or remote host access, and runner administration
+is unavailable with its GitHub token.
+
+From the Windows PC's infrastructure checkout in elevated PowerShell, keep
+Caper's Linux routing off while inspecting Hyper-V, guest memory/network health
+and runner `_diag` logs. Start stopped services or the VM without restarting
+running jobs using the existing recovery command:
+
+```powershell
+gh auth status
+gh variable set SELF_HOSTED_LINUX --body off --repo joswayski/caper
+.\scripts\windows-ci-runner.ps1 recover
+.\scripts\windows-ci-runner.ps1 status
+```
+
+If the VM is running but its runner containers are stopped, run inside the VM:
+
+```sh
+sudo bash /usr/local/sbin/ci-linux-runner.sh recover
+```
+
+These commands have **not** been run from this orb. See
+[the Windows/Linux recovery runbook](https://github.com/joswayski/infrastructure/blob/main/docs/windows-ci-runner.md).
+Removing the explicit Linux quarantine requires a follow-up PR after physical
+recovery, then complete main CI and native acceptance on the intended revision.
+Leave hosted routing in place if that control fails. No infrastructure, secrets,
+database, application-service deployment or client release is required to use
+the hosted route; merging the routing change starts main validation, not a
+release.
+
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
 conversation header on every client; channel rows show voice only while
