@@ -94,46 +94,67 @@ def main() -> None:
     notes = os.environ.get("PLAY_RELEASE_NOTES", "").strip()[:500]
 
     token = access_token(account)
-    edit = must(call(token, "POST", f"{API}/{package}/edits", {}), "Starting a Play edit")["id"]
-    with open(bundle, "rb") as file:
-        uploaded = must(
-            call(
-                token,
-                "POST",
-                f"{UPLOAD}/{package}/edits/{edit}/bundles?uploadType=media",
-                file.read(),
-                "application/octet-stream",
-            ),
-            "Uploading the bundle",
-        )
-    version_code = str(uploaded["versionCode"])
-    print(f"Uploaded {bundle} as version code {version_code}")
 
-    def release(track: str, status: str) -> dict:
-        entry: dict = {"versionCodes": [version_code], "status": status}
-        if name:
-            entry["name"] = name
-        if notes:
-            entry["releaseNotes"] = [{"language": "en-US", "text": notes}]
-        return {"track": track, "releases": [entry]}
+    def publish(drafts: set[str]) -> tuple[tuple[int, dict], str, dict[str, str]]:
+        """Upload the bundle in a new edit and commit it; returns the commit result."""
+        edit = must(call(token, "POST", f"{API}/{package}/edits", {}), "Starting a Play edit")["id"]
+        with open(bundle, "rb") as file:
+            uploaded = must(
+                call(
+                    token,
+                    "POST",
+                    f"{UPLOAD}/{package}/edits/{edit}/bundles?uploadType=media",
+                    file.read(),
+                    "application/octet-stream",
+                ),
+                "Uploading the bundle",
+            )
+        version_code = str(uploaded["versionCode"])
+        print(f"Uploaded {bundle} as version code {version_code}")
 
-    rollouts = {}
-    for track in tracks:
-        rollout = "completed"
-        status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(track, rollout))
-        if status >= 300 and "draft" in json.dumps(body).lower():
-            rollout = "draft"
-            # Play only accepts draft releases until the app has been published once.
-            print(f"::warning::Play accepted the {track} release only as a draft; roll it out in Play Console.")
+        def release(track: str, status: str) -> dict:
+            entry: dict = {"versionCodes": [version_code], "status": status}
+            if name:
+                entry["name"] = name
+            if notes:
+                entry["releaseNotes"] = [{"language": "en-US", "text": notes}]
+            return {"track": track, "releases": [entry]}
+
+        rollouts = {}
+        for track in tracks:
+            rollout = "draft" if track in drafts else "completed"
             status, body = call(token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(track, rollout))
-        must((status, body), f"Assigning the {track} track")
-        rollouts[track] = rollout
-    must(call(token, "POST", f"{API}/{package}/edits/{edit}:commit", {}), "Committing the Play edit")
+            if status >= 300 and rollout != "draft" and is_draft_app(body):
+                rollout = "draft"
+                status, body = call(
+                    token, "PUT", f"{API}/{package}/edits/{edit}/tracks/{track}", release(track, rollout)
+                )
+            must((status, body), f"Assigning the {track} track")
+            rollouts[track] = rollout
+        result = call(token, "POST", f"{API}/{package}/edits/{edit}:commit", {})
+        if result[0] >= 300:
+            call(token, "DELETE", f"{API}/{package}/edits/{edit}")
+        return result, version_code, rollouts
+
+    result, version_code, rollouts = publish(set())
+    if result[0] >= 300 and is_draft_app(result[1]):
+        # Until the app has been published once, Play rejects completed releases
+        # on every track but internal testing, sometimes only when committing.
+        # Retry in a new edit (the failed one never published the bundle).
+        result, version_code, rollouts = publish({track for track in tracks if track != "internal"})
+    must(result, "Committing the Play edit")
     for track, rollout in rollouts.items():
         if rollout == "completed":
             print(f"Version code {version_code} is rolling out to {track} testers")
         else:
-            print(f"Version code {version_code} is saved as a draft on the {track} track")
+            print(
+                f"::warning::Version code {version_code} is saved as a draft on the {track} track; "
+                "roll it out in Play Console until the app has been published once."
+            )
+
+
+def is_draft_app(body: dict) -> bool:
+    return "draft" in json.dumps(body).lower()
 
 
 if __name__ == "__main__":
