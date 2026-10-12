@@ -19558,7 +19558,14 @@ fn reply_motion_enabled() -> bool {
 /// Marks a Caper admin's message in the pin gold with a soft glow. The
 /// server stamps `author.admin`, so a look-alike display name can't claim it.
 fn admin_badge(ui: &mut egui::Ui) {
-    egui::Frame::new()
+    let text = egui::WidgetText::from(RichText::new("ADMIN").size(9.0).strong().color(PIN_GOLD))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        );
+    let frame = egui::Frame::new()
         .fill(PIN_GOLD.gamma_multiply(0.1))
         .stroke(Stroke::new(1.0, PIN_GOLD.gamma_multiply(0.55)))
         .corner_radius(4)
@@ -19568,10 +19575,13 @@ fn admin_badge(ui: &mut egui::Ui) {
             blur: 8,
             spread: 0,
             color: PIN_GOLD.gamma_multiply(0.24),
-        })
-        .show(ui, |ui| {
-            ui.label(RichText::new("ADMIN").size(9.0).strong().color(PIN_GOLD))
         });
+    // Fit the badge to its text, not the wrapping header's control height.
+    ui.allocate_ui_with_layout(
+        text.size() + frame.total_margin().sum(),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| frame.show(ui, |ui| ui.label(text)),
+    );
 }
 
 /// One inbox row: the reporter, where they wrote, a preview, the age and a
@@ -29580,6 +29590,26 @@ mod tests {
         ] {
             assert!(labels.contains(&label), "{label}: {labels:?}");
         }
+        let badge = output
+            .shapes
+            .iter()
+            .flat_map(|shape| match &shape.shape {
+                egui::Shape::Vec(shapes) => shapes.as_slice(),
+                shape => std::slice::from_ref(shape),
+            })
+            .find_map(|shape| match shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == super::PIN_GOLD.gamma_multiply(0.55) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("admin badge outline");
+        assert!(
+            badge.width() > 2.0 * badge.height(),
+            "admin badge must stay rectangular rather than inherit the header height: {badge:?}"
+        );
         assert!(
             !labels.iter().any(|label| label.contains("Visiting as")),
             "no banner: {labels:?}"
