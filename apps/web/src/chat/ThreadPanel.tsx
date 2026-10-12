@@ -9,6 +9,7 @@ import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.t
 import type { Arrivals } from "./arrivals.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
+import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyContext, ReplyDraft } from "./Replies.tsx";
@@ -522,9 +523,11 @@ export default function ThreadPanel({
                 Reply to thread
               </label>
               {suggestions.popup}
-              <textarea
+              <MentionTextarea
                 ref={composer}
                 id="chat-thread-reply"
+                people={mentionPeople}
+                specialMentions={specialMentions}
                 rows={3}
                 value={draft.text}
                 placeholder="Reply to thread…"

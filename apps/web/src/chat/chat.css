@@ -2080,6 +2080,39 @@
   max-height: 160px;
   padding-right: 84px;
 }
+.chat-mention-input {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  border-radius: 8px;
+  background: var(--surface-composer);
+}
+:is(.chat-composer, .chat-profile-composer) .chat-mention-input > textarea {
+  position: relative;
+  display: block;
+  background: transparent;
+}
+.chat-mention-input-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+}
+.chat-mention-input-mirror mark {
+  background: rgb(182 77 50 / 24%);
+  color: transparent;
+  border-radius: 3px;
+}
+.chat-mention-input[data-disabled] .chat-mention-input-mirror {
+  opacity: 0.55;
+}
 .chat-attach {
   grid-column: 1;
   grid-row: 1;

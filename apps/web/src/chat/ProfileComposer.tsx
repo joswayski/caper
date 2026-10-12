@@ -8,6 +8,7 @@ import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
+import MentionTextarea from "./MentionTextarea.tsx";
 import { prepareFile, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
 import { browserTransport, MAX_ATTACHMENTS, uploadPrepared, uploadSettings } from "./uploads.ts";
@@ -341,9 +342,10 @@ export default function ProfileComposer({
           Message @{username}
         </label>
         {suggestions.popup}
-        <textarea
+        <MentionTextarea
           id="profile-message"
           ref={input}
+          people={[{ id: personId, username, displayName: username }]}
           rows={1}
           value={draft.text}
           disabled={locked}

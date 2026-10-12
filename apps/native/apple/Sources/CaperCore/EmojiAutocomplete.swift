@@ -247,6 +247,22 @@ struct SuggestionRow: ViewModifier {
     }
 }
 
+#if os(iOS) || os(macOS)
+/// Attributes only: never replace the text, register an undo edit, or change glyph metrics.
+@MainActor private func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
+    let ranges = MentionAutocomplete.draftHighlights(in: storage.string, source: source)
+    #if os(iOS)
+    let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+    #else
+    let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+    #endif
+    storage.beginEditing()
+    storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
+    for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
+    storage.endEditing()
+}
+#endif
+
 #if os(iOS)
 final class ComposerTextView: UITextView {
     var autocompleteActive: (() -> Bool)?
@@ -307,6 +323,8 @@ struct NativeMessageComposer: UIViewRepresentable {
     var editable = true
     var accessibilityID = "message-composer"
     var pasteAttachments: (() -> Bool)? = nil
+    /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
+    var highlightSource: MentionSource? = nil
     @Environment(\.composerCovered) private var covered
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
@@ -328,7 +346,7 @@ struct NativeMessageComposer: UIViewRepresentable {
         (view as? ComposerTextView)?.pasteAttachments = pasteAttachments
         view.isEditable = editable
         view.accessibilityIdentifier = accessibilityID
-        let mentionsChanged = context.coordinator.parent.mentions != mentions
+        let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
         context.coordinator.parent = self
         if view.text != text { view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
@@ -342,12 +360,15 @@ struct NativeMessageComposer: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: NativeMessageComposer; weak var view: UITextView?; var dismissed = false
+        private var highlighting = false
         init(_ parent: NativeMessageComposer) { self.parent = parent }
         func textViewDidBeginEditing(_ textView: UITextView) { refresh(textView) }
         func textViewDidEndEditing(_ textView: UITextView) { parent.controller.update(nil) }
-        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text; dismissed = false; refresh(textView) }
-        func textViewDidChangeSelection(_ textView: UITextView) { dismissed = false; refresh(textView) }
+        func textViewDidChange(_ textView: UITextView) { guard !highlighting else { return }; parent.text = textView.text; dismissed = false; refresh(textView) }
+        func textViewDidChangeSelection(_ textView: UITextView) { guard !highlighting else { return }; dismissed = false; refresh(textView) }
         func refresh(_ textView: UITextView) {
+            guard !highlighting else { return }
+            highlight(textView)
             let match = dismissed || !textView.isFirstResponder ? nil : ComposerAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil, mentions: parent.mentions)
             parent.controller.update(match)
             parent.controller.acceptAction = { [weak self] index in self?.accept(index) }
@@ -358,10 +379,18 @@ struct NativeMessageComposer: UIViewRepresentable {
                 self.view?.becomeFirstResponder()
             }
         }
+        func highlight(_ view: UITextView) {
+            guard !highlighting, view.markedTextRange == nil else { return }
+            highlighting = true
+            highlightDraft(view.textStorage, source: parent.highlightSource ?? parent.mentions)
+            view.typingAttributes.removeValue(forKey: .backgroundColor)
+            highlighting = false
+        }
         func insert(_ emoji: String, selection: NSRange) {
             guard parent.editable, let view,
                   let result = EmojiAutocomplete.inserting(emoji, in: view.text, selection: selection) else { return }
             view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
+            highlight(view)
             parent.controller.update(nil)
         }
         func handle(_ key: String) {
@@ -375,6 +404,7 @@ struct NativeMessageComposer: UIViewRepresentable {
             guard let view, let match = parent.controller.match,
                   let result = ComposerAutocomplete.inserting(choice: index, in: view.text, match: match) else { return }
             view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
+            highlight(view)
             parent.controller.update(nil); view.becomeFirstResponder()
         }
     }
@@ -415,6 +445,8 @@ struct NativeMessageComposer: NSViewRepresentable {
     var editable = true
     var accessibilityID = "message-composer"
     var pasteAttachments: (() -> Bool)? = nil
+    /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
+    var highlightSource: MentionSource? = nil
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
@@ -439,7 +471,7 @@ struct NativeMessageComposer: NSViewRepresentable {
         context.coordinator.refresh(view); return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let mentionsChanged = context.coordinator.parent.mentions != mentions
+        let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
         context.coordinator.parent = self
         guard let view = scroll.documentView as? ComposerTextView else { return }
         view.pasteAttachments = pasteAttachments
@@ -468,18 +500,21 @@ struct NativeMessageComposer: NSViewRepresentable {
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeMessageComposer; weak var view: ComposerTextView?; var dismissed = false
+        private var highlighting = false
         init(_ parent: NativeMessageComposer) { self.parent = parent }
         // Older macOS SDKs (15.x) don't mark NSTextViewDelegate main-actor, so these delegate
         // calls are nonisolated there. AppKit still delivers them on the main thread.
         func textDidChange(_ notification: Notification) {
             MainActor.assumeIsolated {
-                guard let view else { return }
+                guard !highlighting, let view else { return }
                 if parent.text != view.string { parent.text = view.string }
                 dismissed = false; refresh(view)
             }
         }
-        func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard let view else { return }; dismissed = false; refresh(view) } }
+        func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard !highlighting, let view else { return }; dismissed = false; refresh(view) } }
         @MainActor func refresh(_ view: ComposerTextView) {
+            guard !highlighting else { return }
+            highlight(view)
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
             parent.controller.insertAction = { [weak self, selection = view.selectedRange()] in self?.insert($0, selection: selection) }
@@ -488,10 +523,18 @@ struct NativeMessageComposer: NSViewRepresentable {
                 view.window?.makeFirstResponder(view)
             }
         }
+        @MainActor func highlight(_ view: ComposerTextView) {
+            guard !highlighting, !view.hasMarkedText(), let storage = view.textStorage else { return }
+            highlighting = true
+            highlightDraft(storage, source: parent.highlightSource ?? parent.mentions)
+            view.typingAttributes.removeValue(forKey: .backgroundColor)
+            highlighting = false
+        }
         @MainActor func insert(_ emoji: String, selection: NSRange) {
             guard parent.editable, let view,
                   let result = EmojiAutocomplete.inserting(emoji, in: view.string, selection: selection) else { return }
             view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
+            highlight(view)
             parent.controller.update(nil)
         }
         @MainActor func handle(_ event: NSEvent) -> Bool {
@@ -509,6 +552,7 @@ struct NativeMessageComposer: NSViewRepresentable {
             guard let view, let match = parent.controller.match,
                   let result = ComposerAutocomplete.inserting(choice: index, in: view.string, match: match) else { return }
             view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
+            highlight(view)
             parent.controller.update(nil); view.window?.makeFirstResponder(view)
         }
     }

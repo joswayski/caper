@@ -12085,9 +12085,12 @@ impl CaperApp {
                 let composer_id = egui::Id::new(("thread-draft", &root));
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
+                let (people, specials) = self.mention_people();
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::TextStyle::Body.resolve(ui.style()));
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let mut output = ui.add_enabled_ui(!loading, |ui| egui::TextEdit::multiline(&mut draft.0)
                     .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
+                    .layouter(&mut layouter)
                     .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner;
                 let text = draft.0.clone();
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, &mut output) {
@@ -12430,6 +12433,8 @@ impl CaperApp {
                     let composer_id = egui::Id::new("message-composer");
                     let draft = self.draft.clone();
                     let suggestions = self.suggestion_keys(ui, composer_id, &draft);
+                    let (people, specials) = self.mention_people();
+                    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
                     let editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height(max_editor_height)
@@ -12438,6 +12443,7 @@ impl CaperApp {
                         .show(ui, |ui|
                         egui::TextEdit::multiline(draft)
                             .id(composer_id)
+                            .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
                             .desired_rows(1)
@@ -16036,6 +16042,24 @@ impl CaperApp {
             }
         }
         let suggestions = self.suggestion_keys(ui, id, &draft.text);
+        let people = [mentions::Person {
+            username: username.to_owned(),
+            display_name: username.to_owned(),
+            avatar_id: None,
+        }];
+        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+            draft_layout(
+                ui,
+                text.as_str(),
+                width,
+                &people,
+                mentions::Specials {
+                    channel: false,
+                    feedback: true,
+                },
+                egui::FontId::proportional(13.6),
+            )
+        };
         let pending_picker = self
             .profile_picker
             .as_ref()
@@ -16104,6 +16128,7 @@ impl CaperApp {
                                         .show(ui, |ui| {
                                             egui::TextEdit::multiline(&mut draft.text)
                                                 .id(id)
+                                                .layouter(&mut layouter)
                                                 .hint_text(
                                                     RichText::new(format!("Message @{username}"))
                                                         .color(Color32::from_rgb(142, 149, 152)),
@@ -19738,6 +19763,39 @@ enum Run {
     /// The index of the resolved mention pill drawn here.
     Pill(std::ops::Range<usize>, usize),
     Link(std::ops::Range<usize>, String),
+}
+
+/// Background-only mention styling keeps editable glyph metrics and cursor offsets unchanged.
+fn draft_layout(
+    ui: &egui::Ui,
+    text: &str,
+    width: f32,
+    people: &[mentions::Person],
+    specials: mentions::Specials,
+    font_id: egui::FontId,
+) -> std::sync::Arc<egui::Galley> {
+    let plain = egui::TextFormat {
+        font_id,
+        color: ui.visuals().text_color(),
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = width;
+    let mut cursor = 0;
+    for range in mentions::draft_highlights(text, people, specials) {
+        job.append(&text[cursor..range.start], 0.0, plain.clone());
+        job.append(
+            &text[range.clone()],
+            0.0,
+            egui::TextFormat {
+                background: TERRACOTTA.gamma_multiply(0.24),
+                ..plain.clone()
+            },
+        );
+        cursor = range.end;
+    }
+    job.append(&text[cursor..], 0.0, plain);
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 /// Message text split for drawing: resolved mentions first, then links found
@@ -27582,6 +27640,10 @@ mod tests {
         assert_eq!(app.draft, "@maya ");
         assert_eq!(caret(&context), 6);
         assert!(app.pending.is_none(), "Accepting a mention must not send");
+        let output = render(&mut app, &context, vec![]);
+        let format = section_format(&output, "@maya ", "@maya");
+        assert_eq!(format.background, TERRACOTTA.gamma_multiply(0.24));
+        assert_eq!(format.font_id, egui::FontId::proportional(13.6));
 
         place_caret(&context, "👩‍💻 hi @AL| suffix", &mut app);
         render(&mut app, &context, vec![]);

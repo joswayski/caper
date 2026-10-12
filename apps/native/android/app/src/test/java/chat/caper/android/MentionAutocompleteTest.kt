@@ -31,6 +31,23 @@ class MentionAutocompleteTest {
     private val everyone = MessageMention("everyone")
     private val here = MessageMention("here")
 
+    @Test fun `draft highlights preserve text and offsets and use conversation scope`() {
+        val text = "🙂 @Maya, @ma @missing bob@maya.com @@maya (@feedback)\n@Here @everyone @feedbacks"
+        val source = MentionSource(listOf(person("maya")), specials = true, feedback = true)
+        val styled = MentionVisualTransformation(source).filter(androidx.compose.ui.text.AnnotatedString(text))
+        assertEquals(text, styled.text.text)
+        assertEquals(listOf("@Maya", "@feedback", "@Here", "@everyone"), styled.text.spanStyles.map { text.substring(it.start, it.end) })
+        assertEquals(3, styled.text.spanStyles.first().start)
+        for (offset in 0..text.length) {
+            assertEquals(offset, styled.offsetMapping.originalToTransformed(offset))
+            assertEquals(offset, styled.offsetMapping.transformedToOriginal(offset))
+        }
+        assertEquals(listOf("maya", "feedback"), draftMentionSpans(text, source.copy(specials = false)).map { it.name })
+        assertTrue(draftMentionSpans("@feedback @maya", MentionSource(emptyList(), false)).isEmpty())
+        val long = "a".repeat(33)
+        assertTrue(draftMentionSpans("@$long", source.copy(people = listOf(person(long)))).isEmpty())
+    }
+
     @Test fun `token requires the start rule and a whole name run at the caret`() {
         listOf("bob@ali", "x/@ali", "@@ali", "a,@ali", "a:@ali").forEach { assertNull(it, mentionToken(atEnd(it))) }
         assertEquals(MentionToken(0, 4, "ali"), mentionToken(atEnd("@ali")))
