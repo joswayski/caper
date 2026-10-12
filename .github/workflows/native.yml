@@ -24,6 +24,7 @@ on:
       - tests/test_apple_release_signing.py
       - scripts/native_changelog.py
       - tests/test_native_changelog.py
+      - tests/test_runner_routing.py
       - scripts/play-upload.py
       - scripts/testflight-distribute.py
       - scripts/vectorize-avatars.py
