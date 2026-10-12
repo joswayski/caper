@@ -77,7 +77,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(close, enabled = !saving, shape = MaterialTheme.shapes.small) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
-                    Button(::save, enabled = !saving && validEditText(draft.text), shape = MaterialTheme.shapes.small) { PendingLabel("Save changes", "Saving…", saving) }
+                    Button(::save, enabled = !saving && validEditText(draft.text), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", saving) }
                 }
             }
         }

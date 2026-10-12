@@ -351,7 +351,7 @@ private const val MAX_RECORDING_SECONDS = 30
                 finishing = true
                 permissionGeneration = generation
                 microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            } }, Modifier.widthIn(min = 160.dp), enabled = testing || !finishing, shape = MaterialTheme.shapes.small) {
+            } }, Modifier.widthIn(min = 160.dp), enabled = testing || !finishing, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                 Text(if (testing) "Stop recording" else if (finishing) "Preparing…" else "Test microphone", maxLines = 1)
             }
             Column(Modifier.weight(1f)) {

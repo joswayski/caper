@@ -691,6 +691,16 @@ async fn add_space_member(
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
+    crate::push::consent(
+        &mut tx,
+        member.0,
+        principal.user.id,
+        "space.invitation",
+        Some(space_id),
+        None,
+    )
+    .await
+    .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,

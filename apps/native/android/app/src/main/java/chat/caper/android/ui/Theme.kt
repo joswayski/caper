@@ -1,6 +1,8 @@
 package chat.caper.android.ui
 
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -24,6 +26,9 @@ val Surface = Color(0xFF151719)
 val Border = Color(0xFF34383B)
 val Text = Color(0xFFF3F4F5)
 val Terracotta = Color(0xFFB64D32)
+/** Primary actions are eggshell with blackout labels (shared/design.css --action / --on-action). */
+val Action = Color(0xFFF1EDE4)
+val OnAction = Color(0xFF0C0D0F)
 val CaperGreen = Color(0xFF637A43)
 val VoiceSessionGreen = Color(0xFF4AA86B)
 val SurfaceSidebar = Color(0xFF151C1E)
@@ -117,3 +122,12 @@ private val Satoshi = FontFamily(
 /** Tabular figures (web's `tabular-nums`), so timers and counts keep their width as digits change. */
 val TabularNumbers: TextStyle
     @Composable @ReadOnlyComposable get() = LocalTextStyle.current.merge(TextStyle(fontFeatureSettings = "tnum"))
+
+/**
+ * Web's primary action (shared/design.css --action): an eggshell fill with a blackout label.
+ * Disabled, it steps back to neutral chrome rather than a faded fill. Theme `primary` stays
+ * terracotta for selection, focus and text buttons.
+ */
+@Composable fun primaryButtonColors(): ButtonColors = ButtonDefaults.buttonColors(
+    containerColor = Action, contentColor = OnAction, disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+)

@@ -407,11 +407,13 @@ data class AppUiState(
     val spaces: List<Space> = emptyList(),
     val unreadSpaces: List<UnreadSpace> = emptyList(),
     val invitations: List<Space> = emptyList(),
+    val notificationInvitation: Space? = null,
+    val notificationBrowseSpace: String? = null,
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
-    /** DM mention candidates from `GET /api/people`; null until the first load succeeds. */
+    /** DM mention and space-invite/new-DM username candidates from `GET /api/people`; null until the first load succeeds. */
     val people: List<Person>? = null,
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),

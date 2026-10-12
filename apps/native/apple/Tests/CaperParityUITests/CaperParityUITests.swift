@@ -215,6 +215,19 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    #if os(iOS)
+    /// Phones keep Pins and Members in the menu the conversation's name opens.
+    /// Members carries the member count ("Members · 3"), so match its start.
+    private func chooseFromTitleMenu(_ item: String, in app: XCUIApplication) {
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertTrue(title.waitForExistence(timeout: 3), "The phone header's title opens the conversation menu")
+        title.tap()
+        let choice = app.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", item, "\(item) ·")).firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 3), "The title menu offers \(item)")
+        choice.tap()
+    }
+    #endif
+
     private struct MissingElement: Error, CustomStringConvertible { let description: String }
 
     /// Waits for `element` and throws if it never appears. Tapping, typing into
@@ -961,41 +974,47 @@ final class CaperParityUITests: XCTestCase {
         let designVoice = app.buttons["join-voice-chan00000002"]
         XCTAssertTrue(general.waitForExistence(timeout: 10))
         XCTAssertTrue(design.exists)
-        XCTAssertTrue(generalVoice.exists, "An empty accessible channel keeps its quiet voice action")
-        XCTAssertTrue(designVoice.exists, "An unselected accessible channel keeps its quiet voice action")
-        XCTAssertEqual(generalVoice.label, "Join voice in #general")
-        XCTAssertEqual(designVoice.label, "Join voice in #design")
         XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
-        XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
-        XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
-        // Layout widths are fractional on iOS (107.99999999999997 for 108).
-        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, accuracy: 0.5, "Actions share one stable slot")
-        XCTAssertEqual(generalVoice.frame.width, 108, accuracy: 0.5, "The whole reserved action slot is accessible, not just its text")
+        XCTAssertLessThanOrEqual(design.frame.minY - general.frame.maxY, 4, "An empty channel is a single line, with no voice action beneath it")
         #if os(iOS)
+        XCTAssertFalse(generalVoice.exists, "Touch joins from the conversation header, not a row shortcut")
+        XCTAssertFalse(designVoice.exists, "Touch joins from the conversation header, not a row shortcut")
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
         XCTAssertGreaterThanOrEqual(design.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(designVoice.frame.height, 44)
         #else
         XCTAssertEqual(general.frame.height, 32)
         XCTAssertEqual(design.frame.height, 32)
-        XCTAssertEqual(generalVoice.frame.height, 28)
-        XCTAssertEqual(designVoice.frame.height, 28)
+        // The pointer shortcut is revealed by hovering its row, on the name's line.
+        design.hover()
+        XCTAssertTrue(designVoice.waitForExistence(timeout: 3), "Hover reveals an occupied channel's join shortcut")
+        XCTAssertEqual(designVoice.label, "Join voice in #design")
+        general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3), "Hover reveals an empty channel's join shortcut")
+        XCTAssertEqual(generalVoice.label, "Join voice in #general")
+        XCTAssertEqual(generalVoice.frame.midY, general.frame.midY, accuracy: 1, "The shortcut sits on the channel's own line")
+        XCTAssertGreaterThanOrEqual(generalVoice.frame.minX, general.frame.maxX, "The shortcut follows the channel name")
+        XCTAssertEqual(generalVoice.frame.width, 28, accuracy: 0.5)
+        XCTAssertEqual(generalVoice.frame.height, 28, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(generalVoice.frame.maxX,
+                                 app.descendants(matching: .any)["channel-options-chan00000001"].frame.minX,
+                                 "The shortcut sits before the channel menu")
         #endif
 
         let generalFrame = general.frame
-        let voiceFrame = generalVoice.frame
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
+        let voiceFrame = generalVoice.frame
         #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
         stack.tap()
         XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
-        XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
         #if os(macOS)
         general.hover()
+        XCTAssertTrue(generalVoice.waitForExistence(timeout: 3))
+        XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move the join shortcut")
         #endif
         XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
                        "Expanding another roster must not move the channel menu")
@@ -1148,7 +1167,13 @@ final class CaperParityUITests: XCTestCase {
         let selected = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertEqual(selected.value as? String, "# general")
         #endif
-        XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists)
+        #if os(macOS)
+        app.buttons["channel-chan00000002"].hover()
+        // The shortcut is transparent (absent from accessibility) until SwiftUI applies the hover.
+        XCTAssertTrue(app.buttons["join-voice-chan00000002"].waitForExistence(timeout: 3), "Hover reveals the occupied channel's join shortcut")
+        #else
+        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists, "Touch joins from the conversation header")
+        #endif
         stack.tap()
         XCTAssertEqual(stack.value as? String, "Expanded")
         #if os(iOS)
@@ -1169,9 +1194,12 @@ final class CaperParityUITests: XCTestCase {
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stack)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
                        "Revoked private-channel occupancy must disappear without altering selected chat")
+        #if os(macOS)
+        app.buttons["channel-chan00000002"].hover()
         let deniedAction = app.buttons["join-voice-chan00000002"]
-        XCTAssertTrue(deniedAction.exists, "Revocation keeps the stable action slot")
+        XCTAssertTrue(deniedAction.waitForExistence(timeout: 3), "Revocation keeps the shortcut's slot")
         XCTAssertFalse(deniedAction.isEnabled, "A revoked channel cannot be joined")
+        #endif
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected")
         #else
@@ -1186,8 +1214,47 @@ final class CaperParityUITests: XCTestCase {
 
     func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
         let app = launch(fixture: "voice-roster")
+        // The open channel's header shows who is there and offers Leave, not Join.
+        let headerLeave = app.buttons["header-leave-voice"]
+        XCTAssertTrue(headerLeave.waitForExistence(timeout: 10), "The connected channel's header offers Leave")
+        XCTAssertEqual(headerLeave.label, "Leave voice")
+        XCTAssertFalse(app.buttons["join-voice-button"].exists, "The connected channel's header has no Join")
+        let headerPeople = app.descendants(matching: .any)["header-voice-people"]
+        #if os(macOS)
+        // Wide headers show who is there; phones count them in the title's subtitle instead.
+        XCTAssertTrue(headerPeople.exists)
+        XCTAssertEqual(headerPeople.label, "TEST FIXTURE You and TEST FIXTURE Maya are in voice")
+        #else
+        XCTAssertFalse(headerPeople.exists, "Phone headers show no faces; the title's subtitle counts who is in voice")
+        #endif
+        let headerMute = app.buttons["header-mute"]
         #if os(iOS)
+        // Phones keep the call's microphone in the header; the account bar stays in Browse.
+        XCTAssertTrue(headerMute.exists, "Phones show the call's microphone in the header")
+        XCTAssertTrue(["Mute microphone", "Unmute microphone"].contains(headerMute.label))
+        XCTAssertGreaterThanOrEqual(headerMute.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(headerMute.frame.height, 44)
+        // Then deafen, then the red disconnect.
+        let headerDeafen = app.buttons["header-deafen"]
+        XCTAssertTrue(headerDeafen.exists, "Phones show the call's deafen toggle in the header")
+        XCTAssertTrue(["Deafen audio", "Undeafen audio"].contains(headerDeafen.label))
+        XCTAssertGreaterThanOrEqual(headerDeafen.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(headerDeafen.frame.height, 44)
+        XCTAssertLessThan(headerMute.frame.maxX, headerDeafen.frame.minX + 1, "The microphone sits before deafen")
+        XCTAssertLessThan(headerDeafen.frame.maxX, headerLeave.frame.minX + 1, "Deafen sits before Leave")
+        XCTAssertGreaterThan(headerMute.frame.minX, app.descendants(matching: .any)["channel-title-menu"].frame.maxX - 1,
+                          "The voice group follows the title menu")
+        XCTAssertGreaterThanOrEqual(headerLeave.frame.width, 44)
+        XCTAssertLessThan(headerLeave.frame.width, 60, "Phone headers show Leave as an icon, without its text")
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertEqual(title.label, "#general options")
+        XCTAssertEqual(staticTexts("Leave", in: app).count, 0, "Phone headers show no voice text labels")
         app.buttons["Back to Browse"].tap()
+        #else
+        XCTAssertFalse(headerMute.exists, "Wide layouts keep the microphone in the account bar")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "Wide layouts keep deafen in the account bar")
+        let pins = app.buttons["channel-pins"]
+        XCTAssertLessThan(headerLeave.frame.maxX, pins.frame.minX, "Voice sits before Pins, apart from the icons")
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
@@ -1202,15 +1269,17 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
         XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Volume stays in the remote-only Audio menu")
         XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists, "Participant controls stay hidden while the roster starts collapsed")
-        XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel has no redundant Leave action")
-        XCTAssertEqual(app.buttons.matching(identifier: "Leave voice").count, 1, "Disconnect lives only in the dock")
+        XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel's row has no join shortcut")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@", "Leave voice", "header-leave-voice")).count, 1,
+                       "Besides the header's Leave, Disconnect lives only in the dock")
         let stack = app.buttons["voice-stack-chan00000001"]
         XCTAssertTrue(stack.exists)
         XCTAssertEqual(stack.value as? String, "Collapsed")
         capture("active-voice-compact-test-fixture", app: app)
         stack.tap()
         XCTAssertEqual(stack.value as? String, "Expanded")
-        assertStaticText("TEST FIXTURE You (you)", in: app)
+        // Your own row shows your saved display name (#527), as on Android and desktop.
+        assertStaticText("Fixture Owner (you)", in: app)
         assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertTrue(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
@@ -1344,12 +1413,14 @@ final class CaperParityUITests: XCTestCase {
         saved.doubleClick()
     }
 
-    func testSeparateVoiceRowAndProfileBackdropDismissal() {
+    func testRowJoinShortcutAndProfileBackdropDismissal() {
         let app = launch()
         let channel = app.buttons["channel-chan00000001"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 10))
+        channel.hover()
         let join = app.buttons["join-voice-chan00000001"]
-        XCTAssertTrue(join.waitForExistence(timeout: 10))
-        XCTAssertEqual(join.frame.minY, channel.frame.maxY, accuracy: 2, "Join stays directly below the channel's row")
+        XCTAssertTrue(join.waitForExistence(timeout: 3))
+        XCTAssertEqual(join.frame.midY, channel.frame.midY, accuracy: 2, "The join shortcut shares the channel's row, with no line beneath it")
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.isHittable)
         XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
@@ -1366,6 +1437,17 @@ final class CaperParityUITests: XCTestCase {
         let toggle = app.buttons["Show member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        // Wide headers: the name, then the channel's voice, then Pins and Members apart from it.
+        let name = app.descendants(matching: .any)["selected-channel-name"]
+        let join = app.buttons["join-voice-button"]
+        let pins = app.buttons["channel-pins"]
+        XCTAssertTrue(join.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(join.frame.minX, name.frame.maxX - 1, "Voice follows the channel name")
+        XCTAssertLessThan(join.frame.maxX, pins.frame.minX, "Voice sits before Pins, not between Pins and Members")
+        XCTAssertLessThan(pins.frame.maxX, toggle.frame.minX + 1, "Members sits right of Pins")
+        XCTAssertFalse(app.descendants(matching: .any)["channel-title-menu"].exists, "Wide headers keep separate Pins and Members buttons")
+        XCTAssertFalse(app.buttons["header-mute"].exists, "Wide layouts keep the microphone in the account bar")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "Wide layouts keep deafen in the account bar")
         capture("members-hidden", app: app)
         toggle.tap()
         assertStaticText("Members", in: app, timeout: 2)
@@ -1712,14 +1794,18 @@ final class CaperParityUITests: XCTestCase {
     func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
-        XCTAssertFalse(app.buttons["join-voice-button"].exists, "Web joins voice from the channel list, not the chat header")
+        // Web joins voice from the conversation header on every device.
+        let join = app.buttons["join-voice-button"]
+        XCTAssertTrue(join.waitForExistence(timeout: 5))
+        XCTAssertEqual(join.label, "Join voice")
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: join)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed,
+                       "Normal launches must expose voice without a test-only environment flag")
+        XCTAssertFalse(app.descendants(matching: .any)["header-voice-people"].exists, "An empty channel's header shows no faces")
+        capture("voice-ready", app: app)
         #if os(iOS)
         app.buttons["Back to Browse"].tap()
         #endif
-        let join = app.buttons["join-voice-chan00000001"]
-        XCTAssertTrue(join.waitForExistence(timeout: 5))
-        XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
-        capture("voice-ready", app: app)
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
         XCTAssertTrue(microphone.waitForExistence(timeout: 5))
@@ -2115,6 +2201,22 @@ final class CaperParityUITests: XCTestCase {
                        "The refusal must not leak into the sidebar after closing")
     }
 
+    func testNewDirectMessageSuggestionFillsUsernameWithoutOpening() throws {
+        let app = launch(fixture: "new-direct-message")
+        let username = try require(app.textFields["dm-username"], timeout: 30, "The new-DM dialog must open")
+        type("ma", into: username)
+        // GET /api/people: the fixture space's Maya and Alex, never you.
+        let maya = try require(app.buttons["person-suggestion-maya"], timeout: 5, "Typing ma must suggest maya")
+        XCTAssertFalse(app.buttons["person-suggestion-alex"].exists, "Only matching people are suggested")
+        capture("new-dm-suggestions", app: app)
+        maya.tap()
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "maya"), object: username)
+        XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 3), .completed, "Picking fills in the exact username")
+        XCTAssertFalse(app.buttons["person-suggestion-maya"].exists, "The list closes after a pick")
+        XCTAssertTrue(app.buttons["dm-create-submit"].isEnabled, "Picking must not open the conversation")
+        XCTAssertTrue(username.exists)
+    }
+
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)
@@ -2193,11 +2295,32 @@ final class CaperParityUITests: XCTestCase {
         let channel = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
-        // Since #363 Pins is a header button on every width, as on web; Members sits right of it.
-        XCTAssertTrue(app.buttons["channel-pins"].isHittable, "Pins sits in the phone header")
-        let members = app.buttons["Show member list"]
-        XCTAssertTrue(members.isHittable, "Members is a phone header button, not in a channel dropdown")
-        XCTAssertGreaterThan(members.frame.minX, app.buttons["channel-pins"].frame.maxX - 1, "Members sits right of Pins")
+        // Phones: the name opens the conversation's menu, as in Slack; Pins and Members move there.
+        XCTAssertFalse(app.buttons["channel-pins"].exists, "Pins lives in the phone title menu")
+        XCTAssertFalse(app.buttons["Show member list"].exists, "Members lives in the phone title menu")
+        XCTAssertFalse(app.descendants(matching: .any)["channel-more-menu"].exists, "There is no separate More button")
+        let title = app.descendants(matching: .any)["channel-title-menu"]
+        XCTAssertTrue(title.isHittable, "The phone header's title is the conversation menu")
+        XCTAssertEqual(title.label, "#general options")
+        XCTAssertGreaterThan(title.frame.minX, navigation.frame.maxX - 1, "Back arrow leads the title menu")
+        XCTAssertGreaterThanOrEqual(title.frame.height, 44)
+        // Touch has no channel-row shortcut: voice is joined from the header's icon group, after the name.
+        let join = app.buttons["join-voice-button"]
+        XCTAssertTrue(join.isHittable, "Phones join voice from the conversation header")
+        XCTAssertEqual(join.label, "Join voice")
+        XCTAssertGreaterThanOrEqual(join.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(join.frame.height, 44)
+        XCTAssertLessThan(join.frame.width, 60, "Phone headers show Join as an icon, without its text")
+        XCTAssertGreaterThan(join.frame.minX, title.frame.maxX - 1, "Voice follows the title menu")
+        XCTAssertEqual(staticTexts("Join voice", in: app).count, 0, "Phone headers show no voice text labels")
+        XCTAssertFalse(app.buttons["header-mute"].exists, "The header's microphone appears only during a call")
+        XCTAssertFalse(app.buttons["header-deafen"].exists, "The header's deafen toggle appears only during a call")
+        XCTAssertGreaterThan(channel.frame.width, 0, "The channel name keeps room beside the voice action")
+        // Below the header is only the conversation: the account bar stays in Browse.
+        let accountProfile = app.buttons["account-profile"]
+        XCTAssertFalse(accountProfile.exists && accountProfile.isHittable, "The account bar stays in Browse")
+        let accountMicrophone = app.buttons["microphone-toggle"]
+        XCTAssertFalse(accountMicrophone.exists && accountMicrophone.isHittable, "Account audio controls stay in Browse")
         let composer = app.descendants(matching: .any)["message-composer"]
         composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
@@ -2224,7 +2347,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
         capture("narrow-conversation", app: app)
-        members.tap()
+        chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
@@ -2236,20 +2359,19 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
-        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["Hide member list"])
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: staticTexts("Members", in: app).firstMatch)
         XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the backdrop right closes the member list")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
-        let pins = app.buttons["channel-pins"]
-        XCTAssertTrue(pins.waitForExistence(timeout: 2))
-        pins.tap()
+        chooseFromTitleMenu("Pins", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
         assertStaticText("No pinned messages", in: app, timeout: 2)
         capture("narrow-empty-pins", app: app)
         app.buttons["Messages"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
-        XCTAssertTrue(pins.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
+        XCTAssertTrue(title.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")
-        members.tap()
+        chooseFromTitleMenu("Members", in: app)
+        assertStaticText("Members", in: app, timeout: 2)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         navigation.tap()

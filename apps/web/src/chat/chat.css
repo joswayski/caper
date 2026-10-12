@@ -1364,10 +1364,10 @@
 }
 .chat-mention-card-message {
   min-height: 40px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.82rem;
   font-weight: 700;
@@ -1440,9 +1440,30 @@
   .chat-thread-send-row button:hover:not(:disabled),
   .chat-forward-body .chat-forward-send:hover:not(:disabled),
   .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+:is(
+    .chat-mention-card-message,
+    .chat-thread-send-row button,
+    .chat-forward-body .chat-forward-send,
+    .chat-edit-dialog .chat-edit-save
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .chat-mention-card-message,
+  .chat-thread-send-row button,
+  .chat-forward-body .chat-forward-send,
+  .chat-edit-dialog .chat-edit-save
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 .chat-mention-card-message:focus-visible {
   outline: 2px solid var(--text);
@@ -1542,22 +1563,31 @@
   color: var(--text-muted);
   font-size: 0.8rem;
 }
-.chat-mention-suggestions small {
-  flex: 0 1 auto;
+.chat-mention-suggestions button {
+  padding-block: 6px;
+}
+/* Display name, then the username in small type beneath it. */
+.person-suggestion-names {
+  display: grid;
   min-width: 0;
-  margin-left: auto;
+  line-height: 1.25;
+}
+.chat-emoji-suggestions .person-suggestion-names > span {
+  color: var(--text);
+}
+.person-suggestion-names > small {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-mention-avatar {
   display: grid;
-  flex: 0 0 24px;
+  flex: 0 0 28px;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   overflow: hidden;
   border-radius: var(--radius-avatar);
   font-style: normal;
@@ -2686,8 +2716,8 @@ a.chat-draft-preview:focus-visible strong {
   height: 36px;
   border: 0;
   border-radius: 8px;
-  background: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  color: var(--on-action);
   cursor: pointer;
 }
 .chat-thread-send-row button:disabled {
@@ -2930,9 +2960,9 @@ a.chat-draft-preview:focus-visible strong {
 .chat-forward-body .chat-forward-send {
   align-self: end;
   min-width: 100px;
-  background: var(--terracotta);
-  border-color: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--on-action);
   font-weight: 700;
 }
 .chat-forward-dialog button:disabled {
@@ -3068,8 +3098,9 @@ a.chat-draft-preview:focus-visible strong {
   margin-top: 22px;
 }
 .chat-edit-dialog .chat-edit-save {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
@@ -3275,5 +3306,105 @@ a.chat-draft-preview:focus-visible strong {
   .chat-thread-send-row button {
     width: 44px;
     height: 44px;
+  }
+}
+/* Phones open the channel's menu from its name, as in Slack: Pins and Members
+   move there, leaving the header to the name and voice. Wider layouts keep the
+   plain title and separate buttons. */
+.chat-title-menu {
+  position: static;
+  min-width: 0;
+  flex: 1;
+  display: none;
+}
+.chat-title-menu > summary {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 8px;
+  list-style: none;
+  cursor: pointer;
+}
+.chat-title-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-title-menu[open] > summary {
+  background: var(--surface);
+}
+.chat-title-menu > summary:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-title-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.chat-title-name > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+.chat-title-subtitle {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header-menu {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% + 6px);
+  right: 8px;
+  left: 8px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+.chat-header-menu button {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-header-menu button svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+}
+.chat-header-menu button small {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 760px) {
+  .chat-title-menu {
+    display: block;
+  }
+  .chat-heading > .chat-channel-title,
+  .chat-heading :is(.chat-pins-toggle, .member-list-toggle) {
+    display: none;
   }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, MoreHorizontal, Pin, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -20,6 +20,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
+import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
 import LinkedText from "./LinkedText.tsx";
@@ -171,7 +172,10 @@ export default function Chat({
   initialHistoryError,
   showTitle = false,
   headerLeading,
+  headerVoice,
   headerActions,
+  headerMenu,
+  headerSubtitle,
   readOnly = false,
   composerNotice,
   composerBanner,
@@ -203,7 +207,13 @@ export default function Chat({
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
+  /** The open channel's voice, right after its name. */
+  headerVoice?: ReactNode;
   headerActions?: ReactNode;
+  /** Phones fold Pins and these items into the menu their channel name opens. */
+  headerMenu?: ReactNode;
+  /** A line under the name on phones, such as member and voice counts. */
+  headerSubtitle?: ReactNode;
   readOnly?: boolean;
   composerNotice?: ReactNode;
   /** Shown above an active composer. */ composerBanner?: ReactNode;
@@ -464,6 +474,8 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  const arrivals = useRef<Arrivals>(null);
+  arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
   // old first row also changes as an older page lands above it: it can join
   // that page's last group (losing its name and time) and loses its date
@@ -909,6 +921,12 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  arrivals.current.observe(
+    "channel",
+    state.channelId ?? "",
+    messages.map((message) => message.clientMessageId),
+    state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
+  );
   const scrollIndex =
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
@@ -1120,7 +1138,7 @@ export default function Chat({
             </div>
           )}
           <article
-            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
             onPointerDown={(event) => {
@@ -1486,8 +1504,46 @@ export default function Chat({
             {direct ? "" : "# "}
             {channelName}
           </h2>
+          {/* Phones: the name opens the channel's menu, as in Slack; Pins and Members move there. */}
+          {showTitle && state.phase === "ready" && (
+            <details
+              className="chat-title-menu"
+              onClick={(event) => {
+                // Choosing an item closes the menu.
+                if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && event.currentTarget.open) {
+                  event.preventDefault();
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+              }}
+            >
+              <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
+                <span className="chat-title-name">
+                  {direct ? "" : "# "}
+                  {channelName}
+                  <ChevronDown size={16} aria-hidden="true" />
+                </span>
+                {headerSubtitle && <small className="chat-title-subtitle">{headerSubtitle}</small>}
+              </summary>
+              <div className="chat-header-menu">
+                <button type="button" aria-haspopup="dialog" onClick={() => setShowPins(true)}>
+                  <Pin size={16} aria-hidden="true" />
+                  Pins
+                </button>
+                {headerMenu}
+              </div>
+            </details>
+          )}
+          {headerVoice}
           {pinsToggle}
           {headerActions}
+
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
               {state.phase === "error" ? "Offline" : "Connecting…"}
@@ -1966,6 +2022,7 @@ export default function Chat({
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         renderMessage={renderMessage}
+        arrivals={arrivals.current}
         onClose={closeThread}
       />
       {state.phase === "ready" && !readOnly && editMessage && clientRef.current && (

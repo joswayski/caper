@@ -29,7 +29,7 @@ test("the signed-in composer reserves a disabled attachment control before uploa
   expect(attach).toContain('title="Checking file uploads…"');
 });
 
-test("audio controls remain available before joining, with a text-only Join action", () => {
+test("audio controls remain available before joining, with Join in the conversation header", () => {
   const markup = renderToStaticMarkup(<Call />);
   for (const label of ["Mute microphone", "Deafen audio", "Input Options", "Output Options"]) {
     const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
@@ -37,9 +37,13 @@ test("audio controls remain available before joining, with a text-only Join acti
     expect(button).not.toContain('disabled=""');
     expect(button).not.toContain('aria-disabled="true"');
   }
-  const join = markup.match(/<button[^>]*aria-label="Join voice"[^>]*>(.*?)<\/button>/)?.[1];
+  const header = markup.match(/<header class="chat-heading">(.*?)<\/header>/)?.[1];
+  const join = header?.match(/<button[^>]*aria-label="Join voice"[^>]*>(.*?)<\/button>/)?.[1];
   expect(join).toContain("Join voice");
-  expect(join).not.toContain("<svg");
+  // The channel row keeps only an unlabelled shortcut that fine pointers reveal.
+  const shortcut = markup.match(/<button[^>]*aria-label="Join voice in #general"[^>]*>(.*?)<\/button>/)?.[1];
+  expect(shortcut).toContain("<svg");
+  expect(shortcut).not.toContain("Join voice");
   expect(markup).not.toContain('aria-label="Leave voice"');
 });
 

@@ -37,15 +37,16 @@ export const specialMentionLabels = {
   here: "Everyone online in this channel",
 } as const;
 
-export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
+/**
+ * People matching `query`, best first: exact username, username prefix,
+ * display-name (or display-name word) prefix, then username substring.
+ */
+export function rankPeople<T extends MentionCandidate>(people: T[], query: string, limit = 6): T[] {
   const needle = query.toLowerCase();
-  const special = specials
-    ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
-    : [];
-  const ranked = members
-    .flatMap((member) => {
-      const username = member.username.toLowerCase();
-      const displayName = member.displayName.toLowerCase();
+  return people
+    .flatMap((person) => {
+      const username = person.username.toLowerCase();
+      const displayName = person.displayName.toLowerCase();
       const rank =
         username === needle
           ? 0
@@ -56,11 +57,25 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
               : username.includes(needle)
                 ? 3
                 : 4;
-      return rank < 4 ? [{ member, rank, username }] : [];
+      return rank < 4 ? [{ person, rank, username }] : [];
     })
-    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
+    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0))
+    .slice(0, limit)
+    .map(({ person }) => person);
+}
+
+/** `people` without anyone listed in `exclude` (members, pending invitations, you). */
+export function excludePeople<T extends { id: string }>(people: T[], ...exclude: { id: string }[][]): T[] {
+  const ids = new Set(exclude.flat().map((person) => person.id));
+  return people.filter((person) => !ids.has(person.id));
+}
+
+export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
+  const special = specials
+    ? (["everyone", "here"] as const).filter((name) => name.startsWith(query.toLowerCase())).map((kind) => ({ kind }))
+    : [];
   return [
-    ...ranked.slice(0, 6 - special.length).map(({ member }) => ({ kind: "member" as const, member })),
+    ...rankPeople(members, query, 6 - special.length).map((member) => ({ kind: "member" as const, member })),
     ...special,
   ];
 }

@@ -230,7 +230,8 @@ pub struct Member {
 }
 
 /// A `GET /api/people` entry: someone who shares an active space or a DM with
-/// you (never yourself), for DM `@` suggestions.
+/// you (never yourself), for DM `@` suggestions and the space invite and new
+/// DM username fields.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {

@@ -22,8 +22,9 @@ Adapted from the conventions in `joswayski/captures`.
 
 ## Visual design
 
-- Use shared tokens: blackout #0C0D0F, surface #151719, border #34383B, text #F3F4F5, terracotta #B64D32, caper green #637A43. Satoshi typography; restrained borders and 8px control corners.
-- Terracotta is for primary actions, selection, and focus. Green primarily belongs to the character, with restrained presence/status use. Keep general chrome neutral.
+- Use shared tokens: blackout #0C0D0F, surface #151719, border #34383B, text #F3F4F5, eggshell action #F1EDE4, terracotta #B64D32, caper green #637A43. Satoshi typography; restrained borders and 8px control corners.
+- Primary actions are eggshell fills with blackout labels; disabled ones step back to neutral chrome. Terracotta is for selection, focus, mentions and unread state. Green primarily belongs to the character, with restrained presence/status use. Keep general chrome neutral.
+- Motion: things arrive rather than teleport. Use the shared `--motion-*`/`--ease-out` tokens: short, decelerating, opacity/translate-only entrances; closing stays instant; animate only messages that arrive while the reader watches the live end; honor reduced-motion settings on every client.
 - Build hierarchy with typography, spacing, and clear layouts rather than large color fields. Fictional participants/messages belong only in the explicitly labelled homepage simulation; never use them in real account spaces or add working-looking controls for unimplemented features.
 - Inspect rendered desktop/mobile and affected non-default browser states before claiming visual completion. Use real browser interactions or explicitly labeled test mocks.
 

@@ -366,8 +366,10 @@
   border-radius: 0;
 }
 
-/* The centered join link is the demo's only action. */
+/* Keep the only action outside the tilted scene: 3D compositing must not hide
+   the pill, and idle motion must not move its touch target. */
 .live-activator {
+  --counter-scale: 1;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -381,7 +383,6 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
-  transform: translateZ(calc(var(--depth) * 80px));
 }
 .live-invite {
   pointer-events: auto;
@@ -670,6 +671,9 @@
   gap: 7px;
   min-width: 0;
 }
+.sim-chat > .chat-heading > .header-voice {
+  margin-left: auto;
+}
 .sim-channel-heading > svg {
   width: 14px;
   height: 14px;
@@ -776,9 +780,6 @@
   .sim-direct,
   .sim-sidebar .browse-channels,
   .sim-sidebar .voice-dock {
-    display: none;
-  }
-  .sim-channel-list > li:last-child .channel-voice {
     display: none;
   }
   /* Keep every demo participant visible without taking over the phone card. */

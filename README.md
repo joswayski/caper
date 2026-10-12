@@ -23,15 +23,20 @@ also paste a link to join from web, Android, iPhone/Mac and desktop. Invite link
 the installed app: iPhone and Android open `caper.chat/invite/...` directly, and the
 invite page's **Open in the Caper app** (`caper://invite/...`) opens the Mac, Windows
 and Linux apps, reusing an open Caper window. Android Play installs open links directly
-only once Play's app-signing fingerprint is published; until then they use that button. See
+only once Play's app-signing fingerprint is published; until then they use that button
+([to do](docs/media.md#invite-links): that fingerprint and the iPhone signing check). See
 [invite links](docs/media.md#invite-links).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
+The new-message and invite fields suggest people you already share a space or DM
+with (avatar, display name and username); there is no account directory search.
 The Direct messages list is shared across spaces. Phone push is implemented behind
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
 tabs and running desktop apps also implement local OS notifications; alerts after
-desktop quit or browser close are not implemented. Real-provider and physical-device
-validation is still pending. See [notification behavior and rollout](docs/notifications.md).
+desktop quit or browser close are not implemented. Space/private-channel invites
+and new DM requests notify recipients and open explicit request review. Pending
+DM messages stay quiet until acceptance. Real-provider and physical-device validation
+is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.

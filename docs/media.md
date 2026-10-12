@@ -39,7 +39,9 @@ loaded members except you, then `@everyone` ("Everyone in this channel") and
 `@here` ("Everyone online in this channel"). DMs suggest everyone you share a
 space or DM with, from authenticated `GET /api/people` (`{"people":[{"id",
 "username","displayName","avatarId"}]}`, excluding you, at most 500), fetched when
-a DM opens; until it loads the DM peer is offered. Selecting inserts `@username `
+a DM opens; until it loads the DM peer is offered. Rows show the avatar and display
+name with `@username` in small type beneath it (`@everyone`/`@here` put their
+description there). Selecting inserts `@username `
 without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
 
 On send, `chat::persist` resolves names inside the message transaction (shared
@@ -128,21 +130,37 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Web channel names and `⋯` actions have a separate row above voice
-activity. Join, Joining and Switch here use one fixed-width action slot;
-web uses quiet text-only actions and replaces Join with Leave in the active
-channel. Its roster opens automatically on connection. Mic, deafen and device
-settings stay in the account footer, including before joining. When navigation
-hides the active channel, its roster, channel/space status and single Leave
-action pin above that footer; participant audio menus open upward. Browsing
+Voice joins from the conversation header (October 11, 2026, on web, Android,
+iOS/macOS and Rust desktop). After the channel name, the open channel shows up
+to three faces of who is in its voice with a count, then Join voice, Switch here
+(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
+a thin divider separates it from Pins and Members. Phones show only the
+conversation below a Slack-style header: the channel name (with "N members · M
+in voice" beneath it) opens the channel's menu of Pins and Members, and one
+bordered group holds icon-only voice buttons (headphones to join or switch;
+mute, deafen and a red disconnect while in voice, also in a DM). While others
+are in a channel's voice and you are not, its Join glows softly (static with
+reduced motion); Leave is a red icon and label, with no fill or border, in every header. Phones show no faces in the
+header: the subtitle already says how many are in voice, and Browse lists them.
+Voice errors appear above the composer, and channels, rosters, the account bar
+and the voice dock stay in Browse.
+Channel rows no longer carry a Join action: empty channels are a single line,
+and only occupied channels add the `N in voice` line with its collapsible
+roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
+headphones shortcut on each channel row, revealed on hover or keyboard focus in
+space reserved beside the `⋯` menu and absent for the connected channel; touch
+joins from the header. The roster opens automatically on connection. Mic,
+deafen and device settings stay in the account footer, including before
+joining. The channel/space status and Leave stay in a dock
+above that footer whenever you are in voice; when navigation hides the active
+channel, its roster pins there too; participant audio menus open upward. Browsing
 other chats, spaces or DMs does not leave voice. That includes a space with no
 joined channel, whose empty state replaces only the conversation, and a pending
 invitation opened from the rail, which opens over the room. Voice still ends
 when its own channel is left, deleted or revoked.
-Voice actions are neutral until hover/focus, and empty channels have no voice
+The row shortcut is neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection
-updates do not shift the active channel's action target; expanding its roster
-moves later channels down. The Channels count stays beside its label
+updates do not shift channel rows; expanding a roster moves later channels down. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Other participant lists start collapsed and
 expand from the voice count. Joined-channel menus offer Leave channel to members;
@@ -150,7 +168,8 @@ owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
 At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets.
+layouts retain 44px action targets, and phones show one header face without
+the count.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
@@ -799,6 +818,22 @@ cancelling an invitation stays one click. Invitees must accept before becoming m
 Existing memberships are unchanged; the migration does not retroactively ask
 existing members to accept. Owners can also share [invite links](#invite-links). There are no custom roles,
 ownership transfers or public space discovery yet.
+
+Username fields suggest people the client already has, on web, Android, Apple and
+Rust desktop. The space invite field offers `GET /api/people` (people you share an
+active space or visible DM with) minus current members and pending invitations.
+The private-channel grant field offers the space's members minus the owner,
+current grantees and pending channel invitations. **New direct message** offers
+`GET /api/people`. Each list is fetched or refreshed when its dialog opens and uses
+the `@` ranking (exact username, username prefix, display-name word prefix, then
+username substring; at most six, nothing until you type). Rows match `@`
+suggestions: avatar, display name, and `@username` in small type beneath it, shown
+inline below the field. Choosing one fills in the exact username and never submits;
+Up/Down, Enter and Escape work from hardware keyboards, and Escape closes the list,
+not the dialog. Nothing is searched server-side: there is no account directory,
+and lookups, the shared invitation-attempt limit and block handling stay
+exact-username, so typing a username by hand still works. No API, migration or
+configuration change.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed. Removal is a
 soft delete: space memberships, private-channel grants and channel joins get
@@ -891,6 +926,21 @@ the profile step when needed. Platform specifics:
   plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
   handed to the open window over loopback (a token file in the app data folder)
   instead of starting a second copy.
+
+**To do (owner): finish automatic app-link opening.**
+
+- [ ] Android Play installs: once Play App Signing exists for `chat.caper.android`
+  (after the first app bundle upload), copy **App signing key certificate →
+  SHA-256** from Play Console → Test and release → App integrity → Play app
+  signing, add it to `ANDROID_CERT_FINGERPRINTS` in
+  `apps/web/src/server/app-links.ts`, and deploy web. Until then Play installs open
+  invite links in the browser ("Open in the Caper app" still works); GitHub APK
+  installs already open directly.
+- [ ] iPhone: confirm the first TestFlight build with `applinks:caper.chat` signs.
+  If the export fails on the provisioning profile, enable **Associated Domains**
+  for `chat.caper.ios` at developer.apple.com → Certificates, IDs & Profiles →
+  Identifiers, then rerun the release. Verify by tapping a `caper.chat/invite/...`
+  link in Messages on a device with the TestFlight build.
 
 ### Invitation consent and abuse limits
 
@@ -4733,6 +4783,17 @@ the merged commit with the existing **Deploy Caper apps** action (or
 `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha=MERGED_COMMIT_SHA`),
 then update installed clients once. Merging does not publish a native release.
 
+**Desktop restart recovery:** the shared updater runs outside the install, with
+null standard streams and, on Unix, its own process group. Successful swaps reopen
+the new app; failed download/verification/swap attempts reopen the working install
+after the original process exits. macOS uses `/usr/bin/open -n` through
+LaunchServices and checks its exit status. Errors and launch requests are recorded
+in the system temporary directory's `caper-updater.log`. Local Linux subprocess
+checks cover relocation, replacement/relaunch, and failure recovery, not a live
+signed-release update or a macOS/Windows GUI launch. Those platform checks remain
+release acceptance. Install the fixed native release manually once if the old
+updater still closes without reopening; no server/configuration rollout is needed.
+
 ### Native distribution and acceptance
 
 The [native clients](../apps/native/README.md) are separately implemented,
@@ -4741,6 +4802,20 @@ WebSocket, not a native-only backend. Keep the website available while native
 feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
+
+**Header voice, October 11, 2026:** the October 3 voice rows below are
+superseded. Join, Switch here and Leave for the open channel live in the
+conversation header on every client; channel rows show voice only while
+occupied, plus a hover/focus join shortcut on fine-pointer clients (desktop web,
+macOS, Rust desktop). The voice dock with Leave stays visible whenever in voice.
+Validation: web build/typecheck/lint and 584 Vitest tests pass;
+`VOICE_TEST_REDESIGN=1` and `VOICE_TEST_CHANNEL_ROWS=1` pass at 1280px/390px
+(and the 220px sidebar) in stock and fine-pointer Chromium (mocked
+API/WebRTC). Rust desktop: fmt, clippy and 429 unit tests pass (headless egui
+renders). Android and Apple changes were not compiled or run here (no Android
+SDK or Xcode); run `./gradlew :app:testDebugUnitTest
+:app:connectedDebugAndroidTest`, `smoke.py` and the Apple parity UI tests
+before release. No live SFU, physical-device or touch-hardware validation.
 
 **Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
 SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
@@ -5493,8 +5568,9 @@ not validate that integration.
 ## Account-global direct messages and deferred mobile push
 
 One-to-one DMs belong to two accounts, not to a space. Personal notes use the same
-private stream with your own account as both participants. Start by exact username;
-the canonical pair (including a self pair) has one conversation even when started
+private stream with your own account as both participants. Start by exact username
+(the field suggests people you share a space or DM with, as described under
+spaces); the canonical pair (including a self pair) has one conversation even when started
 concurrently.
 The list appears below channels in every space, including accounts with no spaces.
 Web pins it above the account controls; narrow web and mobile clients expose it in
@@ -6712,3 +6788,48 @@ behavior; this change adds no realtime profile event.
    active call without losing conversation state. Roll back web to its previous
    image; native rollback requires a corrected higher-build-number release. No
    data rollback is needed.
+
+## Eggshell primary actions and entrance motion (October 11, 2026)
+
+Primary actions (sign-in, dialog confirmations, Join channel, Accept, Send/Save,
+Forward, the thread Send and Test microphone) now use an eggshell fill
+(`--action` `#F1EDE4`) with blackout labels on web, Android, iOS/macOS and Rust
+desktop, matching the homepage download button. Hover brightens and press
+deepens the fill; disabled primaries step back to neutral chrome (raised
+surface, border, muted label) instead of a faded fill. Terracotta remains for
+selection, focus, mentions and unread state. Destructive buttons are unchanged.
+Sign-in fields use the dialog fields' focus treatment: a terracotta border with
+a soft 2px ring instead of a 4px-offset outline.
+
+Things that appear now arrive instead of teleporting, using shared tokens
+(`--ease-out` `cubic-bezier(0.16, 1, 0.3, 1)`, `--motion-fast` 140ms,
+`--motion-base` 200ms, `--motion-slow` 260ms):
+
+- Messages you send, and live messages from others, fade in with a 6px settle in
+  channels, DMs and threads. Only rows that arrive while the reader is at the
+  live end animate (`Arrivals` on every client): not first loads, channel
+  switches, older pages, jumps, or newer pages loaded while catching up. A
+  pending send animates once, and recycled rows do not replay after one second.
+- Dialogs rise 8px from 98% while their scrim fades; anchored menus, cards and
+  tooltips rise 4px; touch sheets rise from the bottom; the thread panel slides
+  in 12px.
+- Attached files pop into the composer, and upload progress glides between
+  updates.
+- Closing stays instant. Reduced-motion settings (web `prefers-reduced-motion`,
+  Android animator scale 0, Apple Reduce Motion) turn entrances off. Rust desktop
+  has no OS reduced-motion signal; its headless tests draw final states.
+
+No API, gateway, database, infrastructure, secret or configuration change is
+needed. Web and native clients can release independently.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` pass (584 tests, including `chat/arrivals.test.ts`). Chromium against the disposable fixture at 1440px (fine pointer) and 390px: sign-in, disabled Continue, dialogs and Manage space inspected; DOM checks confirm no arrival animation on load or channel switch, one for a sent message (not replayed on confirmation) and one for a live incoming message; dialog/backdrop, message actions, mention card, thread panel and space menu entrances ran. Draft-tile entrance is CSS-only and unexercised (the fixture disables uploads). Not Safari or a physical phone. |
+| Android | `compileDebugKotlin`, `testDebugUnitTest` (317 tests, including `ArrivalsTest`) and `lintDebug` pass with SDK 36/NDK 27 installed in the orb. No emulator or device rendering. |
+| Apple iOS/macOS | Primary-button styles, arrivals (`MessageArrivals` with tests), entrances and Reduce Motion handling implemented. No Swift compiler or Xcode in this orb: not built, tests not run, no simulator or device rendering. |
+| Rust desktop | `cargo fmt --check`, scoped clippy (`--package caper-desktop --no-deps -D warnings`) and `cargo test` pass (425 passed, 12 ignored, including arrival and entrance-timing tests). Linux Xvfb renders of `login`, `parity-requests` and `parity-attachments` inspected. Not Windows; motion itself not recorded. |
+
+Before native distribution, check on devices: send and receive at the live end
+(one entrance each, none on channel switch or history), dialogs/menus/thread
+opening, attaching files, upload progress, primary/disabled/pressed/focus button
+states, and Reduce Motion / Remove animations.
