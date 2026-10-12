@@ -113,6 +113,18 @@ def find(
     return None
 
 
+def bounds(node: ET.Element) -> tuple[int, int, int, int]:
+    left, top, right, bottom = map(int, re.findall(r"-?\d+", node.get("bounds", "")))
+    return left, top, right, bottom
+
+
+def within(inner: ET.Element, outer: ET.Element) -> bool:
+    """Whether `inner` lies inside `outer` on screen."""
+    il, it, ir, ib = bounds(inner)
+    ol, ot, orr, ob = bounds(outer)
+    return ol <= il and ot <= it and ir <= orr and ib <= ob
+
+
 def dismiss_system_not_responding(root: ET.Element) -> bool:
     """Answer Android's own "System UI isn't responding" dialog with Wait.
 
@@ -707,7 +719,9 @@ def main() -> None:
     wait_for(description="Join voice")
     occupied = capture("caper-android-voice-header-occupied", "#design options")
     title = find(occupied, description="#design options")
-    assert title is not None and "4 in voice" in title.get("text", ""), (
+    subtitle = find(occupied, contains="4 in voice")
+    # The subtitle is its own node inside the title's bounds, not the title's text.
+    assert title is not None and subtitle is not None and within(subtitle, title), (
         "The phone title's subtitle counts who is in voice"
     )
     assert find(occupied, contains="are in voice") is None, "Phone header voice shows no faces"
