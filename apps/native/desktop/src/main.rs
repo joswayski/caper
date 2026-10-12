@@ -25806,6 +25806,8 @@ mod tests {
         let id = egui::Id::new("member-username");
         let list = id.with("people");
         render(&mut app, &context, vec![]);
+        // Scroll past the Invite link section to Members, as a person would.
+        scrolled_text_position(&mut app, &context, "Delete space");
         assert_eq!(
             type_username(&mut app, &context, id, "@FIX"),
             [
