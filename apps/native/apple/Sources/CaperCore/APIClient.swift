@@ -189,6 +189,22 @@ public actor APIClient {
     public func markDirectMessageRead(id: String, seq: String) async throws {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
+    /// The feedback team's inbox (or its archived threads), newest first; 404
+    /// for everyone else.
+    public func feedbackReports(before: String? = nil, archived: Bool = false) async throws -> FeedbackReportsPage {
+        var query: [String] = archived ? ["archived=true"] : []
+        if let before {
+            guard (try? Sequence.compare(before, "0")) != nil else { throw APIError(status: 400, message: "Invalid cursor.") }
+            query.append("before=\(before)")
+        }
+        return try await request("api/feedback" + (query.isEmpty ? "" : "?" + query.joined(separator: "&")))
+    }
+    /// Archives or restores every report in a thread, for the whole team.
+    public func setFeedbackArchived(channelID: String, threadRootID: String, archived: Bool) async throws {
+        struct Input: Encodable { let channelId: String; let threadRootId: String; let archived: Bool }
+        let _: Empty = try await request("api/feedback/archive", method: "PUT",
+                                         body: Input(channelId: channelID, threadRootId: threadRootID, archived: archived))
+    }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
     public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
         let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))

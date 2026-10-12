@@ -2572,6 +2572,89 @@ revision; do not deploy an isolated feature branch that omits applied migrations
    content, versions, outbox records and read/projection compatibility while
    disabling new forwards. Never delete retained data or applied migration history.
 
+## Feedback in place
+
+`@feedback`, `@caper` or any other team name (`@capers`, `@caperchat`,
+`@caper_feedback`, `@caper_support`, `@support`, `@team`, `@staff`, `@admin(s)`,
+`@administrator(s)`, `@mod(s)`, `@moderator(s)`; all reserved usernames) in any
+channel, thread, DM, message request or personal note asks the Caper team to look
+at that conversation. Only accounts can report: a guest's alias, an alias added by an
+edit, and an alias in a forward's note stay plain text. Nothing is copied or
+moved. The message stays where it was written, shows its alias as a mention pill
+and is marked **Caper team has been notified 🫡** for everyone there.
+
+- **Report.** The send transaction writes `feedback_reports` (message, channel,
+  reporter, and the thread replies belong in: the message itself when it was
+  top-level). Reports are kept.
+- **Access.** `feedback_access(channel, account)` is true for an active
+  `feedback_team` member once that channel has any report. The team then takes
+  part like a joined member: every read path (history, threads, single messages,
+  versions, reactors, gateway subscription and replay), sending, replies, files,
+  reactions, editing their own messages, typing, pins, voice and forwarding into
+  the conversation. They are not listed as members and keep no read markers.
+  Responses carry `"visitor": true` when the reader isn't a member, which clients
+  use only to name the space in the header. A visitor's DM reply neither accepts
+  a pending request nor is affected by the participants' blocks. Removing someone
+  from the team (`deleted_at`) ends their access everywhere at once.
+- **Answering.** Team members' messages carry `author.admin`, stamped by the server
+  at send time and badged **ADMIN** on every client. Clients open a report in
+  its thread, so answers default there. Thread participants see them, and an
+  @mention reaches the reporter as usual.
+- **Notifications.** Kind `feedback`, title `Sender · Feedback`, for every team
+  member, ignoring mutes. See [notifications](notifications.md#who-gets-a-notification).
+- **Inbox.** `GET /api/feedback[?before=cursor]` (404 unless on the team) lists
+  reports newest first, 50 per page, with reporter, place, a 280-character
+  preview, reply count, `archived` and `answered`. `answered` is computed on read,
+  not stored: it is true while the newest message in the report's thread is from
+  the team, so anyone replying afterwards makes it wait again. Clients group
+  reports by thread. `PUT /api/feedback/archive {channelId, threadRootId, archived}`
+  archives or restores a whole thread for the whole team (`archived_at` on its
+  reports). Anyone but the team posting in the thread afterwards brings it back, and
+  `?archived=true` lists archived threads. `GET /api/account/me` adds
+  `feedbackTeam: true` for team members.
+
+**Messaging Caper.** Any team name in **New message** opens an accepted DM with
+the Caper account (`users.team_account`, username `caper`, no email, so nobody
+signs in as it; the API maps every alias to it). Each top-level message sent
+there is a report, marked like `@feedback`, so it lands in the inbox as its own
+thread; replies in that thread stay part of it. The team answers as itself, in
+the thread or straight in the DM; either counts as answered. The DM's `peer.team`
+is true, and clients replace the empty state's privacy line with *Messages here go
+to the Caper team.* When the team posts in
+any DM it visits (the Caper DM, personal notes or two people's DM), everyone in
+the conversation is notified as for a DM message.
+
+**Privacy.** Tagging the team is consent for it to read that conversation, the
+earlier context included. The `@feedback` suggestion says so: *Caper team · can
+read and reply here*. Access is per conversation, never per space. The team cannot
+browse conversations nobody reported.
+
+**Operating the team** (run with the migration role; the runtime role can only read):
+
+```sql
+-- Add
+INSERT INTO feedback_team (user_id) SELECT id FROM users WHERE username = '<username>' AND deleted_at IS NULL;
+-- Remove (kept for history)
+UPDATE feedback_team SET deleted_at = now() WHERE user_id = (SELECT id FROM users WHERE username = '<username>') AND deleted_at IS NULL;
+-- Who is on it
+SELECT u.username, t.created_at FROM feedback_team t JOIN users u ON u.id = t.user_id WHERE t.deleted_at IS NULL;
+```
+
+Migration `202610120002_feedback.sql` adds the Caper account, the two tables
+and the function.
+`--migrate` grants the runtime role `SELECT` on `feedback_team`, `SELECT, INSERT,
+UPDATE` on `feedback_reports`, its sequence and `EXECUTE` on `feedback_access`. Every
+access check calls the function, so **run the migration before rolling out the
+API image**: an older API keeps working against the new schema.
+
+| Check | Evidence / limitation |
+| --- | --- |
+| API | `push::tests::feedback_lets_the_team_read_and_answer_where_it_was_asked` against disposable Postgres and Valkey: no access before a report, whole-channel visitor read, private channels, thread replies with `author.admin`, reactions and pins, @feedback and @named visitors notified as `feedback`, APNs payload, inbox order and `answered`, edits never report, DM request stays pending, gateway read and participation (typing, voice), removal ends access. Grant test covers the runtime role. Full workspace suite passes |
+| Web | Vitest for aliases, suggestions, pills, notification routes and inbox grouping. Real local API, gateway, Postgres and Valkey in Chromium: inbox, desktop visit at the report's thread, admin reply with badge seen by members, member autocomplete, "Join voice" under the visited report, 390px DM visit opening the thread, DM reply leaving the request untouched |
+| Rust desktop | `cargo fmt --check`, `cargo test` (422 passed) and Clippy with libwebrtc: decoding, pills, autocomplete, open order, inbox paging, notification routing, headless egui inbox/visit flows. No real window or live server |
+| Android | No Android SDK here. Models, `data/*`, push payloads and autocomplete compiled with standalone kotlinc and their JVM tests pass; Compose UI, view model and FCM taps unbuilt |
+| Apple | No Xcode here. Models, `AppModel`, autocomplete, notifications and API client type-checked with Swift 6 on Linux (stubbed Apple-only modules) and their XCTests pass; SwiftUI views, APNs taps and macOS notification clicks unbuilt |
+
 ## Message editing
 
 Web, Android, Apple (iOS/macOS) and Rust desktop message actions and pins offer

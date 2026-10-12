@@ -31,7 +31,8 @@ export interface Member {
 
 export interface DirectConversation {
   id: string;
-  peer: { id: string; username: string; displayName: string; avatarId?: number };
+  /** `team`: the Caper account, whose DM goes to the feedback team. */
+  peer: { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */
@@ -75,6 +76,38 @@ export function createDirectConversation(username: string) {
 
 export function readDirectConversation(id: string, seq: string) {
   return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+}
+
+/** One `@feedback`, for the team's inbox. Replies belong in `threadRootId` (the message itself when top-level). */
+export interface FeedbackReport {
+  id: string;
+  messageId: string;
+  threadRootId: string;
+  createdAt: string;
+  text: string;
+  attachments: number;
+  reporter: Person;
+  channel: { id: string; name: string; direct: boolean };
+  space: { id: string; name: string } | null;
+  replyCount: number;
+  /** The newest message in its thread is the team's. */
+  answered: boolean;
+  archived?: boolean;
+}
+
+export function listFeedback(before?: string, archived = false) {
+  const query = new URLSearchParams();
+  if (before) query.set("before", before);
+  if (archived) query.set("archived", "true");
+  return request<{ reports: FeedbackReport[]; cursor: string | null }>(`/api/feedback${query.size ? `?${query}` : ""}`);
+}
+
+/** Hides a reported thread from the whole team's inbox, or brings it back. */
+export function archiveFeedback(channelId: string, threadRootId: string, archived: boolean) {
+  return request<void>("/api/feedback/archive", {
+    method: "PUT",
+    body: JSON.stringify({ channelId, threadRootId, archived }),
+  });
 }
 
 export interface UnreadSpace {

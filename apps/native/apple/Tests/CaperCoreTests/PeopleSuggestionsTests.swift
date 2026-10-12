@@ -42,7 +42,8 @@ final class PeopleSuggestionsTests: XCTestCase {
         XCTAssertEqual(names("nobody"), [])
         for query in ["al", "ice", "a", "zed", "e"] {
             XCTAssertEqual(PeopleSuggestions.match(text: query, candidates: candidates),
-                           MentionAutocomplete.rank(query: query, source: MentionSource(members: candidates, specials: false)),
+                           // People only: the team special ("a" offers @admin) is for the composer.
+                           MentionAutocomplete.rank(query: query, source: MentionSource(members: candidates, specials: false, feedback: false)),
                            "the fields and @ suggestions share one ranking: \(query)")
         }
         XCTAssertEqual(MentionAutocomplete.personRank(query: "alice", username: "Alice", displayName: "A"), 0)

@@ -363,12 +363,27 @@ public enum NotificationRoute: Equatable, Sendable {
     case channel(spaceID: String, channelID: String)
     case direct(conversationID: String)
     case invitation(spaceID: String, channelID: String?)
+    /// A `feedback` notification: visit the conversation at the reported
+    /// message, in its thread (`threadRootId`, else the message's own).
+    case feedback(FeedbackTarget)
+
+    /// The notification kind that opens a feedback visit.
+    public static let feedbackKind = "feedback"
 
     /// DMs carry `conversationId`; channels carry `spaceId` and `channelId`.
+    /// Kind `feedback` also needs `messageId`; `threadRootId` is optional.
     public init?(userInfo: [AnyHashable: Any]) {
         func value(_ key: String) -> String? {
             guard let string = userInfo[key] as? String, !string.isEmpty else { return nil }
             return string
+        }
+        let conversationID = value("conversationId")
+        // `feedback` first, then invitations, then the conversation fallback.
+        if value("kind") == Self.feedbackKind, let messageID = value("messageId"),
+           let channelID = conversationID ?? value("channelId") {
+            self = .feedback(FeedbackTarget(channelID: channelID, spaceID: conversationID == nil ? value("spaceId") : nil,
+                                            messageID: messageID, threadRootID: value("threadRootId")))
+            return
         }
         if let kind = value("kind"), kind == "space.invitation" || kind == "channel.invitation" {
             func valid(_ id: String) -> Bool { id.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil }
@@ -379,7 +394,7 @@ public enum NotificationRoute: Equatable, Sendable {
             self = .invitation(spaceID: spaceID, channelID: channelID)
             return
         }
-        if let conversationID = value("conversationId") {
+        if let conversationID {
             self = .direct(conversationID: conversationID)
         } else if let spaceID = value("spaceId"), let channelID = value("channelId") {
             self = .channel(spaceID: spaceID, channelID: channelID)
@@ -388,14 +403,18 @@ public enum NotificationRoute: Equatable, Sendable {
         }
     }
 
-    /// Whether this is the conversation on screen, so a foreground banner is redundant.
-    public func isOpen(spaceID: String?, channelID: String?, directMessageID: String?) -> Bool {
+    /// Whether this is the conversation on screen, so a foreground banner is
+    /// redundant. `visitChannelID` is an open feedback visit's conversation.
+    public func isOpen(spaceID: String?, channelID: String?, directMessageID: String?, visitChannelID: String? = nil) -> Bool {
         switch self {
         case let .direct(conversationID):
             return directMessageID == conversationID
         case let .channel(routeSpaceID, routeChannelID):
             return directMessageID == nil && spaceID == routeSpaceID && channelID == routeChannelID
         case .invitation: return false
+        case let .feedback(target):
+            if visitChannelID == target.channelID || directMessageID == target.channelID { return true }
+            return directMessageID == nil && channelID == target.channelID
         }
     }
 }

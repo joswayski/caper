@@ -217,6 +217,7 @@ extension ComposerSuggestionsView {
 struct MentionSuggestionLabel: View {
     let candidate: MentionCandidate
     var body: some View {
+        // Specials (`@everyone`, `@here`, a team name) stack the name over its description.
         let member = candidate.kind == .member
         HStack(spacing: 10) {
             if member {

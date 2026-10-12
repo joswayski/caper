@@ -59,6 +59,8 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
               let title = event["title"] as? String, let body = event["body"] as? String,
               let timestamp = event["createdAt"] as? String else { return }
         model.scheduleUnreadRefresh()
+        // A new report for the feedback team's inbox.
+        if event["kind"] as? String == NotificationRoute.feedbackKind { model.feedbackNotificationArrived() }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)

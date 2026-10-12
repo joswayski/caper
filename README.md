@@ -56,6 +56,15 @@ Native validation and rollout are tracked in
 [the runbook](docs/media.md#live-message-forwarding). This change is not deployed
 by merging alone.
 
+Writing `@feedback` (or `@caper`, `@admin`, `@mods`, `@support`, `@team`…) in any
+channel, thread, DM or personal note asks the Caper team to look. The message stays
+where it is, marked **Caper team has been notified 🫡**. Feedback team members get a
+push and an inbox of reports, and take part in that conversation like a member
+without joining it: they read it for context and reply in place with an **ADMIN**
+badge, so everyone there sees the answer. Messaging `@caper` (or `@feedback`) from
+**New message** opens a private DM where each message goes to the team. Team membership is managed in
+SQL. See [Feedback](docs/media.md#feedback-in-place).
+
 Authors can edit messages on web, Android, Apple and Rust desktop, including
 thread roots/replies and DMs. The edited indicator opens retained history with
 the previous/current versions side by side and older changes selectable below;

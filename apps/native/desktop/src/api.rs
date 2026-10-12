@@ -147,6 +147,51 @@ impl Api {
         self.request(Method::GET, "api/dms", Some(token), None, None)
     }
 
+    /// `GET /api/feedback[?before=<cursor>]`: the Caper team's inbox, newest
+    /// first. Everyone else gets 404.
+    /// `archived` lists only archived threads' reports.
+    pub fn feedback(
+        &self,
+        token: &str,
+        before: Option<&str>,
+        archived: bool,
+    ) -> Result<crate::feedback::Page, ApiError> {
+        let query: Vec<String> = archived
+            .then(|| "archived=true".to_owned())
+            .into_iter()
+            .chain(before.map(|cursor| format!("before={cursor}")))
+            .collect();
+        let path = if query.is_empty() {
+            "api/feedback".to_owned()
+        } else {
+            format!("api/feedback?{}", query.join("&"))
+        };
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
+    /// `PUT /api/feedback/archive`: archives or restores every report in a
+    /// thread, for the whole team. 204 on success.
+    pub fn archive_feedback(
+        &self,
+        token: &str,
+        channel: &str,
+        thread_root: &str,
+        archived: bool,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::PUT,
+            "api/feedback/archive",
+            Some(token),
+            None,
+            Some(serde_json::json!({
+                "channelId": channel,
+                "threadRootId": thread_root,
+                "archived": archived,
+            })),
+        )?)
+        .map(|_| ())
+    }
+
     pub fn people(&self, token: &str) -> Result<People, ApiError> {
         self.request(Method::GET, "api/people", Some(token), None, None)
     }

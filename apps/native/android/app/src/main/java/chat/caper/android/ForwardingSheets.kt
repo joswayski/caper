@@ -44,6 +44,7 @@ import java.util.UUID
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId)
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            if (message.author.admin) AdminBadge()
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
         // A file-only original has empty text: show just its files, in their processing state.

@@ -59,8 +59,8 @@ public enum CaperTheme {
             case .onboarding: ProfileView(model: model)
             case .ready:
                 if model.restoringWorkspace { LoadingView() }
-                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen && model.spacesLoaded { FirstSpaceView(model: model) }
-                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && model.visit == nil && !model.navigationOpen && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil && model.visit == nil && !model.navigationOpen, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
                 else { WorkspaceView(model: model) }
             }
         }
@@ -502,7 +502,7 @@ private struct WorkspaceView: View {
                     }.padding(12).background(CaperTheme.surface)
                 }
                 // Phones slide the conversation fully over Browse; wider windows show both.
-                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil
+                let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil || model.visit != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
                 let travel = geometry.size.width + 48
@@ -511,7 +511,7 @@ private struct WorkspaceView: View {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
                                 .frame(width: 60)
-                                .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), navigate: { slide(open: false) }))
+                                .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), navigate: { slide(open: false) }))
                             ChannelSidebar(
                                 model: model,
                                 sheet: $sheet,
@@ -582,14 +582,14 @@ private struct WorkspaceView: View {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
                                         }
                                     }
                                 }
@@ -607,7 +607,7 @@ private struct WorkspaceView: View {
                             ConversationStage(model: model, narrow: true, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
-                            if model.selectedDirectMessageID == nil {
+                            if model.selectedDirectMessageID == nil && model.visit == nil {
                                 MembersOverlay(model: model, shows: membersVisible && !model.previewingChannel,
                                                width: min(280, geometry.size.width - 64)) { membersPreference = false }
                             }
@@ -927,7 +927,10 @@ private struct ChannelSidebar: View {
             NotificationErrorRow(model: model)
 
             ScrollView {
-                if narrow && model.showingMessageRequests && model.account != nil {
+                if narrow && model.showingFeedback && model.isFeedbackTeam {
+                    // Phones push the feedback inbox in place of the channel list.
+                    FeedbackInboxList(model: model, pushed: true)
+                } else if narrow && model.showingMessageRequests && model.account != nil {
                     // Phones push the requests list in place of the channel list.
                     MessageRequestsList(model: model, pushed: true)
                 } else {
@@ -1058,6 +1061,12 @@ private struct ChannelSidebar: View {
                         .onHover { directHeadingHovered = $0 }
                         #endif
                         VStack(spacing: 2) {
+                            if model.isFeedbackTeam {
+                                FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
+                                if !narrow && model.showingFeedback {
+                                    FeedbackInboxList(model: model, pushed: false)
+                                }
+                            }
                             if !model.messageRequests.isEmpty {
                                 MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
                                 if !narrow && model.showingMessageRequests {
@@ -1110,13 +1119,14 @@ private struct ChannelSidebar: View {
                 }
                 }
             }
+            .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
             if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
                 Divider().overlay(CaperTheme.border)
             }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
-        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
@@ -1389,7 +1399,8 @@ private struct SidebarIconButton: ButtonStyle {
 /// Who is in voice in a channel: your own call's participants while you are in
 /// it, else the read-only presence roster.
 @MainActor private func voiceOccupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] {
-    guard model.voice.isActive(channelID: channelID) else { return model.voicePresence.roster(for: channelID) }
+    // `voiceRoster` also covers a visited space channel, outside the open space.
+    guard model.voice.isActive(channelID: channelID) else { return model.voiceRoster(for: channelID) }
     return model.voice.participants.map {
         VoiceSpectator(id: $0.id, avatarId: $0.avatarId, name: $0.name, muted: $0.muted, deafened: $0.deafened)
     }
@@ -2335,7 +2346,7 @@ private struct ConversationStage: View {
     let membersVisible: Bool
     let toggleMembers: () -> Void
     var body: some View {
-        if model.selectedChannelID == nil && model.selectedDirectMessageID == nil {
+        if model.selectedChannelID == nil && model.selectedDirectMessageID == nil && model.visit == nil {
             VStack(spacing: 8) {
                 // Wider windows already show Browse beside this, where the button did nothing.
                 if narrow { Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(CaperSecondaryButton()) }
@@ -2438,11 +2449,14 @@ private struct ChatView: View {
     @State private var revealedBlocked: Set<String> = []
 
     /// Channels offer the member list; phones only once the channel is joined.
+    /// A feedback visit has none.
     private var membersAvailable: Bool {
-        model.selectedDirectMessageID == nil && !(narrow && model.previewingChannel)
+        model.selectedDirectMessageID == nil && model.visit == nil && !(narrow && model.previewingChannel)
     }
     /// The open channel once joined: its header carries voice. Previews and DMs have none.
     private var headerVoiceChannel: Channel? {
+        // A visited space channel joins voice from the same header; DMs have none.
+        if model.visit != nil { return model.visitChannel.flatMap { model.isVisitVoice($0) ? $0 : nil } }
         guard model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined else { return nil }
         return channel
     }
@@ -2451,10 +2465,13 @@ private struct ChatView: View {
         model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
     }
     private var headerTitle: String {
-        model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName
+        // A visit reads "#plans · Studio" or "Alice & Bob", from the visited history.
+        if let visit = model.visit { return FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: visit.direct) }
+        return model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName
     }
     private var headerTitleLabel: String {
-        model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)"
+        if model.visit != nil { return "Visiting \(headerTitle)" }
+        return model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)"
     }
     /// The space's member count, where the member list applies to a joined channel.
     private var memberCount: Int? {
@@ -2504,7 +2521,8 @@ private struct ChatView: View {
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .modifier(ControlHover())
-        .accessibilityLabel("\(direct ? "" : "#")\(direct ? chat.channelName : chat.channelName.lowercased()) options")
+        .accessibilityLabel(model.visit != nil ? "\(headerTitle) options"
+                            : "\(direct ? "" : "#")\(direct ? chat.channelName : chat.channelName.lowercased()) options")
         .accessibilityIdentifier("channel-title-menu")
         // Web keeps its visually hidden heading beside the menu: the conversation's
         // name for assistive technology, as on wider layouts.
@@ -2731,6 +2749,13 @@ private struct ChatView: View {
                             .accessibilityIdentifier("dm-options")
                     }
                 }
+                // Wider layouts close a visit back to the conversation before it;
+                // phones go back to Browse, where the inbox stays open.
+                if !narrow, model.visit != nil {
+                    Button { Task { await model.closeVisit() } } label: { CaperIcon(name: "x", size: 20) }
+                        .buttonStyle(SidebarIconButton()).help("Close").accessibilityLabel("Close conversation")
+                        .accessibilityIdentifier("feedback-visit-close")
+                }
             }
             .padding(.leading, narrow ? 13 : 18).padding(.trailing, narrow ? 10 : 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
@@ -2825,7 +2850,8 @@ private struct ChatView: View {
                                         .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
                                 } else {
                                     Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : FeedbackInbox.emptyDirectNote(peer: model.selectedDirectMessage?.peer, name: chat.channelName))
+                                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center).padding(.horizontal, 24)
                                 }
                             }.padding(.top, 80)
                         }
@@ -3030,7 +3056,7 @@ private struct ChatView: View {
             CaperTheme.conversation.ignoresSafeArea()
         }
             // Uploads are optional server configuration; recheck per conversation.
-            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkUploadAvailability() }
             // Finder, Files, Photos and other apps (iPad split view and Slide Over).
             // addAttachments keeps the first files that fit and removes the rest.
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -3043,7 +3069,7 @@ private struct ChatView: View {
             } isTargeted: { fileDropTargeted = $0 }
             .overlay {
                 if fileDropTargeted && chat.canAttach {
-                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil,
+                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil || model.visit?.direct == true,
                                                          attached: chat.attachmentDrafts.count)
                     FileDropOverlay(title: text.title, detail: text.detail)
                 }
@@ -3129,6 +3155,9 @@ private struct ChatView: View {
             .onChange(of: model.selectedDirectMessageID) { _, _ in
                 reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil; olderAnchor = nil
             }
+            .onChange(of: model.visit?.channelID) { _, _ in
+                reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil; showingPins = false; mentionCard = nil; olderAnchor = nil
+            }
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -3138,9 +3167,13 @@ private struct ChatView: View {
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
     /// returned them (only the specials until loaded), or in a DM everyone from
-    /// `GET /api/people` (the DM's other participant until that loads). The
-    /// signed-in account is never suggested.
+    /// `GET /api/people` (the DM's other participant until that loads); in a
+    /// feedback visit, the reporter and people in the loaded messages. The
+    /// signed-in account is never suggested; `@feedback` is offered everywhere.
     private var mentionSource: MentionSource {
+        if let visit = model.visit {
+            return .visit(reporter: visit.reporter, messages: chat.messages, people: model.people, accountID: viewerID)
+        }
         if let id = model.selectedDirectMessageID {
             return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
         }
@@ -3231,7 +3264,7 @@ private struct NativeThreadView: View {
         }
     }
     /// DMs are named after the other person, without a channel `#`.
-    private var direct: Bool { model.selectedDirectMessageID != nil }
+    private var direct: Bool { model.selectedDirectMessageID != nil || model.visit?.direct == true }
     private var reactors: ReactorContext {
         ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { messageID, emoji in
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
@@ -3563,6 +3596,7 @@ private struct MessageRow: View {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         authorProfile { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
+                        if message.author.isAdmin { AdminBadge() }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                         if edited { editedMarker }
@@ -3589,6 +3623,10 @@ private struct MessageRow: View {
                 }
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
+                }
+                if MentionAutocomplete.asksFeedback(message) {
+                    Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("feedback-notified-\(message.id)")
                 }
                 ForwardCardView(message: message) {
                     Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
@@ -5345,6 +5383,240 @@ private struct MessageRequestsRow: View {
             .accessibilityValue("\(count) \(count == 1 ? "request" : "requests")")
             .accessibilityHint(narrow ? "Opens the list of requests" : model.showingMessageRequests ? "Collapses the list" : "Expands the list")
             .accessibilityIdentifier("message-requests")
+    }
+}
+
+/// "Feedback" for the feedback team, at the top of the DM section, with the
+/// count of loaded reports still waiting for a team reply.
+private struct FeedbackRow: View {
+    @Bindable var model: AppModel
+    let narrow: Bool
+    let rowHeight: CGFloat
+    var body: some View {
+        // The archived list has no waiting count.
+        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
+        Button {
+            // Phones push the inbox; sidebars expand it in place.
+            if narrow { model.showingFeedback = true } else { model.showingFeedback.toggle() }
+        } label: {
+            HStack(spacing: 9) {
+                CaperIcon(name: "chevron-down", size: 14)
+                    .rotationEffect(.degrees(!narrow && model.showingFeedback ? 0 : -90))
+                    .animation(.easeOut(duration: 0.15), value: model.showingFeedback)
+                    .frame(width: 24)
+                Text(FeedbackInbox.title).lineLimit(1)
+                Spacer()
+                if waiting > 0 {
+                    Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
+                        .background(CaperTheme.raised, in: Capsule())
+                        .overlay(Capsule().stroke(CaperTheme.border))
+                }
+            }.font(CaperTheme.font(13, weight: .medium))
+                .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
+                .padding(.horizontal, 9).frame(height: rowHeight)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHover())
+            .accessibilityLabel(FeedbackInbox.title)
+            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
+            .accessibilityIdentifier("feedback-inbox")
+    }
+}
+
+/// Pull to refresh for the pushed feedback inbox on phones.
+private struct FeedbackPullToRefresh: ViewModifier {
+    let enabled: Bool
+    let refresh: () async -> Void
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(iOS)
+        if enabled { content.refreshable { await refresh() } } else { content }
+        #else
+        content
+        #endif
+    }
+}
+
+/// The feedback team's inbox: nested under its row in a sidebar, or a pushed
+/// page in Browse on narrow layouts. Newest first; a row visits its
+/// conversation at the reported message, with its thread open. "Show
+/// archived" switches it to the threads the team archived.
+private struct FeedbackInboxList: View {
+    @Bindable var model: AppModel
+    let pushed: Bool
+    private var archived: Bool { model.showingArchivedFeedback }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if pushed {
+                HStack(spacing: 6) {
+                    Button { model.showingFeedback = false } label: {
+                        HStack(spacing: 4) {
+                            CaperIcon(name: "arrow-left", size: 16)
+                            Text("Direct messages")
+                        }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover()).accessibilityIdentifier("feedback-back")
+                    Spacer()
+                }
+                Text(archived ? FeedbackInbox.archivedTitle : FeedbackInbox.title)
+                    .font(CaperTheme.font(15, weight: .bold)).padding(.bottom, 4)
+                if !archived {
+                    Text(FeedbackInbox.subtitle)
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(.bottom, 8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if archived {
+                Text(FeedbackInbox.archivedTitle).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+            }
+            if let error = model.feedbackError {
+                HStack(spacing: 8) {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    Button("Retry") { Task { await model.refreshFeedback() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
+                        .disabled(model.feedbackLoading)
+                        .accessibilityIdentifier("feedback-retry")
+                }.padding(.vertical, 6)
+            }
+            if model.feedbackReports.isEmpty {
+                if !model.feedbackLoaded && model.feedbackLoading {
+                    Text("Loading…").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                } else if model.feedbackLoaded {
+                    Text(archived ? FeedbackInbox.archivedEmpty : FeedbackInbox.empty)
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                }
+            }
+            // Relative times stay current while the inbox is open.
+            TimelineView(.everyMinute) { context in
+                VStack(spacing: 2) {
+                    ForEach(model.feedbackReports) { report in
+                        FeedbackReportRow(model: model, report: report, pushed: pushed, archived: archived, now: context.date)
+                    }
+                }
+            }
+            if model.feedbackCursor != nil {
+                Button(model.feedbackLoading ? "Loading…" : "Load older feedback") { Task { await model.loadMoreFeedback() } }
+                    .buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                    .frame(minHeight: 32).contentShape(Rectangle()).modifier(ControlHover())
+                    .disabled(model.feedbackLoading)
+                    .accessibilityIdentifier("feedback-load-older")
+            }
+            // Quiet, at the bottom: archived threads, and back.
+            Button(archived ? FeedbackInbox.backToFeedback : FeedbackInbox.showArchived) {
+                Task { await model.showArchivedFeedback(!archived) }
+            }
+                .buttonStyle(.plain).font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 28)
+                #endif
+                .padding(.horizontal, pushed ? 0 : 9)
+                .contentShape(Rectangle()).modifier(ControlHover())
+                .accessibilityIdentifier("feedback-show-archived")
+        }
+        .padding(.horizontal, pushed ? 16 : 0).padding(.leading, pushed ? 0 : 16)
+        .padding(.vertical, pushed ? 8 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Refreshed each time it opens.
+        .task { await model.refreshFeedback() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("feedback-list")
+    }
+}
+
+/// One report: who asked, where, what, when, and (in the inbox) whether the
+/// team answered. Archive (Restore in the archived list) is a hover button
+/// on macOS and a context menu (press and hold on iPhone) everywhere.
+private struct FeedbackReportRow: View {
+    @Bindable var model: AppModel
+    let report: FeedbackReport
+    let pushed: Bool
+    let archived: Bool
+    let now: Date
+    #if os(macOS)
+    @State private var hovered = false
+    @FocusState private var actionFocused: Bool
+    #endif
+    private var selected: Bool { model.visit?.channelID == report.channel.id && model.visit?.reportID == report.messageId }
+    private var actionLabel: String { archived ? FeedbackInbox.restore : FeedbackInbox.archiveLabel(report) }
+    private func toggleArchive() {
+        Task { await model.setFeedbackArchived(report, archived: !archived) }
+    }
+    var body: some View {
+        HStack(alignment: .top, spacing: 2) {
+            rowButton
+            #if os(macOS)
+            Button(action: toggleArchive) {
+                Image(systemName: archived ? "tray.and.arrow.up" : "archivebox").font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
+                .focused($actionFocused)
+                .opacity(hovered || actionFocused ? 1 : 0)
+                .allowsHitTesting(hovered || actionFocused)
+                .modifier(ControlHover(isFocused: actionFocused))
+                .help(actionLabel).accessibilityLabel(actionLabel)
+                .accessibilityIdentifier("feedback-archive-\(report.id)")
+            #endif
+        }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
+        .contextMenu {
+            Button(actionLabel, systemImage: archived ? "tray.and.arrow.up" : "archivebox", action: toggleArchive)
+        }
+    }
+    private var rowButton: some View {
+        let preview = FeedbackInbox.preview(report)
+        return Button { Task { await model.openFeedback(report) } } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Avatar(name: report.reporter.displayName, size: pushed ? 32 : 22, avatarID: report.reporter.avatarId)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(report.reporter.displayName).font(CaperTheme.font(13, weight: .medium))
+                            .foregroundStyle(CaperTheme.text).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(FeedbackInbox.relativeTime(report.createdAt, now: now)).font(CaperTheme.font(10))
+                            .foregroundStyle(CaperTheme.muted).fixedSize()
+                    }
+                    Text(FeedbackInbox.location(report)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                    if !preview.isEmpty {
+                        Text(preview).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text).lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    if !archived {
+                        Text(FeedbackInbox.status(report)).font(CaperTheme.font(10, weight: .bold))
+                            .foregroundStyle(report.answered ? CaperTheme.muted : CaperTheme.terracottaBright)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #endif
+            .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHover())
+            .accessibilityLabel(FeedbackInbox.accessibilityLabel(report, now: now, archived: archived))
+            .accessibilityValue(selected ? "Selected" : "")
+            .accessibilityIdentifier("feedback-report-\(report.id)")
+            .accessibilityAction(named: Text(actionLabel), toggleArchive)
+    }
+}
+
+/// Marks a Caper admin's (feedback team member's) message, in the pin gold
+/// with a soft glow. The server stamps it, so a look-alike name can't claim it.
+struct AdminBadge: View {
+    var body: some View {
+        Text("ADMIN").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.pinGold)
+            .padding(.horizontal, 5)
+            .background(CaperTheme.pinGold.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.pinGold.opacity(0.55)))
+            .shadow(color: CaperTheme.pinGold.opacity(0.45), radius: 4)
+            .accessibilityLabel("Admin")
     }
 }
 

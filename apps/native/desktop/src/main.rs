@@ -12,6 +12,7 @@ mod daily_icon;
 mod edits;
 mod effects;
 mod emoji;
+mod feedback;
 mod ffmpeg;
 mod file_drop;
 mod forwarding;
@@ -245,6 +246,8 @@ enum NavIcon {
     ExternalLink,
     Link,
     Volume,
+    Archive,
+    Restore,
     Smile,
     Send,
     MessageCircle,
@@ -984,6 +987,22 @@ struct CaperApp {
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
     open_after_refresh: Option<String>,
+    /// The Caper team's inbox (`feedbackTeam` accounts only), and whether it
+    /// covers the conversation pane.
+    feedback: feedback::Inbox,
+    feedback_open: bool,
+    /// A report or notification is opening its conversation by id; the
+    /// navigation for that channel consumes it.
+    visit_request: Option<feedback::VisitRequest>,
+    /// The open conversation, read as the Caper team without being a member.
+    /// It is DM-shaped (`selected_direct` is its channel): no space, pins,
+    /// typing, voice, settings or read markers.
+    visit: Option<feedback::Visit>,
+    /// Once history around the first anchor lands, the report's thread opens.
+    report_thread: Option<(String, feedback::ThreadFocus)>,
+    /// A member's own space channel reopens the normal way; this navigation
+    /// then lands on the report.
+    report_focus: Option<(u64, feedback::VisitTarget)>,
 }
 
 impl CaperApp {
@@ -1195,6 +1214,12 @@ impl CaperApp {
             file_picker: None,
             local_media: Vec::new(),
             open_after_refresh: None,
+            feedback: feedback::Inbox::default(),
+            feedback_open: false,
+            visit_request: None,
+            visit: None,
+            report_thread: None,
+            report_focus: None,
         };
         if let Some(name) = fixture.filter(|name| name.starts_with("parity-update")) {
             app.updates = updates::Updates::preview(updates::Available {
@@ -1274,6 +1299,7 @@ impl CaperApp {
                             id: "fixture-owner".into(),
                             name: "Fixture Owner".into(),
                             is_guest: false,
+                            admin: false,
                             avatar_id: Some(0),
                         },
                     });
@@ -1354,6 +1380,63 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid mentions fixture");
+                } else if name.starts_with("parity-feedback") {
+                    // A feedback team member, with labelled sample reports as
+                    // `GET /api/feedback` answers them.
+                    if let Some(account) = &mut app.account {
+                        account.feedback_team = true;
+                    }
+                    let channel = app.selected_channel.clone().expect("fixture channel");
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    messages[1].content.text =
+                        "@feedback TEST FIXTURE: uploads stall at 90% on hotel Wi-Fi.".into();
+                    messages[1].content.mentions = vec![model::Mention {
+                        kind: "feedback".into(),
+                        id: None,
+                        username: None,
+                    }];
+                    messages[3].author.admin = true;
+                    let report = |id: &str, root: &str, text: &str, answered: bool| {
+                        serde_json::json!({
+                            "id": id, "messageId": id, "threadRootId": root,
+                            "createdAt": chrono::Utc::now().to_rfc3339(), "text": text,
+                            "attachments": if text.is_empty() { 2 } else { 0 },
+                            "reporter": {"id": "fixture-maya", "username": "maya",
+                                         "displayName": "TEST FIXTURE Maya", "avatarId": 15},
+                            "channel": {"id": channel, "name": "general", "direct": false},
+                            "space": {"id": "space0000001", "name": "Fixture Studio"},
+                            "replyCount": u8::from(answered), "answered": answered
+                        })
+                    };
+                    let page: feedback::Page = serde_json::from_value(serde_json::json!({
+                        "reports": [
+                            report(&messages[1].id, &messages[1].id, &messages[1].content.text, false),
+                            report("fixture-report-2", "fixture-report-2", "", true),
+                        ],
+                        "cursor": null
+                    }))
+                    .expect("valid feedback fixture");
+                    if let Some((request, _)) = app.feedback.start(false) {
+                        app.feedback.finish(request, Ok(page));
+                    }
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid feedback fixture");
+                    if name == "parity-feedback-visit" {
+                        app.selected_direct = Some(channel.clone());
+                        app.visit = Some(feedback::Visit {
+                            channel,
+                            name: "general".into(),
+                            direct: false,
+                            space_id: "space0000001".into(),
+                            space_name: "Fixture Studio".into(),
+                            title: "#general · Fixture Studio".into(),
+                            reporter: None,
+                            origin: feedback::Origin::Inbox,
+                        });
+                    } else {
+                        app.feedback_open = true;
+                    }
                 } else if name.starts_with("parity-edits") {
                     let mut message = app.timeline.messages().nth(1).unwrap().clone();
                     let original = message.clone();
@@ -1412,6 +1495,7 @@ impl CaperApp {
                             username: username.into(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: Some(avatar),
+                            team: false,
                         };
                     let direct =
                         |id: &str, peer: model::DirectPeer, status| model::DirectConversation {
@@ -1482,6 +1566,7 @@ impl CaperApp {
                             avatar_id: Some(avatar),
                             name: author_name.into(),
                             is_guest: false,
+                            admin: false,
                         };
                         message.content.text = text.into();
                         message.seq = "1".into();
@@ -1503,6 +1588,7 @@ impl CaperApp {
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
                             avatar_id: None,
+                            team: false,
                         },
                         last_seq: "2".into(),
                         read_seq: "2".into(),
@@ -1558,6 +1644,7 @@ impl CaperApp {
                             username: name.to_lowercase(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: None,
+                            team: false,
                         },
                         last_seq: "4".into(),
                         read_seq: "1".into(),
@@ -1750,6 +1837,7 @@ impl CaperApp {
                                 avatar_id: Some(15),
                                 name: "Maya".into(),
                                 is_guest: false,
+                                admin: false,
                             },
                             typing: true,
                             revision: 1,
@@ -1946,6 +2034,7 @@ impl CaperApp {
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
+            feedback_team: false,
         });
         let channels = vec![
             channel.clone(),
@@ -2044,6 +2133,7 @@ impl CaperApp {
                     avatar_id: Some(index as i32),
                     name: name.into(),
                     is_guest: false,
+                    admin: false,
                 },
                 content: Content {
                     version: 1,
@@ -2129,6 +2219,7 @@ impl CaperApp {
                 id: "fixture-owner".into(),
                 name: "Fixture Owner".into(),
                 is_guest: false,
+                admin: false,
                 avatar_id: Some(0),
             },
         });
@@ -2302,6 +2393,9 @@ impl CaperApp {
 
     /// Voice actions use their own channel's media root, independently of text.
     fn media_root(&self, channel: &str) -> (String, Option<String>) {
+        if self.visited_channel(channel).is_some() {
+            return (channel.into(), Some(channel.into()));
+        }
         match &self.detail {
             Some(detail) if !detail.space.demo => (channel.into(), Some(channel.into())),
             _ => ("general".into(), None),
@@ -2310,7 +2404,24 @@ impl CaperApp {
 
     /// Query each listed channel once per account/access epoch, not per frame.
     fn refresh_media_status(&mut self) {
-        if self.selected_direct.is_some() || !self.persist_preferences {
+        if !self.persist_preferences {
+            return;
+        }
+        // A visited space channel's call, like a joined channel's.
+        if let Some(channel) = self
+            .visiting()
+            .filter(|visit| !visit.direct)
+            .map(|visit| visit.channel.clone())
+            && self.media_status_roots.insert(channel.clone())
+        {
+            self.worker.send(Command::MediaStatus {
+                generation: self.navigation_cache_generation,
+                root: channel.clone(),
+                token: self.token.clone(),
+                channel: Some(channel),
+            });
+        }
+        if self.selected_direct.is_some() {
             return;
         }
         let channels: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| {
@@ -2442,31 +2553,55 @@ impl CaperApp {
                     self.worker.focus();
                     self.dialog = None;
                     self.navigation_open = false;
-                    if alert.invitation() {
-                        if let Some(space) = alert.space_id {
+                    let known = alert.conversation_id.as_ref().map_or_else(
+                        || {
+                            alert.space_id.as_ref().is_some_and(|space| {
+                                self.spaces.iter().any(|item| &item.id == space)
+                            })
+                        },
+                        |id| self.directs.iter().any(|direct| &direct.id == id),
+                    );
+                    match alert.route(self.feedback_team(), known) {
+                        // As the Caper team, at the report and in its thread.
+                        Some(os_notifications::Route::Visit(target)) => {
+                            self.open_report(target, false);
+                        }
+                        Some(os_notifications::Route::Invitation { space, channel }) => {
                             self.navigation += 1;
                             self.worker.send(Command::OpenInvitation {
                                 epoch: self.account_epoch,
                                 navigation: self.navigation,
                                 token: self.token.clone().expect("signed-in notification"),
                                 space,
-                                channel: alert.channel_id,
+                                channel,
                             });
                         }
-                    } else if let Some(id) = alert.conversation_id {
-                        // A new DM may arrive before the periodic conversation list.
-                        self.navigate(NavigationTarget {
-                            space: None,
-                            channel: Some(id),
-                        });
-                        self.refresh_directs();
-                    } else if let (Some(space), Some(channel)) = (alert.space_id, alert.channel_id)
-                    {
-                        self.navigate(NavigationTarget {
-                            space: Some(space),
-                            channel: Some(channel),
-                        });
+                        Some(os_notifications::Route::Direct(id)) => {
+                            // A new DM may arrive before the periodic conversation list.
+                            self.navigate(NavigationTarget {
+                                space: None,
+                                channel: Some(id),
+                            });
+                            self.refresh_directs();
+                        }
+                        Some(os_notifications::Route::Channel { space, channel }) => {
+                            self.navigate(NavigationTarget {
+                                space: Some(space),
+                                channel: Some(channel),
+                            });
+                        }
+                        None => {}
                     }
+                }
+                Event::FeedbackLoaded {
+                    epoch,
+                    request,
+                    result,
+                } if epoch == self.account_epoch => self.feedback.finish(request, result),
+                // Success or failure, the list reloads; a failure stays shown.
+                Event::FeedbackArchived { epoch, result } if epoch == self.account_epoch => {
+                    self.load_feedback(false);
+                    self.feedback.action_error = result.err();
                 }
                 Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
                     if self.unread_refresh_due.is_none() {
@@ -2739,7 +2874,20 @@ impl CaperApp {
                     && self.selected_channel.as_deref() == Some(&channel) =>
                 {
                     self.context_loading = false;
+                    let main = root.is_none() && !newer;
                     self.accept_context(root, &anchor, newer, result);
+                    // A report lands in its thread once the history around it is in.
+                    if main
+                        && self.selected_channel.is_some()
+                        && let Some((_, thread)) = self
+                            .report_thread
+                            .take_if(|(expected, _)| *expected == anchor)
+                    {
+                        match thread.anchor {
+                            Some(reply) => self.load_context(Some(thread.root), reply, false),
+                            None => self.open_thread(thread.root),
+                        }
+                    }
                 }
                 Event::ThreadLoaded {
                     generation,
@@ -3284,6 +3432,11 @@ impl CaperApp {
         self.privacy_saving = false;
         self.privacy_error = None;
         self.notifications = notifications::Notifications::default();
+        self.feedback = feedback::Inbox::default();
+        self.feedback_open = false;
+        self.visit_request = None;
+        self.visit = None;
+        self.report_focus = None;
         self.invite_links = InviteLinkPanel::default();
         self.invite_join = InviteJoin {
             request: self.invite_join.request + 1,
@@ -3305,6 +3458,158 @@ impl CaperApp {
             .collect()
     }
 
+    /// On the Caper feedback team (`feedbackTeam` on the account).
+    fn feedback_team(&self) -> bool {
+        self.account
+            .as_ref()
+            .is_some_and(|account| account.feedback_team)
+    }
+
+    /// The open conversation when it is a feedback visit.
+    fn visiting(&self) -> Option<&feedback::Visit> {
+        self.visit.as_ref().filter(|visit| {
+            self.selected_direct.as_deref() == Some(visit.channel.as_str())
+                && self.selected_channel.as_deref() == Some(visit.channel.as_str())
+        })
+    }
+
+    /// The open conversation is a DM (a visited one included), named after
+    /// people rather than `#channel`.
+    fn conversation_is_direct(&self) -> bool {
+        self.selected_direct.is_some() && self.visiting().is_none_or(|visit| visit.direct)
+    }
+
+    /// Shows the inbox over the conversation pane and refreshes it.
+    fn open_feedback(&mut self) {
+        if !self.feedback_team() {
+            return;
+        }
+        self.feedback_open = true;
+        self.navigation_open = false;
+        self.showing_pins = false;
+        self.mention_card = None;
+        self.load_feedback(false);
+    }
+
+    fn load_feedback(&mut self, more: bool) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team()) else {
+            return;
+        };
+        if let Some((request, before)) = self.feedback.start(more) {
+            self.worker.send(Command::LoadFeedback {
+                epoch: self.account_epoch,
+                request,
+                token,
+                before,
+                archived: self.feedback.archived,
+            });
+        }
+    }
+
+    /// Archives (or, in the archived view, restores) a report's whole thread
+    /// for the team. It leaves the list at once; the list then reloads.
+    fn archive_report(&mut self, report: &feedback::Report) {
+        let Some(token) = self.token.clone().filter(|_| self.feedback_team()) else {
+            return;
+        };
+        let archived = !self.feedback.archived;
+        self.feedback
+            .remove_thread(&report.channel.id, &report.thread_root_id);
+        self.worker.send(Command::ArchiveFeedback {
+            epoch: self.account_epoch,
+            token,
+            channel: report.channel.id.clone(),
+            thread_root: report.thread_root_id.clone(),
+            archived,
+        });
+    }
+
+    /// The quiet toggle under the list: archived threads, or the inbox.
+    fn show_archived_feedback(&mut self, archived: bool) {
+        self.feedback.show_archived(archived);
+        self.load_feedback(false);
+    }
+
+    /// Where Back returns from a visit opened now.
+    fn report_origin(&self) -> feedback::Origin {
+        if let Some(visit) = self.visiting() {
+            return visit.origin.clone();
+        }
+        match &self.selected_channel {
+            Some(channel) => feedback::Origin::Conversation {
+                space: if self.selected_direct.as_ref() == Some(channel) {
+                    None
+                } else {
+                    self.selected_space.clone()
+                },
+                channel: channel.clone(),
+            },
+            None => feedback::Origin::Nowhere,
+        }
+    }
+
+    /// Opens a report's conversation by channel id, even one outside the
+    /// space and DM lists, at the report and in its thread.
+    fn open_report(&mut self, target: feedback::VisitTarget, from_inbox: bool) {
+        if self.token.is_none() {
+            return;
+        }
+        let origin = if from_inbox {
+            feedback::Origin::Inbox
+        } else {
+            self.report_origin()
+        };
+        self.feedback_open = false;
+        self.navigation_open = false;
+        if self.selected_channel.as_deref() == Some(target.channel.as_str())
+            && !self.opening
+            && self.navigation_error.is_none()
+        {
+            // Already open, as a visit or as a member: land on the report.
+            if self.visiting().is_some()
+                && let Some(visit) = &mut self.visit
+            {
+                visit.origin = origin;
+                if target.reporter.is_some() {
+                    visit.reporter.clone_from(&target.reporter);
+                }
+            }
+            self.focus_report(&target);
+            return;
+        }
+        let channel = target.channel.clone();
+        self.visit_request = Some(feedback::VisitRequest { target, origin });
+        self.navigate(NavigationTarget {
+            space: None,
+            channel: Some(channel),
+        });
+    }
+
+    /// History around the report, then its thread.
+    fn focus_report(&mut self, target: &feedback::VisitTarget) {
+        let (anchor, thread) = target.plan();
+        self.report_thread = thread.map(|thread| (anchor.clone(), thread));
+        self.showing_pins = false;
+        self.load_context(None, anchor, false);
+    }
+
+    /// Back from a visit: the inbox, or the conversation a notification
+    /// interrupted.
+    fn leave_visit(&mut self) {
+        let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) else {
+            return;
+        };
+        match origin {
+            feedback::Origin::Conversation { space, channel } => {
+                self.navigate(NavigationTarget {
+                    space,
+                    channel: Some(channel),
+                });
+            }
+            feedback::Origin::Inbox | feedback::Origin::Nowhere => self.open_feedback(),
+        }
+    }
+
     fn selected_direct_conversation(&self) -> Option<&model::DirectConversation> {
         let id = self.selected_direct.as_ref()?;
         self.directs.iter().find(|direct| &direct.id == id)
@@ -3312,7 +3617,13 @@ impl CaperApp {
 
     /// Under "No messages yet." (not your own DM): who can read a DM, or a channel prompt.
     fn empty_conversation_note(&self) -> String {
+        // A visit is never one person's private conversation with you.
+        if self.visiting().is_some() {
+            return String::new();
+        }
         match self.selected_direct_conversation() {
+            // The Caper DM: every top-level message there is a report.
+            Some(direct) if direct.peer.team => TEAM_DM_NOTE.to_owned(),
             Some(direct) => format!(
                 "Only you and {} can read this conversation.",
                 direct.peer.display_name
@@ -4181,8 +4492,9 @@ impl CaperApp {
     }
 
     /// Narrow Browse slides over the conversation, which is then not being read.
+    /// The feedback inbox covers it too.
     fn browse_covers_conversation(&self) -> bool {
-        self.narrow_layout && self.navigation_open
+        (self.narrow_layout && self.navigation_open) || self.feedback_open
     }
 
     fn mark_selected_direct_read(&mut self) {
@@ -4195,8 +4507,9 @@ impl CaperApp {
         {
             return;
         }
-        // Reading a request must not look like engaging with it.
-        if self.selected_request().is_some() {
+        // Reading a request must not look like engaging with it, and a
+        // visit has no read marker to move.
+        if self.selected_request().is_some() || self.visiting().is_some() {
             return;
         }
         if let (Some(id), Some(token)) = (self.selected_direct.clone(), self.token.clone()) {
@@ -4293,20 +4606,31 @@ impl CaperApp {
         self.channel_rosters.clear();
         self.voice_session_starts.clear();
         self.unavailable_rosters.clear();
+        // A visited space channel's roster comes first, then the open space's.
+        let visited =
+            self.visiting()
+                .filter(|visit| !visit.direct)
+                .map(|visit| gateway::MediaChannel {
+                    id: visit.channel.clone(),
+                    demo: false,
+                });
         let media = gateway::MediaWatch {
             epoch: self.roster_generation,
-            channels: self.detail.as_ref().map_or_else(Vec::new, |detail| {
-                detail
-                    .channels
-                    .iter()
-                    .filter(|channel| self.selected_is_joined() && channel.joined)
-                    .take(gateway::MAX_MEDIA_CHANNELS)
-                    .map(|channel| gateway::MediaChannel {
-                        id: channel.id.clone(),
-                        demo: detail.space.demo,
-                    })
-                    .collect()
-            }),
+            channels: visited
+                .into_iter()
+                .chain(self.detail.as_ref().map_or_else(Vec::new, |detail| {
+                    detail
+                        .channels
+                        .iter()
+                        .filter(|channel| self.selected_is_joined() && channel.joined)
+                        .map(|channel| gateway::MediaChannel {
+                            id: channel.id.clone(),
+                            demo: detail.space.demo,
+                        })
+                        .collect()
+                }))
+                .take(gateway::MAX_MEDIA_CHANNELS)
+                .collect(),
         };
         let presence = if self.token.is_some() {
             self.detail
@@ -4343,6 +4667,17 @@ impl CaperApp {
     fn navigate(&mut self, target: NavigationTarget) {
         if self.profile_sending() {
             return;
+        }
+        // Any conversation replaces the feedback inbox; only the visit's own
+        // navigation keeps its request.
+        self.feedback_open = false;
+        if target.space.is_some()
+            || self
+                .visit_request
+                .as_ref()
+                .is_none_or(|request| target.channel.as_ref() != Some(&request.target.channel))
+        {
+            self.visit_request = None;
         }
         // Another conversation's media never stays open over it.
         self.viewer = None;
@@ -4410,6 +4745,10 @@ impl CaperApp {
 
     fn prepare_navigation(&mut self, cache_target: navigation::Target) {
         self.navigation_prefetch = None;
+        let visit = cache_target.space.is_none()
+            && self.visit_request.as_ref().is_some_and(|request| {
+                cache_target.channel.as_ref() == Some(&request.target.channel)
+            });
         let prefetched = self
             .navigation_cache
             .take_prefetch(&cache_target, Instant::now());
@@ -4419,6 +4758,8 @@ impl CaperApp {
                 read.history
             })
         });
+        // A visit always reads fresh: its cache entry may predate the report.
+        let cached = cached.filter(|_| !visit);
         self.worker.send(Command::PrepareNavigation {
             generation: self.generation,
             navigation: self.navigation,
@@ -4427,6 +4768,7 @@ impl CaperApp {
             channel: cache_target.channel,
             name: self.identity_name(),
             cached,
+            visit,
         });
     }
 
@@ -4525,6 +4867,7 @@ impl CaperApp {
                 has_more: self.has_more,
                 space,
                 channel: place,
+                visitor: false,
             },
         );
     }
@@ -4552,13 +4895,36 @@ impl CaperApp {
         }
         self.opening = false;
         self.restoring = None;
+        // `navigate` drops a request for any other target.
+        let visit_request = self.visit_request.take();
+        let report_focus = self
+            .report_focus
+            .take()
+            .filter(|(request, _)| *request == navigation)
+            .map(|(_, target)| target);
         match result {
             Ok(prepared) => {
                 let forward_focus = self.forward_focus.take();
-                let direct = prepared
-                    .conversation
-                    .as_ref()
-                    .is_some_and(|(history, _)| history.space.id.is_empty());
+                let history = prepared.conversation.as_ref().map(|(history, _)| history);
+                let visitor =
+                    visit_request.is_some() && history.is_some_and(|history| history.visitor);
+                // The team member is in this space channel: open it the
+                // normal way, then land on the report.
+                if let Some(request) = &visit_request
+                    && !visitor
+                    && let Some(history) = history.filter(|history| !history.space.id.is_empty())
+                {
+                    let target = NavigationTarget {
+                        space: Some(history.space.id.clone()),
+                        channel: Some(history.channel.id.clone()),
+                    };
+                    let focus = request.target.clone();
+                    self.navigate(target);
+                    self.report_focus = Some((self.navigation, focus));
+                    return;
+                }
+                // A visit is DM-shaped: it never changes the open space.
+                let direct = visitor || history.is_some_and(|history| history.space.id.is_empty());
                 self.remember_conversation();
                 let space_changed = !direct
                     && self.selected_space.as_deref()
@@ -4595,11 +4961,16 @@ impl CaperApp {
                         .map(|detail| detail.space.id.clone());
                     self.detail = prepared.detail;
                 }
+                self.visit = None;
                 if let Some((history, session)) = prepared.conversation {
                     let channel = history.channel.id.clone();
                     if direct {
                         self.selected_direct = Some(channel.clone());
-                        self.load_people();
+                        if visitor && let Some(request) = visit_request.clone() {
+                            self.visit = Some(feedback::Visit::new(request, &history));
+                        } else {
+                            self.load_people();
+                        }
                     }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
@@ -4610,6 +4981,11 @@ impl CaperApp {
                     && self.selected_channel.as_deref() == Some(&source.message.channel_id)
                 {
                     self.load_context(source.message.thread_root_id, source.message.id, false);
+                }
+                if let Some(target) = report_focus.or(visit_request.map(|request| request.target))
+                    && self.selected_channel.as_deref() == Some(target.channel.as_str())
+                {
+                    self.focus_report(&target);
                 }
             }
             Err(error) => {
@@ -4776,7 +5152,30 @@ impl CaperApp {
             .unwrap_or_else(|| "Guest".into())
     }
 
+    /// The open visit when `channel` is its space channel (DMs have no voice).
+    fn visited_channel(&self, channel: &str) -> Option<&feedback::Visit> {
+        self.visiting()
+            .filter(|visit| !visit.direct && visit.channel == channel)
+    }
+
     fn voice_target(&self, channel: &str) -> Option<(CallContext, Option<String>)> {
+        // The feedback team takes part in a visited space channel's call.
+        if let Some(visit) = self.visited_channel(channel) {
+            if self.token.is_none()
+                || self.unavailable_rosters.contains(channel)
+                || self.join_unavailable(channel).is_some()
+            {
+                return None;
+            }
+            return Some((
+                CallContext {
+                    channel_id: visit.channel.clone(),
+                    channel_name: visit.name.clone(),
+                    space_name: visit.space_name.clone(),
+                },
+                Some(visit.space_id.clone()),
+            ));
+        }
         let detail = self.detail.as_ref()?;
         let target = detail.channels.iter().find(|item| item.id == channel)?;
         if !target.joined
@@ -4842,7 +5241,9 @@ impl CaperApp {
         };
         let clicked = chrono::Utc::now().timestamp_millis().max(0) as u64;
         self.voice_join_request += 1;
-        if let Some(space) = space {
+        // A visit isn't a space membership to recheck; the media service
+        // authorizes the feedback team's access itself.
+        if let Some(space) = space.filter(|_| self.visited_channel(channel).is_none()) {
             self.pending_voice_join = Some((channel.into(), self.voice.state.generation, clicked));
             self.worker.send(Command::CheckVoice {
                 request: self.voice_join_request,
@@ -4915,9 +5316,10 @@ impl CaperApp {
                 session_started_at,
             } if generation == self.roster_generation
                 && self.selected_channel.is_some()
-                && self.detail.as_ref().is_some_and(|detail| {
-                    detail.channels.iter().any(|item| item.id == channel)
-                }) =>
+                && (self.visited_channel(&channel).is_some()
+                    || self.detail.as_ref().is_some_and(|detail| {
+                        detail.channels.iter().any(|item| item.id == channel)
+                    })) =>
             {
                 self.unavailable_rosters.remove(&channel);
                 if let Some(started) = session_started_at.filter(|_| !participants.is_empty()) {
@@ -5218,6 +5620,10 @@ impl CaperApp {
                     self.pending = None;
                     self.release_pending_files();
                     self.focused_message = None;
+                    // A reply can answer a report.
+                    if self.visiting().is_some() {
+                        self.load_feedback(false);
+                    }
                     if root.is_none() && self.has_newer {
                         self.reload_channel();
                     } else if self.thread_view.as_ref().is_some_and(|thread| {
@@ -5411,6 +5817,7 @@ impl CaperApp {
         self.has_newer = false;
         self.context_loading = false;
         self.forward_focus = None;
+        self.report_thread = None;
         self.focused_message = None;
         self.scroll_to_target = false;
         self.timeline = Timeline::default();
@@ -6854,7 +7261,11 @@ impl eframe::App for CaperApp {
             }
         }
         self.worker.showing(
-            if self.foreground && !self.navigation_open && self.dialog.is_none() {
+            if self.foreground
+                && !self.navigation_open
+                && !self.feedback_open
+                && self.dialog.is_none()
+            {
                 self.selected_channel.as_deref()
             } else {
                 None
@@ -8848,6 +9259,24 @@ impl CaperApp {
                     }
                 });
             });
+            // The Caper team's inbox sits with the DMs, for team members only.
+            if self.feedback_team() {
+                let active = self.feedback_open || self.visiting().is_some();
+                ui.horizontal(|ui| {
+                    let (response, _, _) = channel_button(
+                        ui,
+                        egui::vec2(ui.available_width() - 18.0, 28.0),
+                        "Feedback",
+                        Some(NavIcon::Speech),
+                        active,
+                        RowExtras::default(),
+                    );
+                    if response.clicked() {
+                        self.open_feedback();
+                    }
+                });
+                ui.add_space(2.0);
+            }
             self.request_navigation(ui);
             let self_direct = self
                 .directs
@@ -9546,16 +9975,18 @@ impl CaperApp {
         }
     }
 
-    /// The open channel, when it is joined and so has voice in its header.
+    /// The open channel, when it is joined (or a visited space channel) and
+    /// so has voice in its header. DMs have none.
     fn header_voice_channel(&self) -> Option<String> {
         self.selected_channel.clone().filter(|channel| {
-            self.selected_direct.is_none()
-                && self.detail.as_ref().is_some_and(|detail| {
-                    detail
-                        .channels
-                        .iter()
-                        .any(|item| &item.id == channel && item.joined)
-                })
+            self.visited_channel(channel).is_some()
+                || self.selected_direct.is_none()
+                    && self.detail.as_ref().is_some_and(|detail| {
+                        detail
+                            .channels
+                            .iter()
+                            .any(|item| &item.id == channel && item.joined)
+                    })
         })
     }
 
@@ -9570,6 +10001,17 @@ impl CaperApp {
 
     /// Join channel for a preview, or Block for a 1:1 DM.
     fn header_channel_actions(&mut self, ui: &mut egui::Ui) {
+        // A visit has no join, leave or settings: only the way back.
+        if let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) {
+            let back = match origin {
+                feedback::Origin::Conversation { .. } => "Close",
+                feedback::Origin::Inbox | feedback::Origin::Nowhere => "Back to feedback",
+            };
+            if secondary_button(ui, back, true).clicked() {
+                self.leave_visit();
+            }
+            return;
+        }
         if self.selected_direct.is_none() {
             if let (Some(space), Some(channel)) =
                 (self.selected_space.clone(), self.selected_channel.clone())
@@ -9620,11 +10062,16 @@ impl CaperApp {
         }
         let voice_channel = self.header_voice_channel();
         let members = self.header_members();
+        // A visit is titled "#plans · Studio" or "Alice & Bob".
         let direct = self
-            .selected_direct
-            .as_ref()
-            .and_then(|id| self.directs.iter().find(|item| &item.id == id))
-            .map(|item| item.peer.display_name.clone());
+            .visiting()
+            .map(|visit| visit.title.clone())
+            .or_else(|| {
+                self.selected_direct
+                    .as_ref()
+                    .and_then(|id| self.directs.iter().find(|item| &item.id == id))
+                    .map(|item| item.peer.display_name.clone())
+            });
         let member_count = self
             .detail
             .as_ref()
@@ -11155,7 +11602,7 @@ impl CaperApp {
                 ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, RAISED));
             }
             if response.clicked() {
-                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false }, &response, true);
+                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false, admin: false }, &response, true);
             }
         }
         if page_count > 1 {
@@ -11258,7 +11705,155 @@ impl CaperApp {
         });
     }
 
+    /// The Caper team's inbox over the conversation pane: newest reports
+    /// first, each opening its conversation as a visit.
+    fn feedback_inbox(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        let mut open = None;
+        let mut archive = None;
+        let title = if self.feedback.archived {
+            "Archived feedback"
+        } else {
+            "Feedback"
+        };
+        egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let heading = egui::TopBottomPanel::top("feedback-heading")
+                .exact_height(54.0)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(CONVERSATION)
+                        .inner_margin(egui::Margin::symmetric(18, 8)),
+                )
+                .show_inside(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 38.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
+                                self.navigation_open = true;
+                            }
+                            ui.label(RichText::new(title).size(13.76));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if secondary_button(ui, "Refresh", !self.feedback.loading)
+                                        .clicked()
+                                    {
+                                        self.load_feedback(false);
+                                    }
+                                },
+                            );
+                        },
+                    );
+                });
+            ui.painter().hline(
+                heading.response.rect.x_range(),
+                heading.response.rect.bottom(),
+                Stroke::new(1.0, BORDER),
+            );
+            egui::ScrollArea::vertical()
+                .id_salt("feedback-inbox")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(6.0);
+                    let archived_view = self.feedback.archived;
+                    if let Some(error) = self.feedback.action_error.clone() {
+                        history_row(ui, |ui| ui.colored_label(ERROR, error));
+                    }
+                    if self.feedback.reports.is_empty() {
+                        if let Some(error) = self.feedback.error.clone() {
+                            chat_state(ui, 2, |ui| {
+                                ui.label(RichText::new(error).color(MUTED));
+                                ui.add_space(10.0);
+                                if secondary_button(ui, "Try again", true).clicked() {
+                                    self.load_feedback(false);
+                                }
+                            });
+                        } else if !self.feedback.loaded {
+                            message_skeleton(ui);
+                        } else if archived_view {
+                            chat_state(ui, 1, |ui| {
+                                ui.label(RichText::new("Nothing archived.").color(MUTED));
+                            });
+                        } else {
+                            chat_state(ui, 2, |ui| {
+                                ui.label("No feedback yet.");
+                                ui.label(
+                                    RichText::new(
+                                        "Messages that mention @feedback anywhere appear here.",
+                                    )
+                                    .color(MUTED),
+                                );
+                            });
+                        }
+                    } else {
+                        let now = chrono::Utc::now();
+                        for report in self.feedback.reports.clone() {
+                            let (row, action) = feedback_row(ui, &report, now, archived_view);
+                            if action {
+                                archive = Some(report);
+                            } else if row.clicked() {
+                                open = Some(report.target());
+                            }
+                        }
+                        if let Some(error) = self.feedback.error.clone() {
+                            history_row(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(ERROR, error);
+                                    if ui.small_button("Retry").clicked() {
+                                        self.load_feedback(self.feedback.cursor.is_some());
+                                    }
+                                });
+                            });
+                        }
+                        if self.feedback.cursor.is_some()
+                            && history_row(ui, |ui| {
+                                centered_history_button(
+                                    ui,
+                                    "Load older feedback",
+                                    !self.feedback.loading_more,
+                                )
+                            })
+                            .clicked()
+                        {
+                            self.load_feedback(true);
+                        }
+                    }
+                    // The quiet way to the archive and back.
+                    if history_row(ui, |ui| {
+                        centered_history_button(
+                            ui,
+                            if archived_view {
+                                "Back to feedback"
+                            } else {
+                                "Show archived"
+                            },
+                            true,
+                        )
+                    })
+                    .clicked()
+                    {
+                        self.show_archived_feedback(!archived_view);
+                    }
+                    ui.add_space(12.0);
+                });
+        });
+        if let Some(report) = archive {
+            self.archive_report(&report);
+        }
+        if let Some(target) = open {
+            self.open_report(target, true);
+        }
+    }
+
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        if self.feedback_open && self.feedback_team() {
+            self.feedback_inbox(ui, narrow);
+            return;
+        }
         // Web closes the thread on Escape unless something open takes it.
         // These may close earlier in this pass without consuming the key.
         let escape_taken = self.reaction_picker.is_some()
@@ -11341,7 +11936,7 @@ impl CaperApp {
             ui.input(|input| input.time),
         );
         // DMs are named after the other person, without a channel `#`.
-        let direct = self.selected_direct.is_some();
+        let direct = self.conversation_is_direct();
         let (conversation, broadcast_label) = if direct {
             (
                 format!("with {}", self.channel_name()),
@@ -11604,9 +12199,12 @@ impl CaperApp {
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             let direct = self.selected_direct.as_ref().and_then(|id| self.directs.iter().find(|item| &item.id == id));
-                            ui.label(RichText::new(match direct {
-                                Some(item) => item.peer.display_name.clone(),
-                                None => format!("# {}", self.channel_name()),
+                            let visit = self.visiting().map(|visit| visit.title.clone());
+                            ui.label(RichText::new(match (direct, visit) {
+                                // "#plans · Studio", or "Alice & Bob".
+                                (_, Some(title)) => title,
+                                (Some(item), None) => item.peer.display_name.clone(),
+                                (None, None) => format!("# {}", self.channel_name()),
                             }).size(13.76));
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
@@ -11771,7 +12369,7 @@ impl CaperApp {
                         ui.add_space(8.0);
                     }
                     let before = self.draft.clone();
-                    let placeholder = if self.selected_direct.is_some() {
+                    let placeholder = if self.conversation_is_direct() {
                         format!("Message {}", self.channel_name())
                     } else {
                         format!("Message #{}", self.channel_name())
@@ -12049,7 +12647,7 @@ impl CaperApp {
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, false));
                         let arrival = self.arrival(ui.ctx(), &pending.id);
                         motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
-                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
+                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, |ui| {
                                 // File-only messages have no text row.
                                 if !pending.text.is_empty() {
                                     ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -12777,6 +13375,40 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
+                // Below a message that asked the team (any team name). The
+                // salute is drawn from the emoji sheet, like reactions.
+                if mentions::notifies_team(&message.content.mentions) {
+                    let notice = ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        match emoji::find("🫡") {
+                            Some(entry) => {
+                                ui.label(
+                                    RichText::new(
+                                        mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
+                                    )
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                                let salute = self.reaction_textures.image(ui, entry, 13.0);
+                                ui.add(salute);
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new(mentions::FEEDBACK_NOTICE)
+                                        .size(11.0)
+                                        .color(MUTED),
+                                );
+                            }
+                        }
+                    });
+                    notice.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            mentions::FEEDBACK_NOTICE,
+                        )
+                    });
+                }
                 // An empty row would still take a 36px line under every
                 // message, doubling the gaps between them.
                 if !reactions.is_empty() {
@@ -14180,6 +14812,9 @@ impl CaperApp {
     }
 
     fn channel_name(&self) -> &str {
+        if let Some(visit) = self.visiting() {
+            return &visit.name;
+        }
         if let Some(id) = &self.selected_direct {
             return self
                 .directs
@@ -14398,13 +15033,60 @@ impl CaperApp {
         inserted
     }
 
-    /// Who `@` can suggest, never yourself, and whether `everyone`/`here` apply.
-    /// Space channels use the members already loaded by
-    /// `GET /api/spaces/{space}` (none yet leaves only the specials). Any DM,
-    /// self-notes included, uses `GET /api/people`; until that loads, or if it
-    /// never does, a DM offers its other participant (self-notes: nobody).
-    fn mention_people(&self) -> (Vec<mentions::Person>, bool) {
+    /// Who `@` can suggest, never yourself, and which specials apply:
+    /// `everyone`/`here` in space channels, `feedback` everywhere. Space
+    /// channels use the members already loaded by `GET /api/spaces/{space}`
+    /// (none yet leaves only the specials). Any DM, self-notes included, uses
+    /// `GET /api/people`; until that loads, or if it never does, a DM offers
+    /// its other participant (self-notes: nobody). A visited conversation has
+    /// no member list: the reporter and loaded authors whose username is known.
+    fn mention_people(&self) -> (Vec<mentions::Person>, mentions::Specials) {
         let me = self.account.as_ref().map(|account| account.id.as_str());
+        let direct = mentions::Specials {
+            channel: false,
+            feedback: true,
+        };
+        if let Some(visit) = self.visiting() {
+            let authors: BTreeSet<&str> = self
+                .timeline
+                .messages()
+                .map(|message| message.author.id.as_str())
+                .collect();
+            let mut people: Vec<mentions::Person> = Vec::new();
+            let known = self
+                .people
+                .iter()
+                .flatten()
+                .filter(|person| authors.contains(person.id.as_str()))
+                .map(|person| {
+                    (
+                        &person.id,
+                        &person.username,
+                        &person.display_name,
+                        person.avatar_id,
+                    )
+                });
+            let reporter = visit.reporter.as_ref().map(|person| {
+                (
+                    &person.id,
+                    &person.username,
+                    &person.display_name,
+                    person.avatar_id,
+                )
+            });
+            for (id, username, display_name, avatar_id) in reporter.into_iter().chain(known) {
+                if Some(id.as_str()) != me
+                    && !people.iter().any(|person| &person.username == username)
+                {
+                    people.push(mentions::Person {
+                        username: username.clone(),
+                        display_name: display_name.clone(),
+                        avatar_id,
+                    });
+                }
+            }
+            return (people, direct);
+        }
         if let Some(id) = &self.selected_direct {
             let known = self.people.as_deref().unwrap_or_default();
             // The peer also covers a DM opened after the list was fetched.
@@ -14426,7 +15108,7 @@ impl CaperApp {
                 .filter(|person| Some(person.id.as_str()) != me)
                 .map(mentions::Person::from)
                 .collect();
-            return (people, false);
+            return (people, direct);
         }
         let people = self
             .detail
@@ -14440,7 +15122,13 @@ impl CaperApp {
                     .map(mentions::Person::from)
                     .collect()
             });
-        (people, true)
+        (
+            people,
+            mentions::Specials {
+                channel: true,
+                feedback: true,
+            },
+        )
     }
 
     /// A person pill's card data from what is already loaded.
@@ -17733,6 +18421,8 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::BellOff => egui::include_image!("../resources/icons/bell-off.svg"),
         NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
+        NavIcon::Archive => egui::include_image!("../resources/icons/archive.svg"),
+        NavIcon::Restore => egui::include_image!("../resources/icons/archive-restore.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -18094,6 +18784,197 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
+/// Marks a Caper admin's message in the pin gold with a soft glow. The
+/// server stamps `author.admin`, so a look-alike display name can't claim it.
+fn admin_badge(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(PIN_GOLD.gamma_multiply(0.1))
+        .stroke(Stroke::new(1.0, PIN_GOLD.gamma_multiply(0.55)))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(4, 1))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: 8,
+            spread: 0,
+            color: PIN_GOLD.gamma_multiply(0.24),
+        })
+        .show(ui, |ui| {
+            ui.label(RichText::new("ADMIN").size(9.0).strong().color(PIN_GOLD))
+        });
+}
+
+/// One inbox row: the reporter, where they wrote, a preview, the age and a
+/// quiet status ("Waiting" in terracotta; none for archived threads), with a
+/// hover Archive (or Restore) button. Returns the row and whether that
+/// button was clicked.
+fn feedback_row(
+    ui: &mut egui::Ui,
+    report: &feedback::Report,
+    now: chrono::DateTime<chrono::Utc>,
+    archived_view: bool,
+) -> (egui::Response, bool) {
+    let tint = ui.painter().add(egui::Shape::Noop);
+    let width = ui.available_width();
+    let shown = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 18,
+            right: 18 + 36,
+            top: 10,
+            bottom: 10,
+        })
+        .show(ui, |ui| {
+            ui.set_width(width - 36.0 - 36.0);
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 3.0);
+            ui.horizontal_top(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                paint_avatar(
+                    ui,
+                    rect,
+                    &report.reporter.display_name,
+                    report.reporter.avatar_id,
+                );
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(bold(&report.reporter.display_name).size(13.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(feedback::relative_time(&report.created_at, now))
+                                    .size(10.0)
+                                    .color(MUTED),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(report.place()).size(11.0).color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                    let preview = report.preview();
+                    if !preview.is_empty() {
+                        ui.add(
+                            egui::Label::new(RichText::new(preview).size(13.5).color(MESSAGE_TEXT))
+                                .truncate(),
+                        );
+                    }
+                    let waiting = !report.answered;
+                    let replies = match report.reply_count {
+                        0 => String::new(),
+                        1 => "1 reply".into(),
+                        count => format!("{count} replies"),
+                    };
+                    let mut status = egui::text::LayoutJob::default();
+                    // Archived threads carry no Waiting/Answered status.
+                    if !archived_view {
+                        status.append(
+                            report.status(),
+                            0.0,
+                            egui::TextFormat::simple(
+                                egui::FontId::new(
+                                    11.0,
+                                    egui::FontFamily::Name("Satoshi Medium".into()),
+                                ),
+                                if waiting { TERRACOTTA_BRIGHT } else { MUTED },
+                            ),
+                        );
+                    }
+                    if !replies.is_empty() {
+                        status.append(
+                            &if archived_view {
+                                replies
+                            } else {
+                                format!(" · {replies}")
+                            },
+                            0.0,
+                            egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED),
+                        );
+                    }
+                    if !status.text.is_empty() {
+                        ui.label(status);
+                    }
+                });
+            });
+        });
+    let rect = shown.response.rect;
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with(("feedback-report", &report.id)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        let status = if archived_view {
+            "archived"
+        } else {
+            report.status()
+        };
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!(
+                "{}, {}, {status}",
+                report.reporter.display_name,
+                report.place(),
+            ),
+        )
+    });
+    // Archive or Restore, over the row so it takes its own clicks.
+    let button_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 18.0 - 14.0, rect.center().y),
+        egui::vec2(28.0, 28.0),
+    );
+    let button = ui
+        .interact(
+            button_rect,
+            ui.id().with(("feedback-archive", &report.id)),
+            egui::Sense::click(),
+        )
+        .on_hover_text(if archived_view {
+            "Restore to the inbox"
+        } else {
+            "Archive"
+        });
+    let label = report.action_label(archived_view);
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    if ui.rect_contains_pointer(rect) || response.has_focus() || button.has_focus() {
+        ui.painter().set(
+            tint,
+            egui::Shape::rect_filled(rect.shrink2(egui::vec2(8.0, 1.0)), 8.0, RAISED),
+        );
+        let lit = button.hovered() || button.has_focus();
+        ui.painter().rect(
+            button_rect,
+            8.0,
+            if lit { RAISED } else { SURFACE },
+            Stroke::new(1.0, if lit { TERRACOTTA } else { BORDER }),
+            egui::StrokeKind::Inside,
+        );
+        paint_icon(
+            ui.painter(),
+            button_rect.shrink(6.0),
+            if archived_view {
+                NavIcon::Restore
+            } else {
+                NavIcon::Archive
+            },
+            if lit { TEXT } else { MUTED },
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink2(egui::vec2(8.0, 1.0)),
+            8.0,
+            Stroke::new(1.0, TERRACOTTA_BRIGHT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let clicked = button.clicked();
+    (response, clicked)
+}
+
 /// A message row: avatar, then the name and time above the body. A grouped
 /// row (`grouped` is its short time, like "9:42") continues the row above
 /// instead: no avatar or header, 2px top padding, and the avatar column stays
@@ -18193,6 +19074,9 @@ fn message_row<R>(
                                     );
                                 }
                                 profile_response(ui, name);
+                            }
+                            if author.admin {
+                                admin_badge(ui);
                             }
                             if author.is_guest {
                                 ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
@@ -18607,6 +19491,9 @@ fn rich_text(
     body
 }
 
+/// Under "No messages yet." in the Caper DM.
+const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
+
 /// Web's confirmation after inviting someone to a space or a private channel.
 const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
 
@@ -18747,8 +19634,8 @@ fn pill_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui:
     rects
 }
 
-/// One `@` row in the shared suggestion popup: a person, or `@everyone` /
-/// `@here` over whom it reaches.
+/// One `@` row in the shared suggestion popup: a person, `@everyone` /
+/// `@here` over whom it reaches, or a team name over "Notify the Caper team".
 fn mention_suggestion(
     ui: &mut egui::Ui,
     candidate: &mentions::Candidate,
@@ -18759,6 +19646,16 @@ fn mention_suggestion(
         mentions::Candidate::Person(person) => return person_suggestion(ui, person, width, fill),
         mentions::Candidate::Everyone => ("@everyone", "Everyone in this channel"),
         mentions::Candidate::Here => ("@here", "Everyone online in this channel"),
+        mentions::Candidate::Feedback(name) => {
+            return suggestion_row(
+                ui,
+                None,
+                &format!("@{name}"),
+                mentions::FEEDBACK_LABEL,
+                width,
+                fill,
+            );
+        }
     };
     suggestion_row(ui, None, title, detail, width, fill)
 }
@@ -21378,6 +22275,7 @@ mod tests {
                 username: "kim".into(),
                 display_name: "TEST FIXTURE Kim".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "1".into(),
             read_seq: "0".into(),
@@ -21455,6 +22353,7 @@ mod tests {
                 avatar_id: None,
                 name: "Maya".into(),
                 is_guest: false,
+                admin: false,
             },
             typing: true,
             revision: "1".into(),
@@ -24199,6 +25098,7 @@ mod tests {
                 username: "maya".into(),
                 display_name: "TEST FIXTURE Maya".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -25840,6 +26740,7 @@ mod tests {
             pinned_messages: Vec::new(),
             cursor: "0".into(),
             has_more: false,
+            visitor: false,
         };
         app.accept_channel(history, Err("Chat is unavailable.".into()), false, &channel);
         let output = render(&mut app, &context, vec![]);
@@ -26178,12 +27079,13 @@ mod tests {
         assert_eq!(
             suggestion_rows(&context, &output, popup),
             [
+                "@feedback Notify the Caper team",
                 "Alex @alex",
                 "Maya @maya",
                 "@everyone Everyone in this channel",
                 "@here Everyone online in this channel",
             ],
-            "stacked rows, never yourself"
+            "stacked rows led by the team, never yourself"
         );
         let maya = |output: &egui::FullOutput| {
             suggestion_rows(&context, output, popup)
@@ -26211,8 +27113,23 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, press(egui::Key::ArrowDown));
         render(&mut app, &context, press(egui::Key::ArrowDown));
+        render(&mut app, &context, press(egui::Key::ArrowDown));
         render(&mut app, &context, press(egui::Key::Tab));
         assert_eq!(app.draft, "(@everyone ");
+
+        place_caret(&context, "help @|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(
+            app.draft, "help @feedback ",
+            "a bare @ + Enter asks the team"
+        );
+        assert!(app.pending.is_none());
+
+        place_caret(&context, "hi @a|", &mut app);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.draft, "hi @alex ", "a typed query picks a person first");
 
         place_caret(&context, "mail bob@ma|", &mut app);
         render(&mut app, &context, vec![]);
@@ -27225,10 +28142,25 @@ mod tests {
         let (events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         // The fixture previews `GET /api/people`: space members and DM peers.
-        assert_eq!(names(&app, ""), ["alex", "maya"]);
-        assert!(names(&app, "every").is_empty(), "no specials in DMs");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "alex", "maya"],
+            "a bare @ leads with the team, then people"
+        );
+        assert_eq!(
+            names(&app, "a"),
+            ["alex", "maya", "admin"],
+            "typed: people first"
+        );
+        assert!(names(&app, "every").is_empty(), "no everyone/here in DMs");
+        assert_eq!(names(&app, "cap"), ["caper"], "the team, in DMs too");
+        assert_eq!(names(&app, "ad"), ["admin"]);
         app.people = None;
-        assert_eq!(names(&app, ""), ["maya"], "the peer until people load");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya"],
+            "the peer until people load"
+        );
 
         let person = |id: &str, username: &str| model::Person {
             id: id.into(),
@@ -27247,7 +28179,11 @@ mod tests {
             ))
             .unwrap();
         app.receive();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "people beyond the peer");
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya", "sam"],
+            "people beyond the peer"
+        );
         assert_eq!(names(&app, "SA"), ["sam"]);
         events
             .send(loaded(app.generation - 1, Ok(Vec::new())))
@@ -27258,7 +28194,7 @@ mod tests {
         app.receive();
         assert_eq!(
             names(&app, ""),
-            ["maya", "sam"],
+            ["feedback", "maya", "sam"],
             "stale or failed refreshes keep the list"
         );
         app.directs[0].peer = model::DirectPeer {
@@ -27266,28 +28202,278 @@ mod tests {
             username: "newbie".into(),
             display_name: "Newbie".into(),
             avatar_id: None,
+            team: false,
         };
         assert_eq!(
             names(&app, ""),
-            ["maya", "newbie", "sam"],
+            ["feedback", "maya", "newbie", "sam"],
             "a DM newer than the list still offers its peer"
         );
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
-        assert_eq!(names(&app, ""), ["maya", "sam"], "self-notes uses people");
-        app.people = None;
-        assert!(
-            names(&app, "").is_empty(),
-            "self-notes suggests nobody before people load"
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "maya", "sam"],
+            "self-notes uses people"
         );
+        app.people = None;
+        assert_eq!(
+            names(&app, ""),
+            ["feedback"],
+            "self-notes: only the team before people load"
+        );
+        assert_eq!(names(&app, "fe"), ["feedback"], "personal notes too");
 
         app.selected_direct = None;
         app.selected_channel = Some("chan00000001".into());
-        assert_eq!(names(&app, ""), ["alex", "maya", "everyone", "here"]);
+        assert_eq!(
+            names(&app, ""),
+            ["feedback", "alex", "maya", "everyone", "here"]
+        );
+        assert_eq!(names(&app, "f"), ["feedback"]);
         app.detail = None;
         assert_eq!(
             names(&app, ""),
-            ["everyone", "here"],
+            ["feedback", "everyone", "here"],
             "only specials until members load"
+        );
+
+        // A visit has no member list: the reporter and known authors.
+        let channel = "chan00000009".to_owned();
+        app.selected_channel = Some(channel.clone());
+        app.selected_direct = Some(channel.clone());
+        app.visit = Some(crate::feedback::Visit {
+            channel,
+            name: "plans".into(),
+            direct: false,
+            space_id: "space0000009".into(),
+            space_name: "Studio".into(),
+            title: "#plans · Studio".into(),
+            reporter: Some(crate::feedback::Reporter {
+                id: "fixture-zoe".into(),
+                username: "zoe".into(),
+                display_name: "Zoe".into(),
+                avatar_id: None,
+            }),
+            origin: crate::feedback::Origin::Inbox,
+        });
+        assert_eq!(names(&app, ""), ["feedback", "zoe"]);
+        assert_eq!(names(&app, "c"), ["caper"]);
+        assert!(
+            names(&app, "here").is_empty(),
+            "no everyone/here in a visit"
+        );
+    }
+
+    fn fixture(name: &str) -> (egui::Context, CaperApp) {
+        let context = egui::Context::default();
+        let app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some(name),
+        );
+        (context, app)
+    }
+
+    #[test]
+    fn feedback_inbox_lists_reports_and_opens_one_as_a_visit() {
+        let (context, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in [
+            "Feedback",
+            "TEST FIXTURE Maya",
+            "#general · Fixture Studio",
+            "Waiting",
+            "Answered",
+            "Sent 2 files",
+            "@feedback TEST FIXTURE: uploads stall at 90% on hotel Wi-Fi.",
+        ] {
+            assert!(
+                labels.iter().any(|text| text.contains(label)),
+                "{label}: {labels:?}"
+            );
+        }
+        assert!(app.browse_covers_conversation(), "no reads under the inbox");
+        let report = app.feedback.reports[0].clone();
+        click_at(&mut app, &context, text_position(&output, &report.text));
+        assert!(!app.feedback_open, "a report replaces the inbox");
+        // The fixture already shows that channel: land on the report and
+        // then open its own thread.
+        assert_eq!(
+            app.report_thread,
+            Some((
+                report.message_id.clone(),
+                crate::feedback::ThreadFocus {
+                    root: report.thread_root_id.clone(),
+                    anchor: None
+                }
+            ))
+        );
+        assert!(app.context_loading);
+
+        // Another conversation opens by id as a visit request.
+        let mut other = report.target();
+        other.channel = "chan00000042".into();
+        app.open_feedback();
+        app.open_report(other.clone(), true);
+        assert_eq!(
+            app.visit_request
+                .as_ref()
+                .map(|request| (&request.target, &request.origin)),
+            Some((&other, &crate::feedback::Origin::Inbox))
+        );
+        assert!(app.opening);
+        // Any other navigation drops it.
+        app.select_channel("chan00000001".into(), false);
+        assert!(app.visit_request.is_none());
+    }
+
+    #[test]
+    fn archiving_leaves_the_inbox_and_the_toggle_lists_archived_threads() {
+        let (context, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Show archived"));
+        let report = app.feedback.reports[1].clone();
+        app.archive_report(&report);
+        assert_eq!(app.feedback.reports.len(), 1, "it leaves the list at once");
+        events
+            .send(crate::worker::Event::FeedbackArchived {
+                epoch: app.account_epoch,
+                result: Err("Archiving failed.".into()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.feedback.loading, "the list reloads");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Archiving failed."));
+        click_at(&mut app, &context, text_position(&output, "Show archived"));
+        assert!(app.feedback.archived && app.feedback.reports.is_empty());
+        let (request, _) = app.feedback.start(false).unwrap();
+        app.feedback.finish(
+            request,
+            Ok(serde_json::from_value(serde_json::json!({"reports": [], "cursor": null})).unwrap()),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in ["Archived feedback", "Nothing archived.", "Back to feedback"] {
+            assert!(labels.contains(&label), "{label}: {labels:?}");
+        }
+        assert!(!labels.contains(&"Waiting") && !labels.contains(&"Archiving failed."));
+        click_at(
+            &mut app,
+            &context,
+            text_position(&output, "Back to feedback"),
+        );
+        assert!(!app.feedback.archived);
+    }
+
+    #[test]
+    fn visits_take_part_like_members_without_member_only_controls() {
+        let (context, mut app) = fixture("parity-feedback-visit");
+        app.token = Some("fixture-only-token".into());
+        app.foreground = true;
+        assert!(app.visiting().is_some());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in [
+            "#general · Fixture Studio",
+            "Back to feedback",
+            "Caper team has been notified",
+            "ADMIN",
+        ] {
+            assert!(labels.contains(&label), "{label}: {labels:?}");
+        }
+        assert!(
+            !labels.iter().any(|label| label.contains("Visiting as")),
+            "no banner: {labels:?}"
+        );
+        assert!(!labels.contains(&"Join channel"), "{labels:?}");
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| **label == "Join voice")
+                .count(),
+            1,
+            "the visited channel's voice, in its header like any channel"
+        );
+        assert_eq!(app.channel_name(), "general");
+        assert!(
+            !app.conversation_is_direct(),
+            "a visited channel keeps its #"
+        );
+        assert!(app.selected_is_joined(), "visitors can reply");
+        let channel = app.selected_channel.clone().unwrap();
+        assert_eq!(
+            app.header_voice_channel().as_ref(),
+            Some(&channel),
+            "voice from the header, as for a joined channel"
+        );
+        app.media_availability.remove(&channel);
+        assert!(
+            app.voice_target(&channel).is_none(),
+            "checking availability"
+        );
+        app.media_availability.insert(channel.clone(), true);
+        let (context_call, space) = app.voice_target(&channel).expect("visitors join voice");
+        assert_eq!(space.as_deref(), Some("space0000001"));
+        assert_eq!(context_call.space_name, "Fixture Studio");
+        assert_eq!(app.media_root(&channel), (channel.clone(), Some(channel)));
+        assert_eq!(
+            app.empty_conversation_note(),
+            "",
+            "never a DM's privacy note"
+        );
+        click_at(
+            &mut app,
+            &context,
+            text_position(&output, "Back to feedback"),
+        );
+        assert!(app.feedback_open, "Back returns to the inbox");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Waiting"));
+    }
+
+    #[test]
+    fn feedback_notifications_open_a_visit_for_the_team() {
+        let (_, mut app) = fixture("parity-feedback");
+        app.token = Some("fixture-only-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let alert: crate::os_notifications::Alert = serde_json::from_value(serde_json::json!({
+            "kind": "feedback", "messageId": "msg000000002", "threadRootId": "msg000000001",
+            "title": "Alice · Feedback", "body": "@feedback help",
+            "createdAt": "2026-10-11T19:00:00Z", "conversationId": "dm0000000077"
+        }))
+        .unwrap();
+        events
+            .send(crate::worker::Event::OpenNotification {
+                epoch: app.account_epoch,
+                alert,
+            })
+            .unwrap();
+        app.receive();
+        assert!(!app.feedback_open);
+        let request = app.visit_request.clone().expect("a visit opens");
+        assert_eq!(request.target.channel, "dm0000000077");
+        assert_eq!(request.target.message, "msg000000002");
+        assert_eq!(request.target.thread.as_deref(), Some("msg000000001"));
+        assert!(matches!(
+            request.origin,
+            crate::feedback::Origin::Conversation { space: Some(_), .. }
+        ));
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref()),
+            Some("dm0000000077")
         );
     }
 
@@ -28081,6 +29267,7 @@ mod tests {
                 username: "alex".into(),
                 display_name: "Alex".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -29648,6 +30835,7 @@ mod tests {
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
+            feedback_team: false,
         }
     }
 
@@ -29673,6 +30861,7 @@ mod tests {
                 id: channel.into(),
                 name: channel.into(),
             },
+            visitor: false,
         }
     }
 
@@ -29723,6 +30912,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
         }
     }
@@ -30073,6 +31263,7 @@ mod tests {
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "3".into(),
             read_seq: "2".into(),
@@ -30130,6 +31321,7 @@ mod tests {
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -31667,6 +32859,7 @@ mod tests {
                 avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
+                admin: false,
             },
             content: Content {
                 version: 1,
@@ -31711,6 +32904,7 @@ mod tests {
                 avatar_id: None,
                 name: "Self".into(),
                 is_guest: false,
+                admin: false,
             },
         });
         let author = Author {
@@ -31718,6 +32912,7 @@ mod tests {
             avatar_id: None,
             name: "Other".into(),
             is_guest: false,
+            admin: false,
         };
         let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
             generation: 1,
@@ -32269,6 +33464,20 @@ mod tests {
     }
 
     #[test]
+    fn the_caper_dm_explains_where_messages_go() {
+        let (_, mut app) = fixture("parity-direct");
+        assert_eq!(
+            app.empty_conversation_note(),
+            "Only you and TEST FIXTURE Maya can read this conversation."
+        );
+        app.directs[0].peer.team = true;
+        assert_eq!(
+            app.empty_conversation_note(),
+            "Messages here go to the Caper team."
+        );
+    }
+
+    #[test]
     fn direct_read_cursor_requires_foreground_and_never_regresses() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -32285,6 +33494,7 @@ mod tests {
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "9".into(),
             read_seq: "1".into(),

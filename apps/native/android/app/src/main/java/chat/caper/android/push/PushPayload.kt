@@ -17,9 +17,13 @@ internal val pushChannels = listOf(
     MESSAGE_REQUESTS_CHANNEL to "Message requests",
 )
 
-/** Mentions use their own channel; every other kind, known or not, is a plain DM or channel message. */
+/**
+ * Mentions use their own channel, and so does `feedback` (a report for the Caper team, which is
+ * treated like a direct mention); invitations and message requests have theirs; every other
+ * kind, known or not, is a plain DM or channel message.
+ */
 internal fun notificationChannelFor(kind: String, direct: Boolean): String = when (kind) {
-    "mention.user", "mention.everyone" -> MENTIONS_CHANNEL
+    "mention.user", "mention.everyone", "feedback" -> MENTIONS_CHANNEL
     "space.invitation", "channel.invitation" -> INVITATIONS_CHANNEL
     "direct.request" -> MESSAGE_REQUESTS_CHANNEL
     else -> if (direct) DIRECT_MESSAGES_CHANNEL else CHANNEL_MESSAGES_CHANNEL
@@ -44,6 +48,8 @@ internal data class PushPayload(
     val conversationTitle: String?,
     val attachment: PushAttachment? = null,
     val notificationId: String? = null,
+    /** The thread the message replies in, when it is a thread reply (any message kind). */
+    val threadRootId: String? = null,
 ) {
     val direct: Boolean get() = conversationId != null
     val invitation: Boolean get() = kind == "space.invitation" || kind == "channel.invitation"
@@ -99,6 +105,7 @@ internal data class PushPayload(
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
                 attachment = if (consent) null else PushAttachment.parse(data),
+                threadRootId = if (consent) null else value("threadRootId")?.takeIf(messageIdPattern::matches),
             )
         }
 

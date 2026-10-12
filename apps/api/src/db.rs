@@ -188,6 +188,13 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         ),
         format!("GRANT SELECT, INSERT, UPDATE ON public.channel_reads TO {role}"),
         format!("GRANT SELECT, INSERT, UPDATE ON public.user_blocks TO {role}"),
+        // Operators manage the feedback team; the API only reads it. Every
+        // access check reads both tables through `feedback_access`. Reports
+        // are kept as the record of what was asked; archiving updates them.
+        format!("GRANT SELECT ON public.feedback_team TO {role}"),
+        format!("GRANT SELECT, INSERT, UPDATE ON public.feedback_reports TO {role}"),
+        format!("GRANT USAGE ON SEQUENCE public.feedback_reports_id_seq TO {role}"),
+        format!("GRANT EXECUTE ON FUNCTION public.feedback_access(bigint, bigint) TO {role}"),
         // Devices are revoked and preferences updated in place; only finished
         // jobs and deliveries (operational state) are pruned.
         format!(
@@ -438,6 +445,10 @@ mod tests {
             ("public.notification_overrides", "INSERT"),
             ("public.notification_jobs", "DELETE"),
             ("public.notification_deliveries", "DELETE"),
+            ("public.feedback_team", "SELECT"),
+            ("public.feedback_reports", "SELECT"),
+            ("public.feedback_reports", "INSERT"),
+            ("public.feedback_reports", "UPDATE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
@@ -467,6 +478,8 @@ mod tests {
             "public.notification_settings",
             "public.notification_overrides",
             "public.notifications",
+            "public.feedback_team",
+            "public.feedback_reports",
         ] {
             assert!(
                 !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, 'DELETE')")
@@ -478,6 +491,27 @@ mod tests {
                 "{object} is revoked or updated in place, never deleted"
             );
         }
+        for privilege in ["INSERT", "UPDATE"] {
+            assert!(
+                !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
+                    .bind(&runtime_role)
+                    .bind("public.feedback_team")
+                    .bind(privilege)
+                    .fetch_one(&verify)
+                    .await
+                    .unwrap(),
+                "only operators change the feedback team"
+            );
+        }
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT has_function_privilege($1, 'public.feedback_access(bigint,bigint)', 'EXECUTE')"
+            )
+            .bind(&runtime_role)
+            .fetch_one(&verify)
+            .await
+            .unwrap()
+        );
         assert!(
             sqlx::query_scalar::<_, bool>("SELECT has_sequence_privilege($1, $2, $3)")
                 .bind(&runtime_role)

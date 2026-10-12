@@ -96,6 +96,21 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(request + ("spaceId" to "space0000001")))
     }
 
+    @Test fun `feedback reports use the mentions channel and carry their thread`() {
+        val report = requireNotNull(PushPayload.parse(channel + mapOf("kind" to "feedback", "title" to "Maya · Feedback", "threadRootId" to "message00000001")))
+        assertEquals(MENTIONS_CHANNEL, report.channel)
+        assertEquals("feedback", report.kind)
+        assertEquals("Maya · Feedback", report.title)
+        assertEquals("message00000001", report.threadRootId)
+        assertEquals("channel00001", report.tag)
+        val inDirect = requireNotNull(PushPayload.parse(direct + ("kind" to "feedback")))
+        assertEquals(MENTIONS_CHANNEL, inDirect.channel)
+        assertNull(inDirect.threadRootId)
+        // Any kind may carry a thread; a malformed one is dropped, never the notification.
+        assertEquals("message00000009", PushPayload.parse(direct + ("threadRootId" to "message00000009"))?.threadRootId)
+        assertNull(requireNotNull(PushPayload.parse(direct + ("threadRootId" to "../thread"))).threadRootId)
+    }
+
     @Test fun `empty text reads as sent a message and missing names fall back`() {
         assertEquals("Sent a message", PushPayload.parse(direct + ("body" to "  "))?.body)
         assertEquals("Sent a message", PushPayload.parse(direct - "body")?.body)

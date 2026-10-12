@@ -39,7 +39,7 @@ import {
   setSystemSoundsEnabled,
   subscribeSystemSounds,
 } from "../audio/effects";
-import Chat from "../chat/Chat";
+import Chat, { type FocusTarget } from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { MentionCandidate } from "../chat/mentions";
 import type { Space } from "../spaces/client";
@@ -422,7 +422,11 @@ interface CallProps {
     demo?: boolean;
     direct?: boolean;
     directPeerId?: string;
+    /** A DM with the Caper account: messages go to the feedback team. */
+    team?: boolean;
     joined?: boolean;
+    /** A feedback team member taking part without having joined. */
+    visitor?: boolean;
   };
   /**
    * Shown in place of the conversation when no channel is open (a space with no
@@ -464,7 +468,11 @@ interface CallProps {
   onMessagePerson?: (username: string) => Promise<void>;
   profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
-  focusMessage?: GeneralChatHistory["messages"][number];
+  focusMessage?: FocusTarget;
+  /** Also open the focused message's own thread (a feedback report's replies live there). */
+  focusThread?: boolean;
+  /** After the viewer's message is accepted. */
+  onSent?: () => void;
   /** A notice above the composer, such as a DM request still waiting. */
   composerBanner?: ReactNode;
   /** Offers "Block" in message actions; the caller confirms. */
@@ -497,6 +505,8 @@ export default function Call({
   profileSpaces,
   onOpenForward,
   focusMessage,
+  focusThread,
+  onSent,
   composerBanner,
   onBlockAuthor,
 }: CallProps = {}) {
@@ -1739,6 +1749,7 @@ export default function Call({
               identityReady={identityReady && engaged}
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
+              team={!!channel?.team}
               onReadCursor={onReadCursor}
               readActive={engaged && !browsing}
               readOnly={!channelJoined}
@@ -1768,6 +1779,9 @@ export default function Call({
               profileSpaces={profileSpaces}
               onOpenForward={onOpenForward}
               focusMessage={focusMessage}
+              focusThread={focusThread}
+              onSent={onSent}
+              visitor={!!channel?.visitor}
               channelId={channel?.id}
               channelName={channel?.name}
               initialHistory={initialHistory}

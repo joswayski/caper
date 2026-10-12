@@ -751,7 +751,7 @@ export class ChatClient {
     }
   }
 
-  async loadMessageContext(message: ChatMessage): Promise<boolean> {
+  async loadMessageContext(message: Pick<ChatMessage, "id" | "channelId" | "threadRootId">): Promise<boolean> {
     if (this.loadingHistory || this.controller.signal.aborted || message.channelId !== this.state.channelId)
       return false;
     if (message.threadRootId) {

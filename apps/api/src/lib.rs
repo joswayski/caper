@@ -65,6 +65,7 @@ mod db;
 mod direct;
 mod email;
 mod environment;
+mod feedback;
 pub mod gateway;
 mod media_store;
 mod mentions;
@@ -1111,6 +1112,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(spaces::routes())
         .merge(assets::routes())
         .merge(direct::routes())
+        .merge(feedback::routes())
         .merge(push::routes());
     let protected = protected.layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -1359,7 +1361,16 @@ async fn account_me(
     State(state): State<AppState>,
     Extension(principal): Extension<auth::Principal>,
 ) -> Json<Value> {
-    Json(serde_json::to_value(principal.user.own(&state.debug_users)).expect("account serializes"))
+    let mut account =
+        serde_json::to_value(principal.user.own(&state.debug_users)).expect("account serializes");
+    // Team members get the feedback inbox. A database outage only hides it.
+    if let Some(pool) = &state.database
+        && let Ok(mut connection) = pool.acquire().await
+        && let Ok(true) = feedback::team_member(&mut connection, Some(principal.user.id)).await
+    {
+        account["feedbackTeam"] = json!(true);
+    }
+    Json(account)
 }
 
 #[derive(Deserialize)]

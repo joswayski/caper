@@ -14,11 +14,17 @@ use std::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
-    #[cfg(target_os = "windows")]
+    /// `mention.user`, `feedback`, `space.invitation`, … Older servers
+    /// may omit it.
+    pub kind: Option<String>,
+    /// Absent for invitations and message requests.
+    #[serde(default)]
     pub message_id: Option<String>,
     #[cfg(target_os = "windows")]
     pub notification_id: Option<String>,
-    pub kind: Option<String>,
+    /// Present when the message is a thread reply (every kind).
+    #[serde(default)]
+    pub thread_root_id: Option<String>,
     pub title: String,
     pub body: String,
     pub created_at: String,
@@ -46,11 +52,74 @@ impl Alert {
             .as_deref()
             .or(self.channel_id.as_deref())
     }
+    /// Where a click goes: `feedback` first, opening the conversation as
+    /// the Caper team at the report, in its thread; then invitations; then a
+    /// feedback team member's notification from a space or DM missing from
+    /// their lists (`known` false), visited in the reply's thread if it was
+    /// one; then the conversation as before.
+    pub fn route(&self, feedback_team: bool, known: bool) -> Option<Route> {
+        let visit = |thread: Option<String>| {
+            let message = self.message_id.clone()?;
+            Some(Route::Visit(crate::feedback::VisitTarget {
+                channel: self
+                    .conversation_id
+                    .clone()
+                    .or_else(|| self.channel_id.clone())?,
+                thread,
+                message,
+                reporter: None,
+            }))
+        };
+        if self.kind.as_deref() == Some("feedback") {
+            return visit(
+                self.thread_root_id
+                    .clone()
+                    .or_else(|| self.message_id.clone()),
+            );
+        }
+        if self.invitation() {
+            return Some(Route::Invitation {
+                space: self.space_id.clone()?,
+                channel: self.channel_id.clone(),
+            });
+        }
+        if feedback_team
+            && !known
+            && self.kind.as_deref() != Some("direct.request")
+            && let Some(route) = visit(self.thread_root_id.clone())
+        {
+            return Some(route);
+        }
+        if let Some(id) = &self.conversation_id {
+            return Some(Route::Direct(id.clone()));
+        }
+        Some(Route::Channel {
+            space: self.space_id.clone()?,
+            channel: self.channel_id.clone()?,
+        })
+    }
+
     pub fn fresh(&self) -> bool {
         DateTime::parse_from_rfc3339(&self.created_at).is_ok_and(|date| {
             (-30..=120).contains(&(Utc::now() - date.with_timezone(&Utc)).num_seconds())
         })
     }
+}
+
+/// What clicking a notification opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Route {
+    Direct(String),
+    Channel {
+        space: String,
+        channel: String,
+    },
+    /// A space (or private channel) invitation to answer.
+    Invitation {
+        space: String,
+        channel: Option<String>,
+    },
+    Visit(crate::feedback::VisitTarget),
 }
 
 pub struct Control {
@@ -418,6 +487,107 @@ mod tests {
         Message,
         handshake::server::{Request, Response},
     };
+
+    fn alert(value: serde_json::Value) -> Alert {
+        let mut event = json!({
+            "type": "notification.created", "seq": "1", "messageId": "msg000000002",
+            "title": "Alice · Feedback", "body": "@feedback help", "sender": "Alice",
+            "senderId": "user00000001", "createdAt": "2026-10-11T19:00:00Z"
+        });
+        for (key, value) in value.as_object().unwrap() {
+            event[key] = value.clone();
+        }
+        serde_json::from_value(event).unwrap()
+    }
+
+    #[test]
+    fn clicks_route_feedback_to_a_visit_and_the_rest_as_before() {
+        use crate::feedback::VisitTarget;
+        let visit = |channel: &str, message: &str, thread: &str| {
+            Some(Route::Visit(VisitTarget {
+                channel: channel.into(),
+                message: message.into(),
+                thread: Some(thread.into()),
+                reporter: None,
+            }))
+        };
+        let top = alert(json!({"kind": "feedback", "spaceId": "space0000001",
+            "channelId": "chan00000001", "conversationTitle": "#plans"}));
+        assert_eq!(
+            top.route(true, true),
+            visit("chan00000001", "msg000000002", "msg000000002"),
+            "a top-level report opens its own thread, even in a known space"
+        );
+        let reply = alert(json!({"kind": "feedback", "conversationId": "dm0000000001",
+            "threadRootId": "msg000000001"}));
+        assert_eq!(
+            reply.route(true, false),
+            visit("dm0000000001", "msg000000002", "msg000000001")
+        );
+        let mention = alert(json!({"kind": "mention.user", "spaceId": "space0000001",
+            "channelId": "chan00000001"}));
+        assert_eq!(
+            mention.route(true, true),
+            Some(Route::Channel {
+                space: "space0000001".into(),
+                channel: "chan00000001".into()
+            })
+        );
+        assert_eq!(
+            mention.route(false, false),
+            Some(Route::Channel {
+                space: "space0000001".into(),
+                channel: "chan00000001".into()
+            }),
+            "only the team visits"
+        );
+        assert_eq!(
+            mention.route(true, false),
+            Some(Route::Visit(VisitTarget {
+                channel: "chan00000001".into(),
+                message: "msg000000002".into(),
+                thread: None,
+                reporter: None,
+            })),
+            "a space the team member isn't in opens as a visit"
+        );
+        let threaded = alert(
+            json!({"kind": "mention.user", "conversationId": "dm0000000002",
+            "threadRootId": "msg000000001"}),
+        );
+        assert_eq!(
+            threaded.route(true, false),
+            visit("dm0000000002", "msg000000002", "msg000000001")
+        );
+        assert_eq!(
+            threaded.route(true, true),
+            Some(Route::Direct("dm0000000002".into()))
+        );
+        assert_eq!(threaded.thread_root_id.as_deref(), Some("msg000000001"));
+        let old = alert(json!({"conversationId": "dm0000000003"}));
+        assert_eq!(old.kind, None, "older servers omit the kind");
+        assert_eq!(
+            old.route(false, true),
+            Some(Route::Direct("dm0000000003".into()))
+        );
+        assert_eq!(alert(json!({"kind": "feedback"})).route(true, true), None);
+        // Main's kinds keep their routes, even for the team outside the space.
+        let invitation = alert(json!({"kind": "space.invitation", "spaceId": "space0000009"}));
+        assert_eq!(
+            invitation.route(true, false),
+            Some(Route::Invitation {
+                space: "space0000009".into(),
+                channel: None
+            })
+        );
+        let request = alert(json!({"kind": "direct.request", "conversationId": "dm0000000009"}));
+        assert_eq!(
+            request.route(true, false),
+            Some(Route::Direct("dm0000000009".into())),
+            "a message request is never a visit"
+        );
+        assert_eq!(request.conversation(), None, "never suppressed as visible");
+    }
 
     #[test]
     fn invitation_is_not_a_message_or_a_focused_conversation() {

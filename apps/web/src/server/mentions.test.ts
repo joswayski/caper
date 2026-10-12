@@ -9,6 +9,7 @@ import {
   mentionSuggestions,
   mentionToken,
   mentionsAccount,
+  reportsFeedback,
   rankPeople,
   type MentionCandidate,
 } from "../chat/mentions.ts";
@@ -44,8 +45,8 @@ test("suggestions rank username, display name and contains; specials keep their 
   assert.deepEqual(names("MA"), ["maya", "sam_m", "zz_maya"]);
   assert.deepEqual(names("e"), ["alfie", "bea", "everyone"]);
   assert.deepEqual(names("h"), ["here"]);
-  assert.deepEqual(names(""), ["alfie", "bea", "cal", "maya", "everyone", "here"]);
-  assert.deepEqual(names("", false), ["alfie", "bea", "cal", "maya", "mo", "sam_m"]);
+  assert.deepEqual(names(""), ["feedback", "alfie", "bea", "cal", "everyone", "here"]);
+  assert.deepEqual(names("", false), ["feedback", "alfie", "bea", "cal", "maya", "mo"]);
   assert.deepEqual(names("every", false), []);
   assert.equal(names("").length, 6);
 });
@@ -151,4 +152,36 @@ test("pinner profiles match IDs, use canonical identities, and preserve unknown 
     self: false,
   });
   assert.equal(mentionCardPerson(author, [], "pinner").self, true);
+});
+
+test("team names are suggested everywhere once typed, completing the name, and render as pills", () => {
+  const names = (query: string, specials = true) => mentionSuggestions(members, query, specials).map(mentionName);
+  assert.deepEqual(names("feed", false), ["feedback"]);
+  assert.deepEqual(names("cap"), ["caper"]);
+  assert.deepEqual(names("adm"), ["admin"]);
+  assert.deepEqual(names("admins"), ["admins"]);
+  assert.deepEqual(names("c", false), ["cal", "caper"]);
+  assert.deepEqual(names("mo"), ["mo", "mod"]);
+  assert.equal(names("")[0], "feedback", "a bare @ leads with the team, once");
+  assert.equal(names("").filter((name) => name === "feedback").length, 1);
+  assert.deepEqual(names("a", false).at(-1), "admin", "typed queries keep people first");
+  assert.deepEqual(
+    mentionSegments("ping @Admin and @mods", [{ type: "feedback" }])
+      .filter((s) => s.mention)
+      .map((s) => s.text),
+    ["@Admin", "@mods"],
+  );
+  const text = "@Feedback uploads fail, @caper @feedbacks";
+  const segments = mentionSegments(text, [{ type: "feedback" }]);
+  assert.deepEqual(
+    segments.filter((segment) => segment.mention).map((segment) => [segment.text, segment.user]),
+    [
+      ["@Feedback", undefined],
+      ["@caper", undefined],
+    ],
+  );
+  assert.deepEqual(mentionSegments(text, []), [{ text, mention: false }], "unreported text stays plain");
+  const message = { content: { mentions: [{ type: "feedback" }] } } as unknown as ChatMessage;
+  assert.ok(reportsFeedback(message));
+  assert.ok(!reportsFeedback({ content: {} } as unknown as ChatMessage));
 });

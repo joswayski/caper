@@ -3090,3 +3090,504 @@ async fn prune_drops_only_week_old_finished_deliveries_and_expanded_jobs(pool: P
         "a second pass has nothing left"
     );
 }
+
+async fn history(h: &Harness, who: &Person, channel: &str, query: &str) -> (StatusCode, Value) {
+    call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{channel}/messages{query}"),
+        Some(&who.token),
+        None,
+        json!(null),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let jose = person(&pool, "jose").await;
+    let other = person(&pool, "other").await;
+    sqlx::query("INSERT INTO public.feedback_team (user_id) VALUES ($1)")
+        .bind(jose.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let private = channel(&pool, space_id, "Plans", true, &[&alice]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    sqlx::query("INSERT INTO public.channel_members (channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&private).bind(alice.id).execute(&pool).await.unwrap();
+    register(&h, &jose, &jose.token, "apns", APNS_TOKEN).await;
+
+    let (_, me) = call(
+        &h.app,
+        "GET",
+        "/api/account/me",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(me["feedbackTeam"], true);
+    let (_, me) = call(
+        &h.app,
+        "GET",
+        "/api/account/me",
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert!(me.get("feedbackTeam").is_none());
+    let (status, _) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the inbox is the team's");
+
+    // Before anyone asks, the team can't see in.
+    let context = send(&h, &alice, &private, "uploads keep failing", None).await;
+    assert_eq!(
+        history(&h, &jose, &private, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+    expand(&h).await;
+    assert!(notified(&pool, &context).await.is_empty());
+
+    let report = send(&h, &alice, &private, "@feedback see above?", None).await;
+    let (_, stored) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{private}/messages/{report}"),
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(stored["content"]["mentions"], json!([{"type": "feedback"}]));
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &report).await,
+        pairs(&[("jose", "feedback")])
+    );
+    deliver(&h).await;
+    let pushed = h.apns.take();
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].body["kind"], "feedback");
+    assert_eq!(pushed[0].body["aps"]["alert"]["title"], "Alice · Feedback");
+    assert_eq!(pushed[0].body["channelId"], private.as_str());
+    assert_eq!(pushed[0].body["messageId"], report.as_str());
+
+    // The whole conversation is readable for context, as a visitor.
+    let (status, window) = history(&h, &jose, &private, "").await;
+    assert_eq!(status, StatusCode::OK, "{window}");
+    assert_eq!(window["visitor"], true);
+    assert_eq!(window["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(window["channel"]["name"], "plans");
+    assert!(
+        history(&h, &alice, &private, "")
+            .await
+            .1
+            .get("visitor")
+            .is_none()
+    );
+    // Other people, and the rest of the space, stay closed.
+    assert_eq!(
+        history(&h, &other, &private, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        history(&h, &jose, &general, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // The team answers in the report's thread, visibly and badged.
+    let answer = send(&h, &jose, &private, "On it, @alice", Some(&report)).await;
+    let (_, thread) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{private}/messages/{report}/thread"),
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(thread["messages"][0]["id"], answer.as_str());
+    assert_eq!(thread["messages"][0]["author"]["admin"], true);
+    assert_eq!(thread["root"]["thread"]["replyCount"], 1);
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &answer).await,
+        pairs(&[("alice", "mention.user")])
+    );
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        &format!("/api/chat/channels/{private}/messages/{report}/reactions"),
+        None,
+        Some(&jose.chat),
+        json!({"emoji": "👀", "active": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The team takes part like a member: pins too.
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        &format!("/api/chat/channels/{private}/messages/{report}/pin"),
+        None,
+        Some(&jose.chat),
+        json!({"active": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A thread reply that asks again reports into the same thread, and
+    // mentioning a visitor by name reaches them, as feedback.
+    let again = send(
+        &h,
+        &alice,
+        &private,
+        "@caper still broken, @jose",
+        Some(&report),
+    )
+    .await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &again).await,
+        pairs(&[("jose", "feedback")])
+    );
+    let named = send(&h, &alice, &private, "thanks @jose", Some(&report)).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &named).await,
+        pairs(&[("jose", "feedback")])
+    );
+    let plain = send(&h, &alice, &private, "plain channel message", None).await;
+    expand(&h).await;
+    assert!(
+        notified(&pool, &plain).await.is_empty(),
+        "visitors hear only what's for them"
+    );
+
+    let (status, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{inbox}");
+    let reports = inbox["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["messageId"], again.as_str());
+    assert_eq!(reports[0]["threadRootId"], report.as_str());
+    assert_eq!(reports[0]["answered"], false);
+    assert_eq!(reports[1]["messageId"], report.as_str());
+    assert_eq!(reports[1]["threadRootId"], report.as_str());
+    // Alice spoke last in the thread, so it waits for the team again.
+    assert_eq!(reports[1]["answered"], false);
+    assert_eq!(reports[1]["archived"], false);
+    assert_eq!(reports[1]["reporter"]["username"], "alice");
+    assert_eq!(reports[1]["channel"]["name"], "plans");
+    assert_eq!(reports[1]["channel"]["direct"], false);
+    assert_eq!(reports[1]["space"]["name"], "Studio");
+
+    // The team answering last marks the whole thread answered.
+    send(&h, &jose, &private, "Fixed now", Some(&report)).await;
+    let inbox = |query: &'static str| {
+        let app = h.app.clone();
+        let token = jose.token.clone();
+        async move {
+            call(
+                &app,
+                "GET",
+                &format!("/api/feedback{query}"),
+                Some(&token),
+                None,
+                json!(null),
+            )
+            .await
+            .1
+        }
+    };
+    let answered: Vec<Value> = inbox("").await["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["answered"].clone())
+        .collect();
+    assert_eq!(answered, [json!(true), json!(true)]);
+
+    // Archiving hides the whole thread for the team until someone else posts in it.
+    let archive = |archived: bool| {
+        let app = h.app.clone();
+        let token = jose.token.clone();
+        let body = json!({"channelId": private.clone(), "threadRootId": report.clone(), "archived": archived});
+        async move {
+            call(
+                &app,
+                "PUT",
+                "/api/feedback/archive",
+                Some(&token),
+                None,
+                body,
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
+    assert_eq!(
+        inbox("?archived=true").await["reports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (status, _) = call(
+        &h.app,
+        "PUT",
+        "/api/feedback/archive",
+        Some(&alice.token),
+        None,
+        json!({"channelId": private.clone(), "threadRootId": report.clone(), "archived": false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "only the team archives");
+    // The team posting doesn't bring it back; anyone else replying does.
+    send(&h, &jose, &private, "One more note", Some(&report)).await;
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
+    let returned = send(
+        &h,
+        &alice,
+        &private,
+        "@feedback it broke again",
+        Some(&report),
+    )
+    .await;
+    let reports = inbox("").await;
+    assert_eq!(reports["reports"].as_array().unwrap().len(), 3);
+    assert_eq!(reports["reports"][0]["messageId"], returned.as_str());
+    assert_eq!(reports["reports"][2]["archived"], false);
+    assert!(
+        inbox("?archived=true").await["reports"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Archiving again restarts the clock; a plain reply resurfaces it too.
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
+    send(&h, &alice, &private, "still there?", Some(&report)).await;
+    assert_eq!(inbox("").await["reports"].as_array().unwrap().len(), 3);
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
+    assert_eq!(archive(false).await, StatusCode::NO_CONTENT);
+    assert_eq!(inbox("").await["reports"].as_array().unwrap().len(), 3);
+    expand(&h).await;
+
+    // Edits and forward notes never report; guests can't either.
+    let later = send(&h, &bob, &general, "hello", None).await;
+    let (status, edited) = call(
+        &h.app,
+        "PUT",
+        &format!("/api/chat/channels/{general}/messages/{later}"),
+        None,
+        Some(&bob.chat),
+        json!({"text": "hello @feedback", "expectedRevision": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert!(edited["content"].get("mentions").is_none());
+    assert_eq!(
+        history(&h, &jose, &general, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // DMs, including a pending request: the team can read and reply, which
+    // neither accepts the request nor lists the DM as theirs.
+    let dm = direct(&h, &bob, "other").await;
+    send(&h, &bob, &dm, "hi", None).await;
+    assert_eq!(history(&h, &jose, &dm, "").await.0, StatusCode::NOT_FOUND);
+    let dm_report = send(&h, &bob, &dm, "@feedback this request looks stuck", None).await;
+    let (status, window) = history(&h, &jose, &dm, "").await;
+    assert_eq!(status, StatusCode::OK, "{window}");
+    assert_eq!(window["visitor"], true);
+    assert_eq!(window["channel"]["direct"], true);
+    assert!(["Bob & Other", "Other & Bob"].contains(&window["channel"]["name"].as_str().unwrap()));
+    send(&h, &jose, &dm, "Looking", Some(&dm_report)).await;
+    let accepted: bool = sqlx::query_scalar("SELECT d.accepted_at IS NOT NULL FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE c.external_id=$1")
+        .bind(&dm).fetch_one(&pool).await.unwrap();
+    assert!(!accepted);
+    let (_, dms) = call(
+        &h.app,
+        "GET",
+        "/api/dms",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert!(dms["conversations"].as_array().unwrap().is_empty());
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &dm_report).await,
+        pairs(&[("jose", "feedback")])
+    );
+
+    // Live updates, voice and typing work as for a joined member.
+    assert_eq!(
+        crate::spaces::session_channel_access(&pool, None, Some(jose.id), &private)
+            .await
+            .unwrap(),
+        (true, true)
+    );
+    assert!(
+        crate::spaces::channel_participation(&pool, &private, Some(jose.id))
+            .await
+            .is_ok()
+    );
+    assert!(
+        crate::spaces::channel_participation(&pool, &private, Some(other.id))
+            .await
+            .is_err()
+    );
+
+    // Leaving the team ends access everywhere.
+    sqlx::query("UPDATE public.feedback_team SET deleted_at=now() WHERE user_id=$1")
+        .bind(jose.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        history(&h, &jose, &private, "").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(history(&h, &jose, &dm, "").await.0, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn messaging_caper_sends_each_new_message_to_the_team(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let jose = person(&pool, "jose").await;
+    sqlx::query("INSERT INTO public.feedback_team (user_id) VALUES ($1)")
+        .bind(jose.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Any team name opens the same, already-accepted conversation.
+    let caper = direct(&h, &alice, "feedback").await;
+    assert_eq!(direct(&h, &alice, "Admin").await, caper);
+    let (_, dms) = call(
+        &h.app,
+        "GET",
+        "/api/dms",
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(dms["conversations"][0]["peer"]["displayName"], "Caper");
+    assert_eq!(dms["conversations"][0]["status"], "accepted");
+    assert_eq!(dms["conversations"][0]["peer"]["team"], true);
+
+    let first = send(&h, &alice, &caper, "Uploads hang at 100%", None).await;
+    let (_, stored) = call(
+        &h.app,
+        "GET",
+        &format!("/api/chat/channels/{caper}/messages/{first}"),
+        Some(&alice.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(
+        stored["content"]["mentions"],
+        json!([{"type": "feedback"}]),
+        "marked as sent to the team"
+    );
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &first).await,
+        pairs(&[("jose", "feedback")])
+    );
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    assert_eq!(inbox["reports"][0]["messageId"], first.as_str());
+    assert_eq!(inbox["reports"][0]["channel"]["name"], "Alice → Caper");
+    let (_, window) = history(&h, &jose, &caper, "").await;
+    assert_eq!(window["visitor"], true);
+
+    // The team answers as itself; Alice hears it like any DM.
+    let answer = send(&h, &jose, &caper, "Looking now", Some(&first)).await;
+    expand(&h).await;
+    assert_eq!(
+        notified(&pool, &answer).await,
+        pairs(&[("alice", "direct.message")])
+    );
+    // Replies in that thread are the same feedback; a new message is new feedback.
+    let follow = send(&h, &alice, &caper, "Thanks!", Some(&first)).await;
+    let second = send(&h, &alice, &caper, "Also: dark mode?", None).await;
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    let ids: Vec<&str> = inbox["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["messageId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [second.as_str(), first.as_str()]);
+    assert!(!ids.contains(&follow.as_str()));
+    assert_eq!(inbox["reports"][1]["answered"], false, "Alice spoke last");
+    // The team can also just answer in the DM; that answers what came before.
+    send(&h, &jose, &caper, "Both fixed in today's build", None).await;
+    let (_, inbox) = call(
+        &h.app,
+        "GET",
+        "/api/feedback",
+        Some(&jose.token),
+        None,
+        json!(null),
+    )
+    .await;
+    let answered: Vec<&Value> = inbox["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| &r["answered"])
+        .collect();
+    assert_eq!(answered, [&json!(true), &json!(true)]);
+    assert_eq!(
+        inbox["reports"].as_array().unwrap().len(),
+        2,
+        "the team's message is no report"
+    );
+}
