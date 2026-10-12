@@ -3049,7 +3049,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 }
 
 private fun DrawScope.replySocket(position: Offset, angle: Float) {
-    withTransform({ translate(position.x, position.y); rotate(angle, Offset.Zero); scale(density, density, Offset.Zero) }) {
+    withTransform({ translate(position.x, position.y); rotate(angle, Offset.Zero); scale(this@replySocket.density, this@replySocket.density, Offset.Zero) }) {
         val cup = Path().apply {
             moveTo(-12f, -2.4f); quadraticTo(-13f, 0f, -12f, 2.4f)
             lineTo(-1f, 4.5f); lineTo(-1f, -4.5f); close()
