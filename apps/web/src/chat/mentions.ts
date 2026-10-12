@@ -100,14 +100,16 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
   const special: MentionSuggestion[] = specials
     ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
     : [];
-  // Offered everywhere, once something is typed, so a bare `@` stays about people.
-  // It completes the name being typed: `@ad` becomes `@admin`.
-  const alias = needle ? feedbackAliases.find((name) => name.startsWith(needle)) : undefined;
-  if (alias) special.push({ kind: "feedback", alias });
-  return [
-    ...rankPeople(members, query, 6 - special.length).map((member) => ({ kind: "member" as const, member })),
-    ...special,
-  ];
+  // A bare `@` leads with `@feedback`, so people find the Caper team. Once
+  // something is typed people come first, so `@a` + Enter still picks Alex;
+  // the team row then completes the name being typed (`@ad` → `@admin`).
+  const alias = needle ? feedbackAliases.find((name) => name.startsWith(needle)) : "feedback";
+  const team: MentionSuggestion[] = alias ? [{ kind: "feedback", alias }] : [];
+  const people = rankPeople(members, query, 6 - special.length - team.length).map((member) => ({
+    kind: "member" as const,
+    member,
+  }));
+  return needle ? [...people, ...special, ...team] : [...team, ...people, ...special];
 }
 
 export function mentionName(suggestion: MentionSuggestion) {

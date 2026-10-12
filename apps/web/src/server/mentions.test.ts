@@ -45,8 +45,8 @@ test("suggestions rank username, display name and contains; specials keep their 
   assert.deepEqual(names("MA"), ["maya", "sam_m", "zz_maya"]);
   assert.deepEqual(names("e"), ["alfie", "bea", "everyone"]);
   assert.deepEqual(names("h"), ["here"]);
-  assert.deepEqual(names(""), ["alfie", "bea", "cal", "maya", "everyone", "here"]);
-  assert.deepEqual(names("", false), ["alfie", "bea", "cal", "maya", "mo", "sam_m"]);
+  assert.deepEqual(names(""), ["feedback", "alfie", "bea", "cal", "everyone", "here"]);
+  assert.deepEqual(names("", false), ["feedback", "alfie", "bea", "cal", "maya", "mo"]);
   assert.deepEqual(names("every", false), []);
   assert.equal(names("").length, 6);
 });
@@ -162,7 +162,9 @@ test("team names are suggested everywhere once typed, completing the name, and r
   assert.deepEqual(names("admins"), ["admins"]);
   assert.deepEqual(names("c", false), ["cal", "caper"]);
   assert.deepEqual(names("mo"), ["mo", "mod"]);
-  assert.ok(!names("").includes("feedback"), "a bare @ stays about people");
+  assert.equal(names("")[0], "feedback", "a bare @ leads with the team, once");
+  assert.equal(names("").filter((name) => name === "feedback").length, 1);
+  assert.deepEqual(names("a", false).at(-1), "admin", "typed queries keep people first");
   assert.deepEqual(
     mentionSegments("ping @Admin and @mods", [{ type: "feedback" }])
       .filter((s) => s.mention)
