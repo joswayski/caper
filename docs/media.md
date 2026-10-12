@@ -332,12 +332,19 @@ arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 
 ### Channel navigation
 
-Web, Apple and Rust desktop treat clicks on the displayed channel as no-ops;
+Web, Android, Apple and Rust desktop treat clicks on the displayed channel as no-ops;
 clicking it while another channel opens cancels the pending transition. Repeated
 clicks on one pending destination do not duplicate navigation. Hover/focus on
 desktop web, macOS and Rust desktop speculates read-only history, never a sending
 session or voice join. Visited timelines resume from their retained replay cursor;
-native clicks still recheck space access before using speculative history.
+Apple and Rust desktop clicks still recheck space access before using speculative history.
+Channel switches keep the displayed title and loaded messages together until the
+target is ready, rather than covering them with a skeleton during cache lookup,
+prefetch or authorization. Loaded empty channels count as ready conversations.
+Only a first load without a ready conversation uses a message skeleton. Android
+retains up to 20 channel/DM snapshots in account-scoped memory, rejects incomplete
+context windows, and clears removed/revoked conversations and sign-out data;
+the authorized gateway replays from each retained cursor.
 Apple displays prepared history while its sending session opens and retains the
 same space's member page/presence subscription. Rust desktop retains member
 statuses and pagination, but reconnects its combined chat/presence gateway on
@@ -377,7 +384,7 @@ against Vite for mocked desktop/390px repeat-click, hover/click sharing, cancell
 and stable presence checks. Web build/tests and Rust desktop tests/Clippy run in
 the Linux orb; Apple regressions require Xcode and macOS/iOS render validation.
 iOS shares the Apple repeat-click/presence fixes without hover speculation.
-Android channel navigation remains unchanged and does not preload on hover;
+Android retains channel history on revisit but does not preload on hover;
 physical device and live-network checks remain separate.
 
 ### Application gateway and account presence

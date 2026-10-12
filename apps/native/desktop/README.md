@@ -20,9 +20,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account space/channel navigation, including accessible private channels.
 - Bounded read-only hover prefetch, retained conversation cursors and last-channel
   restoration. Navigation rechecks access; mutations and revocation discard
-  cached data and fence in-flight completions. Pending navigation and initial
-  history use message-pane skeletons, not a layout-shifting banner. Navigation
-  failures offer in-pane retry/dismiss; drafts and scroll state remain retained,
+  cached data and fence in-flight completions. Pending navigation keeps the loaded
+  conversation visible, including empty channels; only a first history load with
+  no ready conversation uses a message-pane skeleton. Navigation failures offer
+  in-pane retry/dismiss; drafts and scroll state remain retained,
   and the composer pauses until navigation finishes or is cancelled/dismissed.
 - HTTP message history and idempotent writes. A timeout or lost response retains
   the same client message UUID and original text for retry; a definitive
@@ -406,9 +407,9 @@ DM with unread messages (no dot) and a DM with notifications off (still
 dotted); it sends no notification requests.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
-`parity-opening`, `parity-opening-narrow`, and `parity-opening-error` preview
-pending navigation and its retry state with retained conversation chrome and a
-labelled fixture draft; `parity-loading` previews the initial history skeleton.
+`parity-opening` and `parity-opening-narrow` preview pending navigation with
+retained history and a labelled fixture draft; `parity-opening-error` previews
+retry, and `parity-loading` previews the initial history skeleton.
 These previews do not start a navigation request or a media transport.
 `parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
 `parity-settings-offline` preview the update control and check feedback. These

@@ -12807,7 +12807,7 @@ impl CaperApp {
                 .stick_to_bottom(!self.showing_pins)
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, false]);
-            if !self.showing_pins {
+            if !self.showing_pins && !self.opening {
                 if let Some(offset) = self.history_offset.take() {
                     history = history.vertical_scroll_offset(offset);
                 } else if jump_latest {
@@ -12978,6 +12978,12 @@ impl CaperApp {
 
     fn navigation_state(&mut self, ui: &mut egui::Ui) -> bool {
         if self.opening {
+            // Navigation retains the displayed conversation until the target's
+            // metadata, history and session are ready, including cache hits.
+            // An empty loaded channel is still a conversation, not a cold load.
+            if self.selected_channel.is_some() && !self.loading {
+                return false;
+            }
             message_skeleton(ui);
             return true;
         }
@@ -13045,7 +13051,7 @@ impl CaperApp {
         history: &egui::scroll_area::ScrollAreaOutput<()>,
         heading: egui::Rect,
     ) {
-        if !self.showing_pins {
+        if !self.showing_pins && !self.opening {
             let height = history.content_size.y;
             let viewport = history.inner_rect.height();
             let offset = history.state.offset.y;
@@ -34216,7 +34222,10 @@ mod tests {
 
     #[test]
     fn navigation_loading_and_retry_do_not_shift_the_shell_or_consume_scroll_state() {
-        for size in [egui::vec2(1440.0, 900.0), egui::vec2(390.0, 844.0)] {
+        for (size, cached) in [egui::vec2(1440.0, 900.0), egui::vec2(390.0, 844.0)]
+            .into_iter()
+            .flat_map(|size| [false, true].map(|cached| (size, cached)))
+        {
             let context = egui::Context::default();
             context.enable_accesskit();
             let mut app = CaperApp::new(
@@ -34258,7 +34267,13 @@ mod tests {
                 space: app.selected_space.clone(),
                 channel: Some("chan00000002".into()),
             };
-            app.navigation_cache.begin_prefetch(target, Instant::now());
+            if cached {
+                let mut retained = history("chan00000002");
+                retained.space.id = app.selected_space.clone().unwrap();
+                app.navigation_cache.remember(target, retained);
+            } else {
+                app.navigation_cache.begin_prefetch(target, Instant::now());
+            }
             app.select_channel("chan00000002".into(), false);
             app.history_offset = Some(63.0);
             app.older_anchor = Some(123.0);
@@ -34267,7 +34282,12 @@ mod tests {
             app.has_more = true;
             let opening = frame(&mut app, vec![]);
             assert!(
-                opening
+                opening.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "TEST FIXTURE — local sample data, not a live conversation.")),
+                "preparing another conversation must retain loaded messages"
+            );
+            assert!(
+                !opening
                     .platform_output
                     .accesskit_update
                     .as_ref()
@@ -34290,8 +34310,7 @@ mod tests {
                     .is_disabled()
             );
             assert!(!opening.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if ["Opening conversation…", "Loading messages…", "No messages yet.",
-                    "TEST FIXTURE — local sample data, not a live conversation."].contains(&text.galley.job.text.as_str()))));
+                egui::Shape::Text(text) if ["Opening conversation…", "Loading messages…", "No messages yet."].contains(&text.galley.job.text.as_str()))));
             app.accept_navigation(
                 app.generation,
                 app.navigation,
@@ -34397,6 +34416,20 @@ mod tests {
         let empty = render(&mut app, &context, vec![]);
         text_position(&empty, "No messages yet.");
 
+        app.opening = true;
+        let retained_empty = render(&mut app, &context, vec![]);
+        text_position(&retained_empty, "No messages yet.");
+        assert!(
+            !retained_empty
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Loading messages"))
+        );
+        app.opening = false;
         app.selected_channel = None;
         app.navigation_target = Some(NavigationTarget {
             space: app.selected_space.clone(),
