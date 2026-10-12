@@ -1855,9 +1855,10 @@ resets scrolling; selecting a category clears search. Search covers all eight
 categories, regardless of the selected category. The grid loads its mounted image
 window eagerly, including after category changes. Versioned
 `/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
-changed artwork must use a new path. Web category tabs sit above search, brighten
-on hover/selection, and underline the selected category in terracotta. Pointer
-clicks have no circular ring; keyboard focus retains a separate outline.
+changed artwork must use a new path. Web category tabs sit above search and use
+the same colored Twemoji artwork as native, with a terracotta underline for the
+selected category. Pointer clicks have no circular ring; keyboard focus retains
+a separate outline.
 `node scripts/test-message-actions.mjs` checks startup code/opening-grid preparation
 without opening, warm openings/reopenings without loading-panel flashes,
 hover/focus reuse without opening or duplicate image requests,

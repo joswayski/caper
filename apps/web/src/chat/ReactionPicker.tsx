@@ -1,19 +1,19 @@
 import { useState } from "react";
-import { Bus, Cat, Flag, Music, Search, Shirt, Smile, Utensils, Volleyball, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { VirtuosoGrid } from "react-virtuoso";
 import english from "emoji-picker-react/dist/data/emojis-en";
 import { emojiAsset, emojiNames, preloadEmojiImages } from "./emoji.ts";
 import emojiLabels from "./emoji-labels.json";
 
 const categories = [
-  { category: "smileys_people", name: "Smileys & people", icon: Smile },
-  { category: "animals_nature", name: "Animals & nature", icon: Cat },
-  { category: "food_drink", name: "Food & drink", icon: Utensils },
-  { category: "travel_places", name: "Travel & places", icon: Bus },
-  { category: "activities", name: "Activities", icon: Volleyball },
-  { category: "objects", name: "Objects", icon: Shirt },
-  { category: "symbols", name: "Symbols", icon: Music },
-  { category: "flags", name: "Flags", icon: Flag },
+  { category: "smileys_people", name: "Smileys & people", icon: "1f600" },
+  { category: "animals_nature", name: "Animals & nature", icon: "1f431" },
+  { category: "food_drink", name: "Food & drink", icon: "1f354" },
+  { category: "travel_places", name: "Travel & places", icon: "1f68c" },
+  { category: "activities", name: "Activities", icon: "26bd" },
+  { category: "objects", name: "Objects", icon: "1f455" },
+  { category: "symbols", name: "Symbols", icon: "1f3b5" },
+  { category: "flags", name: "Flags", icon: "1f3c1" },
 ];
 const choices = Object.entries(english.emojis).flatMap(([category, entries]) =>
   entries
@@ -60,7 +60,7 @@ export default function ReactionPicker({ onSelect }: { onSelect: (emoji: string)
               void preloadEmojiImages(item.category);
             }}
           >
-            <item.icon size={22} aria-hidden="true" />
+            <img src={emojiAsset(item.icon)} alt="" width={22} height={22} loading="eager" />
           </button>
         ))}
       </div>
