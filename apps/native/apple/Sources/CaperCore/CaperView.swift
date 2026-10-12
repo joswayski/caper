@@ -357,8 +357,12 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     func body(content: Content) -> some View {
         let opening = Drawer.opening
         // Global coordinates: the view itself moves with the finger. The list
-        // stops scrolling while it follows a slide.
-        content.contentShape(Rectangle()).scrollDisabled(tracking == true)
+        // stops scrolling while it follows a slide, and the controls under the
+        // finger drop their press, so lifting doesn't tap or long-press whatever
+        // is there (as the web suppresses a drag's release click). The swipe
+        // keeps its own touch through the outer content shape.
+        content.allowsHitTesting(tracking != true)
+            .contentShape(Rectangle()).scrollDisabled(tracking == true)
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
@@ -5468,7 +5472,9 @@ private struct NewDirectMessageSheet: View {
                 Button(action: start) {
                     Text("Start conversation").hidden().overlay { Text(pending ? "Opening…" : "Start conversation") }
                 }
-                .buttonStyle(VoiceJoinButton()).disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                // The primary action, as on the other clients: neutral until a username is entered.
+                .buttonStyle(CaperPrimaryButton()).frame(width: 180)
+                .disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel(pending ? "Opening…" : "Start conversation")
                 .accessibilityIdentifier("dm-create-submit")
             }

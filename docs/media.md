@@ -6914,3 +6914,34 @@ discards them.
    and Rust desktop release independently. Roll back web to the previous image;
    native rollback requires a corrected higher-build-number release. No data
    rollback is needed.
+
+## Swipes no longer tap where they end on iOS (October 12, 2026)
+
+On iPhone, a Browse/conversation or member-list swipe also triggered the
+control under the finger when it lifted. Browse rows span the full width, so
+swiping left along **New message** (or **Invite people**) returned to chat and
+then opened the New direct message dialog. In the conversation the content moves
+with the finger, so a link, chip or slow long-press under it could fire too.
+`DrawerSwipe` now stops hit-testing its content once a slide follows the finger,
+so the controls under it drop their press; the swipe keeps its touch through the
+outer content shape. Web (room-level release-click suppression), Android
+(consumed moves cancel the child click) and Rust desktop (the swipe owns the
+drag, so egui sees no click) already behaved this way and are unchanged.
+
+The iOS New direct message dialog's **Start conversation** now uses the primary
+eggshell action, neutral while the username is empty, as on the other clients.
+It previously used the terracotta voice style, which looked enabled while empty.
+
+| Platform | Validation boundary |
+| --- | --- |
+| iOS/macOS | `testNarrowConversationAndBrowse` now swipes along the New message/Invite people row and asserts no dialog opens. Changed sources parse with Linux Swift 6.1. No Apple SDK, Xcode, XCTest, simulator or device run here; needs a physical iPhone check of swipes from Browse rows, timeline links/chips and the member list. |
+| Web, Android, Rust desktop | Unchanged; confirmed by code reading only. |
+| Services | No API, gateway, schema or configuration change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API, gateway,
+   web, Android or Rust desktop rollout is required. Merging deploys nothing.
+2. Release the Apple clients from the merged revision with the usual TestFlight
+   workflow. Rollback requires a corrected higher-build-number release; no data
+   rollback is needed.
