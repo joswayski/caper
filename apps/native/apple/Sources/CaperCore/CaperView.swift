@@ -494,10 +494,13 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     @State private var tracking: Bool?
     /// Where the drawer was and the finger's offset (toward open) when it started following.
     @State private var grab: (position: CGFloat, offset: CGFloat)?
-    /// The gesture this state belongs to, by where it started, and whether it
-    /// has ended. A move after an end, or from another start, is a new gesture
-    /// decided afresh, so no earlier gesture can leave a stale slide.
-    @State private var gesture: (start: CGPoint, ended: Bool)?
+    /// The gesture this state belongs to, by where it started, and when it
+    /// ended. A move from another start, or from the same start once the last
+    /// gesture has been over for a moment, is a new gesture decided afresh, so
+    /// no earlier gesture can leave a stale slide. Moves that trail an end at
+    /// its own start are that gesture's tail: following them reopened the
+    /// slide it had just finished.
+    @State private var gesture: (start: CGPoint, endedAt: Date?)?
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
@@ -511,13 +514,15 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    if gesture?.start != value.startLocation || gesture?.ended != false {
+                    let sameStart = gesture?.start == value.startLocation
+                    if sameStart, let endedAt = gesture?.endedAt, Date().timeIntervalSince(endedAt) < 0.3 { return }
+                    if !sameStart || gesture?.endedAt != nil {
                         // An abandoned slide of an earlier gesture settles back first.
                         if tracking == true, let drawer, drawer.drag != nil {
                             drawer.settle = nil
                             withAnimation(reduceMotion ? nil : DrawerSettle.Timing.settle.animation) { drawer.drag = nil }
                         }
-                        gesture = (value.startLocation, false)
+                        gesture = (value.startLocation, nil)
                         tracking = nil
                         grab = nil
                     }
@@ -536,8 +541,8 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     drawer.drag = min(1, max(0, grab.position + (dx - grab.offset) / drawer.travel))
                 }
                 .onEnded { value in
-                    let followed = tracking == true && gesture?.ended == false && gesture?.start == value.startLocation
-                    defer { tracking = nil; grab = nil; gesture?.ended = true }
+                    let followed = tracking == true && gesture?.endedAt == nil && gesture?.start == value.startLocation
+                    defer { tracking = nil; grab = nil; if gesture?.endedAt == nil { gesture?.endedAt = Date() } }
                     guard followed, let drawer, let position = drawer.drag else { return }
                     let release = DrawerRelease(open: open, position: position, velocity: opening * value.velocity.width,
                                                 distance: opening * value.translation.width, travel: drawer.travel)
@@ -564,7 +569,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     let followed = tracking == true
                     tracking = nil
                     grab = nil
-                    gesture?.ended = true
+                    if gesture?.endedAt == nil { gesture?.endedAt = Date() }
                     guard followed, let drawer, let position = drawer.drag else { return }
                     let timing = DrawerSettle.Timing.settle
                     drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: timing)
