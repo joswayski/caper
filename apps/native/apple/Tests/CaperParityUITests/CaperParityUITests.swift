@@ -598,11 +598,18 @@ final class CaperParityUITests: XCTestCase {
 
         send.tap()
         // "Also send to #general" can put a copy in the hidden channel too.
-        let reply = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(format: "label == %@", "Short reply"))),
-                                  "Reply was not sent")
+        _ = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(format: "label == %@", "Short reply"))),
+                          "Reply was not sent")
         try require(app.staticTexts["1 reply"], timeout: 5, "Populated threads must keep their reply count")
         XCTAssertFalse(app.staticTexts["No replies yet. Start the thread."].exists)
-        reply.press(forDuration: 0.8)
+        // Hold the reply like the root above, on its header text. Since profile
+        // cards (#483), holding its body text on CI opened the author's profile
+        // card instead of the message's actions.
+        let replyRow = try require(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-row-"))
+            .containing(NSPredicate(format: "label == %@", "Short reply")).firstMatch,
+            timeout: 5, "Missing the reply's row")
+        hold(replyRow)
         let replyActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                        "Missing thread reply actions")
         XCTAssertFalse(replyActions.buttons["Reply in thread"].exists, "Replies cannot start nested threads")
