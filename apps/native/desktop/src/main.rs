@@ -3682,6 +3682,12 @@ impl CaperApp {
         })
     }
 
+    /// The inbox or a report visit owns the sidebar highlight, not the
+    /// conversation retained underneath it.
+    fn feedback_selected(&self) -> bool {
+        self.feedback_open || self.visiting().is_some()
+    }
+
     /// The open conversation is a DM (a visited one included), named after
     /// people rather than `#channel`.
     fn conversation_is_direct(&self) -> bool {
@@ -9286,7 +9292,7 @@ impl CaperApp {
                                             egui::vec2((ui.available_width() - trailing).max(48.0), 32.0),
                                             &name,
                                             Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
-                                            self.selected_channel.as_deref() == Some(&id),
+                                            !self.feedback_selected() && self.selected_channel.as_deref() == Some(&id),
                                             RowExtras { unread, ..RowExtras::default() },
                                         );
                                         if row.clicked() { self.select_channel(id.clone(), false); }
@@ -9324,7 +9330,7 @@ impl CaperApp {
                             ui.scope(|ui| {
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 ui.spacing_mut().interact_size.y = 28.0;
-                                let active = self.selected_channel.as_deref() == Some(&id);
+                                let active = !self.feedback_selected() && self.selected_channel.as_deref() == Some(&id);
                                 let started = if self.voice.state.active_channel() == Some(&id) {
                                     if matches!(self.voice.state.phase, Phase::Joining(_)) {
                                         self.voice_session_starts.get(&id).copied().or(self.voice.session_started_at)
@@ -9504,7 +9510,7 @@ impl CaperApp {
             });
             // The Caper team's inbox sits with the DMs, for team members only.
             if self.feedback_team() {
-                let active = self.feedback_open || self.visiting().is_some();
+                let active = self.feedback_selected();
                 ui.horizontal(|ui| {
                     let (response, _, _) = channel_button(
                         ui,
@@ -9526,9 +9532,10 @@ impl CaperApp {
                 .iter()
                 .find(|direct| direct.peer.id == account.id)
                 .cloned();
-            let self_active = self_direct
-                .as_ref()
-                .is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
+            let self_active = !self.feedback_selected()
+                && self_direct
+                    .as_ref()
+                    .is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
             let self_unread = self_direct.as_ref().is_some_and(|direct| {
                 model::sequence(&direct.last_seq).unwrap_or(0)
                     > model::sequence(&direct.read_seq).unwrap_or(0)
@@ -9619,7 +9626,8 @@ impl CaperApp {
                 if direct.peer.id == account.id || direct.status == model::DirectStatus::Incoming {
                     continue;
                 }
-                let active = self.selected_direct.as_deref() == Some(&direct.id);
+                let active = !self.feedback_selected()
+                    && self.selected_direct.as_deref() == Some(&direct.id);
                 let scope = Scope::Direct(direct.id.clone());
                 let muted = self.muted_label(&scope);
                 // A muted DM shows no unread dot.
@@ -9942,7 +9950,8 @@ impl CaperApp {
             return;
         }
         for request in requests {
-            let active = self.selected_direct.as_deref() == Some(&request.id);
+            let active =
+                !self.feedback_selected() && self.selected_direct.as_deref() == Some(&request.id);
             let name = format!("{} @{}", request.peer.display_name, request.peer.username);
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width() - 18.0, 28.0),
@@ -29345,6 +29354,113 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn feedback_sidebar_selection_replaces_the_underlying_conversation() {
+        for kind in ["self", "direct", "request", "channel"] {
+            let (context, mut app) = fixture("parity-feedback");
+            app.feedback_open = false;
+            app.draft = "Unsent notes".into();
+            let channel = app.selected_channel.clone().unwrap();
+            let label = if kind == "channel" {
+                "general".to_owned()
+            } else {
+                let mut direct = model::DirectConversation {
+                    id: "dm0000000001".into(),
+                    peer: model::DirectPeer {
+                        id: "fixture-maya".into(),
+                        username: "maya".into(),
+                        display_name: "TEST FIXTURE Maya".into(),
+                        avatar_id: None,
+                        team: false,
+                    },
+                    last_seq: "0".into(),
+                    read_seq: "0".into(),
+                    status: model::DirectStatus::Accepted,
+                    blocked: false,
+                };
+                if kind == "self" {
+                    let account = app.account.as_ref().unwrap();
+                    direct.peer.id = account.id.clone();
+                    direct.peer.display_name = account.display_name.clone().unwrap();
+                } else if kind == "request" {
+                    direct.status = model::DirectStatus::Incoming;
+                }
+                let label = match kind {
+                    "self" => format!("{} you", direct.peer.display_name),
+                    "request" => format!(
+                        "Message request from {} @{}",
+                        direct.peer.display_name, direct.peer.username
+                    ),
+                    _ => direct.peer.display_name.clone(),
+                };
+                app.selected_channel = Some(direct.id.clone());
+                app.selected_direct = Some(direct.id.clone());
+                app.directs = vec![direct];
+                label
+            };
+            let selected = |output: &egui::FullOutput, label: &str| {
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .unwrap_or_else(|| panic!("missing sidebar row: {label}"))
+                    .1
+                    .toggled()
+                    == Some(egui::accesskit::Toggled::True)
+            };
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(selected(&output, &label), "{kind} starts selected");
+            assert!(!selected(&output, "Feedback"));
+            let conversation = app.selected_channel.clone();
+            let draft = app.draft.clone();
+            let feedback_row = labelled_center(&output, "Feedback").unwrap();
+            click_at(&mut app, &context, feedback_row);
+            let output = render(&mut app, &context, vec![]);
+            assert!(selected(&output, "Feedback"));
+            assert!(!selected(&output, &label), "{kind} is behind the inbox");
+            assert_eq!(app.selected_channel, conversation);
+            assert_eq!(app.draft, draft, "opening the inbox preserves the draft");
+
+            click_at(
+                &mut app,
+                &context,
+                labelled_center(&output, &label).unwrap(),
+            );
+            let output = render(&mut app, &context, vec![]);
+            assert!(selected(&output, &label), "returning selects {kind}");
+            assert!(!selected(&output, "Feedback"));
+            assert_eq!(app.draft, draft);
+
+            if kind != "channel" {
+                continue;
+            }
+
+            // Visiting a report also owns the highlight, even if its channel
+            // is already listed in the sidebar.
+            app.feedback_open = false;
+            app.selected_channel = Some(channel.clone());
+            app.selected_direct = Some(channel.clone());
+            app.visit = Some(crate::feedback::Visit {
+                channel,
+                name: "general".into(),
+                direct: false,
+                space_id: "space0000001".into(),
+                space_name: "Fixture Studio".into(),
+                title: "#general · Fixture Studio".into(),
+                reporter: None,
+                origin: crate::feedback::Origin::Inbox,
+            });
+            let output = render(&mut app, &context, vec![]);
+            assert!(selected(&output, "Feedback"));
+            assert!(!selected(&output, "general"), "the report is a visit");
+        }
     }
 
     #[test]
