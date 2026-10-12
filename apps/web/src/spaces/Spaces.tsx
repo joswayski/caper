@@ -1453,12 +1453,10 @@ function BrowseChannelsDialog({
 
 function ChannelInvitationDialog({
   invitation,
-  spaceName,
   onClose,
   onRespond,
 }: {
   invitation: ChannelInvitation;
-  spaceName: string;
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
@@ -1490,12 +1488,9 @@ function ChannelInvitationDialog({
         <LockKeyhole aria-hidden="true" />
         <h3>Join #{invitation.channel.name}?</h3>
         <p>
-          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private
-          channel in <strong>{spaceName}</strong>.
-        </p>
-        <p>
-          Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations
-          expire seven days after they’re sent.
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to private
+          channel
+          <strong> #{invitation.channel.name}</strong>.
         </p>
         {error && (
           <p className="space-form-error" role="alert">
@@ -1722,6 +1717,16 @@ export default function Spaces({
   const [membershipError, setMembershipError] = useState<string>();
   const [browseOpen, setBrowseOpen] = useState(false);
   const [channelInvitation, setChannelInvitation] = useState<ChannelInvitation>();
+  const notificationInvite = useRef(
+    embedded || typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("invite"),
+  );
+  useEffect(() => {
+    if (!view || view.detail.space.id !== selected.spaceId || !notificationInvite.current) return;
+    const invite = view.detail.channelInvitations?.find((item) => item.channel.id === notificationInvite.current);
+    notificationInvite.current = null;
+    if (invite) setChannelInvitation(invite);
+    else setNotice("This invitation is no longer available.");
+  }, [view, selected.spaceId]);
   const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
@@ -2626,7 +2631,6 @@ export default function Spaces({
         <ChannelInvitationDialog
           key={channelInvitation.channel.id}
           invitation={channelInvitation}
-          spaceName={detail.space.name}
           onClose={() => setChannelInvitation(undefined)}
           onRespond={(accept) =>
             changeChannelMembership(

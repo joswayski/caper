@@ -8,6 +8,8 @@ public final class AppModel {
     public var account: Account?
     public var spaces: [Space] = []
     public var invitations: [Space] = []
+    public var notificationInvitation: Space?
+    public var notificationChannelInvitation: ChannelInvitation?
     private var pendingMemberSnapshots: [Member] = []
     public var pendingMembers: [Member] {
         get { pendingMemberSnapshots.map { $0.withProfile(account) } }
@@ -86,6 +88,7 @@ public final class AppModel {
     @ObservationIgnored private var muteExpiryTask: Task<Void, Never>?
     /// A tapped push that arrived before spaces loaded; opened in their place.
     @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
+    @ObservationIgnored private var notificationRouteRevision = 0
     public var previewingChannel: Bool { selectedChannel?.joined == false }
     public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
@@ -318,6 +321,7 @@ public final class AppModel {
         voice.leaveImmediately()
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
+        notificationInvitation = nil; notificationChannelInvitation = nil
         directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
         blockedAccounts = []; blockedIDs = []; blocksLoaded = false; blocksError = nil
         directMessagePrivacy = nil; privacyError = nil; chat.setBlockedAuthors([])
@@ -380,6 +384,9 @@ public final class AppModel {
             }
             if case let .direct(conversationID)? = route, self.generation == attempt {
                 await self.openDirectMessage(id: conversationID)
+            }
+            if case .invitation? = route, let route, self.generation == attempt {
+                await self.open(route)
             }
         }
     }
@@ -1632,6 +1639,9 @@ extension AppModel {
     /// opens in place of the usual first space.
     public func open(_ route: NotificationRoute) async {
         guard phase != .signedOut else { return }
+        notificationRouteRevision += 1
+        let routeRevision = notificationRouteRevision
+        notificationInvitation = nil; notificationChannelInvitation = nil
         guard account != nil, spacesLoaded else {
             pendingNotificationRoute = route
             return
@@ -1639,6 +1649,35 @@ extension AppModel {
         switch route {
         case let .direct(conversationID): await openDirectMessage(id: conversationID)
         case let .channel(spaceID, channelID): await openChannel(spaceID: spaceID, channelID: channelID)
+        case let .invitation(spaceID, channelID):
+            let attempt = generation
+            let navigation = navigationGeneration
+            do {
+                let response = try await api.spaces()
+                guard generation == attempt, notificationRouteRevision == routeRevision, navigationGeneration == navigation else { return }
+                spaces = response.spaces; invitations = response.invitations; limits = response.limits
+                if let channelID {
+                    guard let space = spaces.first(where: { $0.id == spaceID }) else {
+                        error = "This invitation is no longer available."; return
+                    }
+                    let detail = try await api.space(spaceID)
+                    guard generation == attempt, notificationRouteRevision == routeRevision, navigationGeneration == navigation else { return }
+                    guard let invite = detail.channelInvitations.first(where: { $0.channel.id == channelID }) else {
+                        error = "This invitation is no longer available."; return
+                    }
+                    await select(space: space)
+                    guard generation == attempt, notificationRouteRevision == routeRevision,
+                          navigationGeneration == navigation + 1, selectedSpaceID == spaceID else { return }
+                    notificationChannelInvitation = invite
+                } else {
+                    notificationInvitation = invitations.first(where: { $0.id == spaceID })
+                    if notificationInvitation == nil { error = "This invitation is no longer available." }
+                }
+            } catch {
+                if generation == attempt, notificationRouteRevision == routeRevision, navigationGeneration == navigation {
+                    self.error = FriendlyError.message(for: error)
+                }
+            }
         }
     }
 

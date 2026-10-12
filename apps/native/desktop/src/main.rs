@@ -793,6 +793,7 @@ struct CaperApp {
     navigation_error: Option<String>,
     navigation_cache: navigation::NavigationCache,
     navigation_cache_generation: u64,
+    notification_browse_space: Option<String>,
     dialog: Option<Dialog>,
     /// The dialog kind drawn last frame, so a newly opened one focuses its field.
     dialog_shown: Option<std::mem::Discriminant<Dialog>>,
@@ -998,6 +999,7 @@ impl CaperApp {
             navigation_error: None,
             navigation_cache: navigation::NavigationCache::default(),
             navigation_cache_generation: 1,
+            notification_browse_space: None,
             dialog: None,
             dialog_shown: None,
             focus_dialog_field: false,
@@ -2159,7 +2161,18 @@ impl CaperApp {
                     self.worker.focus();
                     self.dialog = None;
                     self.navigation_open = false;
-                    if let Some(id) = alert.conversation_id {
+                    if alert.invitation() {
+                        if let Some(space) = alert.space_id {
+                            self.navigation += 1;
+                            self.worker.send(Command::OpenInvitation {
+                                epoch: self.account_epoch,
+                                navigation: self.navigation,
+                                token: self.token.clone().expect("signed-in notification"),
+                                space,
+                                channel: alert.channel_id,
+                            });
+                        }
+                    } else if let Some(id) = alert.conversation_id {
                         // A new DM may arrive before the periodic conversation list.
                         self.navigate(NavigationTarget {
                             space: None,
@@ -2181,6 +2194,55 @@ impl CaperApp {
                 }
                 Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
                     self.warning = Some(error);
+                }
+                Event::InvitationLoaded {
+                    epoch,
+                    navigation,
+                    space,
+                    channel,
+                    result,
+                } if epoch == self.account_epoch
+                    && navigation == self.navigation
+                    && self.token.is_some() =>
+                {
+                    match result {
+                        Ok((spaces, detail)) => {
+                            self.set_spaces(spaces);
+                            if let Some(channel) = channel {
+                                if let Some(detail) = detail.filter(|detail| {
+                                    detail
+                                        .channel_invitations
+                                        .iter()
+                                        .any(|invite| invite.channel.id == channel)
+                                }) {
+                                    self.navigation_cache.forget_space(&space);
+                                    if self.selected_space.as_ref() == Some(&space)
+                                        && self.selected_direct.is_none()
+                                    {
+                                        self.detail = Some(detail);
+                                        self.navigation_open = true;
+                                    } else {
+                                        self.navigate(NavigationTarget {
+                                            space: Some(space.clone()),
+                                            channel: None,
+                                        });
+                                        self.notification_browse_space = Some(space);
+                                    }
+                                } else {
+                                    self.warning =
+                                        Some("This invitation is no longer available.".into());
+                                }
+                            } else if let Some(invite) =
+                                self.invitations.iter().find(|invite| invite.id == space)
+                            {
+                                self.dialog = Some(Dialog::Invitation(invite.clone()));
+                            } else {
+                                self.warning =
+                                    Some("This invitation is no longer available.".into());
+                            }
+                        }
+                        Err(error) => self.warning = Some(error),
+                    }
                 }
                 Event::DirectsLoaded {
                     generation,
@@ -2930,6 +2992,7 @@ impl CaperApp {
         self.channel_reads.clear();
         self.unread_revision += 1;
         self.membership_refreshing = false;
+        self.notification_browse_space = None;
         self.space_notice = None;
         self.blocks = None;
         self.blocks_error = None;
@@ -3801,6 +3864,7 @@ impl CaperApp {
     fn navigate(&mut self, target: NavigationTarget) {
         // Another conversation's media never stays open over it.
         self.viewer = None;
+        self.notification_browse_space = None;
         self.forwarding.cancel_conversation();
         self.forward_focus = None;
         let mut cache_target = navigation::Target {
@@ -4032,7 +4096,12 @@ impl CaperApp {
                 self.error = None;
                 self.navigation_error = None;
                 self.navigation_target = None;
-                self.navigation_open = false;
+                self.navigation_open = self.notification_browse_space.take().is_some_and(|space| {
+                    prepared
+                        .detail
+                        .as_ref()
+                        .is_some_and(|detail| detail.space.id == space)
+                });
                 let general = !direct && prepared.detail.is_none();
                 if !direct {
                     self.selected_space = prepared
@@ -8075,8 +8144,7 @@ impl CaperApp {
                                 ui.set_width(ui.available_width());
                                 ui.spacing_mut().item_spacing.y = 3.0;
                                 ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
-                                ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
-                                ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
+                                ui.label(RichText::new(format!("{} (@{}) invited you to private channel #{}.", invitation.inviter.display_name, invitation.inviter.username, invitation.channel.name)).size(11.0).color(MUTED));
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     if secondary_button(ui, "Decline", true).clicked() && let Some(space) = self.selected_space.clone() {

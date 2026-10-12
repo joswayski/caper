@@ -362,12 +362,22 @@ public enum NotificationLabels {
 public enum NotificationRoute: Equatable, Sendable {
     case channel(spaceID: String, channelID: String)
     case direct(conversationID: String)
+    case invitation(spaceID: String, channelID: String?)
 
     /// DMs carry `conversationId`; channels carry `spaceId` and `channelId`.
     public init?(userInfo: [AnyHashable: Any]) {
         func value(_ key: String) -> String? {
             guard let string = userInfo[key] as? String, !string.isEmpty else { return nil }
             return string
+        }
+        if let kind = value("kind"), kind == "space.invitation" || kind == "channel.invitation" {
+            func valid(_ id: String) -> Bool { id.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil }
+            guard value("conversationId") == nil, let spaceID = value("spaceId"), valid(spaceID) else { return nil }
+            let channelID = value("channelId")
+            if kind == "space.invitation" && channelID != nil { return nil }
+            if kind == "channel.invitation" && (channelID == nil || !valid(channelID!)) { return nil }
+            self = .invitation(spaceID: spaceID, channelID: channelID)
+            return
         }
         if let conversationID = value("conversationId") {
             self = .direct(conversationID: conversationID)
@@ -385,6 +395,7 @@ public enum NotificationRoute: Equatable, Sendable {
             return directMessageID == conversationID
         case let .channel(routeSpaceID, routeChannelID):
             return directMessageID == nil && spaceID == routeSpaceID && channelID == routeChannelID
+        case .invitation: return false
         }
     }
 }
