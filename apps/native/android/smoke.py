@@ -169,6 +169,28 @@ def center(node: ET.Element) -> tuple[int, int]:
     return (left + right) // 2, (top + bottom) // 2
 
 
+def drag(x1: int, x2: int, y: int, steps: int = 8) -> None:
+    """A finger drag sent as separate motion events. One `input swipe` reaches a stalled emulator
+    frame as a single batch (its frames take over a second), and the app sees no drag; here every
+    move arrives on its own, and the drag travels far enough to commit without a fling."""
+    adb("shell", "input", "motionevent", "DOWN", str(x1), str(y))
+    for step in range(1, steps + 1):
+        adb("shell", "input", "motionevent", "MOVE", str(x1 + (x2 - x1) * step // steps), str(y))
+    adb("shell", "input", "motionevent", "UP", str(x2), str(y))
+
+
+def drag_until(x1: int, x2: int, y: int, *, description: str | None = None, text: str | None = None) -> None:
+    """Drags, then waits for the result; retries twice, as a stalled frame can still swallow a drag."""
+    for attempt in range(3):
+        drag(x1, x2, y)
+        try:
+            wait_for(description=description, text=text, seconds=8)
+            return
+        except AssertionError:
+            if attempt == 2:
+                raise
+
+
 def tap(*, text: str | None = None, description: str | None = None, resource_id: str | None = None) -> None:
     root = wait_for(text=text, description=description, resource_id=resource_id)
     node = find(root, text=text, description=description, resource_id=resource_id)
@@ -583,16 +605,14 @@ def main() -> None:
     wait_for(text="Close")
     tap(text="Close")
     wait_for(description="#general options")
-    # Navigation starts inside the content, not at a screen edge. Swipes travel past half the
-    # width: a shorter one opens or closes only as a fling, which a busy emulator can report too
-    # slowly (its frames take over a second).
+    # Navigation starts inside the content, not at a screen edge. Drags travel past half the
+    # width, so they commit without depending on fling speed.
     width, middle = 780, "844"
     adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
     assert find(hierarchy(), description="Back to Browse") is not None, "Vertical scrolling stays in chat"
-    adb("shell", "input", "swipe", str(width // 4), middle, str(width - 10), middle, "150")
-    wait_for(description="Close navigation")
-    adb("shell", "input", "swipe", str(width * 3 // 4), middle, "10", middle, "150")
-    wait_for(description="Back to Browse")
+    time.sleep(1)  # Let the list's overscroll settle before the next touch.
+    drag_until(width // 4, width - 10, int(middle), description="Close navigation")
+    drag_until(width * 3 // 4, 10, int(middle), description="Back to Browse")
     tap(description="#general options")
     tap(text="Members")
     wait_for(description="Close member list")
@@ -613,16 +633,14 @@ def main() -> None:
     members_closed("Hide members must close the member overlay")
     # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
     # The 390x844 viewport at DPR 2; mid-height is in the timeline and on the panel.
-    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
-    wait_for(text="Members")
+    drag_until(width // 2, 10, int(middle), text="Members")
     assert find(hierarchy(), description="Back to Browse") is not None, "A left swipe opens Members, not Browse"
     # The panel spans 103-383dp. Swipe past half its travel (280dp plus a 32dp margin): a shorter
     # swipe closes it only as a fling, which a busy emulator can report too slowly.
-    adb("shell", "input", "swipe", str(width * 2 // 5), middle, str(width - 10), middle, "150")
+    drag(width * 2 // 5, width - 10, int(middle))
     members_closed("A right swipe on the member panel must close it")
-    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
-    wait_for(text="Members")
-    adb("shell", "input", "swipe", "40", middle, str(width - 10), middle, "150")
+    drag_until(width // 2, 10, int(middle), text="Members")
+    drag(40, width - 10, int(middle))
     members_closed("A right swipe on the backdrop must close Members without opening Browse")
     assert find(hierarchy(), description="Back to Browse") is not None
     tap(description="Back to Browse")
