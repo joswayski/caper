@@ -102,7 +102,7 @@ final class ProfileMessageDraft {
     var pending: PendingMessage?
     private(set) var discarded = false
     var editable: Bool { !discarded && !sending && pending == nil }
-    var preventsImplicitDismissal: Bool { sending || presentingDialog || !text.isEmpty || !files.isEmpty }
+    var preventsImplicitDismissal: Bool { sending || presentingDialog }
     var canSend: Bool {
         !discarded && !sending && (pending != nil || MessageValidation.error(for: text, attachmentCount: files.count) == nil)
     }

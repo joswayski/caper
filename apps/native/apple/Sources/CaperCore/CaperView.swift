@@ -3980,6 +3980,62 @@ private struct MentionCardHost: ViewModifier {
     #endif
 }
 
+#if os(iOS)
+/// Observe only the sheet's backdrop, keeping native detents, dragging and keyboard handling.
+private struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
+    let close: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.close = close }
+    static func dismantleUIViewController(_ controller: Controller, coordinator: ()) { controller.removeTap() }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        var close: (() -> Void)?
+        private weak var presentation: UIPresentationController?
+        private var tap: UITapGestureRecognizer?
+
+        override func loadView() {
+            view = UIView()
+            view.isUserInteractionEnabled = false
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            var ancestor = parent
+            while let controller = ancestor {
+                if let presentation = controller.presentationController, let container = presentation.containerView {
+                    removeTap()
+                    self.presentation = presentation
+                    let tap = UITapGestureRecognizer(target: self, action: #selector(outsideTap))
+                    tap.delegate = self
+                    tap.cancelsTouchesInView = false
+                    container.addGestureRecognizer(tap)
+                    self.tap = tap
+                    break
+                }
+                ancestor = controller.parent
+            }
+        }
+
+        func removeTap() {
+            if let tap { tap.view?.removeGestureRecognizer(tap) }
+            tap = nil
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let presentation, let container = presentation.containerView, let sheet = presentation.presentedView,
+                  presentation.presentedViewController.presentedViewController == nil else { return false }
+            return !sheet.convert(sheet.bounds, to: container).contains(touch.location(in: container))
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+
+        @objc private func outsideTap() { close?() }
+    }
+}
+#endif
+
 /// Routes pill links (`caper-mention:`) to the mention card instead of the
 /// system; web links (`http(s)`) open in the system browser. A tap on a link
 /// is handled by the Text itself; the row's message actions still need a
@@ -4075,6 +4131,23 @@ private struct MentionCardView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
+                        if !person.isSelf {
+                            Menu {
+                                Button(blocked ? "Unblock" : "Block") {
+                                    if blocked { Task { await unblock() } }
+                                    else { blockRequested = true; close() }
+                                }.accessibilityIdentifier("mention-card-block")
+                            } label: {
+                                Image(systemName: "ellipsis").font(.system(size: 16, weight: .medium))
+                                    .foregroundStyle(CaperTheme.muted)
+                                    .frame(width: 32, height: 32).contentShape(Rectangle())
+                            }
+                            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+                            .fixedSize()
+                            .disabled(pending != nil || draft.sending || draft.presentingDialog)
+                            .accessibilityLabel("More profile actions")
+                            .accessibilityIdentifier("mention-card-more")
+                        }
                         if canMessage {
                             CardIconButton(systemImage: "bubble.left", label: pending == "message" ? "Opening…" : "Open conversation") {
                                 Task { await openConversation() }
@@ -4091,21 +4164,10 @@ private struct MentionCardView: View {
                     Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("mention-card-you")
                 } else {
-                    // Invite and Block share one row.
-                    HStack(spacing: 8) {
-                        if !blocked, person.username != nil, !ownedSpaces.isEmpty {
-                            Button("Invite to space") { choosingSpace.toggle() }
-                                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
-                                .accessibilityIdentifier("mention-card-invite")
-                        }
-                        Button {
-                            if blocked { Task { await unblock() } }
-                            else { blockRequested = true; close() }
-                        } label: {
-                            Text(pending == "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block")
-                                .foregroundStyle(CaperTheme.error)
-                        }.buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
-                            .accessibilityIdentifier("mention-card-block")
+                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                        Button("Invite to space") { choosingSpace.toggle() }
+                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
+                            .accessibilityIdentifier("mention-card-invite")
                     }
                     if choosingSpace, !blocked, person.username != nil {
                         VStack(spacing: 6) {
@@ -4147,6 +4209,9 @@ private struct MentionCardView: View {
         .presentationDetents(person.isSelf ? [.height(196)] : [.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(CaperTheme.surface)
+        .background(ProfileSheetOutsideTap {
+            if pending == nil && !draft.preventsImplicitDismissal { close() }
+        })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -4212,7 +4277,7 @@ private struct MentionCardView: View {
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
                 Button { draft.presentingDialog = true; showingFiles = true } label: {
-                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                    Image(systemName: "paperclip").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

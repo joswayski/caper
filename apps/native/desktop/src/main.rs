@@ -222,6 +222,7 @@ enum NavIcon {
     Close,
     More,
     Plus,
+    Paperclip,
     Settings,
     Hash,
     Lock,
@@ -12417,7 +12418,7 @@ impl CaperApp {
                                     ui.add_space(7.0);
                                     let enabled = attach && !full && self.file_picker.is_none();
                                     let button = ui
-                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
                                         .inner
                                         .on_disabled_hover_text(if !attach {
                                             attach_unavailable.to_owned()
@@ -15283,6 +15284,7 @@ impl CaperApp {
         let mut invitation = None;
         let mut close = false;
         let mut open_conversation = false;
+        let mut menu_open = false;
         let shown = egui::Area::new(id)
             .order(egui::Order::Foreground)
             .pivot(pivot)
@@ -15312,7 +15314,11 @@ impl CaperApp {
                                 .unwrap_or("Profile");
                             avatar(ui, initial, profile.avatar_id, 48.0, false);
                             ui.add_space(4.0);
-                            let actions = if can_message { 60.0 } else { 30.0 };
+                            let can_block = !profile.me
+                                && card.pill.entry.id.is_some()
+                                && self.account.is_some();
+                            let actions = 30.0
+                                * (1 + usize::from(can_message) + usize::from(can_block)) as f32;
                             ui.allocate_ui_with_layout(
                                 egui::vec2(ui.available_width() - actions, 48.0),
                                 egui::Layout::top_down(egui::Align::Min),
@@ -15365,6 +15371,33 @@ impl CaperApp {
                                         .inner
                                         .clicked();
                                 }
+                                if can_block {
+                                    let more = ui
+                                        .add_enabled_ui(!busy && !child_open, |ui| {
+                                            drawn_icon_button(
+                                                ui,
+                                                NavIcon::More,
+                                                "More profile actions",
+                                            )
+                                        })
+                                        .inner;
+                                    if card.fresh && card.focus_on_open && !can_message {
+                                        more.request_focus();
+                                    }
+                                    let popup = egui::Popup::menu(&more)
+                                        .align(egui::RectAlign::BOTTOM_END)
+                                        .width(144.0);
+                                    menu_open = popup.is_open();
+                                    popup.show(|ui| {
+                                        if ui
+                                            .button(if blocked { "Unblock" } else { "Block" })
+                                            .clicked()
+                                        {
+                                            block_action = true;
+                                            ui.close();
+                                        }
+                                    });
+                                }
                             });
                         });
                         egui::ScrollArea::vertical()
@@ -15379,43 +15412,14 @@ impl CaperApp {
                                     && profile.username.is_some()
                                     && card.pill.entry.id.is_some()
                                     && !owned_spaces.is_empty();
-                                let block = card.pill.entry.id.is_some() && self.account.is_some();
-                                // Invite and Block share one row, as on web.
-                                let count = usize::from(invite) + usize::from(block);
-                                if count > 0 {
-                                    let width = (286.0 - 8.0 * (count - 1) as f32) / count as f32;
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        if invite {
-                                            toggle_spaces = ui
-                                                .add_enabled(
-                                                    !busy,
-                                                    egui::Button::new("Invite to space")
-                                                        .min_size(egui::vec2(width, 36.0)),
-                                                )
-                                                .clicked();
-                                        }
-                                        if block {
-                                            let button = ui.add_enabled(
-                                                !busy,
-                                                egui::Button::new(
-                                                    RichText::new(if blocked && self.block_busy {
-                                                        "Unblocking…"
-                                                    } else if blocked {
-                                                        "Unblock"
-                                                    } else {
-                                                        "Block"
-                                                    })
-                                                    .color(ERROR),
-                                                )
-                                                .min_size(egui::vec2(width, 36.0)),
-                                            );
-                                            if card.fresh && card.focus_on_open && !can_message {
-                                                button.request_focus();
-                                            }
-                                            block_action = button.clicked();
-                                        }
-                                    });
+                                if invite {
+                                    toggle_spaces = ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new("Invite to space")
+                                                .min_size(egui::vec2(286.0, 36.0)),
+                                        )
+                                        .clicked();
                                 }
                                 if invite && card.choosing_space {
                                     ui.vertical(|ui| {
@@ -15507,21 +15511,14 @@ impl CaperApp {
                     })
                 })
         });
-        let has_draft = card.pill.entry.id.as_ref().is_some_and(|person| {
-            self.profile_drafts
-                .get(person)
-                .is_some_and(|draft| !draft.text.is_empty() || !draft.files.is_empty())
-        });
         if !busy
             && !child_open
+            && !menu_open
             && !message
             && !open_conversation
             && (close
                 || escape
-                || (!has_draft
-                    && !suggestions_open
-                    && !card.fresh
-                    && shown.response.clicked_elsewhere()))
+                || (!suggestions_open && !card.fresh && shown.response.clicked_elsewhere()))
         {
             self.mention_card = None;
             self.composer_emoji = None;
@@ -15720,7 +15717,7 @@ impl CaperApp {
                         ui.add_space(7.0);
                         let attach = ui
                             .add_enabled_ui(can_attach, |ui| {
-                                drawn_icon_button(ui, NavIcon::Plus, "Attach files")
+                                drawn_icon_button(ui, NavIcon::Paperclip, "Attach files")
                             })
                             .inner
                             .on_disabled_hover_text(
@@ -18429,6 +18426,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
+        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::Settings => egui::include_image!("../resources/icons/settings.svg"),
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
@@ -28941,6 +28939,13 @@ mod tests {
         let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
         click_at(&mut app, &context, alex);
         let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Block"));
+        click_at(
+            &mut app,
+            &context,
+            text_center(&output, "More profile actions"),
+        );
+        let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, last_text_position(&output, "Block"));
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Block Alex?"));
@@ -28954,14 +28959,21 @@ mod tests {
             pill_center(&output, ALEX_MESSAGE, "@alex"),
         );
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Unblock"));
+        assert!(!shows(&output, "Unblock"));
         assert!(!shows_control(&output, "Send") && !shows(&output, "Invite to space"));
+        click_at(
+            &mut app,
+            &context,
+            text_center(&output, "More profile actions"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Unblock"));
         click_at(&mut app, &context, last_text_position(&output, "Unblock"));
         receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
         assert!(
             shows_control(&output, "Send")
-                && shows(&output, "Block")
+                && !shows(&output, "Block")
                 && shows(&output, "Unblocked."),
             "{:?}",
             text_shapes(&output)
@@ -29161,7 +29173,19 @@ mod tests {
         assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
         let retained = app.profile_drafts["fixture-alex"].text.clone();
         click_at(&mut app, &context, egui::pos2(600.0, 700.0));
-        assert!(app.mention_card.is_some(), "outside clicks retain a draft");
+        assert!(
+            app.mention_card.is_none(),
+            "outside clicks close a drafted card"
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
+        assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
         app.profile_drafts.get_mut("fixture-alex").unwrap().sending = true;
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Close profile"));
@@ -29198,6 +29222,16 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
         assert!(shows(&output, "receipt.txt"));
+        assert!(
+            !shows(&output, "Block"),
+            "Block is not a primary profile action"
+        );
+        click_at(
+            &mut app,
+            &context,
+            text_center(&output, "More profile actions"),
+        );
+        let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, last_text_position(&output, "Block"));
         render(&mut app, &context, press(egui::Key::Escape));
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);

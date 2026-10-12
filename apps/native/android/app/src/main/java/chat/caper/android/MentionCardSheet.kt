@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
     var invited by remember(card.id) { mutableStateOf(emptyMap<String, String>()) }
     var status by remember(card.id) { mutableStateOf<String?>(null) }
     var confirmBlock by remember(card.id) { mutableStateOf(false) }
+    var profileMenu by remember(card.id) { mutableStateOf(false) }
     var picking by remember(card.id) { mutableStateOf(false) }
     val id = card.id
     val person = card.id ?: "@${card.username?.lowercase(java.util.Locale.ROOT)}"
@@ -71,7 +72,7 @@ import kotlinx.coroutines.launch
         message({ pending = null; onDismiss() }, { pending = null; error = it })
     }
     // Block closes the card first, as on web: only the confirmation stays.
-    if (!confirmBlock) ProfileBottomSheet(card.title, profileDraft, picking, onDismiss, header = {
+    if (!confirmBlock) ProfileBottomSheet(card.title, profileDraft, picking || pending != null, onDismiss, header = {
         // Identity, then Open conversation (and the sheet's Close) at the end, as on web.
         Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId)
         Column(Modifier.weight(1f)) {
@@ -81,31 +82,32 @@ import kotlinx.coroutines.launch
             )
             card.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
+        if (!card.self && id != null && viewModel != null && state?.account != null) Box {
+            ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }
+            DropdownMenu(profileMenu, { profileMenu = false }, containerColor = SurfaceRaised) {
+                DropdownMenuItem(text = {
+                    Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block")
+                }, enabled = idle, onClick = {
+                    profileMenu = false
+                    if (!blocked) confirmBlock = true
+                    else {
+                        pending = "unblock"; error = null
+                        scope.launch {
+                            viewModel.unblock(id, failed = { error = it }).join()
+                            pending = null
+                            if (error == null) status = "Unblocked."
+                        }
+                    }
+                })
+            }
+        }
         if (canMessage) ProfileIconButton(R.drawable.lucide_message_circle, if (pending == "message") "Opening…" else "Open conversation", idle, ::openConversation)
     }) {
         if (card.self) Text("You", color = TextMuted, fontSize = 13.sp)
         else {
             val invite = !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
-            val block = id != null && viewModel != null && state?.account != null
-            // Invite and Block share one row.
-            if (invite || block) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.weight(1f).heightIn(min = 48.dp),
-                    enabled = idle, shape = MaterialTheme.shapes.small) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                if (block) OutlinedButton({
-                    if (!blocked) confirmBlock = true
-                    else if (id != null && viewModel != null) {
-                        pending = "unblock"; error = null
-                        scope.launch {
-                            viewModel.unblock(id, failed = { error = it }).join()
-                            pending = null
-                            // Unblock keeps the card open and says so, as on web.
-                            if (error == null) status = "Unblocked."
-                        }
-                    }
-                }, Modifier.weight(1f).heightIn(min = 48.dp), enabled = idle, shape = MaterialTheme.shapes.small) {
-                    Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block", color = ErrorText)
-                }
-            }
+            if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                enabled = idle, shape = MaterialTheme.shapes.small) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
             if (invite && choosingSpace && card.username != null && viewModel != null) Column(
                 Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -154,20 +156,19 @@ import kotlinx.coroutines.launch
     }
 }
 
-/** Implicit dismissal cannot interrupt composition; explicit Close never discards a draft. */
+/** Drafts survive dismissal; only sends and child pickers keep the sheet open. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun ProfileBottomSheet(
     title: String, draft: ProfileMessageDraft, picking: Boolean, onDismiss: () -> Unit,
     header: @Composable RowScope.() -> Unit = { Spacer(Modifier.weight(1f)) },
     content: @Composable () -> Unit,
 ) {
-    val keepOpen by rememberUpdatedState(draft.sending || draft.text.isNotEmpty() || draft.files.isNotEmpty() || picking)
+    val keepOpen by rememberUpdatedState(draft.sending || picking)
     val sheet = rememberModalBottomSheetState(confirmValueChange = { it != SheetValue.Hidden || !keepOpen })
     val scope = rememberCoroutineScope()
     ModalBottomSheet(
         onDismissRequest = { if (!keepOpen) onDismiss() }, sheetState = sheet,
-        // The dialog reads this only when it opens, so a sheet opened over a draft
-        // would never close on Back. Back is decided below, from the current draft.
+        // Back is decided below from the current send/picker state.
         properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
         containerColor = SurfaceRaised, contentColor = Text,
     ) {

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { Plus, Send } from "lucide-react";
+import { Paperclip, Send } from "lucide-react";
 import { getAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
@@ -57,7 +57,7 @@ export default function ProfileComposer({
   /** The card focuses this field when it opens. */
   inputRef: RefObject<HTMLTextAreaElement | null>;
   onSent: () => void;
-  onStateChange: (state: { active: boolean; sending: boolean }) => void;
+  onStateChange: (state: { picking: boolean; sending: boolean }) => void;
 }) {
   const draft = useSyncExternalStore(
     subscribe,
@@ -104,8 +104,8 @@ export default function ProfileComposer({
     };
   }, []);
   useEffect(() => {
-    onStateChange({ active: !!draft.text || !!draft.files.length || emojiOpen || choosingFile, sending });
-  }, [draft, emojiOpen, choosingFile, sending, onStateChange]);
+    onStateChange({ picking: emojiOpen || choosingFile, sending });
+  }, [emojiOpen, choosingFile, sending, onStateChange]);
   useEffect(() => {
     const element = fileInput.current;
     const cancel = () => {
@@ -324,7 +324,7 @@ export default function ProfileComposer({
             fileInput.current?.click();
           }}
         >
-          <Plus size={17} aria-hidden="true" />
+          <Paperclip size={17} aria-hidden="true" />
         </button>
         <input
           type="file"

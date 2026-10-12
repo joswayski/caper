@@ -14,6 +14,7 @@ const names = {
   pin: "Pin",
   x: "X",
   plus: "Plus",
+  paperclip: "Paperclip",
   ellipsis: "Ellipsis",
   settings: "Settings",
   hash: "Hash",
