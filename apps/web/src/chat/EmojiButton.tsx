@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { useState } from "react";
 import {
   autoUpdate,
   flip,
@@ -16,8 +16,7 @@ import {
 } from "@floating-ui/react";
 import { Smile, X } from "lucide-react";
 import { preloadReactionPicker } from "./MessageActions.tsx";
-
-const ReactionPicker = lazy(() => import("./ReactionPicker.tsx"));
+import ReactionPicker from "./ReactionPicker.tsx";
 
 /**
  * A composer's emoji control: a picker above the button, or a bottom drawer on
@@ -73,14 +72,12 @@ export default function EmojiButton({
           </button>
         </div>
         <div className="chat-reaction-picker-body">
-          <Suspense fallback={<p role="status">Loading emoji…</p>}>
-            <ReactionPicker
-              onSelect={(emoji) => {
-                setOpen(false);
-                onSelect(emoji);
-              }}
-            />
-          </Suspense>
+          <ReactionPicker
+            onSelect={(emoji) => {
+              setOpen(false);
+              onSelect(emoji);
+            }}
+          />
         </div>
       </div>
     </FloatingFocusManager>

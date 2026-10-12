@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   autoUpdate,
   flip,
@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
+import ReactionPicker from "./ReactionPicker.tsx";
 
 export interface MessageActionTarget {
   messageId: string;
@@ -40,15 +41,8 @@ export interface MessageActionTarget {
 }
 
 const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
-let cachedPicker: ComponentType<{ onSelect: (emoji: string) => void }> | undefined;
 
 export function preloadReactionPicker() {
-  void import("./ReactionPicker.tsx").then(
-    (module) => {
-      cachedPicker = module.default;
-    },
-    () => {},
-  );
   void preloadEmojiImages();
 }
 
@@ -95,11 +89,6 @@ export default function MessageActions({
   block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
 }) {
   const [mode, setMode] = useState(target.mode);
-  const [loadedPicker, setPicker] = useState<typeof cachedPicker>();
-  // Reuse the evaluated module on the first render, including when an action
-  // menu switches modes after startup preloading finishes.
-  const Picker = cachedPicker ?? loadedPicker;
-  const [loadError, setLoadError] = useState(false);
   const [copyError, setCopyError] = useState<string>();
   const returnFocus = useRef(target.anchor);
   const { refs, floatingStyles, context } = useFloating({
@@ -128,22 +117,6 @@ export default function MessageActions({
   useEffect(() => {
     if (!canReact && mode === "emoji") onClose();
   }, [canReact, mode, onClose]);
-  useEffect(() => {
-    if (mode !== "emoji" || Picker) return;
-    let current = true;
-    import("./ReactionPicker.tsx").then(
-      (module) => {
-        cachedPicker = module.default;
-        if (current) setPicker(() => module.default);
-      },
-      () => {
-        if (current) setLoadError(true);
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [mode, Picker]);
 
   const react = (emoji: string, active: boolean) => {
     if (!canReact) return;
@@ -299,13 +272,7 @@ export default function MessageActions({
           </div>
         ) : (
           <div className="chat-reaction-picker-body">
-            {Picker ? (
-              <Picker onSelect={(emoji) => react(emoji, true)} />
-            ) : (
-              <p role={loadError ? "alert" : "status"}>
-                {loadError ? "Couldn’t load emoji. Close and try again." : "Loading emoji…"}
-              </p>
-            )}
+            <ReactionPicker onSelect={(emoji) => react(emoji, true)} />
           </div>
         )}
       </div>

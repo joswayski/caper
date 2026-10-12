@@ -1144,73 +1144,123 @@
   padding: 16px;
   font-size: 0.85rem;
 }
-.chat-reaction-picker .EmojiPickerReact {
-  --epr-bg-color: var(--surface);
-  --epr-text-color: var(--text-muted);
-  --epr-category-label-bg-color: var(--surface);
-  --epr-search-input-bg-color: var(--blackout);
-  --epr-search-input-text-color: var(--text);
-  --epr-search-border-color: var(--border);
-  --epr-search-input-bg-color-active: var(--blackout);
-  --epr-search-border-color-active: var(--terracotta);
-  --epr-highlight-color: var(--terracotta);
-  --epr-hover-bg-color: #292c2f;
-  --epr-focus-bg-color: var(--border);
-  --epr-emoji-size: 26px;
-  --epr-emoji-padding: 7px;
-  --epr-category-navigation-button-size: 32px;
-  --epr-category-icon-active-color: var(--text);
-  --epr-category-icon-inactive-color: var(--text-muted);
-  --epr-header-padding: 4px 12px;
-  border: 0;
-  font-family: inherit;
-}
-.chat-reaction-picker .EmojiPickerReact .epr-header {
+.chat-emoji-picker {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
-.chat-reaction-picker .EmojiPickerReact .epr-category-nav {
-  order: -1;
+.chat-emoji-categories {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  flex: 0 0 auto;
   padding: 0 8px;
-  margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
-.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn {
+.chat-emoji-categories button {
+  position: relative;
+  display: grid;
+  place-items: center;
   height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
 }
-.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn.epr-active::after {
+.chat-emoji-categories button[aria-pressed="true"] {
+  color: var(--text);
+}
+.chat-emoji-categories button[aria-pressed="true"]::after {
   content: "";
   position: absolute;
-  left: -2px;
-  right: -2px;
+  left: 2px;
+  right: 2px;
   bottom: -1px;
   height: 2px;
   background: var(--terracotta);
 }
-/* Pointer clicks select with an underline, not the library's circular :focus
-   ring. Keep a separate, keyboard-only focus indicator. */
-.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn:focus::before {
-  content: none;
-}
-.chat-reaction-picker .EmojiPickerReact .epr-category-nav .epr-cat-btn:focus-visible {
+.chat-emoji-picker button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: -2px;
   border-radius: 8px;
 }
-/* The picker's live result status is otherwise screen-reader-only. Show it
-   below the search field when the search has no visible categories. */
-.chat-reaction-picker .EmojiPickerReact:not(:has(.epr-emoji-category:not(.epr-hidden))) .epr-status-search-results {
-  clip: auto;
-  clip-path: none;
-  width: 100%;
-  height: auto;
-  overflow: visible;
-  white-space: normal;
-  top: calc(100% + 24px);
-  left: 0;
-  text-align: center;
-  font-size: 0.85rem;
+.chat-emoji-search {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--blackout);
   color: var(--text-muted);
+}
+.chat-emoji-search:focus-within {
+  border-color: var(--terracotta);
+}
+.chat-emoji-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.chat-emoji-search button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.chat-emoji-category-label {
+  padding: 0 12px 8px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.chat-emoji-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.chat-emoji-grid {
+  flex: 1;
+  min-height: 0;
+}
+.chat-emoji-grid-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  padding: 0 12px 12px;
+}
+.chat-emoji-grid-item {
+  height: 40px;
+}
+.chat-emoji-grid-item button {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 7px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .chat-emoji-categories button:hover {
+    color: var(--text);
+  }
+  .chat-emoji-grid-item button:hover {
+    background: var(--border);
+  }
 }
 @media (max-width: 600px) {
   .chat-reaction,

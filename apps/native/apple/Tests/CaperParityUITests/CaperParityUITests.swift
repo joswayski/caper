@@ -708,6 +708,20 @@ final class CaperParityUITests: XCTestCase {
         try openReactionPicker(for: targetID, in: app)
         let search = app.textFields["reaction-picker-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
+        let smileys = app.buttons["emoji-category-smileys_people"]
+        let activities = app.buttons["emoji-category-activities"]
+        XCTAssertTrue(smileys.isSelected)
+        XCTAssertTrue(app.buttons["grinning-face"].exists)
+        activities.tap()
+        XCTAssertTrue(activities.isSelected)
+        XCTAssertFalse(app.buttons["grinning-face"].exists)
+        search.tap(); search.typeText("grinning-face")
+        XCTAssertTrue(app.buttons["grinning-face"].waitForExistence(timeout: 5), "Search must cross categories")
+        activities.tap()
+        let clearedQuery = search.value as? String
+        XCTAssertTrue(clearedQuery == "" || clearedQuery == search.placeholderValue,
+                      "Category selection must clear the search")
+        XCTAssertFalse(app.buttons["grinning-face"].exists)
         capture("reaction-picker-open-fixture", app: app)
         // Retapping until focus succeeds can hide a dismiss/re-present loop.
         search.tap()

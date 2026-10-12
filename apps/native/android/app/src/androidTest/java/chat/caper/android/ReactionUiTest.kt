@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -77,6 +78,16 @@ class ReactionUiTest {
 
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithContentDescription("Add reaction").performClick()
+        compose.onNodeWithContentDescription("Smileys & people").assertIsSelected()
+        compose.onNodeWithContentDescription("grinning-face").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Activities").performClick().assertIsSelected()
+        compose.onNodeWithContentDescription("grinning-face").assertDoesNotExist()
+        // Search is global even while Activities is the current category.
+        compose.onNode(hasSetTextAction()).performTextReplacement("grinning-face")
+        compose.onNodeWithContentDescription("grinning-face").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Activities").performClick().assertIsSelected()
+        assertEquals("", compose.onNode(hasSetTextAction()).fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        compose.onNodeWithContentDescription("grinning-face").assertDoesNotExist()
         capture("reaction-picker-test-fixture.png", compose.onNode(isDialog()))
         compose.onNode(hasSetTextAction()).performTextInput("definitely-no-such-emoji")
         compose.onNodeWithText("No emoji found.").assertIsDisplayed()

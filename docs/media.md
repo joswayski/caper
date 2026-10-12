@@ -1835,13 +1835,12 @@ native phone, macOS, multi-client production or physical-device acceptance.
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
-emoji-CDN requests. Signed-in writable web chat immediately warms the code/data
-chunk and preloads/decodes the first 128 Emoji 15.0 smileys/people images when
+emoji-CDN requests. The picker code/data is part of the chat bundle, so opening
+either a composer or reaction picker needs no additional code-loading panel.
+Signed-in writable web chat preloads/decodes the first 128 Emoji 15.0 smileys/people images when
 chat mounts, without waiting for a sending session. This covers the opening grid,
 not the full catalog, and does not mount or open the picker. Hovering or focusing
 **Add reaction** reuses that preload, or retries failed image preparation.
-The evaluated picker component is retained across messages and action menus;
-warm openings render it directly, without an intermediate loading panel.
 Hovering or keyboard-focusing a category tab preloads/decodes its first 128
 Emoji 15.0 images (or the full category when smaller), without selecting it or
 scrolling the grid. Category manifests are also generated at build time.
@@ -1849,8 +1848,12 @@ Preloads are shared per category across message buttons and picker reopenings;
 failures evict only that category so the next intent can retry. Images beyond
 the prefetched window still load on demand; immediate clicks on a cold network
 can still precede completion.
-The virtualized grid loads its mounted image window eagerly, including after
-category jumps. Versioned
+The web picker uses the existing React Virtuoso grid, not the emoji library's
+separate category IntersectionObserver gate, which could leave a visible category
+heading with no emoji buttons. Category selection renders only that category and
+resets scrolling; selecting a category clears search. Search covers all eight
+categories, regardless of the selected category. The grid loads its mounted image
+window eagerly, including after category changes. Versioned
 `/emoji/twemoji-15/**` artwork is served with a one-year immutable browser cache;
 changed artwork must use a new path. Web category tabs sit above search, brighten
 on hover/selection, and underline the selected category in terracotta. Pointer
@@ -1861,8 +1864,22 @@ hover/focus reuse without opening or duplicate image requests,
 all seven non-opening category preloads without selection/scrolling, cache reuse
 across reopening, populated category jumps, eager loading with virtualization, selected
 tab styling, and keyboard navigation on desktop and Chromium touch-emulated web.
-Native picker loading/styling is intentionally unchanged: those independent
-clients use bundled sprite sheets, not browser image loading or this library.
+Android, iOS/macOS and Rust desktop also have eight category controls above search,
+category browsing and global search with the same reset behavior. Their independent
+implementations use bundled sprite sheets, not browser image loading. Rust desktop
+warms the opening category's sheets at startup and category windows on hover/focus;
+its fixed 40px cells fill the picker width and match the virtual scroller's row
+height, rather than leaving unused width or clipping rows from a mismatched height.
+Picker validation: web check/build and 604 tests passed; Chromium desktop and
+touch-emulated narrow layouts exercised all eight categories, global search,
+preloading/cache reuse, scrolling and reaction persistence. Composer insertion
+checks passed. Profile-composer emoji/caret and settled drawer bounds passed,
+but its later incoming-request navigation check timed out. Rust desktop passed
+484 tests (12 ignored), Clippy and a Linux build; default, Activities, global
+search and empty-result captures were inspected. Windows, Android and Apple
+rendering remain unverified: no Windows device, Android SDK or Xcode is available
+in this Linux orb. Run native build/UI checks and inspect those clients before
+releasing them; browser and Linux fixtures do not prove native device acceptance.
 These are images, not the operating system's emoji font, so supported reactions
 look consistent across all clients. Native apps bundle raster sprite sheets from the same
 artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
@@ -1883,8 +1900,8 @@ dash-separated accessible names/image alt text, and Unicode persistence.
 Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
 and a skin-tone selector are deferred. Message text does not currently convert
 `:name:` shortcodes into emoji. Dashes are not a restriction on future custom
-emoji: the web picker supports named custom images, but uploads alone will not
-enable them. Custom reactions also need an authorized emoji catalog, stable asset
+emoji, but uploads alone will not enable them. Custom reactions need an
+authorized emoji catalog, stable asset
 IDs, API/protocol support alongside Unicode, and image rendering in every client;
 the current API deliberately accepts only standard Unicode emoji.
 

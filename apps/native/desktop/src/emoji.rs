@@ -24,6 +24,17 @@ pub fn catalog() -> &'static [Entry] {
     })
 }
 
+pub const CATEGORIES: [(&str, &str, &str); 8] = [
+    ("smileys_people", "Smileys & people", "😀"),
+    ("animals_nature", "Animals & nature", "🐱"),
+    ("food_drink", "Food & drink", "🍔"),
+    ("travel_places", "Travel & places", "🚌"),
+    ("activities", "Activities", "⚽"),
+    ("objects", "Objects", "👕"),
+    ("symbols", "Symbols", "🎵"),
+    ("flags", "Flags", "🏁"),
+];
+
 /// An entry's place in the emoji picker, approximating web's order: smileys
 /// (the emoticon block, then other faces by name or keyword) before people,
 /// then the other categories with flags last. The catalog itself is in code
@@ -198,18 +209,35 @@ pub fn unicode_id(value: &str) -> String {
 pub struct Textures(BTreeMap<usize, egui::TextureHandle>);
 
 impl Textures {
-    pub fn image(&mut self, ui: &mut egui::Ui, entry: &Entry, size: f32) -> egui::Image<'static> {
-        let texture = self.0.entry(entry.sheet).or_insert_with(|| {
-            let decoded = image::load_from_memory(sheet(entry.sheet))
+    fn texture(&mut self, context: &egui::Context, page: usize) -> &egui::TextureHandle {
+        self.0.entry(page).or_insert_with(|| {
+            let decoded = image::load_from_memory(sheet(page))
                 .expect("embedded emoji sheet is valid")
                 .to_rgba8();
             let dimensions = [decoded.width() as usize, decoded.height() as usize];
-            ui.ctx().load_texture(
-                format!("emoji-sheet-{}", entry.sheet),
+            context.load_texture(
+                format!("emoji-sheet-{page}"),
                 egui::ColorImage::from_rgba_unmultiplied(dimensions, decoded.as_raw()),
                 egui::TextureOptions::LINEAR,
             )
-        });
+        })
+    }
+
+    /// Decode/upload only the opening window's bundled sheets. Repeated load,
+    /// hover and focus intent reuses the same textures, without network work.
+    pub fn preload(&mut self, context: &egui::Context, category: &str) {
+        let mut entries: Vec<_> = catalog()
+            .iter()
+            .filter(|entry| entry.selectable && entry.category == category)
+            .collect();
+        entries.sort_by_key(|entry| picker_order(entry));
+        for entry in entries.into_iter().take(128) {
+            self.texture(context, entry.sheet);
+        }
+    }
+
+    pub fn image(&mut self, ui: &mut egui::Ui, entry: &Entry, size: f32) -> egui::Image<'static> {
+        let texture = self.texture(ui.ctx(), entry.sheet);
         let uv = egui::Rect::from_min_max(
             egui::pos2(entry.x as f32 / 1024.0, entry.y as f32 / 1024.0),
             egui::pos2(

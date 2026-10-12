@@ -5410,6 +5410,13 @@ private struct ComposerEmojiButton: View {
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var category = "smileys_people"
+    private let categories = [
+        ("smileys_people", "Smileys & people", "😀"), ("animals_nature", "Animals & nature", "🐱"),
+        ("food_drink", "Food & drink", "🍔"), ("travel_places", "Travel & places", "🚌"),
+        ("activities", "Activities", "⚽"), ("objects", "Objects", "👕"),
+        ("symbols", "Symbols", "🎵"), ("flags", "Flags", "🏁")
+    ]
     #if os(macOS)
     @FocusState private var focusedEmoji: String?
     #endif
@@ -5417,8 +5424,8 @@ private struct ReactionPicker: View {
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !term.isEmpty else { return EmojiArtwork.pickerChoices }
-        return EmojiArtwork.pickerChoices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
+        guard !term.isEmpty else { return EmojiArtwork.pickerChoices.filter { $0.category == category } }
+        return EmojiArtwork.pickerChoices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) || $0.category.replacingOccurrences(of: "_", with: " ").contains(term) }
     }
     var body: some View {
         #if os(macOS)
@@ -5456,10 +5463,30 @@ private struct ReactionPicker: View {
     }
     private var content: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(categories, id: \.0) { item in
+                    let active = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && category == item.0
+                    Button { category = item.0; query = "" } label: {
+                        VStack(spacing: 0) {
+                            EmojiArtworkView(emoji: item.2, size: 22).frame(maxWidth: .infinity, minHeight: 42)
+                            Rectangle().fill(active ? CaperTheme.terracottaBright : .clear).frame(height: 2)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .modifier(ControlHover())
+                    .accessibilityLabel(item.1)
+                    .accessibilityIdentifier("emoji-category-\(item.0)")
+                    .accessibilityAddTraits(active ? .isSelected : [])
+                }
+            }.padding(.horizontal, 8)
             TextField("Search emoji", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("reaction-picker-search")
                 .padding(12)
+            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? categories.first { $0.0 == category }!.1 : "Search results")
+                .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12)
             if choices.isEmpty {
                 ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
                     .accessibilityIdentifier("reaction-picker-empty")
@@ -5480,7 +5507,7 @@ private struct ReactionPicker: View {
                             .accessibilityLabel(entry.name)
                         }
                     }.padding(12)
-                }.accessibilityIdentifier("reaction-picker-grid")
+                }.id("\(category):\(query)").accessibilityIdentifier("reaction-picker-grid")
             }
         }
     }
