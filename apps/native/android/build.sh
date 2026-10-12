@@ -11,7 +11,9 @@ fi
 
 "$ROOT/prepare-fonts.sh"
 bash "$ROOT/prepare-audio.sh"
-CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 testDebugUnitTest lintDebug assembleDebug
+# minifyReleaseWithR8 shrinks the release build's code (no signing needed) so the
+# JNI check below sees what Play and APK users actually run.
+CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 testDebugUnitTest lintDebug assembleDebug minifyReleaseWithR8
 mkdir -p dist
 cp app/build/outputs/apk/debug/app-debug.apk dist/Caper-android-debug.apk
 archive_entries="$(mktemp)"
@@ -32,4 +34,6 @@ for abi in arm64-v8a armeabi-v7a x86 x86_64; do
   grep -Fxq "lib/$abi/libavif_android.so" "$archive_entries"
   grep -Fxq "lib/$abi/libcaper_avif.so" "$archive_entries"
 done
+# Debug and release package the same native libraries.
+python3 "$ROOT/check-jni-keeps.py" app/build/outputs/mapping/release/mapping.txt app/build/outputs/mapping/release/usage.txt dist/Caper-android-debug.apk
 printf 'Development-only debug APK: %s\n' "$ROOT/dist/Caper-android-debug.apk"
