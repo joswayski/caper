@@ -1107,10 +1107,25 @@ file keeps:
   at 100% zoom; photos larger than `ASSET_IMAGE_MAX_EDGE` are resized.
 - **Video** is converted to H.264 so it plays in every browser and app. 4K,
   1440p and HDR footage loses resolution, some fine detail in busy or dark
-  scenes, and its HDR range compared with the original. Video quality has not
-  been measured objectively yet. The bitrate and frame-rate settings below are
-  the levers, and they are delivered per request, so they could later differ by
-  plan.
+  scenes, and its HDR range compared with the original. The bitrate and
+  frame-rate settings below are the levers, and they are delivered per
+  request, so they could later differ by plan.
+
+Measured in October 2026 with VMAF against the uploaded file (simulated phone
+HEVC originals of Xiph/Netflix test clips; x264 `veryfast` as the client
+encoder, so hardware encoders may score somewhat lower). 50/60 fps footage, so
+the 150% frame-rate boost applies:
+
+| Clip (phone original) | 6 Mbps, before | 8 Mbps defaults | Notes |
+| --- | --- | --- | --- |
+| Park scene, 1080p50, 12 Mbps HEVC | 61 | 81 | Foliage smeared at 6 Mbps |
+| Crowd running, 1080p50, 12 Mbps HEVC | 56 | 77 | Deliberately extreme motion and detail |
+| Lean HEVC, 1080p50, 3 Mbps | 89 (78 with #519's 100% cap) | 89 | 200% cap restores it; output is twice the original's size |
+| Market, 4K60, 50 Mbps HEVC | 80 (74 on a 4K screen) | 92 (85 on a 4K screen) | Remaining 4K loss is the 1080p cap |
+| Driving, 4K60, 50 Mbps HEVC | 85 (78 on a 4K screen) | 92 (87 on a 4K screen) | |
+
+VMAF 93+ is close to indistinguishable for most viewers; about 6 points is one
+just-noticeable difference.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
