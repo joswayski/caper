@@ -70,7 +70,7 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
   }
   // The window intentionally turns toward the hero copy; compensate for the
   // resulting projected bounds below so the visible card remains centered.
-  const rest = mode === "expand" ? { x: 11, y: 28, z: -1.6 } : { x: 4, y: 14, z: -0.4 };
+  const rest = mode === "expand" ? { x: 6.6, y: 16.8, z: -0.96 } : { x: 4, y: 14, z: -0.4 };
   scene.dataset.mode = mode;
   scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
   scene.style.setProperty("--scene-width", `${geometry.width}px`);
