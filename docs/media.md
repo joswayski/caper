@@ -4942,6 +4942,39 @@ feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
 
+**Mac CI runner quarantine, October 12, 2026:** `.github/workflows/mac-route.yml`
+currently routes all macOS jobs to GitHub-hosted runners, even when
+`SELF_HOSTED_MAC=on` and the local runner reports online. Self-hosted controls were
+interrupted by an inspected application-memory/Force Quit dialog and, separately,
+lost runner communication. Online status alone does not prove a usable desktop
+session. The underlying host cause has not been established: this orb has no
+connected Mac or remote shell access, and its GitHub token cannot administer
+runners or repository variables. This quarantine changes no host settings,
+credentials, Windows/Linux routing, or the Mac's Linux-arm routing. It neither
+deploys an app nor starts a release. Routing-file changes trigger the native
+workflow on `main`, so acceptance checks the actual merged policy.
+
+To recover the machines, use the physical Apple Silicon Mac's infrastructure
+checkout, with both Tart windows open and admin logged into each desktop. Keep
+Caper routing off and wait for all VM jobs to become idle before recovery;
+`recover` refuses to restart a VM with an active `Runner.Worker`:
+
+```sh
+cd ~/code/infrastructure
+gh auth status
+gh variable set SELF_HOSTED_MAC --body off --repo joswayski/caper
+./scripts/mac-ci-runner.sh recover
+./scripts/mac-ci-runner.sh status
+```
+
+Inspect the VM desktop, memory pressure and newest runner `_diag` logs; confirm
+the OS dialog is absent, the desktop is drawn/unlocked, and both Caper listeners
+are online. See [the host recovery runbook](https://github.com/joswayski/infrastructure/blob/main/docs/mac-ci-runner.md).
+These host commands have **not** been run from this orb. Do not restore routing
+by toggling the variable alone: a follow-up PR must remove the explicit macOS
+quarantine after recovery, then validate complete ARM/Intel/iOS native suites on
+the intended main revision. Keep hosted routing if that control fails.
+
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
 conversation header on every client; channel rows show voice only while

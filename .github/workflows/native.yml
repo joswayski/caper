@@ -30,6 +30,7 @@ on:
       - pyproject.toml
       - uv.lock
       - .python-version
+      - .github/workflows/mac-route.yml
       - .github/workflows/native.yml
       - package.json
       - package-lock.json

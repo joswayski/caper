@@ -4,7 +4,11 @@ name: Choose self-hosted runners
 # (joswayski/infrastructure: the Mac, label "josemac" and, for linux/arm64 image
 # builds in its Linux VM, "joselinux-arm", see docs/mac-ci-runner.md; the
 # Windows PC, labels "josewin" and "joselinux", see docs/windows-ci-runner.md).
-# Each output is 'true' only when all of these hold, and jobs use
+# macOS desktop runners are quarantined after OS memory-dialog interruptions
+# and lost runner communication. The mac output stays false until recovery is
+# verified; Windows, Linux and Linux arm64 routing are unchanged. See
+# docs/media.md, "Mac CI runner quarantine".
+# Every other output is 'true' only when all of these hold, and jobs use
 # GitHub-hosted runners otherwise:
 #   - the repository variable (SELF_HOSTED_MAC for both of the Mac's outputs,
 #     SELF_HOSTED_WINDOWS or SELF_HOSTED_LINUX) is "on" (the kill switch),
@@ -62,7 +66,9 @@ jobs:
           fi
           route() { # output enabled label description
             local output="$1" enabled="$2" label="$3" what="$4" use=false reason online
-            if [[ "$enabled" != on ]]; then
+            if [[ "$output" == mac ]]; then
+              reason="macOS desktop runners are quarantined pending verified recovery"
+            elif [[ "$enabled" != on ]]; then
               reason="its repository variable is not 'on'"
             elif [[ "$EVENT" != push && "$EVENT" != workflow_dispatch ]] || [[ "$REF" != refs/heads/main ]]; then
               reason="only pushes and manual runs on main use self-hosted runners"
