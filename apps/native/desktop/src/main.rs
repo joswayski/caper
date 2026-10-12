@@ -814,6 +814,9 @@ struct CaperApp {
     draft: String,
     /// Unsent text of other conversations by channel or DM ID, restored on return.
     drafts: BTreeMap<String, String>,
+    /// Staged files of conversations that are not open, still uploading. Like
+    /// their text, they return when the conversation reopens.
+    staged_files: BTreeMap<String, Vec<DraftUpload>>,
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
@@ -1049,6 +1052,7 @@ impl CaperApp {
             display_name: String::new(),
             draft: String::new(),
             drafts: BTreeMap::new(),
+            staged_files: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
             pending: None,
@@ -2817,6 +2821,7 @@ impl CaperApp {
                         .draft_files
                         .iter()
                         .chain(&self.pending_files)
+                        .chain(self.staged_files.values().flatten())
                         .any(|draft| draft.key == key)
                         && let worker::UploadUpdate::Finished(Ok(attachment)) = &update
                     {
@@ -3081,6 +3086,8 @@ impl CaperApp {
         self.selected_space = None;
         self.clear_channel_state();
         self.drafts.clear();
+        self.thread_drafts.clear();
+        self.discard_staged_files(None);
         self.token = Some(token);
         self.uploads = None;
         self.uploads_checked = None;
@@ -4056,6 +4063,9 @@ impl CaperApp {
         self.has_newer = false;
         self.context_loading = false;
         self.history_request += 1;
+        if self.selected_channel.as_deref() != Some(history.channel.id.as_str()) {
+            self.restore_conversation_drafts(&history.channel.id);
+        }
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -4565,16 +4575,62 @@ impl CaperApp {
         });
     }
 
-    /// Keeps the open conversation's unsent text so returning to it restores it.
+    /// Keeps the open conversation's unsent text and staged files (uploads
+    /// carry on) so returning to it restores them.
     fn stash_draft(&mut self) {
         let draft = std::mem::take(&mut self.draft);
+        let files = std::mem::take(&mut self.draft_files);
         if let Some(channel) = &self.selected_channel {
             if draft.is_empty() {
                 self.drafts.remove(channel);
             } else {
                 self.drafts.insert(channel.clone(), draft);
             }
+            if !files.is_empty() {
+                self.staged_files.insert(channel.clone(), files);
+            }
+        } else {
+            self.draft_files = files;
         }
+    }
+
+    /// Returns a reopened conversation's unsent text and staged files,
+    /// renewing any upload that failed or expired while it was closed.
+    fn restore_conversation_drafts(&mut self, channel: &str) {
+        if let Some(draft) = self.drafts.remove(channel) {
+            self.draft = draft;
+        }
+        if let Some(files) = self.staged_files.remove(channel) {
+            self.draft_files = files;
+            let renew: Vec<_> = self
+                .draft_files
+                .iter()
+                .filter(|file| file.needs_upload())
+                .map(|file| file.key)
+                .collect();
+            for key in renew {
+                self.retry_upload(key);
+            }
+        }
+    }
+
+    /// Gives up staged files that can no longer be sent: on sign-out, or for
+    /// a conversation whose access ended.
+    fn discard_staged_files(&mut self, channel: Option<&str>) {
+        let files: Vec<_> = match channel {
+            Some(channel) => self.staged_files.remove(channel).unwrap_or_default(),
+            None => std::mem::take(&mut self.staged_files)
+                .into_values()
+                .flatten()
+                .collect(),
+        };
+        let mut ids = Vec::new();
+        for file in files {
+            file.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            ids.extend(file.attachment.map(|attachment| attachment.id));
+        }
+        self.cancel_assets(ids);
     }
 
     fn reload_selected_channel(&mut self, id: String, general: bool) {
@@ -4595,7 +4651,6 @@ impl CaperApp {
         self.thread_view = None;
         self.thread_request += 1;
         self.thread_pages.clear();
-        self.thread_drafts.clear();
         self.thread_only_rows.clear();
         self.older_armed = false;
         self.older_anchor = None;
@@ -4610,7 +4665,7 @@ impl CaperApp {
         self.reactors.clear();
         self.pending_pins.clear();
         self.mutations = model::MessageMutations::default();
-        self.draft = self.drafts.remove(&id).unwrap_or_default();
+        self.restore_conversation_drafts(&id);
         self.typers.clear();
         self.error = None;
         self.loading = true;
@@ -5238,10 +5293,15 @@ impl CaperApp {
 
     fn clear_channel(&mut self, message: &str) {
         self.invalidate_navigation_cache();
-        if let Some(channel) = &self.selected_channel {
+        let channel = self.selected_channel.clone();
+        if let Some(channel) = &channel {
             self.voice.revoke_channel(channel);
         }
         self.clear_channel_state();
+        // Access ended: its staged files could no longer be sent there.
+        if let Some(channel) = &channel {
+            self.discard_staged_files(Some(channel));
+        }
         self.error = Some(message.into());
     }
 
@@ -5269,7 +5329,6 @@ impl CaperApp {
         self.thread_view = None;
         self.thread_request += 1;
         self.thread_pages.clear();
-        self.thread_drafts.clear();
         self.thread_only_rows.clear();
         self.forwarding.close();
         self.older_armed = false;
@@ -5331,6 +5390,8 @@ impl CaperApp {
         self.selected_channel = None;
         self.clear_channel_state();
         self.drafts.clear();
+        self.thread_drafts.clear();
+        self.discard_staged_files(None);
         self.challenge = None;
         self.code.clear();
         self.attempts_remaining = None;
@@ -5729,7 +5790,8 @@ impl CaperApp {
         }
     }
 
-    /// Uploads belong to one channel; abandon them when it changes.
+    /// Gives up the open conversation's files. Switching conversations stashes
+    /// them first (`stash_draft`), so this only drops what is still open.
     fn drop_drafts(&mut self) {
         self.release_pending_files();
         let mut ids = Vec::new();
@@ -5749,6 +5811,7 @@ impl CaperApp {
             .draft_files
             .iter_mut()
             .chain(&mut self.pending_files)
+            .chain(self.staged_files.values_mut().flatten())
             .find(|draft| draft.key == key)
         else {
             return;
@@ -13318,16 +13381,19 @@ impl CaperApp {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        // A file shown under another conversation goes back to its own,
+        // still uploading, rather than being dropped.
         let channel = self.selected_channel.clone();
-        for draft in &self.draft_files {
-            if Some(&draft.channel) != channel.as_ref() {
-                draft
-                    .cancel
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
+        let (open, elsewhere): (Vec<_>, Vec<_>) = std::mem::take(&mut self.draft_files)
+            .into_iter()
+            .partition(|draft| Some(&draft.channel) == channel.as_ref());
+        self.draft_files = open;
+        for draft in elsewhere {
+            self.staged_files
+                .entry(draft.channel.clone())
+                .or_default()
+                .push(draft);
         }
-        self.draft_files
-            .retain(|draft| Some(&draft.channel) == channel.as_ref());
         for (id, image) in std::mem::take(&mut self.local_media) {
             self.media.insert_local(context, &id, image);
         }
@@ -29303,14 +29369,64 @@ mod tests {
             .iter()
             .map(|draft| draft.cancel.clone())
             .collect();
+        let channel = app.draft_files[0].channel.clone();
         app.selected_channel = Some("another-channel".into());
         app.attachment_housekeeping(&context);
         assert!(app.draft_files.is_empty());
         assert!(
             cancels
                 .iter()
-                .all(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+                .all(|cancel| !cancel.load(std::sync::atomic::Ordering::Relaxed)),
+            "files of another conversation are kept, not cancelled"
         );
+        assert_eq!(app.staged_files[&channel].len(), cancels.len());
+    }
+
+    #[test]
+    fn switching_conversations_keeps_each_ones_text_files_and_thread_replies() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        let first = app.selected_channel.clone().unwrap();
+        let keys: Vec<_> = app.draft_files.iter().map(|draft| draft.key).collect();
+        let cancels: Vec<_> = app
+            .draft_files
+            .iter()
+            .map(|draft| draft.cancel.clone())
+            .collect();
+        assert!(!keys.is_empty());
+        app.draft = "Unsent in the first conversation".into();
+        app.thread_drafts
+            .insert("root-message".into(), ("Unsent reply".into(), true));
+        app.reload_selected_channel("chan00000002".into(), false);
+        assert!(app.draft.is_empty() && app.draft_files.is_empty());
+        // A stashed upload still reports progress while its conversation is closed.
+        app.upload_update(keys[0], crate::worker::UploadUpdate::Progress(0.9));
+        app.draft = "Unsent in the second conversation".into();
+        app.reload_selected_channel(first.clone(), false);
+        assert_eq!(app.draft, "Unsent in the first conversation");
+        assert_eq!(
+            app.draft_files
+                .iter()
+                .map(|draft| draft.key)
+                .collect::<Vec<_>>(),
+            keys
+        );
+        assert!(app.draft_files[0].progress >= 0.9);
+        assert!(
+            cancels
+                .iter()
+                .all(|cancel| !cancel.load(std::sync::atomic::Ordering::Relaxed)),
+            "switching never cancels an upload"
+        );
+        assert_eq!(
+            app.drafts["chan00000002"],
+            "Unsent in the second conversation"
+        );
+        assert_eq!(app.thread_drafts["root-message"].0, "Unsent reply");
     }
 
     #[test]

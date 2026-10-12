@@ -647,9 +647,10 @@ Message bodies, chat capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to authorized
 channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
-Each channel and DM keeps its own unsent draft while the app stays open on web,
-Android, Apple and Rust desktop: switching conversations and coming back restores
-it, sending clears it, and signing out discards every draft. Drafts stay in memory
+Each channel and DM keeps its own unsent draft (text, staged files and thread
+replies) while the app stays open on web, Android, Apple and Rust desktop:
+switching conversations in any direction and coming back restores it, sending
+clears it, and signing out discards every draft. Drafts stay in memory
 and are never sent to the API. Restoring one does not send a typing indicator.
 `scripts/test-desktop-navigation.mjs` (channels) and
 `scripts/test-direct-messages.mjs` (DMs) check this in Chromium. Desktop, Apple
@@ -1451,8 +1452,8 @@ to the app also retries upload failures. No expiry or reselect explanation is
 shown. A timeout still means an unknown send outcome: retry the original command
 first, never cancel or replace its files until acceptance or a definitive refusal.
 
-This retains bytes only for the current open conversation/session, not durable
-attachment drafts across app restarts, page reloads or conversation switches.
+Staged files stay with their conversation across switches for the session
+(see below), not across app restarts or page reloads.
 No new lifetime-renewal endpoint or schema is introduced. Replacement uploads
 reserve quota normally; cancelled bytes remain charged until purge succeeds.
 
@@ -6883,3 +6884,33 @@ does not deploy them. Before native distribution, verify images, files and text
 scroll to the input edge with the keyboard open/closed, typing on/off, multiline
 drafts and thread replies on real iPhone/Android devices. Roll back web to its
 previous image; native rollback requires a corrected higher-build-number release.
+
+## Staged files and thread replies survive conversation switches (October 12, 2026)
+
+Switching away from a channel or DM no longer gives up its staged files or
+thread reply drafts. Channel to DM, DM to channel, channel to channel and DM to
+DM all keep each conversation's text, files and thread replies until you come
+back, send them, remove them, or sign out. Uploads keep running while their
+conversation is closed and are not re-uploaded on return; files whose upload
+failed, or is older than the 23-hour renewal point, are renewed on return
+(Apple restarts an upload that was still in flight when you switched). Only
+explicit **Remove**, sign-out, or loss of access to that conversation cancels a
+file's reservation. Drafts live in memory: closing or reloading the app still
+discards them.
+
+| Platform | Validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 594 `npm test` tests pass, including new store tests. In Chromium against the local fixture: #general text, a file and a thread reply, #design text plus a file, then the self-DM and back: each conversation returned with its text, files and thread reply, with no re-upload or cancellation; sending the restored #general draft delivered the file; Remove still cancelled. |
+| Android | `:app:compileDebugKotlin`, `:app:testDebugUnitTest` (329 JVM tests) and `:app:compileDebugAndroidTestKotlin` pass with platform/build-tools 36. No emulator here: no device switch check. |
+| iOS/macOS | Implementation only; Swift sources parse with Linux Swift 6.1. No Apple SDK build, XCTest or device check. |
+| Rust desktop | `cargo test -p caper-desktop`: 449 passed, 12 device/audio ignored, including a new switch test for text, files, background progress and thread replies; fmt and Clippy pass. The one failure, `compress::tests::usage_compression_settings_decode_with_defaults`, comes from #550 on main (it still expects the old 1080 video cap) and is untouched here. |
+| Services | No API, gateway, schema or configuration change. |
+
+**Deployment order.**
+
+1. No infrastructure, secrets/configuration, database migration, API or gateway
+   rollout is required. Merging deploys nothing.
+2. Deploy web from the merged revision with the usual workflow; Android, Apple
+   and Rust desktop release independently. Roll back web to the previous image;
+   native rollback requires a corrected higher-build-number release. No data
+   rollback is needed.

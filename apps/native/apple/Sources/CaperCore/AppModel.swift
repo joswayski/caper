@@ -1951,6 +1951,11 @@ public final class ChatModel {
     private var threadDrafts: [String: String] = [:]
     /// Unsent text of other conversations by channel or DM ID, restored on return.
     private var drafts: [String: String] = [:]
+    /// Staged files of conversations that are not open, by channel or DM ID.
+    /// Like their text, they stay (uploads carrying on) until reopened.
+    private var stagedFiles: [String: [AttachmentDraft]] = [:]
+    /// The conversation each staged file uploads to, open or not.
+    private var draftChannels: [String: String] = [:]
     private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
@@ -2233,6 +2238,7 @@ public final class ChatModel {
             clearLocal(preservingPending: preservingPending)
         }
         let restoredDraft = channelID.flatMap { drafts.removeValue(forKey: $0) } ?? ""
+        if let channelID { restoreStagedFiles(channelID: channelID) }
         draft = preservingPending ? preservedDraft : restoredDraft
         self.restoredDraft = draft.isEmpty ? nil : draft
         // Prepared history is already loaded and authorized by navigation.
@@ -2834,7 +2840,10 @@ public final class ChatModel {
         let oldSubscription = subscriptionID
         subscriptionID = nil
         clearLocal()
-        if discardingDrafts { drafts = [:] }
+        if discardingDrafts {
+            drafts = [:]; threadDrafts = [:]; threadBroadcasts = [:]
+            discardStagedFiles()
+        }
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
 
@@ -2846,6 +2855,7 @@ public final class ChatModel {
         guard let type = event["type"] as? String else { return }
         if type == "subscription.error", let status = event["status"] as? Int, [401, 403, 404].contains(status) {
             clearLocal(); error = event["error"] as? String ?? "Channel access ended."
+            discardStagedFiles(channelID: eventChannelID)
             onAccessRevoked?(eventChannelID)
             return
         }
@@ -3003,6 +3013,42 @@ public final class ChatModel {
     private func stashDraft() {
         guard let channelID else { return }
         drafts[channelID] = draft.isEmpty ? nil : draft
+        if !attachmentDrafts.isEmpty {
+            stagedFiles[channelID] = attachmentDrafts
+            attachmentDrafts = []
+            attachmentNotice = nil
+        }
+    }
+
+    /// Returns a reopened conversation's staged files, renewing any that
+    /// failed or expired while it was closed.
+    private func restoreStagedFiles(channelID: String) {
+        guard let files = stagedFiles.removeValue(forKey: channelID) else { return }
+        attachmentDrafts = files
+        for file in files where file.needsUpload && preparedUploads[file.id] != nil { retryAttachmentDraft(id: file.id) }
+    }
+
+    private func hasDraft(_ id: String) -> Bool {
+        (attachmentDrafts + pendingDrafts).contains(where: { $0.id == id })
+            || stagedFiles.values.contains(where: { $0.contains(where: { $0.id == id }) })
+    }
+
+    /// Gives up staged files that can no longer be sent: on sign-out, or for a
+    /// conversation whose access ended.
+    private func discardStagedFiles(channelID: String? = nil) {
+        let ids = channelID.map { [$0] } ?? Array(stagedFiles.keys)
+        for id in ids {
+            for draft in stagedFiles.removeValue(forKey: id) ?? [] { abandon(draft) }
+        }
+    }
+
+    private func abandon(_ draft: AttachmentDraft) {
+        uploadTasks[draft.id]?.cancel()
+        uploadTasks[draft.id] = nil
+        preparedUploads[draft.id] = nil
+        draftChannels[draft.id] = nil
+        if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
+        AttachmentStaging.remove(draft.localURL)
     }
 
     private func clearLocal(preservingPending: Bool = false) {
@@ -3028,7 +3074,7 @@ public final class ChatModel {
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
         editSnapshots.reset()
         failedPinActions = [:]
-        closeThread(); threadPages = [:]; threadOnlyRows = []; threadDrafts = [:]; threadBroadcasts = [:]
+        closeThread(); threadPages = [:]; threadOnlyRows = []
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil
@@ -3216,12 +3262,12 @@ public final class ChatModel {
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
             let id = UUID().uuidString
+            if let channelID { draftChannels[id] = channelID }
             attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
                                                     localURL: file.url, sourceSize: file.size))
             uploadTasks[id] = Task { [weak self] in
                 let prepared = await AttachmentPreparer.prepare(file, settings: settings)
-                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
-                      self.attachmentDrafts.contains(where: { $0.id == id }) else {
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled, self.hasDraft(id) else {
                     // Removed (or the conversation closed) while compressing.
                     AttachmentStaging.remove(prepared.fileURL)
                     if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
@@ -3251,6 +3297,7 @@ public final class ChatModel {
         uploadTasks[id]?.cancel()
         uploadTasks[id] = nil
         preparedUploads[id] = nil
+        draftChannels[id] = nil
         if let draft = attachmentDrafts.first(where: { $0.id == id }) {
             if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
             AttachmentStaging.remove(draft.localURL)
@@ -3259,21 +3306,19 @@ public final class ChatModel {
         attachmentNotice = nil
     }
 
+    /// Gives up the open conversation's files. Switching conversations stashes
+    /// them first (`stashDraft`), so this only drops what is still open.
     private func discardAttachmentDrafts() {
-        uploadGeneration += 1
-        uploadTasks.values.forEach { $0.cancel() }
-        uploadTasks = [:]
-        for draft in attachmentDrafts {
-            preparedUploads[draft.id] = nil
-            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
-            AttachmentStaging.remove(draft.localURL)
-        }
+        attachmentDrafts.forEach(abandon)
         attachmentDrafts = []
         attachmentNotice = nil
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
         if let index = attachmentDrafts.firstIndex(where: { $0.id == id }) { change(&attachmentDrafts[index]) }
+        for (channel, files) in stagedFiles {
+            if let index = files.firstIndex(where: { $0.id == id }) { change(&stagedFiles[channel]![index]) }
+        }
         if let index = pendingDrafts.firstIndex(where: { $0.id == id }) { change(&pendingDrafts[index]) }
     }
 
@@ -3293,7 +3338,9 @@ public final class ChatModel {
     }
 
     private func uploadAttachmentDraft(id: String) async throws -> ChatAttachment {
-        guard let channelID, let file = (attachmentDrafts + pendingDrafts).first(where: { $0.id == id }),
+        let staged = stagedFiles.values.flatMap { $0 }
+        guard let channelID = draftChannels[id] ?? channelID,
+              let file = (attachmentDrafts + pendingDrafts + staged).first(where: { $0.id == id }),
               let prepared = preparedUploads[id] else { throw CancellationError() }
         if !file.needsUpload, let attachment = file.attachment { return attachment }
         let expected = uploadGeneration
@@ -3309,8 +3356,7 @@ public final class ChatModel {
                 self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
             }
         }
-        guard uploadGeneration == expected, !Task.isCancelled,
-              (attachmentDrafts + pendingDrafts).contains(where: { $0.id == id }) else {
+        guard uploadGeneration == expected, !Task.isCancelled, hasDraft(id) else {
             await api.cancelAsset(id: attachment.id)
             throw CancellationError()
         }

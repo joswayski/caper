@@ -58,6 +58,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
     internal val drafts = ConversationDrafts()
+    /** Staged files of conversations that are not open, by channel or DM ID, still uploading (like their text drafts). */
+    private val stagedFiles = mutableMapOf<String, List<DraftAttachmentUi>>()
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
@@ -260,6 +262,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         ++accountGeneration
         ++spaceAccessGeneration
         invalidate()
+        // Signing out gives up every conversation's staged files.
+        stagedFiles.values.flatten().forEach { abandonDraft(it) }
+        stagedFiles.clear()
         accountToken = null
         chatToken = null
         chatAuthor = null
@@ -480,6 +485,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        restoreStagedFiles(channel.id)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
@@ -517,6 +523,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 closeChannel(clearPending = true)
                 val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
                 mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id)
+                restoreStagedFiles(channel.id)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(conversation.id, history.cursor, committed)
@@ -976,6 +983,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
                     busy = false, error = null,
                 )
+                restoreStagedFiles(destination.channel.id)
                 openGateway(channelId, destination.history.cursor, request)
                 onOpened()
             } catch (error: Throwable) {
@@ -1058,6 +1066,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
                         busy = false, error = null, messagesLoading = false,
                     )
+                    restoreStagedFiles(channel.id)
                     openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
                     if (direct != null) refreshPeople()
                 }
@@ -1578,6 +1587,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun restoreStagedFiles(channelId: String) {
+        val files = stagedFiles.remove(channelId) ?: return
+        mutable.value = mutable.value.copy(drafts = files)
+        // Renew anything that failed or expired while the conversation was closed.
+        files.filter { it.error != null || uploadStale(it) }.forEach { retryDraft(it.key) }
+    }
+
+    /** Gives up the open conversation's staged files when it can no longer be used. */
+    private fun dropOpenDrafts() {
+        mutable.value.drafts.forEach { abandonDraft(it) }
+        mutable.value = mutable.value.copy(drafts = emptyList())
+    }
+
+    /** Open, sending and stashed drafts: an upload continues while its file is in any of them. */
+    private fun knownDrafts() = mutable.value.drafts + pendingDrafts + stagedFiles.values.flatten()
+
     private fun uploadStale(draft: DraftAttachmentUi) = draft.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
 
     fun retryDraft(key: String) {
@@ -1593,9 +1618,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun uploadDraft(key: String, token: String, channel: String): ChatAttachment {
-        val draft = (mutable.value.drafts + pendingDrafts).find { it.key == key } ?: throw CancellationException()
+        val draft = knownDrafts().find { it.key == key } ?: throw CancellationException()
         if (draft.attachment != null && !uploadStale(draft)) return draft.attachment
-        val request = generation
         updateDraft(key) { it.copy(attachment = null, error = null, progress = 0f) }
         draft.attachment?.let { api.cancelAsset(token, it.id) }
         val prepared = preparedDrafts[key] ?: run {
@@ -1607,7 +1631,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 sourceSize = picked.source.length(), thumbnail = if (image) Uri.fromFile(picked.source).toString() else null,
                 pickedImage = if (image) uri.toString() else null) }
             preparer.prepare(picked, compression, directory, progressReporter(key)).also {
-                if (request != generation || (mutable.value.drafts + pendingDrafts).none { it.key == key }) throw CancellationException()
+                if (knownDrafts().none { it.key == key }) throw CancellationException()
                 preparedDrafts[key] = it
             }
         }
@@ -1615,7 +1639,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             compressing = false, progress = 0f, localUrl = Uri.fromFile(prepared.file).toString(),
             thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail) }
         val attachment = uploader.upload(token, channel, prepared, progressReporter(key))
-        if (request != generation || (mutable.value.drafts + pendingDrafts).none { it.key == key }) {
+        if (knownDrafts().none { it.key == key }) {
             api.cancelAsset(token, attachment.id)
             throw CancellationException()
         }
@@ -1643,6 +1667,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateDraft(key: String, change: (DraftAttachmentUi) -> DraftAttachmentUi) {
+        stagedFiles.entries.forEach { entry -> if (entry.value.any { it.key == key }) entry.setValue(entry.value.map { if (it.key == key) change(it) else it }) }
         mutable.value = mutable.value.copy(drafts = mutable.value.drafts.map { if (it.key == key) change(it) else it })
         pendingDrafts = pendingDrafts.map { if (it.key == key) change(it) else it }
     }
@@ -2330,7 +2355,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         replaceDetail(current.copy(channels = current.channels.mapNotNull {
             if (it.id != channel.id) it else if (privateLoss) null else it.copy(joined = false)
         }))
-        if (selected == channel.id) { ++generation; closeChannel(clearPending = true) }
+        // Leaving a channel gives up its staged files: they could no longer be sent there.
+        stagedFiles.remove(channel.id)?.forEach { abandonDraft(it) }
+        if (selected == channel.id) { ++generation; dropOpenDrafts(); closeChannel(clearPending = true) }
         refreshSpace(detail.space.id, if (selected == channel.id && privateLoss) null else selected)
     }
 
@@ -2382,6 +2409,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value.selectedDirectId?.let { directHistories.remove(it) }
         mutable.value.selectedChannel?.id?.let { VoiceCallService.stopIfChannel(getApplication(), it) }
         ++generation
+        dropOpenDrafts()
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(error = "You no longer have access to this channel.")
     }
@@ -2400,8 +2428,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         unloadedAttachments.clear()
         if (clearPending) {
             pendingSends.clear()
-            // Uploads belong to one conversation; abandon them when it changes.
-            mutable.value.drafts.forEach { abandonDraft(it) }
+            // Staged files stay with their conversation, uploads carrying on, until it is reopened.
+            mutable.value.selectedChannel?.id?.let { id -> if (mutable.value.drafts.isNotEmpty()) stagedFiles[id] = mutable.value.drafts }
             // An uncertain send may still commit; do not cancel its files.
             pendingDrafts.forEach { discardDraftFiles(it.key) }
             pendingDrafts = emptyList()
