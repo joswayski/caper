@@ -1137,7 +1137,7 @@ mod tests {
         assert_eq!(parsed.image_max_edge, 2048);
         assert_eq!(parsed.palette_colors, 64);
         assert_eq!(parsed.preview_edge, 320);
-        assert_eq!(parsed.video_max_height, 1080);
+        assert_eq!(parsed.video_max_height, 1440);
         // Missing photo-format fields keep older servers on WebP.
         assert_eq!(parsed.image_format, "webp");
         assert_eq!(parsed.avif_quality, 85);
