@@ -4460,11 +4460,15 @@ private struct ReactionPicker: View {
 private struct NativeReplyContext: View {
     let reference: MessageReply
     @Bindable var chat: ChatModel
+    var replyGap: CGFloat = 6
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var collapsedHeight: CGFloat = 0
-    @State private var sweepStart = Date()
+    @State private var previousY: CGFloat?
+    @State private var displacement: CGFloat = 0
+    @State private var velocity: CGFloat = 0
+    @State private var motion: Task<Void, Never>?
     private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
     private var excerpt: String {
         let text = reference.fullText ?? reference.text
@@ -4531,57 +4535,84 @@ private struct NativeReplyContext: View {
             .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             .overlay(alignment: .topLeading) {
                 GeometryReader { geometry in
-                    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || hidden)) { timeline in
-                        let progress = CGFloat(max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 2.8) / 2.8))
-                        let bottom = geometry.size.height + 6
-                        let ribbon = Path { path in
-                            path.move(to: CGPoint(x: 16.45, y: bottom))
-                            path.addLine(to: CGPoint(x: 15.4, y: 48))
-                            path.addQuadCurve(to: CGPoint(x: 44, y: 18), control: CGPoint(x: 15.4, y: 18))
-                            path.addLine(to: CGPoint(x: 56, y: 18)); path.addLine(to: CGPoint(x: 56, y: 22)); path.addLine(to: CGPoint(x: 44, y: 22))
-                            path.addQuadCurve(to: CGPoint(x: 18.6, y: 48), control: CGPoint(x: 18.6, y: 22))
-                            path.addLine(to: CGPoint(x: 17.55, y: bottom)); path.closeSubpath()
-                        }
-                        let path = Path { path in
-                            path.move(to: CGPoint(x: 17, y: bottom))
-                            path.addLine(to: CGPoint(x: 17, y: 48))
-                            path.addQuadCurve(to: CGPoint(x: 44, y: 20), control: CGPoint(x: 17, y: 20))
-                            path.addLine(to: CGPoint(x: 56, y: 20))
-                        }
-                        let rings = Path { path in
-                            path.addEllipse(in: CGRect(x: -0.5, y: bottom - 1.5, width: 35, height: 35))
-                            if !hidden { path.addEllipse(in: CGRect(x: 55.5, y: 11.5, width: 17, height: 17)) }
-                        }
-                        ZStack {
-                            ribbon.fill(CaperTheme.muted.opacity(0.65))
-                            rings.stroke(CaperTheme.muted.opacity(0.4), lineWidth: 1)
-                            if !reduceMotion && !hidden && progress > 0 && progress < 1,
-                               let center = path.trimmedPath(from: 0, to: progress).currentPoint {
-                                let before = path.trimmedPath(from: 0, to: max(0, progress - 0.001)).currentPoint ?? center
-                                let angle = Angle.radians(Double(atan2(center.y - before.y, center.x - before.x)))
-                                let fade = 0.8 * Double(min(1, min(progress / 0.07, (1 - progress) / 0.12)))
-                                let stops: [Gradient.Stop] = [
-                                    .init(color: CaperTheme.text, location: 0),
-                                    .init(color: CaperTheme.text, location: 0.16),
-                                    .init(color: CaperTheme.terracottaBright.opacity(0.95), location: 0.32),
-                                    .init(color: CaperTheme.terracottaBright.opacity(0.3), location: 0.6),
-                                    .init(color: .clear, location: 1),
-                                ]
-                                let light = RadialGradient(stops: stops, center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 36)
-                                let bloom = RadialGradient(stops: stops, center: .center, startRadius: 0, endRadius: 36)
-                                Circle().fill(bloom).frame(width: 72, height: 72)
-                                    .scaleEffect(x: 84.0 / 36.0, y: 24.0 / 36.0).rotationEffect(angle)
-                                    .position(center).opacity(0.14 * fade).blur(radius: 8)
-                                Circle().fill(bloom).frame(width: 72, height: 72)
-                                    .scaleEffect(x: 52.0 / 36.0, y: 10.0 / 36.0).rotationEffect(angle)
-                                    .position(center).opacity(0.35 * fade).blur(radius: 4)
-                                ribbon.fill(light).opacity(fade)
+                    if !hidden {
+                        Canvas { context, _ in
+                            let bottom = geometry.size.height + replyGap + 17
+                            let angle = displacement * 0.025
+                            let dx = 12 * cos(angle), dy = 12 * sin(angle)
+                            let start = CGPoint(x: -dx, y: bottom + dy)
+                            let end = CGPoint(x: 56 - dx, y: 20 - dy)
+                            let span = start.y - end.y
+                            let wire = Path { path in
+                                path.move(to: start)
+                                path.addCurve(to: end,
+                                    control1: CGPoint(x: start.x - 7 + displacement, y: start.y - span * 0.3),
+                                    control2: CGPoint(x: end.x - 30 + displacement, y: end.y + span * 0.3))
                             }
-                        }.frame(width: 57, height: geometry.size.height + 40)
+                            var string = context
+                            string.translateBy(x: 20, y: 0)
+                            string.stroke(wire, with: .color(CaperTheme.muted.opacity(0.75)), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+                            drawSocket(context, at: CGPoint(x: 56, y: 20), angle: angle)
+                            drawSocket(context, at: CGPoint(x: 0, y: bottom), angle: -angle)
+                        }
+                        // Canvas clips to its bounds; reserve the gutter and the avatar below.
+                        .frame(width: 78, height: geometry.size.height + 45)
+                        .offset(x: -20)
                     }
                 }.allowsHitTesting(false).accessibilityHidden(true)
             }
-            .onAppear { sweepStart = .now }
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { y in
+                let delta = (previousY ?? y) - y
+                previousY = y
+                guard !reduceMotion && !hidden && delta != 0 else { return }
+                velocity = max(-60, min(60, velocity + delta * 0.8))
+                guard motion == nil else { return }
+                motion = Task { @MainActor in
+                    var previousTime = Date()
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+                        let now = Date()
+                        let dt = CGFloat(min(now.timeIntervalSince(previousTime), 0.032))
+                        previousTime = now
+                        velocity -= (180 * displacement + 20 * velocity) * dt
+                        displacement = max(-4, min(4, displacement + velocity * dt))
+                        if abs(displacement) < 0.01 && abs(velocity) < 0.05 { break }
+                    }
+                    displacement = 0; velocity = 0; motion = nil
+                }
+            }
+            .onChange(of: reduceMotion) { _, _ in stopMotion() }
+            .onChange(of: hidden) { _, _ in stopMotion() }
+            .onDisappear { stopMotion(); previousY = nil }
+    }
+
+    private func stopMotion() {
+        motion?.cancel(); motion = nil; displacement = 0; velocity = 0
+    }
+
+    private func drawSocket(_ context: GraphicsContext, at position: CGPoint, angle: CGFloat) {
+        var socket = context
+        socket.translateBy(x: position.x + 20, y: position.y)
+        socket.rotate(by: .radians(Double(angle)))
+        let cup = Path { path in
+            path.move(to: CGPoint(x: -12, y: -2.4))
+            path.addQuadCurve(to: CGPoint(x: -12, y: 2.4), control: CGPoint(x: -13, y: 0))
+            path.addLine(to: CGPoint(x: -1, y: 4.5)); path.addLine(to: CGPoint(x: -1, y: -4.5)); path.closeSubpath()
+        }
+        let metal = Gradient(stops: [
+            .init(color: Color(red: 100/255, green: 107/255, blue: 112/255), location: 0),
+            .init(color: Color(red: 162/255, green: 169/255, blue: 173/255), location: 0.32),
+            .init(color: Color(red: 112/255, green: 120/255, blue: 125/255), location: 0.55),
+            .init(color: Color(red: 48/255, green: 54/255, blue: 58/255), location: 1),
+        ])
+        socket.fill(cup, with: .linearGradient(metal, startPoint: CGPoint(x: 0, y: -4.5), endPoint: CGPoint(x: 0, y: 4.5)))
+        socket.stroke(cup, with: .color(CaperTheme.border), lineWidth: 0.6)
+        let highlight = Path { $0.move(to: CGPoint(x: -11, y: -1.6)); $0.addLine(to: CGPoint(x: -3, y: -3)) }
+        socket.stroke(highlight, with: .color(CaperTheme.text.opacity(0.35)), lineWidth: 0.6)
+        let rim = Path(ellipseIn: CGRect(x: -2.6, y: -4.5, width: 3.2, height: 9))
+        socket.fill(rim, with: .color(Color(red: 37/255, green: 42/255, blue: 45/255)))
+        socket.stroke(rim, with: .color(CaperTheme.terracotta), lineWidth: 0.8)
+        socket.fill(Path(ellipseIn: CGRect(x: -1.7, y: -3.4, width: 1.4, height: 6.8)), with: .color(CaperTheme.surface))
     }
 }
 
@@ -4608,7 +4639,7 @@ private struct PendingMessageRow: View {
     let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-        if let reference = pending.replyTo, let chat { NativeReplyContext(reference: reference, chat: chat) }
+        if let reference = pending.replyTo, let chat { NativeReplyContext(reference: reference, chat: chat, replyGap: 5) }
         HStack(alignment: .top, spacing: 10) {
             if grouped {
                 // Keep the avatar column empty; a clear name still reaches VoiceOver.

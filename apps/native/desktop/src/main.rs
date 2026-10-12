@@ -10803,7 +10803,9 @@ impl CaperApp {
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
                         if let Some(reference) = &pending.reply_to {
                             let source = self.reply_context(ui, reference, &pending.id);
-                            reply_connector(ui, source, ui.cursor().top() + 11.0);
+                            if !self.is_blocked(&reference.author.id) {
+                                reply_connector(ui, source, ui.cursor().top() + 11.0, &pending.id);
+                            }
                         }
                         message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false }, "Now", grouped.then_some("Now"), false, |ui| {
                             // File-only messages have no text row.
@@ -11276,10 +11278,10 @@ impl CaperApp {
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let quote = message
-                .reply_to
-                .as_ref()
-                .map(|reference| self.reply_context(ui, reference, &message.id));
+            let quote = message.reply_to.as_ref().map(|reference| {
+                let source = self.reply_context(ui, reference, &message.id);
+                (source, !self.is_blocked(&reference.author.id))
+            });
             if in_pins && let Some(pin) = pinned {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -11323,9 +11325,11 @@ impl CaperApp {
                         }
                     });
             }
-            if let Some(source) = quote {
+            if let Some((source, visible)) = quote {
                 actions_y = Some(ui.cursor().top());
-                reply_connector(ui, source, ui.cursor().top() + 11.0);
+                if visible {
+                    reply_connector(ui, source, ui.cursor().top() + 11.0, &message.id);
+                }
             }
             let (timestamp, profile, body) =
                 message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
@@ -15700,47 +15704,122 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     })
 }
 
-fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32) {
-    let column = ui.cursor().left() + 35.0;
-    let bend = source - egui::vec2(12.0, 0.0);
-    let control = egui::pos2(column, source.y);
-    let below = egui::pos2(column, source.y + 28.0);
-    let mut points = vec![source, bend];
-    for step in 1..=12 {
-        let t = step as f32 / 12.0;
-        points.push(egui::pos2(
-            (1.0 - t).powi(2) * bend.x + 2.0 * t * (1.0 - t) * control.x + t * t * below.x,
-            (1.0 - t).powi(2) * bend.y + 2.0 * t * (1.0 - t) * control.y + t * t * below.y,
+#[derive(Clone, Copy)]
+struct ReplyStringMotion {
+    source_y: f32,
+    time: f64,
+    displacement: f32,
+    velocity: f32,
+}
+
+fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str) {
+    let target = egui::pos2(ui.cursor().left() + 18.0, avatar_top + 16.0);
+    let id = ui.id().with(("reply-string", key));
+    let now = ui.input(|input| input.time);
+    let mut motion = ui
+        .data(|data| data.get_temp::<ReplyStringMotion>(id))
+        .unwrap_or(ReplyStringMotion {
+            source_y: source.y,
+            time: now,
+            displacement: 0.0,
+            velocity: 0.0,
+        });
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(reply_motion_enabled) && ui.style().animation_time > 0.0;
+    if enabled && ui.is_rect_visible(egui::Rect::from_two_pos(source, target)) {
+        // Advance elapsed time in stable substeps, even on a slow software-rendered frame.
+        let mut remaining = (now - motion.time).clamp(0.0, 0.25) as f32;
+        while remaining > 0.0 {
+            let dt = remaining.min(1.0 / 120.0);
+            motion.velocity -= (180.0 * motion.displacement + 20.0 * motion.velocity) * dt;
+            motion.displacement = (motion.displacement + motion.velocity * dt).clamp(-4.0, 4.0);
+            remaining -= dt;
+        }
+        // This frame's scroll impulse happens now, not at the previous frame's time.
+        motion.velocity = (motion.velocity + (motion.source_y - source.y) * 0.8).clamp(-60.0, 60.0);
+        if motion.displacement.abs() < 0.01 && motion.velocity.abs() < 0.05 {
+            motion.displacement = 0.0;
+            motion.velocity = 0.0;
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
+    } else {
+        motion.displacement = 0.0;
+        motion.velocity = 0.0;
+    }
+    motion.source_y = source.y;
+    motion.time = now;
+    ui.data_mut(|data| data.insert_temp(id, motion));
+    let angle = motion.displacement * 0.025;
+    let dx = 12.0 * angle.cos();
+    let dy = 12.0 * angle.sin();
+    let start = target + egui::vec2(-dx, dy);
+    let end = source + egui::vec2(-dx, -dy);
+    let span = start.y - end.y;
+    ui.painter()
+        .add(egui::epaint::CubicBezierShape::from_points_stroke(
+            [
+                start,
+                start + egui::vec2(-7.0 + motion.displacement, -span * 0.3),
+                end + egui::vec2(-30.0 + motion.displacement, span * 0.3),
+                end,
+            ],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::new(1.1, MUTED.gamma_multiply(0.75)),
         ));
+    for (position, angle) in [(source, angle), (target, -angle)] {
+        egui::Image::new(egui::include_image!("../../../../shared/reply-socket.svg"))
+            .rotate(angle, egui::vec2(14.0 / 16.0, 0.5))
+            .paint_at(
+                ui,
+                egui::Rect::from_min_size(position - egui::vec2(14.0, 6.0), egui::vec2(16.0, 12.0)),
+            );
     }
-    points.push(egui::pos2(column, avatar_top));
-    let length: f32 = points
-        .windows(2)
-        .map(|pair| pair[0].distance(pair[1]))
-        .sum();
-    let mut distance = 0.0;
-    let mut mesh = egui::Mesh::default();
-    for (index, point) in points.iter().enumerate() {
-        if index > 0 {
-            distance += point.distance(points[index - 1]);
+}
+
+/// Read the desktop preference once, without a subprocess or timer per row/frame.
+fn reply_motion_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SystemParametersInfoW(
+                action: u32,
+                parameter: u32,
+                value: *mut std::ffi::c_void,
+                flags: u32,
+            ) -> i32;
         }
-        let tangent = points[(index + 1).min(points.len() - 1)] - points[index.saturating_sub(1)];
-        let normal = egui::vec2(-tangent.y, tangent.x).normalized();
-        let width = 2.0 - 1.45 * distance / length;
-        mesh.colored_vertex(*point + normal * width, MUTED.gamma_multiply(0.65));
-        mesh.colored_vertex(*point - normal * width, MUTED.gamma_multiply(0.65));
-        if index > 0 {
-            let index = index as u32 * 2;
-            mesh.add_triangle(index - 2, index - 1, index);
-            mesh.add_triangle(index, index - 1, index + 1);
+        let mut enabled = 1_i32;
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to a live, aligned i32.
+        unsafe {
+            SystemParametersInfoW(0x1042, 0, (&raw mut enabled).cast(), 0);
         }
+        enabled != 0
     }
-    ui.painter().add(mesh);
-    let ring = Stroke::new(1.0, MUTED.gamma_multiply(0.4));
-    ui.painter()
-        .circle_stroke(source + egui::vec2(8.0, 0.0), 8.5, ring);
-    ui.painter()
-        .circle_stroke(egui::pos2(column, avatar_top + 16.0), 17.5, ring);
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let (command, args, disabled) = (
+            "defaults",
+            &["read", "com.apple.universalaccess", "reduceMotion"][..],
+            "1",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (command, args, disabled) = (
+            "gsettings",
+            &["get", "org.gnome.desktop.interface", "enable-animations"][..],
+            "false",
+        );
+        !std::process::Command::new(command)
+            .args(args)
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == disabled
+            })
+    }
 }
 
 /// A message row: avatar, then the name and time above the body. A grouped

@@ -1,5 +1,6 @@
 import { CornerUpRight, Paperclip, X } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
+import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";
 import { attachmentsOf, type ChatMessage, type ChatReplyReference } from "./types.ts";
 
@@ -27,10 +28,13 @@ export function ReplyContext({
 }) {
   const root = useRef<HTMLDivElement>(null);
   const excerpt = useRef<HTMLSpanElement>(null);
+  const wire = useRef<SVGPathElement>(null);
+  const sourceCup = useRef<SVGGElement>(null);
+  const targetCup = useRef<SVGGElement>(null);
   const excerptId = useId();
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
-  const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 17, height: 100 });
+  const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 0, height: 117 });
   const text = reference.fullText ?? reference.text;
   const preview = [...text].slice(0, 100).join("");
   const canExpand = preview !== text || clipped;
@@ -46,8 +50,8 @@ export function ReplyContext({
       setConnection({
         sourceX: source.left - bounds.left,
         sourceY: source.top + source.height / 2 - bounds.top,
-        targetX: target ? target.left + target.width / 2 - bounds.left : 17,
-        height: target ? target.top - bounds.top + 1 : bounds.height + 18,
+        targetX: target ? target.left - bounds.left : 0,
+        height: target ? target.top + target.height / 2 - bounds.top : bounds.height + 35,
       });
       // The same context appears in the timeline, threads, pending rows and Pins.
       const actions =
@@ -70,13 +74,80 @@ export function ReplyContext({
     };
   }, [hidden, text]);
   const { sourceX, sourceY, targetX, height } = connection;
-  const bendX = sourceX - 12;
-  const bendY = sourceY + 28;
-  const path = `M${targetX} ${height}V${bendY}Q${targetX} ${sourceY} ${bendX} ${sourceY}H${sourceX}`;
-  const ribbon = `M${targetX - 0.55} ${height}L${targetX - 1.6} ${bendY}Q${targetX - 1.6} ${sourceY - 2} ${bendX} ${sourceY - 2}H${sourceX}V${sourceY + 2}H${bendX}Q${targetX + 1.6} ${sourceY + 2} ${targetX + 1.6} ${bendY}L${targetX + 0.55} ${height}Z`;
-  const clipId = `reply-ribbon-${excerptId}`;
-  const routeId = `reply-route-${excerptId}`;
-  const lightId = `reply-light-${excerptId}`;
+  useLayoutEffect(() => {
+    if (hidden) return;
+    const element = root.current!;
+    const scroller = element.closest<HTMLElement>(".chat-scroller, .chat-thread-messages, .chat-pins");
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    let previousTime = 0;
+    let previousScroll = scroller?.scrollTop ?? 0;
+    let offset = 0;
+    let velocity = 0;
+    const draw = () => {
+      // Both cup mouths stay on their avatars. The string follows the rotated backs.
+      const angle = offset * 0.025;
+      const dx = 12 * Math.cos(angle);
+      const dy = 12 * Math.sin(angle);
+      const startX = targetX - dx;
+      const startY = height + dy;
+      const endX = sourceX - dx;
+      const endY = sourceY - dy;
+      const span = startY - endY;
+      wire.current!.setAttribute(
+        "d",
+        `M${startX} ${startY}C${startX - 7 + offset} ${startY - span * 0.3} ${endX - 30 + offset} ${endY + span * 0.3} ${endX} ${endY}`,
+      );
+      sourceCup.current!.setAttribute(
+        "transform",
+        `translate(${sourceX} ${sourceY}) rotate(${(angle * 180) / Math.PI})`,
+      );
+      targetCup.current!.setAttribute(
+        "transform",
+        `translate(${targetX} ${height}) rotate(${(-angle * 180) / Math.PI})`,
+      );
+    };
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      offset = velocity = 0;
+      draw();
+    };
+    const step = (time: number) => {
+      const dt = Math.min((time - previousTime) / 1000, 0.032);
+      previousTime = time;
+      velocity -= (180 * offset + 20 * velocity) * dt;
+      offset = Math.max(-4, Math.min(4, offset + velocity * dt));
+      if (Math.abs(offset) < 0.01 && Math.abs(velocity) < 0.05) stop();
+      else {
+        draw();
+        frame = requestAnimationFrame(step);
+      }
+    };
+    const scroll = () => {
+      const delta = scroller!.scrollTop - previousScroll;
+      previousScroll = scroller!.scrollTop;
+      const bounds = element.getBoundingClientRect();
+      const viewport = scroller!.getBoundingClientRect();
+      if (motion.matches || bounds.bottom + 35 < viewport.top || bounds.top > viewport.bottom) {
+        stop();
+        return;
+      }
+      velocity = Math.max(-60, Math.min(60, velocity + delta * 0.8));
+      if (!frame) {
+        previousTime = performance.now();
+        frame = requestAnimationFrame(step);
+      }
+    };
+    draw();
+    scroller?.addEventListener("scroll", scroll, { passive: true });
+    motion.addEventListener("change", stop);
+    return () => {
+      cancelAnimationFrame(frame);
+      scroller?.removeEventListener("scroll", scroll);
+      motion.removeEventListener("change", stop);
+    };
+  }, [connection, hidden]);
   return (
     <div
       ref={root}
@@ -84,42 +155,22 @@ export function ReplyContext({
       data-expanded={expanded && !hidden}
       data-clipped={canExpand && !hidden}
     >
-      <svg
-        className="chat-reply-connector"
-        style={{ width: sourceX + 1, height }}
-        viewBox={`0 0 ${sourceX + 1} ${height}`}
-        aria-hidden="true"
-      >
-        <defs>
-          <clipPath id={clipId}>
-            <path d={ribbon} />
-          </clipPath>
-          <path id={routeId} className="chat-reply-route" d={path} />
-          <radialGradient id={lightId}>
-            <stop offset="0" stopColor="var(--text)" stopOpacity="1" />
-            <stop offset="0.16" stopColor="var(--text)" stopOpacity="1" />
-            <stop offset="0.32" stopColor="currentColor" stopOpacity="0.95" />
-            <stop offset="0.6" stopColor="currentColor" stopOpacity="0.3" />
-            <stop offset="1" stopColor="currentColor" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <path className="chat-reply-line" d={ribbon} />
-        {!hidden && (
-          <g className="chat-reply-pulse">
-            <g className="chat-reply-flow chat-reply-haze" style={{ offsetPath: `url(#${routeId})` }}>
-              <ellipse rx="84" ry="24" fill={`url(#${lightId})`} />
-            </g>
-            <g className="chat-reply-flow chat-reply-glow" style={{ offsetPath: `url(#${routeId})` }}>
-              <ellipse rx="52" ry="10" fill={`url(#${lightId})`} />
-            </g>
-            <g clipPath={`url(#${clipId})`}>
-              <g className="chat-reply-flow" style={{ offsetPath: `url(#${routeId})` }}>
-                <circle r="36" fill={`url(#${lightId})`} />
-              </g>
-            </g>
+      {!hidden && (
+        <svg
+          className="chat-reply-connector"
+          style={{ width: sourceX + 1, height }}
+          viewBox={`0 0 ${sourceX + 1} ${height}`}
+          aria-hidden="true"
+        >
+          <path ref={wire} className="chat-reply-line chat-reply-route" />
+          <g ref={sourceCup} className="chat-reply-socket chat-reply-socket-source">
+            <image href={socketArtwork} x="-14" y="-6" width="16" height="12" />
           </g>
-        )}
-      </svg>
+          <g ref={targetCup} className="chat-reply-socket chat-reply-socket-target">
+            <image href={socketArtwork} x="-14" y="-6" width="16" height="12" />
+          </g>
+        </svg>
+      )}
       <div className="chat-reply-body">
         <button
           type="button"

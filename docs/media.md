@@ -6623,22 +6623,23 @@ composers retain their normal attachment support; thread composers remain
 text-only. Replying does not implicitly mention or ping the source author.
 
 The quoted original sits in a separate neutral card, with clear spacing before
-the current reply and a visible **View original** affordance. A curved beam
-connects both outlined avatar boundaries, tapering from thin at the replying
-author to thicker at the quoted source. Collapsed quotes show the first 100
+the current reply and a visible **View original** affordance. Small shaded
+pewter cup sockets touch the left edges of the original and replying avatars,
+joined by one thin curved string in the gutter. Web and Rust desktop share the
+SVG artwork; Android and Apple draw matching vectors. Collapsed quotes show the first 100
 Unicode scalars, wrap to at most three lines and fade into the dark card above
 **Show more**. Expansion reveals the complete saved text separately from source
 navigation. Short quotes have neither a fade nor an expansion control unless
-line breaks overflow the preview. Web, Android and Apple automatically move a
-feathered terracotta light with a bright neutral center inside the wire from the replying author
-toward the quoted source, with gradual falloff at both ends and a soft surrounding
-halo with a wider, fainter outer bloom, rather than a solid moving stroke. The
-round light field illuminates the curved wire instead of intersecting it with a
-flattened streak, so the highlight follows the bend without a chopped edge. The
-selected single-glow design uses 80% light opacity; the neutral wire stays
-unchanged. Each pass lasts about 2.8 seconds and fades directly into the next
-pass without a parked interval. Reduced motion and blocked-source context disable
-the light; Rust desktop keeps the tapered connector static. Replies
+line breaks overflow the preview. Scrolling flexes the string by a few pixels
+and slightly rotates the cups around their fixed avatar attachment points.
+A damped spring settles back to rest; there is no repeating glow or idle jiggling.
+Both string ends follow the rotating cup backs. Animation work stops at rest
+and on disposal; reduced motion keeps the connection static. Blocked-source
+context hides the decorative connection as well as the quoted identity/text.
+Rust desktop reads the Windows, macOS or GNOME animation preference once when
+first rendering a connection; restart after changing that preference. Other
+Linux desktops without the GNOME setting retain motion. Web, Android and Apple
+observe their motion preference changes while mounted. Replies
 retain a faint neutral background; mentions,
 selected threads and source-jump highlights keep their stronger colors. Desktop
 message toolbars expose **Reply** beside **Reply in thread**, including Reply
@@ -6671,8 +6672,8 @@ push rules are unchanged.
 | Platform | Validation boundary |
 | --- | --- |
 | API/Postgres | `cargo fmt --all -- --check`, `cargo test --workspace` (159 passed, 60 integration tests ignored), all 60 ignored integration tests on disposable loopback Postgres/Valkey, and workspace Clippy pass. Coverage includes reply-to-reply, independent threads, unchanged original sequence/count, reference scope, target-bound retries, 200/4,000-scalar Unicode quote boundaries and transactional full-text outbox snapshots. Low-memory builds use one job and zero debug information. |
-| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files. Browser checks cover the 100-scalar faded preview (including emoji), full immutable expansion, both avatar attachments, a separate quote card, long URLs, source jumps and blocked-source privacy. Motion samples verify automatic upward travel, repetition without a parked interval and the reduced-motion stop. Inspected 2x desktop/narrow collapsed and expanded frames and a fresh 20fps recording; decoded pixels confirm three moving passes across its 8.5 seconds. The narrow capture verifies coarse-pointer touch emulation and five touch points, not a native phone. The forwarding browser suite also verifies original reaction counts and file attachments in the picker, delivered snapshot and shared conversation, including subsequent edits. Its synthetic file URL is not a storage/download acceptance test. Existing thread/reaction/resize/retry/long-press checks and attachment recovery remain applicable. Not Safari or physical-device acceptance. |
-| Rust desktop | 417 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. The separate quote card, tapered static connector and avatar outlines are implemented. Quote tests cover legacy compatibility, full Unicode snapshots and frozen retries. Inspected 2x Linux quote fixtures; initial-reply validation also exercised quick Reply while retaining the draft. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
+| Web | `npm run check` and `npm test -- --maxWorkers=1` pass: 579 tests across 55 files. Browser checks cover the 100-scalar faded preview (including emoji), full immutable expansion, both avatar sockets and their string attachments, a separate quote card, long URLs, source jumps and blocked-source privacy. Real timeline scrolling flexes the string and rotates the cups while their endpoints stay attached, then returns exactly to rest with no idle animation. Reduced-motion scrolling stays static. Inspected 2x desktop/narrow collapsed and expanded frames and a fresh scroll/settling recording. The narrow capture verifies coarse-pointer touch emulation, not a native phone. The forwarding browser suite also verifies original reaction counts and file attachments in the picker, delivered snapshot and shared conversation, including subsequent edits. Its synthetic file URL is not a storage/download acceptance test. Existing thread/reaction/resize/retry/long-press checks and attachment recovery remain applicable. Not Safari or physical-device acceptance. |
+| Rust desktop | 417 tests pass; 12 existing device/audio tests remain ignored. Formatting, application-package Clippy (`--no-deps`) and the full libwebrtc-linked Linux debug build pass with Clang 21. The separate quote card, shaded SVG sockets and scroll-driven damped string are implemented. Quote tests cover legacy compatibility, full Unicode snapshots and frozen retries. Inspected 2x Linux sockets and quote expansion after real Secret Service sign-in with a disposable fixture keyring. Software rendering ran around 6 FPS: the tiny flex was hard to judge visually; a temporary live geometry trace confirmed real scroll impulses, nonzero deformation and exact settling to zero. Stable integration substeps preserve elapsed time on slow frames; the trace was removed. Initial-reply validation also exercised quick Reply while retaining the draft. Orb setup installs GNOME Keyring and passes twice. Dependency-inclusive Clippy is blocked by 34 existing vendored `webrtc-sys` missing-safety-doc errors. No Windows or physical-device acceptance. |
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |

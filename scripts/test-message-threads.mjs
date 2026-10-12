@@ -381,10 +381,17 @@ const checkLongQuotePreview = async (layout) => {
     const beam = quote.querySelector('.chat-reply-route');
     const end = beam.getPointAtLength(beam.getTotalLength()).matrixTransform(beam.getScreenCTM());
     const start = beam.getPointAtLength(0).matrixTransform(beam.getScreenCTM());
+    const sourceSocket = quote.querySelector('.chat-reply-socket-source').getScreenCTM();
+    const targetSocket = quote.querySelector('.chat-reply-socket-target').getScreenCTM();
+    const sourceMouth = new DOMPoint(0, 0).matrixTransform(sourceSocket);
+    const targetMouth = new DOMPoint(0, 0).matrixTransform(targetSocket);
+    const sourceBack = new DOMPoint(-12, 0).matrixTransform(sourceSocket);
+    const targetBack = new DOMPoint(-12, 0).matrixTransform(targetSocket);
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
-      connection: Math.abs(line.bottom - avatar.top - 1), overflow: document.documentElement.scrollWidth > innerWidth,
-      sourceConnection: Math.hypot(end.x - source.left, end.y - source.top - source.height / 2),
-      replyConnection: Math.hypot(start.x - avatar.left - avatar.width / 2, start.y - avatar.top - 1),
+      connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
+      sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
+      replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
+      wireConnection: Math.max(Math.hypot(end.x - sourceBack.x, end.y - sourceBack.y), Math.hypot(start.x - targetBack.x, start.y - targetBack.y)),
       separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
       quoteHeight: quote.getBoundingClientRect().height };
   })()`);
@@ -398,6 +405,7 @@ const checkLongQuotePreview = async (layout) => {
     collapsed.sourceConnection < 1 && collapsed.replyConnection < 1,
     "Both avatar attachments match their rendered boundaries",
   );
+  assert.ok(collapsed.wireConnection < 0.1, "The string stays attached to both cup backs");
   assert.ok(collapsed.separation >= 8, "The quote card stays separate from the replying author");
   assert.equal(collapsed.overflow, false);
   screenshot(`reply-preview-${layout}-collapsed`);
@@ -410,6 +418,7 @@ const checkLongQuotePreview = async (layout) => {
   assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
   assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
+  assert.ok(expanded.wireConnection < 0.1);
   assert.ok(expanded.separation >= 8);
   assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
   browser("scrollintoview", selector);
@@ -419,45 +428,48 @@ const checkLongQuotePreview = async (layout) => {
   if (layout === "desktop") {
     browser("mouse", "move", "10", "10");
     evaluate("document.activeElement.blur()");
-    assert.equal(
-      evaluate(`getComputedStyle(document.querySelector('${selector} .chat-reply-flow')).animationIterationCount`),
-      "infinite",
-      "The automatic motion does not require a hover or focus trigger",
-    );
-    const samples = evaluate(`new Promise(resolve => {
-      const beam = document.querySelector('${selector} [clip-path] .chat-reply-flow');
+    browser("wait", "1000");
+    const sampleScroll = () =>
+      evaluate(`new Promise(resolve => {
+      const quote = document.querySelector('${selector} .chat-reply-context');
+      const scroller = quote.closest('.chat-scroller');
+      const cup = quote.querySelector('.chat-reply-socket-target');
+      const wire = quote.querySelector('.chat-reply-route');
+      const initial = wire.getAttribute('d');
       const samples = []; const start = performance.now();
+      const top = scroller.scrollTop;
+      scroller.scrollTop += top > 80 ? -64 : 64;
       const sample = () => {
-        const style = getComputedStyle(beam); const bounds = beam.getBoundingClientRect();
-        samples.push({ offset: parseFloat(style.offsetDistance), opacity: parseFloat(style.opacity), y: bounds.top + bounds.height / 2 });
-        if (performance.now() - start < 4400) requestAnimationFrame(sample); else resolve(samples);
+        const rotation = Math.atan2(cup.getCTM().b, cup.getCTM().a);
+        const back = new DOMPoint(-12, 0).matrixTransform(cup.getScreenCTM());
+        const end = wire.getPointAtLength(0).matrixTransform(wire.getScreenCTM());
+        samples.push({ rotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
+        if (performance.now() - start < 1300) requestAnimationFrame(sample);
+        else resolve({ samples, initial, final: wire.getAttribute('d'), moved: Math.abs(scroller.scrollTop - top) });
       }; requestAnimationFrame(sample);
     })`);
+    const motion = sampleScroll();
+    assert.ok(motion.moved >= 60, "The real timeline scrolled");
     assert.ok(
-      samples.some((sample) => sample.opacity > 0.8),
-      "The light fades in while idle",
+      motion.samples.some((sample) => Math.abs(sample.rotation) > 0.008 && sample.changed),
+      "Scrolling flexes the string and tilts the cups",
     );
     assert.ok(
-      samples.filter((sample) => sample.opacity < 0.1).length / samples.length < 0.15,
-      "The moving light has no long parked interval between passes",
+      motion.samples.every((sample) => sample.attached < 0.1),
+      "The string remains attached throughout the spring",
     );
+    assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
     assert.ok(
-      samples.some(
-        (sample, index) =>
-          index > 0 &&
-          sample.opacity > 0.8 &&
-          samples[index - 1].opacity > 0.8 &&
-          sample.offset > samples[index - 1].offset &&
-          sample.y < samples[index - 1].y - 0.1,
-      ),
-      "The light moves up from the replying avatar toward the quoted source",
-    );
-    assert.ok(
-      samples.some((sample, index) => index > 0 && sample.offset < samples[index - 1].offset - 50),
-      "The motion repeats",
+      motion.samples.slice(-10).every((sample) => sample.rotation === 0 && !sample.changed),
+      "No idle jiggling",
     );
     browser("set", "media", "dark", "reduced-motion");
-    assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-flow').getAnimations().length`), 0);
+    const reduced = sampleScroll();
+    assert.ok(reduced.moved >= 60);
+    assert.ok(
+      reduced.samples.every((sample) => sample.rotation === 0 && !sample.changed),
+      "Reduced-motion connections stay still while scrolling",
+    );
     browser("set", "media", "dark");
     assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
   }
@@ -482,7 +494,7 @@ const checkLongQuotePreview = async (layout) => {
   wait(`document.querySelector('${selector} .chat-reply-context')?.textContent.includes('Blocked message')`);
   assert.equal(
     evaluate(
-      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar, ${selector} .chat-reply-flow')`,
+      `!!document.querySelector('${selector} .chat-reply-excerpt, ${selector} .chat-reply-expand, ${selector} .chat-reply-avatar, ${selector} .chat-reply-connector')`,
     ),
     false,
     "Blocked quote text, expansion and identity stay hidden",
@@ -492,7 +504,7 @@ const checkLongQuotePreview = async (layout) => {
   browser("open", `${web}/spaces`);
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
-    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", automatic upward motion without a parked interval, repetition and reduced motion" : ""}.`,
+    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar sockets and string attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", scroll-driven spring, attached endpoints during motion, exact settling, no idle jiggling and static reduced motion" : ""}.`,
   );
 };
 

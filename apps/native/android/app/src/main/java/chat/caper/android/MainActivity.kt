@@ -84,14 +84,16 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -181,9 +183,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -2488,61 +2490,65 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
     var clipped by remember(reference.id, hidden) { mutableStateOf(false) }
     val context = LocalContext.current
-    val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
-    val sweep = remember { Animatable(0f) }
-    LaunchedEffect(still, hidden) {
-        if (still || hidden) return@LaunchedEffect
-        while (isActive) {
-            sweep.snapTo(0f)
-            sweep.animateTo(1f, tween(2800, easing = LinearEasing))
+    val still by produceState(false, context) {
+        val resolver = context.contentResolver
+        val setting = android.provider.Settings.Global.ANIMATOR_DURATION_SCALE
+        fun disabled() = android.provider.Settings.Global.getFloat(resolver, setting, 1f) == 0f
+        value = disabled()
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { value = disabled() }
         }
+        resolver.registerContentObserver(android.provider.Settings.Global.getUriFor(setting), false, observer)
+        awaitDispose { resolver.unregisterContentObserver(observer) }
+    }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current.density
+    var previousY by remember(reference.id) { mutableStateOf<Float?>(null) }
+    var displacement by remember(reference.id) { mutableFloatStateOf(0f) }
+    var velocity by remember(reference.id) { mutableFloatStateOf(0f) }
+    var motion by remember(reference.id) { mutableStateOf<Job?>(null) }
+    DisposableEffect(hidden, still) {
+        onDispose { motion?.cancel(); displacement = 0f; velocity = 0f }
     }
     val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
-    Column(Modifier.fillMaxWidth().drawWithContent {
+    Column(Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
+        val y = coordinates.positionInWindow().y / density
+        val delta = (previousY ?: y) - y
+        previousY = y
+        if (!hidden && !still && delta != 0f) {
+            velocity = (velocity + delta * 0.8f).coerceIn(-60f, 60f)
+            if (motion?.isActive != true) motion = scope.launch {
+                var previousTime = withFrameNanos { it }
+                while (isActive) {
+                    val time = withFrameNanos { it }
+                    val dt = ((time - previousTime) / 1_000_000_000f).coerceAtMost(0.032f)
+                    previousTime = time
+                    velocity -= (180f * displacement + 20f * velocity) * dt
+                    displacement = (displacement + velocity * dt).coerceIn(-4f, 4f)
+                    if (abs(displacement) < 0.01f && abs(velocity) < 0.05f) break
+                }
+                displacement = 0f; velocity = 0f
+            }
+        }
+    }.drawWithContent {
         drawContent()
+        if (hidden) return@drawWithContent
         val sourceX = 74.dp.toPx(); val sourceY = 24.dp.toPx()
-        val column = 35.dp.toPx(); val bottom = size.height + 10.dp.toPx()
-        val bendX = sourceX - 12.dp.toPx(); val bendY = sourceY + 28.dp.toPx()
-        val ribbon = Path().apply {
-            moveTo(column - 0.55.dp.toPx(), bottom)
-            lineTo(column - 1.6.dp.toPx(), bendY)
-            quadraticTo(column - 1.6.dp.toPx(), sourceY - 2.dp.toPx(), bendX, sourceY - 2.dp.toPx())
-            lineTo(sourceX, sourceY - 2.dp.toPx()); lineTo(sourceX, sourceY + 2.dp.toPx()); lineTo(bendX, sourceY + 2.dp.toPx())
-            quadraticTo(column + 1.6.dp.toPx(), sourceY + 2.dp.toPx(), column + 1.6.dp.toPx(), bendY)
-            lineTo(column + 0.55.dp.toPx(), bottom); close()
-        }
+        val targetX = 18.dp.toPx(); val bottom = size.height + 27.dp.toPx()
+        val angle = displacement * 0.025f
+        val dx = 12.dp.toPx() * cos(angle); val dy = 12.dp.toPx() * sin(angle)
+        val start = Offset(targetX - dx, bottom + dy)
+        val end = Offset(sourceX - dx, sourceY - dy)
+        val span = start.y - end.y
+        val offset = displacement.dp.toPx()
         val path = Path().apply {
-            moveTo(column, bottom); lineTo(column, bendY)
-            quadraticTo(column, sourceY, bendX, sourceY); lineTo(sourceX, sourceY)
+            moveTo(start.x, start.y)
+            cubicTo(start.x - 7.dp.toPx() + offset, start.y - span * 0.3f,
+                end.x - 30.dp.toPx() + offset, end.y + span * 0.3f, end.x, end.y)
         }
-        drawPath(ribbon, TextMuted.copy(alpha = 0.65f))
-        drawCircle(TextMuted.copy(alpha = 0.4f), 17.5.dp.toPx(), Offset(column, bottom + 17.dp.toPx()), style = Stroke(1.dp.toPx()))
-        if (!hidden) drawCircle(TextMuted.copy(alpha = 0.4f), 8.5.dp.toPx(), Offset(sourceX + 8.dp.toPx(), sourceY), style = Stroke(1.dp.toPx()))
-        if (!hidden && !still) {
-            val measure = PathMeasure().apply { setPath(path, false) }
-            val progress = sweep.value
-            val distance = progress * measure.length
-            val center = measure.getPosition(distance)
-            val tangent = measure.getTangent(distance)
-            val angle = atan2(tangent.y, tangent.x) * 180f / PI.toFloat()
-            val fade = 0.8f * minOf(1f, progress / 0.07f, (1f - progress) / 0.12f)
-            val radius = 36.dp.toPx()
-            val light = Brush.radialGradient(
-                0f to chat.caper.android.ui.Text.copy(alpha = fade),
-                0.16f to chat.caper.android.ui.Text.copy(alpha = fade),
-                0.32f to TerracottaBright.copy(alpha = 0.95f * fade),
-                0.6f to TerracottaBright.copy(alpha = 0.3f * fade),
-                1f to Color.Transparent,
-                center = center, radius = radius,
-            )
-            withTransform({ rotate(angle, center); scale(84f / 36f, 24f / 36f, center) }) {
-                drawCircle(light, radius, center, alpha = 0.14f)
-            }
-            withTransform({ rotate(angle, center); scale(52f / 36f, 10f / 36f, center) }) {
-                drawCircle(light, radius, center, alpha = 0.35f)
-            }
-            drawPath(ribbon, light)
-        }
+        drawPath(path, TextMuted.copy(alpha = 0.75f), style = Stroke(1.1.dp.toPx(), cap = StrokeCap.Round))
+        replySocket(Offset(sourceX, sourceY), angle * 180f / kotlin.math.PI.toFloat())
+        replySocket(Offset(targetX, bottom), -angle * 180f / kotlin.math.PI.toFloat())
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -2566,6 +2572,21 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 }
             }
         }
+    }
+}
+
+private fun DrawScope.replySocket(position: Offset, angle: Float) {
+    withTransform({ translate(position.x, position.y); rotate(angle, Offset.Zero); scale(density, density, Offset.Zero) }) {
+        val cup = Path().apply {
+            moveTo(-12f, -2.4f); quadraticTo(-13f, 0f, -12f, 2.4f)
+            lineTo(-1f, 4.5f); lineTo(-1f, -4.5f); close()
+        }
+        drawPath(cup, Brush.verticalGradient(0f to Color(0xFF646B70), 0.32f to Color(0xFFA2A9AD), 0.55f to Color(0xFF70787D), 1f to Color(0xFF30363A), startY = -4.5f, endY = 4.5f))
+        drawPath(cup, Border, style = Stroke(0.6f))
+        drawLine(Color(0xFFC3C8CB).copy(alpha = 0.35f), Offset(-11f, -1.6f), Offset(-3f, -3f), strokeWidth = 0.6f)
+        drawOval(Color(0xFF252A2D), Offset(-2.6f, -4.5f), Size(3.2f, 9f))
+        drawOval(Terracotta, Offset(-2.6f, -4.5f), Size(3.2f, 9f), style = Stroke(0.8f))
+        drawOval(Color(0xFF151719), Offset(-1.7f, -3.4f), Size(1.4f, 6.8f))
     }
 }
 

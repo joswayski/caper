@@ -537,61 +537,13 @@
   z-index: 1;
   overflow: visible;
   fill: none;
-  color: var(--terracotta-bright);
   stroke-linecap: round;
   pointer-events: none;
 }
 .chat-reply-line {
-  fill: var(--text-muted);
-  opacity: 0.65;
-}
-.chat-reply-avatar,
-.chat-message:has(> .chat-reply-context) > .chat-avatar {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-muted) 40%, transparent);
-}
-.chat-reply-pulse {
-  opacity: 0.8;
-}
-.chat-reply-connector .chat-reply-flow {
-  offset-position: 0 0;
-  offset-anchor: center;
-  offset-rotate: auto;
-  offset-distance: 0%;
-  transform-box: fill-box;
-  opacity: 0;
-}
-.chat-reply-connector .chat-reply-haze {
-  filter: blur(8px);
-}
-.chat-reply-haze ellipse {
-  opacity: 0.14;
-}
-.chat-reply-connector .chat-reply-glow {
-  filter: blur(4px);
-}
-.chat-reply-glow ellipse {
-  opacity: 0.35;
-}
-@keyframes chat-reply-sweep {
-  0% {
-    offset-distance: 0%;
-    opacity: 0;
-  }
-  7% {
-    opacity: 1;
-  }
-  88% {
-    opacity: 1;
-  }
-  100% {
-    offset-distance: 100%;
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .chat-reply-flow {
-    animation: chat-reply-sweep 2.8s linear infinite;
-  }
+  stroke: var(--text-muted);
+  stroke-width: 1.1px;
+  opacity: 0.75;
 }
 .chat-message:has(> .chat-reply-context)
   > div

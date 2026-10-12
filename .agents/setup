@@ -27,6 +27,7 @@ packages=(
   clang-21
   curl
   file
+  gnome-keyring
   libasound2
   libasound2-dev
   libdbus-1-dev
