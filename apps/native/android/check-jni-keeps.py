@@ -10,6 +10,7 @@ usage: check-jni-keeps.py MAPPING USAGE ARCHIVE...
 MAPPING and USAGE are R8's mapping.txt and usage.txt; each ARCHIVE is an APK or
 AAB whose lib/<abi>/*.so files are scanned.
 """
+
 import re
 import sys
 import zipfile
