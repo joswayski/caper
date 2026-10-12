@@ -126,17 +126,26 @@ class MentionAutocompleteTest {
         assertTrue(team("feedbacks").isEmpty())
         assertTrue(team("x").isEmpty())
         assertTrue(team("h").isEmpty())
-        assertTrue(team("").isEmpty())
+        // A bare `@` offers `@feedback` itself, first.
+        assertEquals(listOf(MentionCandidate("feedback", "Notify the Caper team", special = true)), team(""))
         assertEquals(17, FEEDBACK_NAMES.size)
         // People rank first; specials keep their order and slots.
         assertEquals(listOf("felix", "feedback"), mentionSuggestions(channel, "f").map { it.username })
-        // A bare `@` stays about people.
-        assertEquals(listOf("bob", "felix", "everyone", "here"), mentionSuggestions(channel, "").map { it.username })
+        // A bare `@` starts with `@feedback`, once, then people and specials within the same six rows.
+        val bareChannel = mentionSuggestions(channel, "")
+        assertEquals(listOf("feedback", "bob", "felix", "everyone", "here"), bareChannel.map { it.username })
+        assertTrue(bareChannel.first().teamSuggestion)
+        assertEquals(1, bareChannel.count { it.username in FEEDBACK_NAMES })
         val crowd = MentionSource((1..8).map { person("user$it") }, specials = true, feedback = true)
-        assertEquals(listOf("user1", "user2", "user3", "user4", "everyone", "here"), mentionSuggestions(crowd, "").map { it.username })
+        assertEquals(listOf("feedback", "user1", "user2", "user3", "everyone", "here"), mentionSuggestions(crowd, "").map { it.username })
+        // A typed query keeps people first: `@a` + Enter picks Amy, not `@admin`.
+        val amy = MentionSource(listOf(person("amy"), person("bob")), specials = true, feedback = true)
+        assertEquals(listOf("amy", "admin"), mentionSuggestions(amy, "a").map { it.username })
+        // Without an account there is no team row, bare or typed.
+        assertEquals(listOf("bob", "felix", "everyone", "here"), mentionSuggestions(channel.copy(feedback = false), "").map { it.username })
         // DMs and notes: the team without `@everyone`/`@here`; without an account, nothing.
         val dm = MentionSource(listOf(person("bob")), specials = false, feedback = true)
-        assertEquals(listOf("bob"), mentionSuggestions(dm, "").map { it.username })
+        assertEquals(listOf("feedback", "bob"), mentionSuggestions(dm, "").map { it.username })
         assertEquals(listOf("admin"), mentionSuggestions(dm, "ad").map { it.username })
         assertTrue(mentionSuggestions(dm, "ev").isEmpty())
         assertTrue(mentionSuggestions(MentionSource(emptyList(), specials = true), "fe").isEmpty())
@@ -189,10 +198,10 @@ class MentionAutocompleteTest {
         ), source.people)
         // `c` also finds the team (as `caper`).
         assertEquals(listOf("cy", "caper"), mentionSuggestions(source, "c").map { it.username })
-        assertEquals(listOf("ann", "cy", "rae"), mentionSuggestions(source, "").map { it.username })
+        assertEquals(listOf("feedback", "ann", "cy", "rae"), mentionSuggestions(source, "").map { it.username })
         // Without a reporter (opened from a notification) or names: only the team.
         val bare = mentionSource(state.copy(visit = visit.copy(reporter = null), messages = emptyList()))
-        assertTrue(mentionSuggestions(bare, "").isEmpty())
+        assertEquals(listOf("feedback"), mentionSuggestions(bare, "").map { it.username })
         assertEquals(listOf("feedback"), mentionSuggestions(bare, "fe").map { it.username })
     }
 

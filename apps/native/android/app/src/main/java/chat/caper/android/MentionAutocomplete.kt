@@ -44,7 +44,7 @@ internal const val FEEDBACK_SUGGESTION_LABEL = "Notify the Caper team"
 /**
  * The one team suggestion for a non-empty [query]: the first team name that starts with it,
  * inserted as named (`@ad` → `@admin`, `@cap` → `@caper`, `@fe` → `@feedback`). Offered in
- * every conversation (channels, threads, DMs and your notes), never for a bare `@`.
+ * every conversation (channels, threads, DMs and your notes); a bare `@` lists `@feedback` first instead (see [mentionSuggestions]).
  */
 internal fun feedbackSuggestion(query: String): MentionCandidate? {
     val needle = query.lowercase(Locale.ROOT)
@@ -126,14 +126,15 @@ internal fun visitMentionPeople(state: AppUiState, self: String?): List<MentionC
 
 /**
  * Members ranked by [rankPeople], followed by matching specials (`@everyone`, `@here`,
- * then one team name once something is typed, see [feedbackSuggestion]).
- * Specials keep their slots within [limit].
+ * then one team name once something is typed, see [feedbackSuggestion]). A bare `@` puts
+ * `@feedback` first instead, so the team is easy to find. Specials keep their slots within [limit].
  */
 internal fun mentionSuggestions(source: MentionSource, query: String, limit: Int = 6): List<MentionCandidate> {
     val needle = query.lowercase(Locale.ROOT)
+    val first = if (source.feedback && needle.isEmpty()) listOf(MentionCandidate(FEEDBACK_NAMES.first(), FEEDBACK_SUGGESTION_LABEL, special = true)) else emptyList()
     val specials = ((if (source.specials) mentionSpecials.filter { it.username.startsWith(needle) } else emptyList()) +
-        listOfNotNull(if (source.feedback) feedbackSuggestion(needle) else null)).take(limit)
-    return rankPeople(source.people, needle).take((limit - specials.size).coerceAtLeast(0)) + specials
+        listOfNotNull(if (source.feedback) feedbackSuggestion(needle) else null)).take((limit - first.size).coerceAtLeast(0))
+    return first + rankPeople(source.people, needle).take((limit - first.size - specials.size).coerceAtLeast(0)) + specials
 }
 
 /**
