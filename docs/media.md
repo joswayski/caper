@@ -6627,9 +6627,11 @@ the current reply and a visible **View original** affordance. A curved beam
 connects both outlined avatar boundaries, tapering from thin at the replying
 author to thicker at the quoted source. Quotes wrap to three lines;
 **Show more / Show less** reveals the complete saved text separately from source
-navigation. Web, Android and Apple automatically move a soft terracotta light
-from the replying author toward the quoted source, with a quiet pause between
-passes (about 4.2 seconds per cycle). Reduced motion and blocked-source context
+navigation. Web, Android and Apple automatically move a feathered terracotta
+light inside the wire from the replying author toward the quoted source, with
+gradual falloff at both ends and only a faint surrounding halo, rather than a
+solid moving stroke. A quiet pause separates passes (about 4.2 seconds per
+cycle). Reduced motion and blocked-source context
 disable the light; Rust desktop keeps the tapered connector static. Replies
 retain a faint neutral background; mentions,
 selected threads and source-jump highlights keep their stronger colors. Desktop

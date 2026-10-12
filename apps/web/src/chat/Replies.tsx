@@ -73,6 +73,8 @@ export function ReplyContext({
   const path = `M${targetX} ${height}V${bendY}Q${targetX} ${sourceY} ${bendX} ${sourceY}H${sourceX}`;
   const ribbon = `M${targetX - 0.55} ${height}L${targetX - 1.6} ${bendY}Q${targetX - 1.6} ${sourceY - 2} ${bendX} ${sourceY - 2}H${sourceX}V${sourceY + 2}H${bendX}Q${targetX + 1.6} ${sourceY + 2} ${targetX + 1.6} ${bendY}L${targetX + 0.55} ${height}Z`;
   const clipId = `reply-ribbon-${excerptId}`;
+  const routeId = `reply-route-${excerptId}`;
+  const lightId = `reply-light-${excerptId}`;
   return (
     <div ref={root} className="chat-reply-context" data-expanded={expanded && !hidden}>
       <svg
@@ -85,10 +87,27 @@ export function ReplyContext({
           <clipPath id={clipId}>
             <path d={ribbon} />
           </clipPath>
+          <path id={routeId} className="chat-reply-route" d={path} />
+          <radialGradient id={lightId}>
+            <stop offset="0" stopColor="currentColor" stopOpacity="0.9" />
+            <stop offset="0.22" stopColor="currentColor" stopOpacity="0.5" />
+            <stop offset="0.6" stopColor="currentColor" stopOpacity="0.12" />
+            <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+          </radialGradient>
         </defs>
         <path className="chat-reply-line" d={ribbon} />
-        {!hidden && <path className="chat-reply-flow chat-reply-glow" d={path} pathLength="100" />}
-        {!hidden && <path className="chat-reply-flow" d={path} pathLength="100" clipPath={`url(#${clipId})`} />}
+        {!hidden && (
+          <>
+            <g className="chat-reply-flow chat-reply-glow" style={{ offsetPath: `url(#${routeId})` }}>
+              <ellipse rx="28" ry="3" fill={`url(#${lightId})`} />
+            </g>
+            <g clipPath={`url(#${clipId})`}>
+              <g className="chat-reply-flow" style={{ offsetPath: `url(#${routeId})` }}>
+                <ellipse rx="28" ry="3" fill={`url(#${lightId})`} />
+              </g>
+            </g>
+          </>
+        )}
       </svg>
       <div className="chat-reply-body">
         <button

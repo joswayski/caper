@@ -4545,11 +4545,17 @@ private struct NativeReplyContext: View {
                         ZStack {
                             ribbon.fill(CaperTheme.muted.opacity(0.65))
                             rings.stroke(CaperTheme.muted.opacity(0.4), lineWidth: 1)
-                            if !reduceMotion && !hidden && progress > 0 && progress < 1 {
-                                let tip = progress * 1.22
-                                let segment = path.trim(from: max(0, tip - 0.22), to: min(1, tip))
-                                segment.stroke(CaperTheme.terracottaBright.opacity(0.3), style: StrokeStyle(lineWidth: 5, lineCap: .round)).blur(radius: 2)
-                                segment.stroke(CaperTheme.terracottaBright.opacity(0.95), style: StrokeStyle(lineWidth: 4, lineCap: .round)).clipShape(ribbon)
+                            if !reduceMotion && !hidden && progress > 0 && progress < 1,
+                               let center = path.trimmedPath(from: 0, to: progress).currentPoint {
+                                let fade = Double(min(1, min(progress / 0.14, (1 - progress) / 0.18)))
+                                let light = RadialGradient(stops: [
+                                    .init(color: CaperTheme.terracottaBright.opacity(0.9), location: 0),
+                                    .init(color: CaperTheme.terracottaBright.opacity(0.5), location: 0.22),
+                                    .init(color: CaperTheme.terracottaBright.opacity(0.12), location: 0.6),
+                                    .init(color: .clear, location: 1),
+                                ], center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 28)
+                                path.stroke(light, style: StrokeStyle(lineWidth: 5, lineCap: .round)).opacity(0.18 * fade).blur(radius: 2)
+                                ribbon.fill(light).opacity(fade)
                             }
                         }.frame(width: 57, height: geometry.size.height + 40)
                     }

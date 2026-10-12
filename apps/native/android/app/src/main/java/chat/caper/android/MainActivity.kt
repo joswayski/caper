@@ -81,13 +81,13 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
@@ -2516,13 +2516,16 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         if (!hidden) drawCircle(TextMuted.copy(alpha = 0.4f), 8.5.dp.toPx(), Offset(sourceX + 8.dp.toPx(), sourceY), style = Stroke(1.dp.toPx()))
         if (!hidden && !still && sweep.value > 0f && sweep.value < 1f) {
             val measure = PathMeasure().apply { setPath(path, false) }
-            val length = measure.length * 0.22f
-            val tip = sweep.value * (measure.length + length)
-            val segment = Path()
-            measure.getSegment((tip - length).coerceAtLeast(0f), tip.coerceAtMost(measure.length), segment, true)
-            drawPath(segment, TerracottaBright.copy(alpha = 0.12f), style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
-            drawPath(segment, TerracottaBright.copy(alpha = 0.2f), style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
-            clipPath(ribbon) { drawPath(segment, TerracottaBright.copy(alpha = 0.95f), style = Stroke(4.dp.toPx(), cap = StrokeCap.Round)) }
+            val fade = minOf(1f, sweep.value / 0.14f, (1f - sweep.value) / 0.18f)
+            val light = Brush.radialGradient(
+                0f to TerracottaBright.copy(alpha = 0.9f * fade),
+                0.22f to TerracottaBright.copy(alpha = 0.5f * fade),
+                0.6f to TerracottaBright.copy(alpha = 0.12f * fade),
+                1f to Color.Transparent,
+                center = measure.getPosition(sweep.value * measure.length), radius = 28.dp.toPx(),
+            )
+            drawPath(path, light, alpha = 0.18f, style = Stroke(5.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(ribbon, light)
         }
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {

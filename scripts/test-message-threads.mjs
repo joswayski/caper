@@ -376,7 +376,7 @@ const checkLongQuotePreview = async (layout) => {
     const avatar = row.querySelector(':scope > .chat-avatar').getBoundingClientRect();
     const line = quote.querySelector('svg').getBoundingClientRect();
     const source = quote.querySelector('.chat-reply-avatar').getBoundingClientRect();
-    const beam = quote.querySelector('.chat-reply-flow:not(.chat-reply-glow)');
+    const beam = quote.querySelector('.chat-reply-route');
     const end = beam.getPointAtLength(beam.getTotalLength()).matrixTransform(beam.getScreenCTM());
     const start = beam.getPointAtLength(0).matrixTransform(beam.getScreenCTM());
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
@@ -423,9 +423,8 @@ const checkLongQuotePreview = async (layout) => {
       const beam = document.querySelector('${selector} .chat-reply-flow:not(.chat-reply-glow)');
       const samples = []; const start = performance.now();
       const sample = () => {
-        const style = getComputedStyle(beam); const offset = parseFloat(style.strokeDashoffset);
-        const position = beam.getPointAtLength(Math.max(0, Math.min(1, (11 - offset) / 100)) * beam.getTotalLength());
-        samples.push({ offset, opacity: parseFloat(style.opacity), y: position.y });
+        const style = getComputedStyle(beam); const bounds = beam.getBoundingClientRect();
+        samples.push({ offset: parseFloat(style.offsetDistance), opacity: parseFloat(style.opacity), y: bounds.top + bounds.height / 2 });
         if (performance.now() - start < 4400) requestAnimationFrame(sample); else resolve(samples);
       }; requestAnimationFrame(sample);
     })`);
@@ -443,13 +442,13 @@ const checkLongQuotePreview = async (layout) => {
           index > 0 &&
           sample.opacity > 0.8 &&
           samples[index - 1].opacity > 0.8 &&
-          sample.offset < samples[index - 1].offset &&
+          sample.offset > samples[index - 1].offset &&
           sample.y < samples[index - 1].y - 0.1,
       ),
       "The light moves up from the replying avatar toward the quoted source",
     );
     assert.ok(
-      samples.some((sample, index) => index > 0 && sample.offset > samples[index - 1].offset + 50),
+      samples.some((sample, index) => index > 0 && sample.offset < samples[index - 1].offset - 50),
       "The motion repeats after its pause",
     );
     browser("set", "media", "dark", "reduced-motion");
