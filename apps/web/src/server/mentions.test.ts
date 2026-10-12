@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+  excludePeople,
   insertMention,
   mentionCardPerson,
   mentionName,
@@ -8,6 +9,7 @@ import {
   mentionSuggestions,
   mentionToken,
   mentionsAccount,
+  rankPeople,
   type MentionCandidate,
 } from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
@@ -46,6 +48,18 @@ test("suggestions rank username, display name and contains; specials keep their 
   assert.deepEqual(names("", false), ["alfie", "bea", "cal", "maya", "mo", "sam_m"]);
   assert.deepEqual(names("every", false), []);
   assert.equal(names("").length, 6);
+});
+
+test("username fields rank people like @ suggestions, without members, invitations or specials", () => {
+  const names = (people: MentionCandidate[], query: string) =>
+    rankPeople(people, query).map((person) => person.username);
+  assert.deepEqual(names(members, "MAYA"), ["maya", "sam_m", "zz_maya"]);
+  assert.deepEqual(names(members, "e"), ["alfie", "bea"]);
+  assert.deepEqual(names(members, "every"), []);
+  assert.equal(names(members, "").length, 6);
+  const candidates = excludePeople(members, [{ id: "u-maya" }], [{ id: "u-zz" }, { id: "missing" }]);
+  assert.deepEqual(names(candidates, "maya"), ["sam_m"]);
+  assert.deepEqual(excludePeople(members), members);
 });
 
 test("insertion replaces the token, adds a space and enforces the limit", () => {

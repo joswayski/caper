@@ -39,7 +39,9 @@ loaded members except you, then `@everyone` ("Everyone in this channel") and
 `@here` ("Everyone online in this channel"). DMs suggest everyone you share a
 space or DM with, from authenticated `GET /api/people` (`{"people":[{"id",
 "username","displayName","avatarId"}]}`, excluding you, at most 500), fetched when
-a DM opens; until it loads the DM peer is offered. Selecting inserts `@username `
+a DM opens; until it loads the DM peer is offered. Rows show the avatar and display
+name with `@username` in small type beneath it (`@everyone`/`@here` put their
+description there). Selecting inserts `@username `
 without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
 
 On send, `chat::persist` resolves names inside the message transaction (shared
@@ -816,6 +818,22 @@ cancelling an invitation stays one click. Invitees must accept before becoming m
 Existing memberships are unchanged; the migration does not retroactively ask
 existing members to accept. There are no invite links, custom roles, ownership
 transfers or public space discovery yet.
+
+Username fields suggest people the client already has, on web, Android, Apple and
+Rust desktop. The space invite field offers `GET /api/people` (people you share an
+active space or visible DM with) minus current members and pending invitations.
+The private-channel grant field offers the space's members minus the owner,
+current grantees and pending channel invitations. **New direct message** offers
+`GET /api/people`. Each list is fetched or refreshed when its dialog opens and uses
+the `@` ranking (exact username, username prefix, display-name word prefix, then
+username substring; at most six, nothing until you type). Rows match `@`
+suggestions: avatar, display name, and `@username` in small type beneath it, shown
+inline below the field. Choosing one fills in the exact username and never submits;
+Up/Down, Enter and Escape work from hardware keyboards, and Escape closes the list,
+not the dialog. Nothing is searched server-side: there is no account directory,
+and lookups, the shared invitation-attempt limit and block handling stay
+exact-username, so typing a username by hand still works. No API, migration or
+configuration change.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed. Removal is a
 soft delete: space memberships, private-channel grants and channel joins get
@@ -5467,8 +5485,9 @@ not validate that integration.
 ## Account-global direct messages and deferred mobile push
 
 One-to-one DMs belong to two accounts, not to a space. Personal notes use the same
-private stream with your own account as both participants. Start by exact username;
-the canonical pair (including a self pair) has one conversation even when started
+private stream with your own account as both participants. Start by exact username
+(the field suggests people you share a space or DM with, as described under
+spaces); the canonical pair (including a self pair) has one conversation even when started
 concurrently.
 The list appears below channels in every space, including accounts with no spaces.
 Web pins it above the account controls; narrow web and mobile clients expose it in

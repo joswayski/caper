@@ -45,7 +45,8 @@ pub enum Command {
         token: String,
         space: Option<String>,
     },
-    /// `GET /api/people`, for `@` suggestions in DMs.
+    /// `GET /api/people`, for `@` suggestions in DMs and the space invite and
+    /// new DM username fields.
     LoadPeople {
         generation: u64,
         token: String,

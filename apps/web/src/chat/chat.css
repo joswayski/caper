@@ -1563,22 +1563,31 @@
   color: var(--text-muted);
   font-size: 0.8rem;
 }
-.chat-mention-suggestions small {
-  flex: 0 1 auto;
+.chat-mention-suggestions button {
+  padding-block: 6px;
+}
+/* Display name, then the username in small type beneath it. */
+.person-suggestion-names {
+  display: grid;
   min-width: 0;
-  margin-left: auto;
+  line-height: 1.25;
+}
+.chat-emoji-suggestions .person-suggestion-names > span {
+  color: var(--text);
+}
+.person-suggestion-names > small {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-mention-avatar {
   display: grid;
-  flex: 0 0 24px;
+  flex: 0 0 28px;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   overflow: hidden;
   border-radius: var(--radius-avatar);
   font-style: normal;

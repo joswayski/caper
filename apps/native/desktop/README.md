@@ -97,6 +97,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   New DM requests alert once without message content and open the existing
   read-only request review; pending messages stay quiet until acceptance.
   Quitting exits the app; there is no keep-running-in-tray behavior.
+- The space invite, private-channel grant and New direct message username
+  fields suggest people the app already has (known people minus members and
+  invitations, space members minus grantees, known people), ranked like `@`
+  suggestions. Rows, like `@` popup rows, show the avatar and display name with
+  `@username` beneath it. Clicking or Enter fills the exact username without
+  submitting; Up/Down move and Escape closes the list, not the dialog.
 - The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
   popup; the thread reply box and message editor do not yet. Space channels
   offer the open space's loaded members except you, then `@everyone`/`@here`.

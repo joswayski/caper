@@ -369,11 +369,54 @@ impl SuggestionState {
     }
 }
 
+/// The people list below a username field (space invite, private channel
+/// grant, new DM). The fields share one text and only one shows at a time.
+#[derive(Default)]
+struct PeopleSuggestions {
+    /// The text the highlight and `hidden` belong to.
+    text: String,
+    selected: usize,
+    /// Escape or a selection hides the list until the text changes.
+    hidden: bool,
+}
+
+impl PeopleSuggestions {
+    fn sync(&mut self, text: &str) {
+        if self.text != text {
+            text.clone_into(&mut self.text);
+            self.selected = 0;
+            self.hidden = false;
+        }
+    }
+
+    /// Puts `username` in the field with the caret after it, and hides the list.
+    fn choose(
+        &mut self,
+        context: &egui::Context,
+        id: egui::Id,
+        value: &mut String,
+        username: &str,
+    ) {
+        username.clone_into(value);
+        self.sync(value);
+        self.hidden = true;
+        let mut state = egui::TextEdit::load_state(context, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(value.chars().count()),
+            )));
+        state.store(context, id);
+    }
+}
+
 /// What a composer's suggestion keys decided before its editor drew.
 struct SuggestionPass {
     id: egui::Id,
     /// IME events this pass: composition never opens or accepts suggestions.
     ime: bool,
+    /// Focus before the editor drew: clicking a row takes it away.
+    focused: bool,
     chosen: Option<Suggestion>,
 }
 
@@ -642,7 +685,8 @@ struct CaperApp {
     unread_spaces: Vec<model::UnreadSpace>,
     unread_revision: u64,
     channel_reads: BTreeMap<String, String>,
-    /// `GET /api/people` for DM `@` suggestions; kept while it refreshes.
+    /// `GET /api/people` for DM `@` suggestions and the space invite and new
+    /// DM username fields; kept while it refreshes.
     people: Option<Vec<model::Person>>,
     /// Bumps on sign-in and sign-out; fences request, block, privacy and
     /// notification results.
@@ -803,6 +847,8 @@ struct CaperApp {
     form_name: String,
     form_private: bool,
     member_username: String,
+    /// People suggested below the username fields, which share `member_username`.
+    people_suggestions: PeopleSuggestions,
     member_error: Option<&'static str>,
     /// Refocus the username field once an add or invite finishes.
     member_refocus: bool,
@@ -1007,6 +1053,7 @@ impl CaperApp {
             form_name: String::new(),
             form_private: false,
             member_username: String::new(),
+            people_suggestions: PeopleSuggestions::default(),
             member_error: None,
             member_refocus: false,
             member_status: None,
@@ -1481,6 +1528,23 @@ impl CaperApp {
                             owner: false,
                         });
                     }
+                    // As `GET /api/people` answers: the other members, and
+                    // labelled DM contacts outside the space.
+                    app.people = Some(
+                        [
+                            ("fixture-maya", "maya", "Maya"),
+                            ("fixture-alex", "alex", "Alex"),
+                            ("fixture-contact", "fixture_contact", "TEST FIXTURE contact"),
+                            ("invited00001", "fixture_invitee", "TEST FIXTURE invitee"),
+                        ]
+                        .map(|(id, username, display_name)| model::Person {
+                            id: id.into(),
+                            username: username.into(),
+                            display_name: display_name.into(),
+                            avatar_id: None,
+                        })
+                        .into(),
+                    );
                     app.dialog = Some(Dialog::ManageSpace);
                 } else if name == "parity-channel" {
                     app.form_name = "planning".into();
@@ -3546,7 +3610,25 @@ impl CaperApp {
                 operation: AdminOperation::LoadInvitations { space },
             });
         }
+        self.load_people();
         self.dialog = Some(Dialog::ManageSpace);
+    }
+
+    fn open_start_direct(&mut self) {
+        self.member_username.clear();
+        self.error = None;
+        self.load_people();
+        self.dialog = Some(Dialog::StartDirect);
+    }
+
+    /// Refreshes `GET /api/people`; the previous list stays until it answers.
+    fn load_people(&mut self) {
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::LoadPeople {
+                generation: self.generation,
+                token,
+            });
+        }
     }
 
     fn open_settings(&mut self) {
@@ -3571,9 +3653,7 @@ impl CaperApp {
         if self.owner() {
             self.open_manage_space();
         } else {
-            self.member_username.clear();
-            self.error = None;
-            self.dialog = Some(Dialog::StartDirect);
+            self.open_start_direct();
         }
     }
 
@@ -4114,12 +4194,7 @@ impl CaperApp {
                     let channel = history.channel.id.clone();
                     if direct {
                         self.selected_direct = Some(channel.clone());
-                        if let Some(token) = self.token.clone() {
-                            self.worker.send(Command::LoadPeople {
-                                generation: self.generation,
-                                token,
-                            });
-                        }
+                        self.load_people();
                     }
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
@@ -8249,9 +8324,7 @@ impl CaperApp {
                         );
                     }
                     if response.on_hover_text("Start direct message").clicked() {
-                        self.member_username.clear();
-                        self.error = None;
-                        self.dialog = Some(Dialog::StartDirect);
+                        self.open_start_direct();
                     }
                 });
             });
@@ -13531,7 +13604,12 @@ impl CaperApp {
             });
         }
         self.composer_suggestions.insert(id, state);
-        SuggestionPass { id, ime, chosen }
+        SuggestionPass {
+            id,
+            ime,
+            focused,
+            chosen,
+        }
     }
 
     /// After the editor drew: one popup above it serves `:` emoji and `@`
@@ -13547,9 +13625,12 @@ impl CaperApp {
         let id = pass.id;
         let response = output.response.clone();
         let mut state = self.composer_suggestions.remove(&id).unwrap_or_default();
+        // A click on a row has already taken the editor's focus and its
+        // output cursor; the stored cursor remains.
         let active = output
             .cursor_range
-            .filter(|_| response.has_focus() && !self.ime_composing && !pass.ime)
+            .or_else(|| output.state.cursor.char_range())
+            .filter(|_| pass.focused && !self.ime_composing && !pass.ime)
             .and_then(|range| state.token_at(text, range));
         let choices = active
             .as_ref()
@@ -13660,11 +13741,7 @@ impl CaperApp {
                 .iter()
                 .chain(peer.as_ref())
                 .filter(|person| Some(person.id.as_str()) != me)
-                .map(|person| mentions::Person {
-                    username: person.username.clone(),
-                    display_name: person.display_name.clone(),
-                    avatar_id: person.avatar_id,
-                })
+                .map(mentions::Person::from)
                 .collect();
             return (people, false);
         }
@@ -13677,11 +13754,7 @@ impl CaperApp {
                     .members
                     .iter()
                     .filter(|member| Some(member.id.as_str()) != me)
-                    .map(|member| mentions::Person {
-                        username: member.username.clone(),
-                        display_name: member.display_name.clone(),
-                        avatar_id: member.avatar_id,
-                    })
+                    .map(mentions::Person::from)
                     .collect()
             });
         (people, true)
@@ -14411,13 +14484,18 @@ impl CaperApp {
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
-                                                let username = ui.add_sized(
-                                                    [ui.available_width(), 42.0],
-                                                    egui::TextEdit::singleline(&mut self.member_username)
-                                                        .vertical_align(egui::Align::Center)
-                                                        .margin(egui::Margin::symmetric(8, 4))
-                                                        .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
-                                                );
+                                                let id = egui::Id::new("direct-username");
+                                                let people: Vec<_> = self.people.iter().flatten().map(mentions::Person::from).collect();
+                                                let username = people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
+                                                    ui.add_sized(
+                                                        [ui.available_width(), 42.0],
+                                                        egui::TextEdit::singleline(value)
+                                                            .id(id)
+                                                            .vertical_align(egui::Align::Center)
+                                                            .margin(egui::Margin::symmetric(8, 4))
+                                                            .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
+                                                    )
+                                                });
                                                 if self.focus_dialog_field {
                                                     username.request_focus();
                                                 }
@@ -15211,16 +15289,55 @@ impl CaperApp {
         );
     }
 
-    fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
-        ui.horizontal(|ui| {
-            let field = ui.add_sized(
-                [(ui.available_width() - 80.0).max(1.0), 38.0],
-                egui::TextEdit::singleline(&mut self.member_username)
-                    .vertical_align(egui::Align::Center)
-                    .char_limit(32)
-                    .hint_text(RichText::new("Exact username").color(MUTED.gamma_multiply(0.65))),
+    /// Who the member field suggests: for a space, known people outside it and
+    /// not invited; for a private channel, space members other than you
+    /// without access or an invitation.
+    fn member_suggestions(&self, channel: bool) -> Vec<mentions::Person> {
+        if !channel {
+            return mentions::invitees(
+                self.people.as_deref().unwrap_or_default(),
+                &self.managed_members,
+                &self.managed_invitations,
             );
-            self.member_username = normalize_username(&self.member_username);
+        }
+        let space = self
+            .detail
+            .as_ref()
+            .filter(|detail| self.selected_space.as_ref() == Some(&detail.space.id))
+            .map_or(&[][..], |detail| detail.members.as_slice());
+        mentions::grantees(
+            space,
+            self.account.as_ref().map(|account| account.id.as_str()),
+            &self.managed_members,
+            &self.managed_invitations,
+        )
+    }
+
+    fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
+        let people = self.member_suggestions(channel.is_some());
+        ui.horizontal(|ui| {
+            let id = egui::Id::new("member-username");
+            let field = people_field(
+                ui,
+                id,
+                &mut self.people_suggestions,
+                &mut self.member_username,
+                &people,
+                |ui, value| {
+                    let field = ui.add_sized(
+                        [(ui.available_width() - 80.0).max(1.0), 38.0],
+                        egui::TextEdit::singleline(value)
+                            .id(id)
+                            .vertical_align(egui::Align::Center)
+                            .char_limit(32)
+                            .hint_text(
+                                RichText::new("Exact username").color(MUTED.gamma_multiply(0.65)),
+                            ),
+                    );
+                    *value = normalize_username(value);
+                    field
+                },
+            );
             if field.changed() {
                 self.member_error = None;
                 self.member_status = None;
@@ -16945,66 +17062,224 @@ fn pill_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui:
     rects
 }
 
-/// One `@` row in the shared suggestion popup, laid out like an emoji row:
-/// a 24px avatar slot, the 12px icon gap, then the name and a muted detail.
+/// One `@` row in the shared suggestion popup: a person, or `@everyone` /
+/// `@here` over whom it reaches.
 fn mention_suggestion(
     ui: &mut egui::Ui,
     candidate: &mentions::Candidate,
     width: f32,
     fill: Color32,
 ) -> egui::Response {
-    let font = egui::TextStyle::Button.resolve(ui.style());
     let (title, detail) = match candidate {
-        mentions::Candidate::Person(person) => {
-            (person.display_name.clone(), format!("@{}", person.username))
-        }
-        mentions::Candidate::Everyone => ("@everyone".into(), "Everyone in this channel".into()),
-        mentions::Candidate::Here => ("@here".into(), "Everyone online in this channel".into()),
+        mentions::Candidate::Person(person) => return person_suggestion(ui, person, width, fill),
+        mentions::Candidate::Everyone => ("@everyone", "Everyone in this channel"),
+        mentions::Candidate::Here => ("@here", "Everyone online in this channel"),
     };
-    let mut text = egui::text::LayoutJob::default();
-    text.append(
-        &title,
-        0.0,
-        egui::TextFormat {
-            valign: egui::Align::Center,
-            ..egui::TextFormat::simple(font, TEXT)
-        },
+    suggestion_row(ui, None, title, detail, width, fill)
+}
+
+/// A person's row in `@` and username-field suggestions.
+fn person_suggestion(
+    ui: &mut egui::Ui,
+    person: &mentions::Person,
+    width: f32,
+    fill: Color32,
+) -> egui::Response {
+    suggestion_row(
+        ui,
+        Some((&person.display_name, person.avatar_id)),
+        &person.display_name,
+        &format!("@{}", person.username),
+        width,
+        fill,
+    )
+}
+
+/// A 44px suggestion row laid out like an emoji row: a 24px avatar (`@` for
+/// the specials), the 12px icon gap, then the title over a small muted
+/// detail, each truncated to the row.
+fn suggestion_row(
+    ui: &mut egui::Ui,
+    avatar: Option<(&str, Option<i32>)>,
+    title: &str,
+    detail: &str,
+    width: f32,
+    fill: Color32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            format!("{title} {detail}"),
+        )
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, ui.visuals().widgets.inactive.corner_radius, fill);
+    let padding = ui.spacing().button_padding.x;
+    let slot = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + padding, rect.center().y - 12.0),
+        egui::vec2(24.0, 24.0),
     );
-    // Smaller secondary text keeps the specials' descriptions inside 260px.
-    text.append(
-        &format!(" {detail}"),
-        4.0,
-        egui::TextFormat {
-            valign: egui::Align::Center,
-            ..egui::TextFormat::simple(egui::FontId::proportional(11.0), MUTED)
-        },
-    );
-    let slot = egui::Id::new("mention-suggestion-avatar").with(candidate.name());
-    let row = egui::Button::new((egui::Atom::custom(slot, egui::vec2(24.0, 24.0)), text))
-        .min_size(egui::vec2(width, 44.0))
-        .truncate()
-        .stroke(Stroke::NONE)
-        .fill(fill)
-        .atom_ui(ui);
-    if let Some(rect) = row.rect(slot) {
-        match candidate {
-            mentions::Candidate::Person(person) => {
-                paint_avatar(ui, rect, &person.display_name, person.avatar_id);
-            }
-            mentions::Candidate::Everyone | mentions::Candidate::Here => {
-                ui.painter()
-                    .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "@",
-                    egui::FontId::proportional(rect.width() * 0.5),
-                    MUTED,
-                );
-            }
+    match avatar {
+        Some((name, avatar_id)) => paint_avatar(ui, slot, name, avatar_id),
+        None => {
+            painter.circle_filled(slot.center(), slot.width() / 2.0, RAISED);
+            painter.text(
+                slot.center(),
+                egui::Align2::CENTER_CENTER,
+                "@",
+                egui::FontId::proportional(slot.width() * 0.5),
+                MUTED,
+            );
         }
     }
-    row.response
+    let left = slot.right() + 12.0;
+    let line = |text: &str, font: egui::FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text.into(), font, color);
+        job.wrap =
+            egui::text::TextWrapping::truncate_at_width((rect.right() - padding - left).max(0.0));
+        painter.layout_job(job)
+    };
+    let title = line(title, egui::TextStyle::Button.resolve(ui.style()), TEXT);
+    let detail = line(detail, egui::FontId::proportional(11.0), MUTED);
+    let top = rect.center().y - (title.size().y + detail.size().y) / 2.0;
+    let below = top + title.size().y;
+    painter.galley(egui::pos2(left, top), title, TEXT);
+    painter.galley(egui::pos2(left, below), detail, MUTED);
+    response
+}
+
+/// A username field drawn by `editor` (a `TextEdit` with `id`), with people
+/// suggestions below it while it has focus. Arrows move the highlight, Enter
+/// or a click puts the exact username in the field, and Escape hides the list
+/// but not the dialog. Selecting never submits; with the list closed, keys
+/// reach the editor as before. The list counts as an egui popup, so dialogs
+/// leave Escape and outside clicks to it.
+fn people_field(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    state: &mut PeopleSuggestions,
+    value: &mut String,
+    people: &[mentions::Person],
+    editor: impl FnOnce(&mut egui::Ui, &mut String) -> egui::Response,
+) -> egui::Response {
+    // Read before the editor draws: clicking a row takes its focus away.
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let rows = |state: &PeopleSuggestions, value: &str| {
+        if focused && !state.hidden {
+            mentions::field_suggestions(people, value)
+        } else {
+            Vec::new()
+        }
+    };
+    state.sync(value);
+    // An open list takes its keys before the editor sees them.
+    let open = rows(state, value);
+    let mut chosen = None;
+    if !open.is_empty() {
+        let count = open.len();
+        state.selected = state.selected.min(count - 1);
+        ui.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                state.selected = (state.selected + 1) % count;
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                state.selected = (state.selected + count - 1) % count;
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                chosen = Some(open[state.selected].username.clone());
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                state.hidden = true;
+            }
+        });
+        if let Some(username) = &chosen {
+            state.choose(ui.ctx(), id, value, username);
+        }
+    }
+    let mut response = editor(ui, value);
+    // A selection edits the text as typing does.
+    if chosen.is_some() {
+        response.mark_changed();
+    }
+    state.sync(value);
+    let rows = rows(state, value);
+    if rows.is_empty() {
+        return response;
+    }
+    state.selected = state.selected.min(rows.len() - 1);
+    let list = id.with("people");
+    let field = response.rect;
+    // Below the field, or above it when only that fits in the window.
+    let height = rows.len() as f32 * 44.0 + 10.0;
+    let viewport = ui.ctx().viewport_rect();
+    let (pivot, position) = if field.bottom() + 4.0 + height > viewport.bottom()
+        && field.top() - 4.0 - height >= viewport.top()
+    {
+        (
+            egui::Align2::LEFT_BOTTOM,
+            field.left_top() - egui::vec2(0.0, 4.0),
+        )
+    } else {
+        (
+            egui::Align2::LEFT_TOP,
+            field.left_bottom() + egui::vec2(0.0, 4.0),
+        )
+    };
+    let mut chosen = None;
+    let shown = egui::Area::new(list)
+        .order(ui.layer_id().order)
+        .pivot(pivot)
+        .fixed_pos(position)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(COMPOSER)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+                .inner_margin(4)
+                .show(ui, |ui| {
+                    let width = field.width() - 10.0;
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for (index, person) in rows.iter().enumerate() {
+                        let fill = if index == state.selected {
+                            Color32::from_rgb(67, 36, 30)
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        if person_suggestion(ui, person, width, fill).clicked() {
+                            chosen = Some(person.username.clone());
+                        }
+                    }
+                });
+        });
+    if let Some(username) = chosen {
+        state.choose(ui.ctx(), id, value, &username);
+        response.request_focus();
+        response.mark_changed();
+        return response;
+    }
+    // Stays above the dialog when a click in the dialog raises its layer.
+    ui.ctx()
+        .set_sublayer(ui.layer_id(), shown.response.layer_id);
+    egui::Popup::open_id(ui.ctx(), list);
+    // egui moves focus on arrows and drops it on Escape before widgets run.
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            id,
+            egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                tab: false,
+                escape: true,
+            },
+        );
+    });
+    response
 }
 
 fn date_divider(ui: &mut egui::Ui, label: &str) {
@@ -24044,6 +24319,54 @@ mod tests {
         text_shapes(output).iter().any(|label| label == text)
     }
 
+    /// The rows of the suggestion list `area` drawn this pass, as "title
+    /// detail", after checking that each detail sits directly below its title.
+    fn suggestion_rows(
+        context: &egui::Context,
+        output: &egui::FullOutput,
+        area: egui::Id,
+    ) -> Vec<String> {
+        let Some(bounds) = context.memory(|memory| memory.area_rect(area)) else {
+            return Vec::new();
+        };
+        // The list's frame if drawn this pass (its fill fades in), then what
+        // it paints over everything below it.
+        let Some(frame) = output.shapes.iter().position(|shape| {
+            matches!(&shape.shape, egui::epaint::Shape::Rect(rect)
+                if (rect.rect.min - bounds.min).length() < 1.0
+                    && (rect.rect.max - bounds.max).length() < 1.0)
+        }) else {
+            return Vec::new();
+        };
+        // Text right of the avatar slot, which may hold an `@` or an initial.
+        let mut texts: Vec<_> = output.shapes[frame..]
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => {
+                    let rect = text.galley.rect.translate(text.pos.to_vec2());
+                    (bounds.contains(rect.center()) && rect.left() > bounds.left() + 40.0)
+                        .then(|| (rect, text.galley.job.text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        texts.sort_by(|left, right| left.0.top().total_cmp(&right.0.top()));
+        texts
+            .chunks(2)
+            .map(|pair| {
+                let [(title_rect, title), (detail_rect, detail)] = pair else {
+                    panic!("a row without a detail: {pair:?}");
+                };
+                assert!(
+                    (title_rect.left() - detail_rect.left()).abs() < 0.5
+                        && (detail_rect.top() - title_rect.bottom()).abs() < 0.5,
+                    "{detail} is not directly below {title}"
+                );
+                format!("{title} {detail}")
+            })
+            .collect()
+    }
+
     #[test]
     fn mention_composer_suggests_members_and_specials_and_inserts_without_sending() {
         let context = egui::Context::default();
@@ -24058,19 +24381,22 @@ mod tests {
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("@".into())]);
         let output = render(&mut app, &context, vec![]);
-        let labels = text_shapes(&output);
-        for row in [
-            "Alex @alex",
-            "Maya @maya",
-            "@everyone Everyone in this channel",
-            "@here Everyone online in this channel",
-        ] {
-            assert!(labels.iter().any(|label| label == row), "{row}: {labels:?}");
-        }
-        assert!(
-            !labels.iter().any(|label| label.contains("@fixture_owner")),
-            "never suggest yourself: {labels:?}"
+        let popup = id.with("suggestions");
+        assert_eq!(
+            suggestion_rows(&context, &output, popup),
+            [
+                "Alex @alex",
+                "Maya @maya",
+                "@everyone Everyone in this channel",
+                "@here Everyone online in this channel",
+            ],
+            "stacked rows, never yourself"
         );
+        let maya = |output: &egui::FullOutput| {
+            suggestion_rows(&context, output, popup)
+                .iter()
+                .any(|row| row == "Maya @maya")
+        };
         render(&mut app, &context, vec![egui::Event::Text("ma".into())]);
         render(&mut app, &context, vec![]);
         render(&mut app, &context, press(egui::Key::Enter));
@@ -24098,10 +24424,7 @@ mod tests {
         place_caret(&context, "mail bob@ma|", &mut app);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        assert!(
-            !shows(&output, "Maya @maya"),
-            "an email address is not a mention"
-        );
+        assert!(!maya(&output), "an email address is not a mention");
 
         // Selected text and active IME composition never open suggestions.
         app.draft = "hi @ma".into();
@@ -24115,20 +24438,43 @@ mod tests {
         state.store(&context, id);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        assert!(!shows(&output, "Maya @maya"), "selection");
+        assert!(!maya(&output), "selection");
         place_caret(&context, "hi @ma|", &mut app);
         let ime = |event| vec![egui::Event::Ime(event)];
         render(&mut app, &context, ime(egui::ImeEvent::Enabled));
         let output = render(&mut app, &context, vec![]);
-        assert!(!shows(&output, "Maya @maya"), "IME composition");
+        assert!(!maya(&output), "IME composition");
         render(&mut app, &context, ime(egui::ImeEvent::Disabled));
+        // The bottom-anchored popup settles a pass after it shrinks.
+        render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Maya @maya"));
+        assert!(maya(&output));
         render(&mut app, &context, press(egui::Key::Escape));
         assert!(app.composer_suggestions[&id].dismissed.is_some());
         assert!(context.memory(|memory| memory.has_focus(id)));
         render(&mut app, &context, press(egui::Key::Enter));
         assert_eq!(app.pending.as_ref().unwrap().text, "hi @ma");
+    }
+
+    #[test]
+    fn mention_rows_insert_on_click_without_sending() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        let id = egui::Id::new("message-composer");
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(&mut app, &context, vec![egui::Event::Text("@ma".into())]);
+        let output = render(&mut app, &context, vec![]);
+        // The click takes focus from the editor before the popup draws.
+        click_at(&mut app, &context, text_center(&output, "@maya"));
+        assert_eq!(app.draft, "@maya ");
+        assert!(app.pending.is_none(), "a click never sends");
+        assert!(context.memory(|memory| memory.has_focus(id)));
     }
 
     fn open_loaded_thread(app: &mut CaperApp, root: &str) {
@@ -24159,7 +24505,10 @@ mod tests {
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("@ma".into())]);
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Maya @maya"), "{:?}", text_shapes(&output));
+        assert_eq!(
+            suggestion_rows(&context, &output, id.with("suggestions")),
+            ["Maya @maya"]
+        );
         render(&mut app, &context, press(egui::Key::Enter));
         assert_eq!(app.thread_drafts[&root].0, "@maya ");
         assert!(app.pending.is_none(), "Accepting a mention must not send");
@@ -24606,6 +24955,133 @@ mod tests {
         );
         assert_eq!(app.member_username, "ghost", "the typed username stays");
         assert_eq!(app.member_status, None);
+    }
+
+    /// Focuses a username field and types `text`; returns the list's rows.
+    fn type_username(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        id: egui::Id,
+        text: &str,
+    ) -> Vec<String> {
+        context.memory_mut(|memory| memory.request_focus(id));
+        render(app, context, vec![]);
+        render(app, context, vec![egui::Event::Text(text.into())]);
+        let output = render(app, context, vec![]);
+        suggestion_rows(context, &output, id.with("people"))
+    }
+
+    #[test]
+    fn invite_field_suggests_people_outside_the_space_and_selecting_never_invites() {
+        let api = || crate::api::Api::new("http://127.0.0.1:9").unwrap();
+        let context = egui::Context::default();
+        let usernames = |app: &CaperApp| -> Vec<String> {
+            app.member_suggestions(false)
+                .into_iter()
+                .map(|person| person.username)
+                .collect()
+        };
+        let invited = CaperApp::new(&context, api(), Some("parity-admin-invitations"));
+        assert_eq!(usernames(&invited), ["fixture_contact"], "nor the invited");
+        let mut app = CaperApp::new(&context, api(), Some("parity-admin"));
+        assert_eq!(
+            usernames(&app),
+            ["fixture_contact", "fixture_invitee"],
+            "members are never suggested"
+        );
+        let (_events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.token = Some("fixture-token".into());
+        let id = egui::Id::new("member-username");
+        let list = id.with("people");
+        render(&mut app, &context, vec![]);
+        assert_eq!(
+            type_username(&mut app, &context, id, "@FIX"),
+            [
+                "TEST FIXTURE contact @fixture_contact",
+                "TEST FIXTURE invitee @fixture_invitee",
+            ]
+        );
+        let output = render(&mut app, &context, vec![]);
+        let bounds = context.memory(|memory| memory.area_rect(list).unwrap());
+        assert!(
+            bounds.top() > text_center(&output, "Invite").y
+                && egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))
+                    .contains_rect(bounds),
+            "below the field and inside the window: {bounds:?}"
+        );
+        render(&mut app, &context, press(egui::Key::ArrowDown));
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.member_username, "fixture_invitee");
+        assert!(!app.loading, "selecting never invites");
+        assert!(context.memory(|memory| memory.has_focus(id)));
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            suggestion_rows(&context, &output, list).is_empty(),
+            "hidden until the text changes"
+        );
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert!(app.loading, "Enter with the list closed invites");
+
+        app.loading = false;
+        app.member_username.clear();
+        assert_eq!(type_username(&mut app, &context, id, "fix").len(), 2);
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(
+            matches!(app.dialog, Some(Dialog::ManageSpace)),
+            "Escape hides the list, not the dialog"
+        );
+        assert!(context.memory(|memory| memory.has_focus(id)));
+        let output = render(&mut app, &context, vec![]);
+        assert!(suggestion_rows(&context, &output, list).is_empty());
+        assert_eq!(
+            type_username(&mut app, &context, id, "ture_c"),
+            ["TEST FIXTURE contact @fixture_contact"],
+            "typing shows it again"
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "@fixture_contact"));
+        assert_eq!(app.member_username, "fixture_contact");
+        assert!(!app.loading, "a click never invites");
+        assert!(context.memory(|memory| memory.has_focus(id)));
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(
+            app.dialog.is_none(),
+            "Escape with the list closed closes the dialog"
+        );
+    }
+
+    #[test]
+    fn channel_and_direct_fields_suggest_their_people_and_select_without_submitting() {
+        let api = || crate::api::Api::new("http://127.0.0.1:9").unwrap();
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(&context, api(), Some("parity-channel"));
+        let names: Vec<_> = app
+            .member_suggestions(true)
+            .into_iter()
+            .map(|person| person.username)
+            .collect();
+        assert_eq!(names, ["alex"], "space members without you or access");
+        let id = egui::Id::new("member-username");
+        render(&mut app, &context, vec![]);
+        assert_eq!(type_username(&mut app, &context, id, "a"), ["Alex @alex"]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.member_username, "alex");
+        assert!(!app.member_refocus, "selecting never adds");
+        assert!(matches!(app.dialog, Some(Dialog::ManageChannel(_))));
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(&context, api(), Some("parity-direct-new"));
+        let id = egui::Id::new("direct-username");
+        render(&mut app, &context, vec![]);
+        assert_eq!(
+            type_username(&mut app, &context, id, " @AL"),
+            ["Alex @alex"]
+        );
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert_eq!(app.member_username, "alex");
+        assert!(!app.loading, "selecting never opens the conversation");
+        assert!(matches!(app.dialog, Some(Dialog::StartDirect)));
     }
 
     #[test]

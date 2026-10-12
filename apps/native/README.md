@@ -66,6 +66,15 @@ a person's pill opens a profile card with **Message** (a popover on macOS and Ru
 desktop, a bottom sheet on Android and iPhone). Mentions do not notify anyone yet. The grammar and payload are described in
 [docs/media.md](../../docs/media.md#scope-and-architecture).
 
+The space invite, private-channel grant and **New direct message** username
+fields suggest people the app already has while you type: known people
+(`GET /api/people`) minus members and pending invitations for spaces, the space's
+members minus existing grantees for private channels, and known people for DMs.
+Rows match `@` suggestions (avatar, display name, `@username` beneath it).
+Choosing one fills in the exact username without submitting; lookups stay
+exact-username and there is no account directory. See
+[docs/media.md](../../docs/media.md#spaces-and-channel-access) for the shared rules.
+
 First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.

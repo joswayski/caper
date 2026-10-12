@@ -352,7 +352,7 @@ internal data class VoiceJoinIntent(
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
-        Overlay.StartDirect -> StartDirectDialog(state.busy, { overlay = null }) { username, failed ->
+        Overlay.StartDirect -> StartDirectDialog(state.busy, directCandidates(state.people, state.account?.id ?: state.chatAuthorId), viewModel::refreshPeople, { overlay = null }) { username, failed ->
             viewModel.startDirect(username, done = { overlay = null }, failed = failed)
         }
         is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
@@ -2082,17 +2082,61 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     content = content,
 )
 
-/** A person (avatar, display name, muted `@username`) or a special (`@everyone`, muted description). */
-@Composable private fun MentionSuggestionRow(candidate: MentionCandidate, selected: Boolean, choose: () -> Unit) {
+/** A person (avatar, display name over a muted `@username`) or a special (`@everyone` over its muted description). */
+@Composable private fun MentionSuggestionRow(candidate: MentionCandidate, selected: Boolean, action: String = "Mention", choose: () -> Unit) {
     val primary = if (candidate.special) "@${candidate.username}" else candidate.label
     val secondary = if (candidate.special) candidate.label else "@${candidate.username}"
-    SuggestionRow(selected, "Mention $primary, $secondary", choose) {
+    SuggestionRow(selected, "$action $primary, $secondary", choose) {
         if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
         } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(primary, Modifier.weight(1f, fill = false), color = Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(secondary, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.weight(1f)) {
+            Text(primary, color = Text, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(secondary, color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/**
+ * An exact-username field ([content] applies `field` to it) with [people] suggested inline below it while it is
+ * focused and its text matches someone (`usernameSuggestions`). While the list is open Up/Down move, Enter or the
+ * IME action (`imeAction`, which runs `closed` otherwise) fills in the highlighted username, and Escape hides the
+ * list without closing the dialog. Choosing never submits; the list stays hidden until the text changes.
+ */
+@Composable private fun UsernameSuggestions(
+    username: String, onUsername: (String) -> Unit, people: List<MentionCandidate>,
+    content: @Composable (field: Modifier, imeAction: (closed: () -> Unit) -> Unit) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var dismissedAt by remember { mutableStateOf<String?>(null) }
+    // Hidden only until the text changes: coming back to the same text later lists again.
+    LaunchedEffect(username) { if (username != dismissedAt) dismissedAt = null }
+    var escaping by remember { mutableStateOf(false) }
+    val rows = if (focused && username != dismissedAt) usernameSuggestions(people, username) else emptyList()
+    var selected by remember(rows) { mutableIntStateOf(0) }
+    fun choose(index: Int) = rows.getOrNull(index)?.let { dismissedAt = it.username; onUsername(it.username) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        content(
+            Modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
+                when {
+                    // Dialogs close on Escape's key-up: swallow the one whose key-down hid the list.
+                    event.key == Key.Escape && event.type == KeyEventType.KeyUp -> escaping.also { escaping = false }
+                    rows.isEmpty() || event.type != KeyEventType.KeyDown -> false
+                    event.key == Key.DirectionDown -> { selected = (selected + 1) % rows.size; true }
+                    event.key == Key.DirectionUp -> { selected = (selected - 1 + rows.size) % rows.size; true }
+                    event.key == Key.Enter || event.key == Key.NumPadEnter -> { choose(selected); true }
+                    event.key == Key.Escape -> { dismissedAt = username; escaping = true; true }
+                    else -> false
+                }
+            },
+            { closed -> if (rows.isEmpty()) closed() else choose(selected) },
+        )
+        if (rows.isNotEmpty()) Surface(Modifier.fillMaxWidth(), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                rows.forEachIndexed { index, person ->
+                    key(person.username) { MentionSuggestionRow(person, index == selected, "Select") { selected = index; choose(index) } }
+                }
+            }
         }
     }
 }
@@ -3208,15 +3252,23 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun StartDirectDialog(busy: Boolean, close: () -> Unit, start: (String, (String) -> Unit) -> Unit) {
+/** [people] suggests usernames (`/api/people`, refreshed by [loadPeople] on open); the lookup stays exact. */
+@Composable private fun StartDirectDialog(
+    busy: Boolean, people: List<MentionCandidate>, loadPeople: () -> Unit, close: () -> Unit, start: (String, (String) -> Unit) -> Unit,
+) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { loadPeople() }
     CaperDialog("New direct message", close, busy = busy) {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
-            modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true)
+        // The field is read-only while the conversation opens, so suggestions wait too.
+        UsernameSuggestions(username, { username = it; error = null }, if (busy) emptyList() else people) { suggestions, imeAction ->
+            OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
+                modifier = Modifier.fillMaxWidth().focusRequester(field).then(suggestions), singleLine = true,
+                keyboardActions = KeyboardActions(onDone = { imeAction { defaultKeyboardAction(ImeAction.Done) } }))
+        }
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
@@ -3255,14 +3307,16 @@ internal fun counterTone(count: Int): Color = when {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var removing by remember(detail.space.id) { mutableStateOf<Member?>(null) }
-    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations() }
+    // Invite suggestions come from `/api/people`; the previous list stays while it refreshes.
+    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
     CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         OutlinedTextField(name, { name = it.codePointTake(80); if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
-            { removing = it }, viewModel::cancelSpaceInvitation, channel = false)
+            { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
+            suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations))
         HorizontalDivider(color = Border)
         DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
     }
@@ -3297,10 +3351,10 @@ internal fun counterTone(count: Int): Color = when {
 
 @Composable private fun InviteManager(
     members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit,
-    remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean,
+    remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean, suggestions: List<MentionCandidate>,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    MemberManager(members, pending, busy, add, remove, channel, heading = "Members", action = "Invite")
+    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
@@ -3337,7 +3391,8 @@ internal fun counterTone(count: Int): Color = when {
         if (channel.private) {
             HorizontalDivider(color = Border)
             InviteManager(state.channelGrants, state.pendingChannelInvitations, state.busy, { username, done, failed -> viewModel.addChannelGrant(channel, username, done, failed) },
-                { removing = it }, { viewModel.cancelChannelInvitation(channel, it) }, channel = true)
+                { removing = it }, { viewModel.cancelChannelInvitation(channel, it) }, channel = true,
+                suggestions = channelGrantCandidates(state.selectedSpace?.members.orEmpty(), state.account?.id ?: state.chatAuthorId, state.channelGrants, state.pendingChannelInvitations))
         }
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }
@@ -3351,10 +3406,13 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-/** Web's MemberManager: exact-username invite, kept until it is sent, then "@username · Owner" rows. */
+/**
+ * Web's MemberManager: exact-username invite (with [suggestions] for the username), kept until it is sent,
+ * then "@username · Owner" rows.
+ */
 @Composable private fun MemberManager(
     members: List<Member>, invitations: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit, remove: (Member) -> Unit,
-    channel: Boolean, heading: String = "Members", action: String = "Add",
+    channel: Boolean, suggestions: List<MentionCandidate>, heading: String = "Members", action: String = "Add",
 ) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -3363,17 +3421,19 @@ internal fun counterTone(count: Int): Color = when {
         Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        val submitMember = {
-            success = null
-            error = memberInviteError(username, members, invitations, channel)
-            if (error == null) add(username, { username = ""; success = "Invitation sent. They must accept before joining." }, { error = memberAddError(it) })
+    UsernameSuggestions(username, { username = it; error = null; success = null }, suggestions) { field, imeAction ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val submitMember = {
+                success = null
+                error = memberInviteError(username, members, invitations, channel)
+                if (error == null) add(username, { username = ""; success = "Invitation sent. They must accept before joining." }, { error = memberAddError(it) })
+            }
+            OutlinedTextField(username, { username = normalizeUsername(it); error = null; success = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f).then(field), singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { imeAction { if (!busy) submitMember() } }))
+            Spacer(Modifier.width(8.dp))
+            Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(action) }
         }
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null; success = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { if (!busy) submitMember() }))
-        Spacer(Modifier.width(8.dp))
-        Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(action) }
     }
     success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
