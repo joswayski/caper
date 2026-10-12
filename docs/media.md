@@ -1195,9 +1195,9 @@ file keeps:
 - **Photos** are re-encoded at very high quality (SSIMULACRA2 ≈ 83 on 9–14 MP
   photos): differences are rarely visible at normal size, though not identical
   at 100% zoom; photos larger than `ASSET_IMAGE_MAX_EDGE` are resized.
-- **Video** is converted to H.264 so it plays in every browser and app. 4K,
-  1440p and HDR footage loses resolution, some fine detail in busy or dark
-  scenes, and its HDR range compared with the original. The bitrate and
+- **Video** is converted to H.264 so it plays in every browser and app. 4K and
+  HDR footage loses resolution (down to a 1440 short edge), some fine detail
+  in busy or dark scenes, and its HDR range compared with the original. The bitrate and
   frame-rate settings below are the levers, and they are delivered per
   request, so they could later differ by plan.
 
@@ -1206,13 +1206,14 @@ HEVC originals of Xiph/Netflix test clips; x264 `veryfast` as the client
 encoder, so hardware encoders may score somewhat lower). 50/60 fps footage, so
 the 150% frame-rate boost applies:
 
-| Clip (phone original) | 6 Mbps, before | 8 Mbps defaults | Notes |
-| --- | --- | --- | --- |
-| Park scene, 1080p50, 12 Mbps HEVC | 61 | 81 | Foliage smeared at 6 Mbps |
-| Crowd running, 1080p50, 12 Mbps HEVC | 56 | 77 | Deliberately extreme motion and detail |
-| Lean HEVC, 1080p50, 3 Mbps | 89 (78 with #519's 100% cap) | 89 | 200% cap restores it; output is twice the original's size |
-| Market, 4K60, 50 Mbps HEVC | 80 (74 on a 4K screen) | 92 (85 on a 4K screen) | Remaining 4K loss is the 1080p cap |
-| Driving, 4K60, 50 Mbps HEVC | 85 (78 on a 4K screen) | 92 (87 on a 4K screen) | |
+| Clip (original) | 6 Mbps, 1080 cap (before) | 8 Mbps, 1080 cap | Defaults: 8 Mbps, 1440 cap | Notes |
+| --- | --- | --- | --- | --- |
+| Park scene, 1080p50, 12 Mbps HEVC | 61 | 81 | 81 | Foliage smeared at 6 Mbps |
+| Crowd running, 1080p50, 12 Mbps HEVC | 56 | 77 | 77 | Deliberately extreme motion and detail |
+| Lean HEVC, 1080p50, 3 Mbps | 89 (78 with #519's 100% cap) | 89 | 89 | 200% cap restores it; output is twice the original's size |
+| Market, 4K60, 50 Mbps HEVC (1080p / 4K screen) | 80 / 74 | 92 / 85 | 95 / 89 | 1440p60 output ≈ 170 MB/min |
+| Driving, 4K60, 50 Mbps HEVC (1080p / 4K screen) | 85 / 78 | 92 / 87 | 95 / 92 | |
+| Retina screen recording, 2880×1800 text, scored at full size | — | 94.5 (7.2 Mbps) | 99.9 (12.8 Mbps) | 1080 visibly softens small text |
 
 VMAF 93+ is close to indistinguishable for most viewers; about 6 points is one
 just-noticeable difference.
@@ -1225,7 +1226,7 @@ just-noticeable difference.
 | `ASSET_IMAGE_QUALITY` | 92 | WebP photo quality (JPEG where WebP encoding is unavailable). 100 disables lossy photo encoding in either format. |
 | `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
 | `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
-| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1440 | Short-edge cap for videos ("1440p", so portrait phone video and Retina screen recordings keep their detail); 0 uploads videos unchanged. |
 | `ASSET_VIDEO_BITRATE_KBPS` | 8000 | Target bitrate at 1080p30, scaled by pixel count and frame rate (hardware encoders need more headroom than x264 to avoid blocking). |
 | `ASSET_VIDEO_SOURCE_BITRATE_PERCENT` | 200 | A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264 sources: 100%, since more bits cannot improve them). H.264 needs about twice HEVC's bitrate for the same quality. 0 removes the cap. |
 | `ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT` | 150 | Above 30 fps the target grows with the frame rate (fps ÷ 30) up to this percentage, so 60 fps video does not get half the bits per frame. 100 turns it off. |

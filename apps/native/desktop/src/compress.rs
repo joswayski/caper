@@ -75,7 +75,7 @@ impl Default for Compression {
             image_max_edge: 4096,
             palette_colors: 256,
             preview_edge: 640,
-            video_max_height: 1080,
+            video_max_height: 1440,
             video_bitrate_kbps: 8000,
             video_source_bitrate_percent: 200,
             video_high_fps_boost_percent: 150,

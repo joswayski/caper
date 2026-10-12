@@ -462,7 +462,7 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(decoded.compression.previewEdge, 320)
         XCTAssertEqual(decoded.compression.videoBitrateKbps, 8000)
         XCTAssertEqual(decoded.compression.imageMaxEdge, 4096)
-        XCTAssertEqual(decoded.compression.videoMaxHeight, 1080)
+        XCTAssertEqual(decoded.compression.videoMaxHeight, 1440)
         XCTAssertEqual(decoded.compression.audioBitrateKbps, 128)
         let legacy = try JSONDecoder().decode(AssetUsage.self, from: Data(#"{"used":0,"limit":10,"maxUploadBytes":5}"#.utf8))
         XCTAssertEqual(legacy.compression, AttachmentCompression())
@@ -715,11 +715,13 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(plan(facts(1920, 1080)), .keep, "efficient 1080p H.264 is never re-compressed")
         XCTAssertEqual(plan(facts(1920, 1080, kbps: 10_000)), .keep, "up to 1.25 × the 8000 kbps target")
         XCTAssertEqual(plan(facts(1920, 1080, kbps: 10_100)), transcode(1920, 1080, 8000, required: false), "bitrate only: size-only transcode")
-        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), transcode(1920, 1080, 8000, required: false), "short edge above 1080")
-        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), transcode(1080, 1920, 8000, required: false), "portrait 4K")
+        XCTAssertEqual(plan(facts(3840, 2160, kbps: 20_000)), transcode(2560, 1440, 14_222, required: false), "short edge above 1440")
+        XCTAssertEqual(plan(facts(2160, 3840, kbps: 20_000)), transcode(1440, 2560, 14_222, required: false), "portrait 4K")
+        XCTAssertEqual(plan(facts(2880, 1800, kbps: 30_000)), transcode(2304, 1440, 12_800, required: false),
+                       "a Retina screen recording keeps a 1440 short edge")
         XCTAssertEqual(plan(facts(1080, 1920, h264: false, kbps: 8000)), transcode(1080, 1920, 8000, required: true), "HEVC portrait 1080p keeps its size")
-        XCTAssertEqual(plan(facts(1440, 1920, h264: false, kbps: 10_683)), transcode(1080, 1440, 6000, required: true),
-                       "iPhone 1440×1920 HEVC shrinks at the scaled target")
+        XCTAssertEqual(plan(facts(1440, 1920, h264: false, kbps: 10_683)), transcode(1440, 1920, 10_667, required: true),
+                       "iPhone 1440×1920 HEVC keeps its size at the scaled target")
         XCTAssertEqual(plan(facts(1920, 1080, h264: false, kbps: 3000)), transcode(1920, 1080, 6000, required: true),
                        "a lean HEVC clip gets up to twice its own bitrate in H.264")
         var fast = facts(1920, 1080, h264: false, kbps: 20_000)

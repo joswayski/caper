@@ -198,7 +198,7 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val imageMaxEdge: Int = 4096,
     val paletteColors: Int = 256,
     val previewEdge: Int = 640,
-    val videoMaxHeight: Int = 1080,
+    val videoMaxHeight: Int = 1440,
     /** Video target at 1080p30, scaled by pixel count and frame rate. */
     val videoBitrateKbps: Int = 8000,
     val audioBitrateKbps: Int = 128,

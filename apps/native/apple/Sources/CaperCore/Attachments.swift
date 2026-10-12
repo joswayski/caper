@@ -168,7 +168,7 @@ public struct AttachmentCompression: Codable, Equatable, Sendable {
     public var imageMaxEdge: Int = 4096
     public var paletteColors: Int = 256
     public var previewEdge: Int = 640
-    public var videoMaxHeight: Int = 1080
+    public var videoMaxHeight: Int = 1440
     /// Video target at 1080p30, scaled by pixel count and frame rate.
     public var videoBitrateKbps: Int = 8000
     /// A re-encode never exceeds this percentage of a non-H.264 source's own
@@ -198,7 +198,7 @@ public struct AttachmentCompression: Codable, Equatable, Sendable {
         imageMaxEdge = value(.imageMaxEdge, 0...65_536, 4096)
         paletteColors = value(.paletteColors, 0...256, 256)
         previewEdge = value(.previewEdge, 0...4096, 640)
-        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1080)
+        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1440)
         videoBitrateKbps = value(.videoBitrateKbps, 1...1_000_000, 8000)
         videoSourceBitratePercent = value(.videoSourceBitratePercent, 0...1000, 200)
         videoHighFpsBoostPercent = value(.videoHighFpsBoostPercent, 100...400, 150)

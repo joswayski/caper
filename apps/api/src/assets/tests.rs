@@ -244,7 +244,7 @@ fn compression_settings_default_and_validate_from_configuration() {
     assert_eq!(
         serde_json::to_value(&defaults).unwrap(),
         json!({"imageFormat":"avif","avifQuality":85,"imageQuality":92,"imageMaxEdge":4096,"paletteColors":256,"previewEdge":640,
-               "videoMaxHeight":1080,"videoBitrateKbps":8000,"videoSourceBitratePercent":200,
+               "videoMaxHeight":1440,"videoBitrateKbps":8000,"videoSourceBitratePercent":200,
                "videoHighFpsBoostPercent":150,"audioBitrateKbps":128})
     );
     let tuned = Compression::from_env(&E::from_values_for_test([

@@ -294,8 +294,8 @@ test("efficient H.264 uploads unchanged; transcodes happen only for size, codec,
   );
   assert.deepEqual(
     videoPlan(probe({ codec: "hevc", width: 1440, height: 1920, bitrateKbps: 10683 }), s),
-    { action: "transcode", reasons: ["resolution", "codec"], width: 1080, height: 1440, bitrateKbps: 6000 },
-    "an iPhone 1440×1920 HEVC clip shrinks to 1080 wide at the scaled target",
+    { action: "transcode", reasons: ["codec"], width: 1440, height: 1920, bitrateKbps: 10667 },
+    "an iPhone 1440×1920 HEVC clip keeps its size at the scaled target",
   );
   assert.deepEqual(
     videoPlan(probe({ codec: "hevc", bitrateKbps: 20000, fps: 60 }), s),
@@ -306,17 +306,32 @@ test("efficient H.264 uploads unchanged; transcodes happen only for size, codec,
   assert.deepEqual(videoPlan(probe({ width: 3840, height: 2160, bitrateKbps: 50000 }), s), {
     action: "transcode",
     reasons: ["resolution", "bitrate"],
-    width: 1920,
-    height: 1080,
-    bitrateKbps: 8000,
+    width: 2560,
+    height: 1440,
+    bitrateKbps: 14222,
   });
   assert.deepEqual(videoPlan(probe({ width: 2160, height: 3840, bitrateKbps: 8000 }), s), {
     action: "transcode",
     reasons: ["resolution"],
-    width: 1080,
-    height: 1920,
+    width: 1440,
+    height: 2560,
     bitrateKbps: 8000,
   });
+  assert.deepEqual(
+    videoPlan(probe({ width: 2880, height: 1800, bitrateKbps: 20000 }), s),
+    { action: "transcode", reasons: ["resolution"], width: 2304, height: 1440, bitrateKbps: 12800 },
+    "a Retina screen recording keeps a 1440 short edge",
+  );
+  assert.deepEqual(
+    videoPlan(probe({ width: 3840, height: 2160, bitrateKbps: 50000 }), { ...s, videoMaxHeight: 1080 }),
+    {
+      action: "transcode",
+      reasons: ["resolution", "bitrate"],
+      width: 1920,
+      height: 1080,
+      bitrateKbps: 8000,
+    },
+  );
   assert.deepEqual(videoPlan(probe({ inlineContainer: false }), s), {
     action: "transcode",
     reasons: ["container"],
@@ -336,9 +351,9 @@ test("HDR video is always tone mapped to SDR, and kept only when smaller unless 
     {
       action: "transcode",
       reasons: ["hdr", "resolution", "codec", "bitrate"],
-      width: 1920,
-      height: 1080,
-      bitrateKbps: 8000,
+      width: 2560,
+      height: 1440,
+      bitrateKbps: 14222,
     },
   );
   assert.deepEqual(videoPlan(probe({ hdr: true }), DEFAULT_COMPRESSION), {
