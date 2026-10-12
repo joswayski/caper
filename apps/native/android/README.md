@@ -26,13 +26,26 @@ yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ```
 
-The checked-in wrapper pins Gradle 8.13 and verifies the official distribution with `distributionSha256Sum`. Android Gradle Plugin 8.13.0, Kotlin 2.2.20, Compose BOM 2025.09.01, OkHttp 5.1.0, Coil 3.3.0, Media3 1.8.0 and `io.github.webrtc-sdk:android:150.7871.01` are pinned.
+The checked-in wrapper pins Gradle 9.1.0 and verifies the official distribution with `distributionSha256Sum`. Android Gradle Plugin 9.0.1 uses built-in Kotlin with the compiler, Compose compiler plugin and serialization plugin pinned to Kotlin 2.2.20. Compose BOM 2025.09.01, OkHttp 5.1.0, Coil 3.3.0, Media3 1.8.0 and `io.github.webrtc-sdk:android:150.7871.01` remain pinned. JDK 17, SDK 36 and the explicit NDK version are unchanged.
 
 ```bash
 ./apps/native/android/build.sh
 ```
 
 The build first invokes `scripts/native_fonts.py`, which downloads and verifies the official, unmodified Satoshi Regular/Medium/Bold/Black OTF files and Fontshare license. It also validates the checked-in DPDFNet-8 HR model and downloads SHA-256-pinned ONNX Runtime 1.23.2 Android and RNNoise source/model archives before compiling native microphone processing, and `prepare-avif.sh` builds the AVIF photo encoder from pinned libaom 3.15.1 (SHA-256) and libavif 1.4.2 (commit) sources (BSD-2-Clause; notices in `third_party/`). Neither model nor native code is fetched at runtime. Generated inputs remain ignored. It then runs JVM unit tests, Android lint, and `assembleDebug` with bounded native compilation, asserts that the Satoshi and WebRTC notices are packaged, and writes `apps/native/android/dist/Caper-android-debug.apk`. The APK is installable and debug-signed by the Android toolchain for development only. It is not a production release.
+
+### Release optimization and Play Console metrics
+
+Release builds use R8 full mode, code shrinking, optimized resource shrinking and class repackaging. AGP 9 enables the integrated code/resource shrinking pipeline; release resource shrinking still needs `isShrinkResources = true`. Repackaging shortens package names, but the WebRTC/JNI keep rules must remain: native libraries look up those classes by name. `build.sh` and the signed release workflow validate those names against R8's mapping and removal reports. Debug builds stay unminified.
+
+Play Console's optimization, obfuscation and shrinking percentages describe code subject to those transformations, not runtime speed gains or the percentage of bytes removed. Total uncompressed DEX size covers compiled Java/Kotlin code, excluding native libraries and assets; it is not the user's download size. Inspect a locally built release bundle with:
+
+```bash
+unzip -l app/build/outputs/bundle/release/app-release.aab | grep -E '\.dex$' | awk '{sum+=$1} END {print sum " uncompressed DEX bytes"}'
+unzip -p app/build/outputs/bundle/release/app-release.aab BUNDLE-METADATA/com.android.tools/r8.json
+```
+
+The bundle requires the release-signing variables described below. Before publishing the next release, test the actual minified, signed build on physical devices: sign-in/session restoration, text and push, voice/WebRTC and native microphone processing, attachment decoding/encoding and media playback. APK/ELF alignment checks do not establish runtime support on a 16 KB-page device. A smaller DEX does not by itself prove faster startup or rendering.
 
 The API defaults to `https://caper.chat`. Override it at build time with `-PcaperApiBaseUrl=https://host.example` (HTTPS is required by the manifest).
 

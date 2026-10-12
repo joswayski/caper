@@ -1,3 +1,6 @@
+# Shorten package names only for classes not protected by the JNI keep rules.
+-repackageclasses
+
 -keep class org.webrtc.** { *; }
 -dontwarn org.webrtc.**
 # WebRTC's JNI_OnLoad looks up org.jni_zero.JniZero by name, and the SDK ships no
