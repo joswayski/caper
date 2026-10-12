@@ -98,7 +98,8 @@ try {
   browser("set", "viewport", "1440", "900", "2");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
-  wait('!!document.querySelector(".channel-select")');
+  // The initial voice roster inserts a row into the channel list. Let it settle before clicking.
+  wait('!!document.querySelector(".channel-select") && !!document.querySelector(".voice-stack-count")');
   browser("find", "role", "button", "click", "--name", "planning", "--exact");
   const sourceRow = `[data-message-key="${source.clientMessageId}"]`;
   wait(

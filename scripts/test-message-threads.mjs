@@ -90,6 +90,9 @@ const open = (id) => {
   wait(
     '!!document.querySelector(".chat-thread-panel") && !document.querySelector(".chat-thread-messages[aria-busy=true]")',
   );
+  evaluate(
+    "Promise.all(document.querySelector('.chat-thread-panel').getAnimations().map(animation => animation.finished))",
+  );
   assert.deepEqual(
     evaluate(`(() => {
       const replies = document.querySelector('.chat-thread-messages');
