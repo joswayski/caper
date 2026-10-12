@@ -1,5 +1,6 @@
 package chat.caper.android
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -162,11 +163,17 @@ import kotlinx.coroutines.launch
 ) {
     val keepOpen by rememberUpdatedState(draft.sending || draft.text.isNotEmpty() || draft.files.isNotEmpty() || picking)
     val sheet = rememberModalBottomSheetState(confirmValueChange = { it != SheetValue.Hidden || !keepOpen })
+    val scope = rememberCoroutineScope()
     ModalBottomSheet(
         onDismissRequest = { if (!keepOpen) onDismiss() }, sheetState = sheet,
-        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = !keepOpen),
+        // The dialog reads this only when it opens, so a sheet opened over a draft
+        // would never close on Back. Back is decided below, from the current draft.
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
         containerColor = SurfaceRaised, contentColor = Text,
     ) {
+        BackHandler(enabled = !keepOpen) {
+            scope.launch { sheet.hide() }.invokeOnCompletion { if (!sheet.isVisible) onDismiss() }
+        }
         Column(
             Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 16.dp).semantics { paneTitle = title },
             verticalArrangement = Arrangement.spacedBy(12.dp),
