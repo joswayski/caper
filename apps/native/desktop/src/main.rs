@@ -15792,6 +15792,7 @@ impl CaperApp {
                         username: username.clone(),
                         display_name: display_name.clone(),
                         avatar_id,
+                        invited: false,
                     });
                 }
             }
@@ -16381,6 +16382,7 @@ impl CaperApp {
             username: username.to_owned(),
             display_name: username.to_owned(),
             avatar_id: None,
+            invited: false,
         }];
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
             draft_layout(
@@ -20608,7 +20610,11 @@ fn person_suggestion(
         ui,
         Some((&person.display_name, person.avatar_id)),
         &person.display_name,
-        &format!("@{}", person.username),
+        &if person.invited {
+            format!("@{} · Already invited", person.username)
+        } else {
+            format!("@{}", person.username)
+        },
         width,
         fill,
     )
@@ -29016,7 +29022,18 @@ mod tests {
                 .collect()
         };
         let invited = CaperApp::new(&context, api(), Some("parity-admin-invitations"));
-        assert_eq!(usernames(&invited), ["fixture_contact"], "nor the invited");
+        assert_eq!(
+            invited
+                .member_suggestions(false)
+                .into_iter()
+                .map(|person| (person.username, person.invited))
+                .collect::<Vec<_>>(),
+            [
+                ("fixture_contact".to_owned(), false),
+                ("fixture_invitee".to_owned(), true)
+            ],
+            "the invited stay, marked as already invited"
+        );
         let mut app = CaperApp::new(&context, api(), Some("parity-admin"));
         assert_eq!(
             usernames(&app),

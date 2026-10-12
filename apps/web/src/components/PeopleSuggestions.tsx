@@ -11,7 +11,10 @@ export function PersonSuggestion({ person }: { person: MentionCandidate }) {
       </i>
       <span className="person-suggestion-names">
         <span>{person.displayName}</span>
-        <small>@{person.username}</small>
+        <small>
+          @{person.username}
+          {person.invited && " · Already invited"}
+        </small>
       </span>
     </>
   );
@@ -66,7 +69,7 @@ export function usePeopleSuggestions({
               key={person.id}
               tabIndex={-1}
               aria-selected={index === active}
-              aria-label={`${person.displayName}, @${person.username}`}
+              aria-label={`${person.displayName}, @${person.username}${person.invited ? ", already invited" : ""}`}
               onPointerDown={(event) => event.preventDefault()}
               onMouseMove={() => setSelected(index)}
               onClick={() => choose(person)}

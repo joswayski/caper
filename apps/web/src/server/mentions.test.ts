@@ -12,6 +12,7 @@ import {
   mentionsAccount,
   reportsFeedback,
   rankPeople,
+  withInvited,
   type MentionCandidate,
 } from "../chat/mentions.ts";
 import type { ChatMessage } from "../chat/types.ts";
@@ -62,6 +63,26 @@ test("username fields rank people like @ suggestions, without members, invitatio
   const candidates = excludePeople(members, [{ id: "u-maya" }], [{ id: "u-zz" }, { id: "missing" }]);
   assert.deepEqual(names(candidates, "maya"), ["sam_m"]);
   assert.deepEqual(excludePeople(members), members);
+});
+
+test("pending invitees stay in username-field matches, marked as already invited", () => {
+  const invited = { id: "u-zz", username: "zz_maya", displayName: "Zed", avatarId: 4, owner: false };
+  const candidates = withInvited(excludePeople(members, [{ id: "u-maya" }], [invited]), [invited]);
+  assert.deepEqual(
+    rankPeople(candidates, "maya").map((person) => [person.username, !!person.invited]),
+    [
+      ["sam_m", false],
+      ["zz_maya", true],
+    ],
+  );
+  assert.deepEqual(candidates.at(-1), {
+    id: "u-zz",
+    username: "zz_maya",
+    displayName: "Zed",
+    avatarId: 4,
+    invited: true,
+  });
+  assert.deepEqual(withInvited(members, []), members);
 });
 
 test("insertion replaces the token, adds a space and enforces the limit", () => {

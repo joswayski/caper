@@ -207,7 +207,9 @@ struct ComposerSuggestionsView: View {
 
 extension ComposerSuggestionsView {
     static func mentionLabel(_ candidate: MentionCandidate) -> String {
-        candidate.kind == .member ? "\(candidate.displayName), @\(candidate.username)" : "@\(candidate.username), \(candidate.displayName)"
+        candidate.kind == .member
+            ? "\(candidate.displayName), @\(candidate.username)\(candidate.invited ? ", already invited" : "")"
+            : "@\(candidate.username), \(candidate.displayName)"
     }
 }
 
@@ -229,7 +231,7 @@ struct MentionSuggestionLabel: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(member ? candidate.displayName : "@\(candidate.username)")
                     .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                Text(member ? "@\(candidate.username)" : candidate.displayName)
+                Text(member ? "@\(candidate.username)\(candidate.invited ? " · Already invited" : "")" : candidate.displayName)
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
             }
             Spacer(minLength: 0)

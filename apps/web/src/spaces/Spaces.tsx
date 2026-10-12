@@ -39,7 +39,7 @@ import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
-import { excludePeople, type MentionCandidate } from "../chat/mentions";
+import { excludePeople, withInvited, type MentionCandidate } from "../chat/mentions";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { FocusTarget } from "../chat/Chat";
 import StatusPage from "../components/StatusPage";
@@ -710,7 +710,7 @@ function MemberManager({
   removalCopy: (member: Member) => { title: string; description: string };
   pending: boolean;
   loading?: boolean;
-  /** People the field suggests, already without members and pending invitations. */
+  /** People the field suggests: without members; pending invitees are marked as invited. */
   suggestions?: MentionCandidate[];
 }) {
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
@@ -975,7 +975,7 @@ function ManageSpaceDialog({
       <MemberManager
         members={members}
         invitations={invitations}
-        suggestions={people && excludePeople(people, members, invitations)}
+        suggestions={withInvited(excludePeople(people ?? [], members, invitations), invitations)}
         pending={pending}
         onAdd={(username) =>
           run(async () => {
@@ -1118,7 +1118,10 @@ function ManageChannelDialog({
           // Grants require space membership; the owner always has access.
           suggestions={
             membersLoaded
-              ? excludePeople(detail.members, members, invitations, [{ id: detail.space.ownerId }])
+              ? withInvited(
+                  excludePeople(detail.members, members, invitations, [{ id: detail.space.ownerId }]),
+                  invitations,
+                )
               : undefined
           }
           channel

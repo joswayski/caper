@@ -20,18 +20,22 @@ enum PeopleSuggestions {
     }
 
     /// Space invites: the people you know (`GET /api/people`), except anyone
-    /// already in the space or invited to it, matched by account id.
+    /// already in the space, matched by account id, then pending invitees
+    /// marked as already invited.
     static func spaceInvite(people: [Person]?, members: [Member], invited: [Member], accountID: String?) -> [MentionCandidate] {
         let excluded = Set(members.map(\.id) + invited.map(\.id) + [accountID].compactMap { $0 })
         return (people ?? []).filter { !excluded.contains($0.id) }.map { MentionCandidate($0) }
+            + invited.map { MentionCandidate($0, invited: true) }
     }
 
     /// Private channel grants: the space's members, since only they can be
-    /// granted, except you, anyone with access and anyone invited.
+    /// granted, except you and anyone with access, then pending invitees
+    /// marked as already invited.
     static func channelGrant(spaceMembers: [Member], channelMembers: [Member], invited: [Member],
                              accountID: String?) -> [MentionCandidate] {
         let excluded = Set(channelMembers.map(\.id) + invited.map(\.id) + [accountID].compactMap { $0 })
         return spaceMembers.filter { !excluded.contains($0.id) }.map { MentionCandidate($0) }
+            + invited.map { MentionCandidate($0, invited: true) }
     }
 
     /// New direct messages: the people you know, never yourself.

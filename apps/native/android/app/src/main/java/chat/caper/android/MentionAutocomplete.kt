@@ -28,6 +28,8 @@ internal data class MentionCandidate(
     val label: String,
     val special: Boolean = false,
     val avatarId: Int? = null,
+    /** Already has a pending invitation to the space or channel being managed; the row says so. */
+    val invited: Boolean = false,
 )
 
 internal val mentionSpecials = listOf(
