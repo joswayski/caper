@@ -1039,6 +1039,7 @@ struct CaperApp {
     arrivals: motion::Arrivals,
     reaction_picker: Option<String>,
     reaction_search: String,
+    reaction_category: usize,
     reaction_search_focus: bool,
     reaction_textures: emoji::Textures,
     pending_reactions: BTreeMap<(String, String), PendingReaction>,
@@ -1188,6 +1189,8 @@ impl CaperApp {
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
+        let mut reaction_textures = emoji::Textures::default();
+        reaction_textures.preload(context, emoji::CATEGORIES[0].0);
         let mut app = Self {
             daily_icon: None,
             file_drop_since: None,
@@ -1299,8 +1302,9 @@ impl CaperApp {
             arrivals: motion::Arrivals::default(),
             reaction_picker: None,
             reaction_search: String::new(),
+            reaction_category: 0,
             reaction_search_focus: false,
-            reaction_textures: emoji::Textures::default(),
+            reaction_textures,
             pending_reactions: BTreeMap::new(),
             reaction_errors: BTreeMap::new(),
             reactors: BTreeMap::new(),
@@ -13827,10 +13831,15 @@ impl CaperApp {
                 more.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
                 });
+                if emoji.hovered() || emoji.has_focus() {
+                    self.reaction_textures
+                        .preload(ui.ctx(), emoji::CATEGORIES[0].0);
+                }
                 if emoji.on_hover_text("Add reaction").clicked() {
                     self.reaction_picker = Some(message.id.clone());
                     self.composer_emoji = None;
                     self.reaction_search.clear();
+                    self.reaction_category = 0;
                     self.reaction_search_focus = true;
                 }
                 let active = message.pin.is_some();
@@ -13868,6 +13877,7 @@ impl CaperApp {
                                 self.reaction_picker = Some(message.id.clone());
                                 self.composer_emoji = None;
                                 self.reaction_search.clear();
+                                self.reaction_category = 0;
                                 self.reaction_search_focus = true;
                                 ui.close();
                             }
@@ -15239,8 +15249,53 @@ impl CaperApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(360.0)
+            .fixed_size(egui::vec2(352.0, 430.0))
             .show(context, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                let category_width = ui.available_width() / emoji::CATEGORIES.len() as f32;
+                ui.horizontal(|ui| {
+                    for (index, (category, name, icon)) in emoji::CATEGORIES.iter().enumerate() {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(category_width, 40.0),
+                            egui::Sense::click(),
+                        );
+                        let response = response.on_hover_text(*name);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                self.reaction_search.trim().is_empty()
+                                    && self.reaction_category == index,
+                                *name,
+                            )
+                        });
+                        if response.hovered() || response.has_focus() || response.clicked() {
+                            self.reaction_textures.preload(context, category);
+                            ui.painter().rect_filled(rect.shrink(2.0), 8.0, RAISED);
+                        }
+                        if let Some(entry) = emoji::find(icon) {
+                            self.reaction_textures.image(ui, entry, 22.0).paint_at(
+                                ui,
+                                egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)),
+                            );
+                        }
+                        if response.clicked() {
+                            self.reaction_category = index;
+                            self.reaction_search.clear();
+                        }
+                        if self.reaction_search.trim().is_empty() && self.reaction_category == index
+                        {
+                            ui.painter().line_segment(
+                                [
+                                    rect.left_bottom() + egui::vec2(2.0, 0.0),
+                                    rect.right_bottom() - egui::vec2(2.0, 0.0),
+                                ],
+                                Stroke::new(2.0, TERRACOTTA),
+                            );
+                        }
+                    }
+                });
+                ui.add_space(10.0);
                 let search_id = egui::Id::new("emoji-picker-search");
                 let _search = ui.add(
                     egui::TextEdit::singleline(&mut self.reaction_search)
@@ -15254,14 +15309,27 @@ impl CaperApp {
                 }
                 ui.add_space(6.0);
                 let query = self.reaction_search.trim().to_lowercase();
+                let (category, name, _) = emoji::CATEGORIES[self.reaction_category];
+                ui.label(
+                    RichText::new(if query.is_empty() {
+                        name
+                    } else {
+                        "Search results"
+                    })
+                    .color(MUTED),
+                );
+                ui.add_space(6.0);
                 let mut choices: Vec<_> = emoji::catalog()
                     .iter()
                     .filter(|entry| {
                         entry.selectable
-                            && (query.is_empty()
-                                || entry.name.to_lowercase().contains(&query)
-                                || entry.keywords.to_lowercase().contains(&query)
-                                || entry.category.to_lowercase().contains(&query))
+                            && (if query.is_empty() {
+                                entry.category == category
+                            } else {
+                                entry.name.to_lowercase().contains(&query)
+                                    || entry.keywords.to_lowercase().contains(&query)
+                                    || entry.category.replace('_', " ").contains(&query)
+                            })
                     })
                     .collect();
                 // Web's order: smileys and people first, flags last.
@@ -15269,18 +15337,32 @@ impl CaperApp {
                 if choices.is_empty() {
                     ui.label(RichText::new("No emoji found").color(MUTED));
                 }
-                egui::ScrollArea::vertical().max_height(330.0).show_rows(
-                    ui,
-                    38.0,
-                    choices.len().div_ceil(8),
-                    |ui, rows| {
+                let columns = (ui.available_width() / 40.0).floor().max(1.0) as usize;
+                let cell_width = ui.available_width() / columns as f32;
+                egui::ScrollArea::vertical()
+                    .id_salt(("emoji-grid", category, &query))
+                    .auto_shrink([false, false])
+                    .max_height(ui.available_height())
+                    .show_rows(ui, 40.0, choices.len().div_ceil(columns), |ui, rows| {
                         for row in rows {
                             ui.horizontal(|ui| {
-                                for entry in choices.iter().skip(row * 8).take(8) {
+                                for entry in choices.iter().skip(row * columns).take(columns) {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(cell_width, 40.0),
+                                        egui::Sense::click(),
+                                    );
+                                    if response.hovered() || response.has_focus() {
+                                        ui.painter().rect_filled(rect.shrink(2.0), 8.0, RAISED);
+                                    }
                                     let image = self.reaction_textures.image(ui, entry, 30.0);
-                                    let response = ui
-                                        .add(egui::Button::image(image).frame(false))
-                                        .on_hover_text(&entry.name);
+                                    image.paint_at(
+                                        ui,
+                                        egui::Rect::from_center_size(
+                                            rect.center(),
+                                            egui::vec2(30.0, 30.0),
+                                        ),
+                                    );
+                                    let response = response.on_hover_text(&entry.name);
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
                                             egui::WidgetType::Button,
@@ -15294,8 +15376,7 @@ impl CaperApp {
                                 }
                             });
                         }
-                    },
-                );
+                    });
             });
         if let Some(emoji) = selected {
             match &target {
@@ -15346,6 +15427,7 @@ impl CaperApp {
             .input(|input| input.pointer.interact_pos());
         self.reaction_picker = None;
         self.reaction_search.clear();
+        self.reaction_category = 0;
         self.reaction_search_focus = true;
     }
 
@@ -31939,6 +32021,29 @@ mod tests {
             app.composer_emoji,
             Some((super::EmojiTarget::Channel, _))
         ));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(labelled_center(&output, "grinning-face").is_some());
+        let activities = labelled_center(&output, "Activities").unwrap();
+        click_at(&mut app, &context, activities);
+        let output = render(&mut app, &context, vec![]);
+        assert!(labelled_center(&output, "grinning-face").is_none());
+        app.reaction_search = "grinning-face".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            labelled_center(&output, "grinning-face").is_some(),
+            "search crosses categories"
+        );
+        click_at(
+            &mut app,
+            &context,
+            labelled_center(&output, "Flags").unwrap(),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(app.reaction_search.is_empty());
+        assert!(labelled_center(&output, "grinning-face").is_none());
+        assert!(labelled_center(&output, "ascension-island").is_some());
         app.reaction_search = "party-popper".into();
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);

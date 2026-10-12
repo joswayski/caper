@@ -47,8 +47,8 @@ function watchPickerLoading() {
   })()`);
 }
 const visibleEmojiImages = `(() => {
-  const body = document.querySelector('.epr-body').getBoundingClientRect();
-  return [...document.querySelectorAll('.epr-body img')].filter(image => {
+  const body = document.querySelector('.chat-emoji-grid').getBoundingClientRect();
+  return [...document.querySelectorAll('.chat-emoji-grid img')].filter(image => {
     const rect = image.getBoundingClientRect();
     return rect.bottom > body.top && rect.top < body.bottom;
   });
@@ -56,19 +56,24 @@ const visibleEmojiImages = `(() => {
 function checkEmojiCategories(layout) {
   assert.equal(
     evaluate(
-      `document.querySelector('.epr-category-nav').getBoundingClientRect().bottom <= document.querySelector('.epr-search-container').getBoundingClientRect().top`,
+      `document.querySelector('.chat-emoji-categories').getBoundingClientRect().bottom <= document.querySelector('.chat-emoji-search').getBoundingClientRect().top`,
     ),
     true,
   );
   for (const [category, firstEmoji] of [
+    ["animals_nature", "1f435"],
+    ["food_drink", "1f347"],
+    ["travel_places", "1f30d"],
     ["activities", "1f383"],
+    ["objects", "1f453"],
+    ["symbols", "1f3e7"],
     ["flags", "1f3c1"],
     ["smileys_people", "1f600"],
   ]) {
-    const tab = `.epr-icn-${category}`;
+    const tab = `[data-category="${category}"]`;
     browser("click", tab);
     wait(
-      `document.querySelector('${tab}').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="${firstEmoji}"]')`,
+      `document.querySelector('${tab}').getAttribute('aria-pressed') === 'true' && !!document.querySelector('.chat-emoji-grid button[data-unified="${firstEmoji}"]')`,
     );
     wait(
       `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
@@ -94,37 +99,36 @@ function checkEmojiCategories(layout) {
     screenshot(`emoji-${layout}-${category}`);
   }
   assert.ok(
-    evaluate('document.querySelectorAll(".epr-body img").length') < 200,
+    evaluate('document.querySelectorAll(".chat-emoji-grid img").length') < 200,
     "Eager loading must retain the virtualized window, not mount the whole catalog",
   );
 }
 
 function checkEmojiNames(layout) {
+  // Search must not be restricted to the category being browsed.
+  browser("click", '[data-category="activities"]');
   for (const [unified, name] of [
     ["1f600", "grinning-face"],
     ["1f62d", "loudly-crying-face"],
   ]) {
     for (const query of [name, name.replaceAll("-", "_"), name.replaceAll("-", " ")]) {
       browser("fill", ".chat-reaction-picker input", "definitely-no-such-emoji");
-      wait('document.querySelector(".epr-status-search-results")?.textContent.startsWith("No results")');
+      wait('document.querySelector(".chat-emoji-empty")?.textContent.startsWith("No results")');
       browser("fill", ".chat-reaction-picker input", query);
-      // Exclude the invisible sizing button outside the virtualized grid.
-      const selector = `.chat-reaction-picker .epr-emoji-category-content button[data-unified="${unified}"]`;
+      const selector = `.chat-reaction-picker .chat-emoji-grid button[data-unified="${unified}"]`;
       wait(`document.querySelector('${selector}')?.getClientRects().length > 0`);
       assert.equal(evaluate(`document.querySelector('${selector}').getAttribute('aria-label')`), name);
       assert.equal(evaluate(`document.querySelector('${selector} img').alt`), name);
     }
   }
   browser("fill", ".chat-reaction-picker input", "grinning-face");
-  wait(
-    `!!document.querySelector('.chat-reaction-picker .epr-emoji-category-content button[aria-label="grinning-face"]')`,
-  );
+  wait(`!!document.querySelector('.chat-reaction-picker .chat-emoji-grid button[aria-label="grinning-face"]')`);
   wait(
     `${visibleEmojiImages}.length > 0 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
   screenshot(`emoji-${layout}-dash-search`);
-  browser("click", ".epr-btn-clear-search");
-  wait('!document.querySelector(".EmojiPickerReact").classList.contains("epr-search-active")');
+  browser("click", '[data-category="smileys_people"]');
+  wait('document.querySelector(".chat-emoji-search input").value === ""');
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
@@ -218,7 +222,7 @@ try {
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
-  // The library itself warms some off-screen assets. Chromium can reuse them
+  // The grid eagerly loads its overscan. Chromium can reuse those images
   // without a new Resource Timing entry, so count only genuinely cold assets.
   const loadedAssets = new Set(evaluate(`${preloadedImages}.map(resource => new URL(resource.name).pathname)`));
   const openingCodes = await (await fetch(`${web}/emoji/twemoji-15/preload.json`)).json();
@@ -241,7 +245,7 @@ try {
     const coldAssets = assets.filter((asset) => !loadedAssets.has(asset));
     evaluate("performance.clearResourceTimings()");
     // Hover the nested SVG, not just the button, to exercise target resolution.
-    browser(intent, `.epr-icn-${category}${intent === "hover" ? " svg" : ""}`);
+    browser(intent, `[data-category="${category}"]${intent === "hover" ? " svg" : ""}`);
     wait(
       `${JSON.stringify(coldAssets)}.every(asset => ${preloadedImages}.some(resource => new URL(resource.name).pathname === asset && resource.responseEnd > 0 && resource.responseStatus === 200))`,
     );
@@ -261,15 +265,15 @@ try {
     ]);
     assert.equal(
       evaluate(
-        `document.querySelector('.epr-cat-btn[aria-selected="true"]').classList.contains('epr-icn-smileys_people')`,
+        `document.querySelector('.chat-emoji-categories button[aria-pressed="true"]').dataset.category === 'smileys_people'`,
       ),
       true,
       "Category intent must not select or scroll away from smileys",
     );
-    assert.equal(evaluate('document.querySelector(".epr-body").scrollTop'), 0);
+    assert.equal(evaluate('document.querySelector(".chat-emoji-grid").scrollTop'), 0);
     browser("mouse", "move", "10", "10");
     browser("focus", ".chat-reaction-picker input");
-    browser(intent, `.epr-icn-${category}`);
+    browser(intent, `[data-category="${category}"]`);
     await delay(100);
     assert.equal(
       evaluate(`${preloadedImages}.length`),
@@ -283,9 +287,9 @@ try {
   browser("focus", ".chat-reaction-picker input");
   await delay(100);
   assert.equal(evaluate(`${preloadedImages}.length`), 0, "Unrelated picker controls must not preload categories");
-  browser("click", ".epr-icn-travel_places");
+  browser("click", '[data-category="travel_places"]');
   wait(
-    `document.querySelector('.epr-icn-travel_places').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="1f30d"]')`,
+    `document.querySelector('[data-category="travel_places"]').getAttribute('aria-pressed') === 'true' && !!document.querySelector('.chat-emoji-grid button[data-unified="1f30d"]')`,
   );
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
@@ -298,8 +302,8 @@ try {
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
   );
   evaluate("performance.clearResourceTimings()");
-  browser("hover", ".epr-icn-travel_places svg");
-  browser("focus", ".epr-icn-flags");
+  browser("hover", '[data-category="travel_places"] svg');
+  browser("focus", '[data-category="flags"]');
   await delay(100);
   assert.equal(
     evaluate(
@@ -490,7 +494,7 @@ try {
   checkEmojiCategories("mobile");
   checkEmojiNames("mobile");
   screenshot("message-actions-mobile-picker");
-  const emojiBody = ".chat-reaction-picker .epr-body";
+  const emojiBody = ".chat-reaction-picker .chat-emoji-grid";
   assert.equal(
     evaluate(
       `(() => { const body = document.querySelector(${JSON.stringify(emojiBody)}); return body.scrollHeight > body.clientHeight; })()`,
@@ -506,7 +510,7 @@ try {
   await touch("touchEnd");
   wait(`document.querySelector(${JSON.stringify(emojiBody)}).scrollTop > 0`);
   browser("fill", ".chat-reaction-picker input", "definitely-no-such-emoji");
-  wait('document.querySelector(".epr-status-search-results")?.textContent.includes("No")');
+  wait('document.querySelector(".chat-emoji-empty")?.textContent.includes("No")');
   screenshot("message-actions-mobile-empty-search");
   browser("fill", ".chat-reaction-picker input", "rocket");
   // Live arrivals must not retarget or unmount the picker when its row scrolls out.
@@ -596,8 +600,8 @@ try {
   checkEmojiCategories("desktop");
   browser("fill", ".chat-reaction-picker input", "");
   browser("focus", ".chat-reaction-picker input");
-  browser("press", "Tab");
-  wait('document.activeElement?.classList.contains("epr-cat-btn")');
+  browser("press", "Shift+Tab");
+  wait('!!document.activeElement?.closest(".chat-emoji-categories")');
   assert.equal(
     evaluate(
       'document.activeElement.matches(":focus-visible") && getComputedStyle(document.activeElement).outlineStyle === "solid"',
@@ -609,16 +613,16 @@ try {
   const focusedCategory = evaluate('document.activeElement.getAttribute("aria-label")');
   browser("press", "Enter");
   wait(
-    `document.querySelector('.epr-cat-btn[aria-selected="true"]').getAttribute('aria-label') === ${JSON.stringify(focusedCategory)}`,
+    `document.querySelector('.chat-emoji-categories button[aria-pressed="true"]').getAttribute('aria-label') === ${JSON.stringify(focusedCategory)}`,
   );
   screenshot("message-actions-desktop-picker");
   browser("press", "Escape");
   wait('!document.querySelector(".chat-reaction-picker")');
   browser("find", "first", ".chat-add-reaction:not(:disabled)", "click");
   wait('!!document.querySelector(".chat-reaction-picker input")');
-  browser("click", ".epr-icn-activities");
+  browser("click", '[data-category="activities"]');
   wait(
-    `document.querySelector('.epr-icn-activities').getAttribute('aria-selected') === 'true' && !!document.querySelector('.epr-body button[data-unified="1f383"]')`,
+    `document.querySelector('[data-category="activities"]').getAttribute('aria-pressed') === 'true' && !!document.querySelector('.chat-emoji-grid button[data-unified="1f383"]')`,
   );
   wait(
     `${visibleEmojiImages}.length >= 24 && ${visibleEmojiImages}.every(image => image.complete && image.naturalWidth > 0)`,
@@ -629,11 +633,11 @@ try {
   browser("find", "first", ".chat-add-reaction:not(:disabled)", "click");
   wait('!!document.querySelector(".chat-reaction-picker input")');
   browser("fill", ".chat-reaction-picker input", "grinning-face");
-  wait(`!!document.querySelector('.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]')`);
+  wait(`!!document.querySelector('.chat-reaction-picker .chat-emoji-grid button[data-unified="1f600"]')`);
   const targetKey = evaluate(
     'document.querySelector(".chat-message:has(.chat-add-reaction:not(:disabled))").dataset.messageKey',
   );
-  browser("click", '.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]');
+  browser("click", '.chat-reaction-picker .chat-emoji-grid button[data-unified="1f600"]');
   wait(`!!document.querySelector('.chat-reaction[aria-pressed="true"]:not([aria-disabled="true"])')`);
   assert.equal(
     evaluate(`document.querySelector('[data-message-key="${targetKey}"] .chat-reaction img').getAttribute('src')`),

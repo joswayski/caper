@@ -40,6 +40,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -52,6 +53,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -2734,13 +2736,18 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     historyTarget?.let { target -> MessageHistoryDialog(state.pinnedMessages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null } }
 }
 
-private val emojiPickerCategories = listOf("smileys_people", "animals_nature", "food_drink", "travel_places", "activities", "objects", "symbols", "flags")
+private val emojiPickerCategories = listOf(
+    Triple("smileys_people", "Smileys & people", "😀"), Triple("animals_nature", "Animals & nature", "🐱"),
+    Triple("food_drink", "Food & drink", "🍔"), Triple("travel_places", "Travel & places", "🚌"),
+    Triple("activities", "Activities", "⚽"), Triple("objects", "Objects", "👕"),
+    Triple("symbols", "Symbols", "🎵"), Triple("flags", "Flags", "🏁"),
+)
 /**
  * Picker order approximating web's: smileys (the emoticon block, then other faces) before people, then the other
  * categories with flags last. The catalog itself is in code point order; sorting is stable within each group.
  */
 internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
-    { emojiPickerCategories.indexOf(it.category).let { rank -> if (rank < 0) emojiPickerCategories.size else rank } },
+    { entry -> emojiPickerCategories.indexOfFirst { it.first == entry.category }.let { rank -> if (rank < 0) emojiPickerCategories.size else rank } },
     {
         val point = it.id.substringBefore('-').toIntOrNull(16) ?: 0
         when {
@@ -2756,17 +2763,33 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     // Picker order, as on web: smileys and people first, flags last.
     val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable }.sortedWith(emojiPickerOrder) }
     var query by rememberSaveable { mutableStateOf("") }
-    val shown = remember(query, catalog) {
+    var category by rememberSaveable { mutableStateOf(emojiPickerCategories.first().first) }
+    val grid = rememberLazyGridState()
+    LaunchedEffect(category, query) { grid.scrollToItem(0) }
+    val shown = remember(query, category, catalog) {
         val needle = query.trim().lowercase(Locale.ROOT)
-        if (needle.isEmpty()) catalog else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) }
+        if (needle.isEmpty()) catalog.filter { it.category == category }
+        else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) || it.category.replace('_', ' ').contains(needle) }
     }
     Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.swipeCancelsPresses().fillMaxWidth().heightIn(max = 520.dp)) {
+        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.swipeCancelsPresses().fillMaxWidth().heightIn(min = 420.dp, max = 520.dp)) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small) { Text("Close") } }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    emojiPickerCategories.forEach { (id, name, icon) ->
+                        val active = query.isBlank() && category == id
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            IconButton({ category = id; query = "" }, Modifier.size(48.dp).semantics { contentDescription = name; selected = active }) {
+                                EmojiImage(icon, null, Modifier.size(22.dp))
+                            }
+                            Box(Modifier.width(44.dp).height(2.dp).background(if (active) TerracottaBright else Color.Transparent))
+                        }
+                    }
+                }
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
+                Text(if (query.isBlank()) emojiPickerCategories.first { it.first == category }.second else "Search results", color = TextMuted, fontWeight = FontWeight.Bold)
                 if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
-                else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
+                else LazyVerticalGrid(GridCells.Adaptive(48.dp), state = grid, modifier = Modifier.weight(1f)) {
                     gridItems(shown, key = { it.id }) { entry ->
                         IconButton({ select(entry.emoji) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
                     }

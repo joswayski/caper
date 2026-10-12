@@ -119,9 +119,9 @@ try {
   assert.equal(value(), "Hello suffix");
   assert.equal(evaluate('return document.querySelector("#profile-message").selectionStart'), 6);
   browser("click", '.chat-profile-composer [aria-label="Insert emoji"]');
-  wait('!!document.querySelector(".EmojiPickerReact")');
+  wait('!!document.querySelector(".chat-emoji-grid")');
   capture("profile-desktop-emoji");
-  browser("click", '.chat-reaction-picker .epr-emoji-category-content button[data-unified="1f600"]');
+  browser("click", '.chat-reaction-picker .chat-emoji-grid button[data-unified="1f600"]');
   assert.equal(value(), "Hello 😀suffix", "Emoji goes at the saved caret, not at the end");
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   // Browser-supported file upload, then a file-bearing paste event.
@@ -242,15 +242,19 @@ try {
   assert.equal(value(), "Rejected draft");
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 1);
   browser("click", '.chat-profile-composer [aria-label="Insert emoji"]');
-  wait('!!document.querySelector(".EmojiPickerReact")');
+  wait('!!document.querySelector(".chat-emoji-grid")');
+  // The eager grid mounts before the drawer's entrance animation finishes.
+  wait(
+    '(() => { const picker=document.querySelector(".chat-emoji-picker").getBoundingClientRect(); return picker.left >= 0 && picker.right <= innerWidth && picker.bottom <= innerHeight; })()',
+  );
   capture("profile-narrow-emoji");
   assert.ok(
     evaluate(
-      'const picker=document.querySelector(".EmojiPickerReact").getBoundingClientRect(); return picker.left >= 0 && picker.right <= innerWidth && picker.bottom <= innerHeight',
+      'const picker=document.querySelector(".chat-emoji-picker").getBoundingClientRect(); return picker.left >= 0 && picker.right <= innerWidth && picker.bottom <= innerHeight',
     ),
   );
   browser("press", "Escape");
-  wait('!document.querySelector(".EmojiPickerReact")');
+  wait('!document.querySelector(".chat-emoji-picker")');
   assert.equal(value(), "Rejected draft", "Escape closes emoji first without closing the profile");
   browser("focus", "#profile-message");
   browser("press", "Control+a");
