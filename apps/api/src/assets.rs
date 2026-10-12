@@ -462,7 +462,14 @@ pub(crate) struct Compression {
     /// Videos whose short edge exceeds this ("1080p") are scaled down; 0
     /// disables transcoding.
     pub video_max_height: u32,
+    /// Video target at 1080p30, scaled by pixel count and frame rate.
     pub video_bitrate_kbps: u32,
+    /// A re-encode never exceeds this percentage of a non-H.264 source's own
+    /// bitrate (H.264 sources: 100%); 0 removes the cap.
+    pub video_source_bitrate_percent: u16,
+    /// Above 30 fps the target grows with the frame rate, up to this
+    /// percentage; 100 turns it off.
+    pub video_high_fps_boost_percent: u16,
     pub audio_bitrate_kbps: u32,
 }
 
@@ -476,7 +483,9 @@ impl Default for Compression {
             palette_colors: 256,
             preview_edge: 640,
             video_max_height: 1080,
-            video_bitrate_kbps: 6000,
+            video_bitrate_kbps: 8000,
+            video_source_bitrate_percent: 200,
+            video_high_fps_boost_percent: 150,
             audio_bitrate_kbps: 128,
         }
     }
@@ -541,6 +550,18 @@ impl Compression {
                 "ASSET_VIDEO_BITRATE_KBPS",
                 d.video_bitrate_kbps,
                 250..=50_000,
+            )?,
+            video_source_bitrate_percent: setting(
+                environment,
+                "ASSET_VIDEO_SOURCE_BITRATE_PERCENT",
+                d.video_source_bitrate_percent,
+                0..=1000,
+            )?,
+            video_high_fps_boost_percent: setting(
+                environment,
+                "ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT",
+                d.video_high_fps_boost_percent,
+                100..=400,
             )?,
             audio_bitrate_kbps: setting(
                 environment,

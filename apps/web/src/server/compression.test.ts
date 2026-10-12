@@ -56,7 +56,14 @@ test("server compression settings are validated field by field, defaults match t
     compressionSettings({ imageQuality: 0, paletteColors: 999, previewEdge: 320, videoBitrateKbps: "fast" }),
     { ...DEFAULT_COMPRESSION, imageFormat: "webp", previewEdge: 320 },
   );
-  assert.equal(DEFAULT_COMPRESSION.videoBitrateKbps, 6000);
+  assert.equal(DEFAULT_COMPRESSION.videoBitrateKbps, 8000);
+  assert.equal(DEFAULT_COMPRESSION.videoSourceBitratePercent, 200);
+  assert.equal(DEFAULT_COMPRESSION.videoHighFpsBoostPercent, 150);
+  assert.deepEqual(
+    compressionSettings({ ...DEFAULT_COMPRESSION, videoSourceBitratePercent: 0, videoHighFpsBoostPercent: 99 }),
+    { ...DEFAULT_COMPRESSION, videoSourceBitratePercent: 0 },
+    "0 removes the source cap; a boost below 100% falls back",
+  );
   assert.equal(DEFAULT_COMPRESSION.imageFormat, "avif");
   assert.equal(DEFAULT_COMPRESSION.avifQuality, 85);
   assert.equal(DEFAULT_COMPRESSION.imageQuality, 92);
@@ -232,24 +239,33 @@ test("videos only shrink so the short edge fits, keeping even dimensions", () =>
   assert.deepEqual(videoTargetSize(3840, 2160, 721), { height: 720 });
 });
 
-test("target bitrate scales with pixels from the 1080p setting, with a floor", () => {
-  assert.equal(videoTargetKbps(1920, 1080, DEFAULT_COMPRESSION), 6000);
-  assert.equal(videoTargetKbps(1280, 720, DEFAULT_COMPRESSION), 2667);
+test("target bitrate scales with pixels and frame rate from the 1080p30 setting, with a floor", () => {
+  assert.equal(videoTargetKbps(1920, 1080, DEFAULT_COMPRESSION), 8000);
+  assert.equal(videoTargetKbps(1280, 720, DEFAULT_COMPRESSION), 3556);
   assert.equal(videoTargetKbps(640, 360, DEFAULT_COMPRESSION), 1500, "floor");
+  assert.equal(videoTargetKbps(1920, 1080, DEFAULT_COMPRESSION, 24), 8000, "never below the 30 fps target");
+  assert.equal(videoTargetKbps(1920, 1080, DEFAULT_COMPRESSION, 45), 12000);
+  assert.equal(videoTargetKbps(1920, 1080, DEFAULT_COMPRESSION, 60), 12000, "boost capped at 150%");
+  assert.equal(videoTargetKbps(1920, 1080, { ...DEFAULT_COMPRESSION, videoHighFpsBoostPercent: 200 }, 60), 16000);
+  assert.equal(videoTargetKbps(1920, 1080, { ...DEFAULT_COMPRESSION, videoHighFpsBoostPercent: 100 }, 60), 8000);
 });
 
-test("output bitrate is the target capped at the source's bitrate, never below the floor", () => {
-  assert.equal(outputKbps(6000, undefined), 6000, "unknown source");
-  assert.equal(outputKbps(6000, 10683), 6000);
-  assert.equal(outputKbps(6000, 2500.4), 2500);
-  assert.equal(outputKbps(6000, 800), 1500, "floor");
+test("output bitrate never exceeds 200% of a non-H.264 source's bitrate or 100% of H.264's", () => {
+  const s = DEFAULT_COMPRESSION;
+  assert.equal(outputKbps(8000, undefined, false, s), 8000, "unknown source");
+  assert.equal(outputKbps(8000, 10683, false, s), 8000);
+  assert.equal(outputKbps(8000, 2500, false, s), 5000, "HEVC gets twice its bitrate in H.264");
+  assert.equal(outputKbps(8000, 2500, true, s), 2500, "more bits cannot improve H.264");
+  assert.equal(outputKbps(8000, 600, false, s), 1500, "floor");
+  assert.equal(outputKbps(8000, 2500, false, { ...s, videoSourceBitratePercent: 0 }), 8000, "0 removes the cap");
+  assert.equal(outputKbps(8000, 2500, false, { ...s, videoSourceBitratePercent: 150 }), 3750);
 });
 
 test("efficient H.264 uploads unchanged; transcodes happen only for size, codec, container or bitrate", () => {
   const s = DEFAULT_COMPRESSION;
   assert.deepEqual(videoPlan(probe(), s), { action: "keep", reason: "efficient" });
   assert.deepEqual(
-    videoPlan(probe({ bitrateKbps: 7500 }), s),
+    videoPlan(probe({ bitrateKbps: 10000 }), s),
     { action: "keep", reason: "efficient" },
     "within 1.25× of target",
   );
@@ -257,44 +273,49 @@ test("efficient H.264 uploads unchanged; transcodes happen only for size, codec,
     action: "keep",
     reason: "efficient",
   });
-  assert.deepEqual(videoPlan(probe({ bitrateKbps: 7501 }), s), {
+  assert.deepEqual(videoPlan(probe({ bitrateKbps: 10001 }), s), {
     action: "transcode",
     reasons: ["bitrate"],
     width: 1920,
     height: 1080,
-    bitrateKbps: 6000,
+    bitrateKbps: 8000,
   });
-  assert.deepEqual(videoPlan(probe({ width: 1280, height: 720, bitrateKbps: 3400 }), s), {
+  assert.deepEqual(videoPlan(probe({ width: 1280, height: 720, bitrateKbps: 4500 }), s), {
     action: "transcode",
     reasons: ["bitrate"],
     width: 1280,
     height: 720,
-    bitrateKbps: 2667,
+    bitrateKbps: 3556,
   });
   assert.deepEqual(
-    videoPlan(probe({ codec: "hevc", bitrateKbps: 4000 }), s),
-    { action: "transcode", reasons: ["codec"], width: 1920, height: 1080, bitrateKbps: 4000 },
-    "HEVC does not play everywhere; the H.264 copy never exceeds the source's bitrate",
+    videoPlan(probe({ codec: "hevc", bitrateKbps: 3000 }), s),
+    { action: "transcode", reasons: ["codec"], width: 1920, height: 1080, bitrateKbps: 6000 },
+    "HEVC does not play everywhere; its H.264 copy gets up to twice the source's bitrate",
   );
   assert.deepEqual(
     videoPlan(probe({ codec: "hevc", width: 1440, height: 1920, bitrateKbps: 10683 }), s),
-    { action: "transcode", reasons: ["resolution", "codec", "bitrate"], width: 1080, height: 1440, bitrateKbps: 4500 },
+    { action: "transcode", reasons: ["resolution", "codec"], width: 1080, height: 1440, bitrateKbps: 6000 },
     "an iPhone 1440×1920 HEVC clip shrinks to 1080 wide at the scaled target",
   );
+  assert.deepEqual(
+    videoPlan(probe({ codec: "hevc", bitrateKbps: 20000, fps: 60 }), s),
+    { action: "transcode", reasons: ["codec", "bitrate"], width: 1920, height: 1080, bitrateKbps: 12000 },
+    "60 fps gets 150% of the target",
+  );
   assert.deepEqual(videoPlan(probe({ codec: "vp9" }), s).action, "transcode");
-  assert.deepEqual(videoPlan(probe({ width: 3840, height: 2160, bitrateKbps: 40000 }), s), {
+  assert.deepEqual(videoPlan(probe({ width: 3840, height: 2160, bitrateKbps: 50000 }), s), {
     action: "transcode",
     reasons: ["resolution", "bitrate"],
     width: 1920,
     height: 1080,
-    bitrateKbps: 6000,
+    bitrateKbps: 8000,
   });
   assert.deepEqual(videoPlan(probe({ width: 2160, height: 3840, bitrateKbps: 8000 }), s), {
     action: "transcode",
     reasons: ["resolution"],
     width: 1080,
     height: 1920,
-    bitrateKbps: 6000,
+    bitrateKbps: 8000,
   });
   assert.deepEqual(videoPlan(probe({ inlineContainer: false }), s), {
     action: "transcode",
@@ -317,7 +338,7 @@ test("HDR video is always tone mapped to SDR, and kept only when smaller unless 
       reasons: ["hdr", "resolution", "codec", "bitrate"],
       width: 1920,
       height: 1080,
-      bitrateKbps: 6000,
+      bitrateKbps: 8000,
     },
   );
   assert.deepEqual(videoPlan(probe({ hdr: true }), DEFAULT_COMPRESSION), {

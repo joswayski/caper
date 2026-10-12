@@ -453,8 +453,10 @@ public enum AttachmentPreparer {
             bitrate = Double(fileSize) * 8 / Double(duration) // bits per millisecond = kbps
         }
         let hasAudio = !((try? await asset.loadTracks(withMediaType: .audio)) ?? []).isEmpty
+        let frameRate = (try? await track.load(.nominalFrameRate)).map(Double.init)
         let facts = AttachmentPolicy.VideoFacts(width: width, height: height, isH264: isH264, isHDR: isHDR, bitrateKbps: bitrate,
-                                                playableContainer: AttachmentKind(contentType: contentType) == .video)
+                                                playableContainer: AttachmentKind(contentType: contentType) == .video,
+                                                fps: frameRate.flatMap { $0 > 0 ? $0 : nil })
         return VideoProbe(facts: facts, durationMs: duration, hasAudio: hasAudio)
     }
 

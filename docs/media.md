@@ -1097,9 +1097,20 @@ works until it expires, as with Discord's signed attachment links.
 
 Clients compress before upload, using settings the API serves with
 `GET /api/assets/usage` (`compression`), so operators tune them with
-configuration and an API restart, not a client release. The goal is smaller
-files **without visible quality loss**; when a platform cannot meet a rule it
-uploads the original instead of a worse file.
+configuration and an API restart, not a client release. When a platform cannot
+meet a rule it uploads the original instead of a worse file. What each kind of
+file keeps:
+
+- **Screenshots and graphics** stay lossless (identical pixels).
+- **Photos** are re-encoded at very high quality (SSIMULACRA2 ≈ 83 on 9–14 MP
+  photos): differences are rarely visible at normal size, though not identical
+  at 100% zoom; photos larger than `ASSET_IMAGE_MAX_EDGE` are resized.
+- **Video** is converted to H.264 so it plays in every browser and app. 4K,
+  1440p and HDR footage loses resolution, some fine detail in busy or dark
+  scenes, and its HDR range compared with the original. Video quality has not
+  been measured objectively yet. The bitrate and frame-rate settings below are
+  the levers, and they are delivered per request, so they could later differ by
+  plan.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -1110,7 +1121,9 @@ uploads the original instead of a worse file.
 | `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. Never upscales. |
 | `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
 | `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Short-edge cap for videos ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
-| `ASSET_VIDEO_BITRATE_KBPS` | 6000 | Target bitrate at 1080p, scaled by pixel count for smaller videos (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_VIDEO_BITRATE_KBPS` | 8000 | Target bitrate at 1080p30, scaled by pixel count and frame rate (hardware encoders need more headroom than x264 to avoid blocking). |
+| `ASSET_VIDEO_SOURCE_BITRATE_PERCENT` | 200 | A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264 sources: 100%, since more bits cannot improve them). H.264 needs about twice HEVC's bitrate for the same quality. 0 removes the cap. |
+| `ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT` | 150 | Above 30 fps the target grows with the frame rate (fps ÷ 30) up to this percentage, so 60 fps video does not get half the bits per frame. 100 turns it off. |
 | `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
 
 Rules shared by every client:
@@ -1139,9 +1152,9 @@ Rules shared by every client:
   above `ASSET_VIDEO_MAX_HEIGHT`, the codec is not H.264 (HEVC, VP9 and others
   do not play everywhere), or the bitrate is more than 1.25× the target.
   Otherwise the original uploads unchanged, so already-efficient phone video is
-  never re-compressed. The output bitrate is the target at the output size,
-  but never above the source's own bitrate (floor still applies), so a lean
-  HEVC clip converted only for compatibility does not grow. A size-only
+  never re-compressed. The output bitrate is the target at the output size and
+  frame rate, capped at `ASSET_VIDEO_SOURCE_BITRATE_PERCENT` of the source's
+  own bitrate (100% for H.264 sources; the 1.5 Mbps floor still applies). A size-only
   transcode is kept only when at least 10% smaller; the audio track is never
   dropped.
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
@@ -1406,7 +1419,7 @@ the owner's assets when that flow lands.
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
 | `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
 | `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `10737418240` (10 GiB). |
-| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
+| `ASSET_IMAGE_FORMAT`, `ASSET_AVIF_QUALITY`, `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_VIDEO_SOURCE_BITRATE_PERCENT`, `ASSET_VIDEO_HIGH_FPS_BOOST_PERCENT`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
 | `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 
 The bucket needs a CORS rule allowing `PUT` from the web origin with the

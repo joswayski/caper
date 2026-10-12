@@ -173,12 +173,17 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val paletteColors: Int = 256,
     val previewEdge: Int = 640,
     val videoMaxHeight: Int = 1080,
-    val videoBitrateKbps: Int = 6000,
+    /** Video target at 1080p30, scaled by pixel count and frame rate. */
+    val videoBitrateKbps: Int = 8000,
     val audioBitrateKbps: Int = 128,
     /** Photo format: only exactly `avif` selects AVIF; older servers omit it and keep WebP. */
     val imageFormat: String = "webp",
     /** AVIF photo quality on libavif's `quality` scale. */
     val avifQuality: Int = 85,
+    /** A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264: 100%); 0 removes the cap. */
+    val videoSourceBitratePercent: Int = 200,
+    /** Above 30 fps the target grows with the frame rate, up to this percentage; 100 turns it off. */
+    val videoHighFpsBoostPercent: Int = 150,
 )
 /** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
