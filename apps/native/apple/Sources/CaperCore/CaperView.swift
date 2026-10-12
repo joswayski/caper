@@ -340,8 +340,8 @@ private struct BrowseLayer: ViewModifier {
 
 /// Lifting a drawer swipe also ends the press on the control under the finger,
 /// which then taps it: swiping Browse closed along the New message row opened
-/// the New message dialog. SwiftUI can't cancel a press that has started
-/// (`allowsHitTesting(false)` only stops new ones), so Browse's rows skip a tap
+/// the New message dialog. SwiftUI can't cancel a press that has started, so
+/// Browse's rows skip a tap
 /// that lands while a swipe follows the finger or just after it lets go, as
 /// the web suppresses a drag's release click.
 @MainActor enum SwipeTapGuard {
@@ -372,12 +372,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     func body(content: Content) -> some View {
         let opening = Drawer.opening
         // Global coordinates: the view itself moves with the finger. The list
-        // stops scrolling while it follows a slide, and the controls under the
-        // finger drop their press, so lifting doesn't tap or long-press whatever
-        // is there (as the web suppresses a drag's release click). The swipe
-        // keeps its own touch through the outer content shape.
-        content.allowsHitTesting(tracking != true)
-            .contentShape(Rectangle()).scrollDisabled(tracking == true)
+        // stops scrolling while it follows a slide. Turning off hit-testing
+        // mid-swipe let the system cancel it over a scrolling list, so it slid
+        // back; Browse's rows skip the lift's tap instead (`SwipeTapGuard`).
+        content.contentShape(Rectangle()).scrollDisabled(tracking == true)
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
