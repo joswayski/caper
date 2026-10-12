@@ -20794,7 +20794,7 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert_eq!(card_entry(&app), Some("fixture-maya"));
         assert!(
-            shows(&output, "@maya") && shows(&output, "Send"),
+            shows(&output, "@maya") && shows_control(&output, "Send"),
             "pinner profile, not the message author: {:?}",
             text_shapes(&output)
         );
@@ -26059,10 +26059,13 @@ mod tests {
             .collect()
     }
 
-    /// Drawn text, or an icon control's accessible label.
     fn shows(output: &egui::FullOutput, text: &str) -> bool {
         text_shapes(output).iter().any(|label| label == text)
-            || labelled_center(output, text).is_some()
+    }
+
+    /// Drawn text, or an icon control's accessible label (Send, Insert emoji).
+    fn shows_control(output: &egui::FullOutput, text: &str) -> bool {
+        shows(output, text) || labelled_center(output, text).is_some()
     }
 
     /// A labelled control inside the open mention card, where the channel
@@ -27412,16 +27415,16 @@ mod tests {
                 click_at(&mut app, &context, target);
                 let output = render(&mut app, &context, vec![]);
                 assert!(
-                    shows(&output, "@maya") && shows(&output, "Send"),
+                    shows(&output, "@maya") && shows_control(&output, "Send"),
                     "profile resolves the author/member by ID"
                 );
                 render(&mut app, &context, press(egui::Key::Escape));
                 let output = render(&mut app, &context, vec![]);
-                assert!(!shows(&output, "Send"));
+                assert!(!shows_control(&output, "Send"));
                 render(&mut app, &context, press(egui::Key::Enter));
                 let output = render(&mut app, &context, vec![]);
                 assert!(
-                    shows(&output, "@maya") && shows(&output, "Send"),
+                    shows(&output, "@maya") && shows_control(&output, "Send"),
                     "focus returns and Enter reopens the profile"
                 );
                 render(&mut app, &context, press(egui::Key::Escape));
@@ -27483,10 +27486,17 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         let output = render(&mut app, &context, vec![]);
         for label in ["Alex", "@alex", "Send"] {
-            assert!(shows(&output, label), "{label}: {:?}", text_shapes(&output));
+            assert!(
+                shows_control(&output, label),
+                "{label}: {:?}",
+                text_shapes(&output)
+            );
         }
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Send"), "the opening click is not outside");
+        assert!(
+            shows_control(&output, "Send"),
+            "the opening click is not outside"
+        );
         let pill = app.mention_card.as_ref().unwrap().pill.id;
 
         render(&mut app, &context, press(egui::Key::Escape));
@@ -27514,7 +27524,7 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
-        assert!(!shows(&output, "Send"), "no Send for yourself");
+        assert!(!shows_control(&output, "Send"), "no Send for yourself");
         assert!(!shows(&output, "Block") && !shows(&output, "Invite to space"));
 
         let outside = text_center(&output, "Beginning of conversation");
@@ -27697,12 +27707,14 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Unblock"));
-        assert!(!shows(&output, "Send") && !shows(&output, "Invite to space"));
+        assert!(!shows_control(&output, "Send") && !shows(&output, "Invite to space"));
         click_at(&mut app, &context, last_text_position(&output, "Unblock"));
         receive_until(&mut app, |app| !app.is_blocked("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
         assert!(
-            shows(&output, "Send") && shows(&output, "Block") && shows(&output, "Unblocked."),
+            shows_control(&output, "Send")
+                && shows(&output, "Block")
+                && shows(&output, "Unblocked."),
             "{:?}",
             text_shapes(&output)
         );
@@ -28157,7 +28169,7 @@ mod tests {
         assert!(app.error.is_none(), "not duplicated outside the card");
         assert!(app.selected_direct.is_none());
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, &error) && shows(&output, "Send"));
+        assert!(shows(&output, &error) && shows_control(&output, "Send"));
 
         // An uncertain retry can later receive a definitive refusal. Only
         // uncertainty keeps the original payload frozen.
@@ -28191,7 +28203,7 @@ mod tests {
                 .unwrap();
             app.receive();
             let output = render(&mut app, &context, vec![]);
-            assert!(shows(
+            assert!(shows_control(
                 &output,
                 if uncertain { "Retry send" } else { "Send" }
             ));
@@ -28621,7 +28633,7 @@ mod tests {
         click_at(&mut app, &context, reply);
         assert_eq!(card_entry(&app), Some("fixture-alex"));
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Alex") && shows(&output, "Send"));
+        assert!(shows(&output, "Alex") && shows_control(&output, "Send"));
     }
 
     #[test]

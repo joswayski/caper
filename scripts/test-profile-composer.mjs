@@ -169,9 +169,10 @@ try {
   browser("click", ".channel-select");
   wait(`!!document.querySelector('.chat-author-profile[aria-label="Open profile for Maya"]')`);
   assert.equal(evaluate('return document.querySelector("#chat-message").value'), "Existing channel draft");
-  // Like any conversation switch, leaving abandons the channel's uploaded files
-  // (cancelling their reservations); only its text draft returns.
-  assert.equal(evaluate('return document.querySelectorAll(".chat-composer .chat-drafts li").length'), 0);
+  // Like any conversation switch, the channel keeps its text and files, and
+  // returning reuses the uploaded file instead of uploading it again.
+  wait('document.querySelector(".chat-composer .chat-drafts li strong")?.textContent === "review-notes.txt"');
+  assert.equal(evaluate('return window.assetReservations.filter(item => item.channelId === "chan00000001").length'), 1);
   open("Maya");
   assert.equal(value(), "", "Confirmed send clears only the profile draft");
   browser("fill", "#profile-message", "Rejected draft");
@@ -248,7 +249,7 @@ try {
     "Open conversation must not silently accept a request",
   );
   console.log(
-    "PASS: profile text/emoji/files and file-only sends, caret/chooser cancellation, outside clicks, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text, request acceptance isolation, desktop/narrow layouts.",
+    "PASS: profile text/emoji/files and file-only sends, caret/chooser cancellation, outside clicks, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
   );
 } catch (error) {
   console.error(evaluate('return document.querySelector(".chat-mention-card")?.textContent'));
