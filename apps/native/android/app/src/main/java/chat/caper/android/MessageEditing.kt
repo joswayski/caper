@@ -54,7 +54,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
     Dialog(onDismissRequest = { if (!saving) close() }) {
         // Runs in the dialog's own composition, once the field is attached.
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
-        Surface(color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        Surface(Modifier.swipeCancelsPresses(), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Edit message", style = MaterialTheme.typography.titleLarge)
                 Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
@@ -108,7 +108,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
     }
     LaunchedEffect(message.id, message.revision) { load(false) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth(.95f).widthIn(max = 880.dp).fillMaxHeight(.9f), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        Surface(Modifier.swipeCancelsPresses().fillMaxWidth(.95f).widthIn(max = 880.dp).fillMaxHeight(.9f), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column {
             // The heading stays above its own scrolling body, as in the app's other dialogs.
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {

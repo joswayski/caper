@@ -16,6 +16,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
+import { movesOf, Velocity } from "../components/swipe.ts";
 import type { ChatAttachment } from "./types.ts";
 import { formatBytes } from "./uploads.ts";
 import {
@@ -49,17 +50,25 @@ interface Gesture {
   /** After a pinch the remaining finger pans; it never swipes. */
   pinched?: boolean;
   axis?: "x" | "y";
+  /** Finger speed along each axis, for flings. */
+  speed: { x: Velocity; y: Velocity };
 }
+
+/** The bottom of a player with controls is its seek bar and buttons, which keep their own drags. */
+const PLAYER_CONTROLS = 64;
 
 /** One file, fitted to the stage. Keyed by file, so zoom resets on navigation. */
 function ViewerItem({
   attachment,
+  enter,
   failed,
   onError,
   onStep,
   onClose,
 }: {
   attachment: ChatAttachment;
+  /** Paging here, it arrives from the side it was swiped or stepped in from. */
+  enter?: 1 | -1;
   failed: boolean;
   onError: () => void;
   onStep: (step: 1 | -1) => void;
@@ -126,6 +135,7 @@ function ViewerItem({
     return () => element.removeEventListener("wheel", wheel);
   }, [image, size?.width, size?.height, box?.width, box?.height]);
 
+  const speeds = () => ({ x: new Velocity(), y: new Velocity() });
   const pinchOf = () => {
     const [a, b] = [...pointers.current.values()];
     return {
@@ -134,19 +144,32 @@ function ViewerItem({
     };
   };
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    // The player's seek bar and the viewer's buttons handle their own presses.
-    if ((event.target as Element).closest("button, a, video[controls]")) return;
+    // Buttons and the player's seek bar handle their own presses; the rest of
+    // a player still swipes to page or close, like an image.
+    const target = event.target as Element;
+    const player = target.closest("video[controls]");
+    if (
+      target.closest("button, a") ||
+      (player && event.clientY > player.getBoundingClientRect().bottom - PLAYER_CONTROLS)
+    )
+      return;
     // Only images pinch; videos follow one pointer.
     if (pointers.current.size && !image) return;
     pointerType.current = event.pointerType;
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.current.size === 1) {
       moved.current = false;
-      gesture.current = { start: { x: event.clientX, y: event.clientY }, view: shown };
+      gesture.current = { start: { x: event.clientX, y: event.clientY }, view: shown, speed: speeds() };
     } else if (pointers.current.size === 2) {
       moved.current = true;
       setDrag(undefined);
-      gesture.current = { start: { x: event.clientX, y: event.clientY }, view: shown, pinch: pinchOf(), pinched: true };
+      gesture.current = {
+        start: { x: event.clientX, y: event.clientY },
+        view: shown,
+        pinch: pinchOf(),
+        pinched: true,
+        speed: speeds(),
+      };
     }
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -180,6 +203,10 @@ function ViewerItem({
     }
     const dx = event.clientX - current.start.x;
     const dy = event.clientY - current.start.y;
+    for (const point of movesOf(event.nativeEvent)) {
+      current.speed.x.add(point.timeStamp, point.clientX);
+      current.speed.y.add(point.timeStamp, point.clientY);
+    }
     if (Math.hypot(dx, dy) > 10) moved.current = true;
     if (current.view.scale > 1 && size && box)
       setView(clampView({ ...current.view, x: current.view.x + dx, y: current.view.y + dy }, size, box));
@@ -194,17 +221,19 @@ function ViewerItem({
     const [rest] = pointers.current.values();
     if (rest) {
       // Lifting one finger of a pinch carries on as a pan from here.
-      gesture.current = { start: rest, view: shown, pinched: true };
+      gesture.current = { start: rest, view: shown, pinched: true, speed: speeds() };
       return;
     }
     gesture.current = undefined;
     setDrag(undefined);
     if (event.type !== "pointerup") return;
     if (current.axis) {
+      current.speed[current.axis].add(event.timeStamp, current.axis === "x" ? event.clientX : event.clientY);
+      const velocity = current.speed[current.axis].speed(event.timeStamp);
       const action =
         current.axis === "x"
-          ? swipeAction(event.clientX - current.start.x, 0)
-          : swipeAction(0, event.clientY - current.start.y);
+          ? swipeAction(event.clientX - current.start.x, 0, velocity)
+          : swipeAction(0, event.clientY - current.start.y, velocity);
       if (action === "close") onClose();
       else if (action) onStep(action === "next" ? 1 : -1);
       return;
@@ -247,6 +276,7 @@ function ViewerItem({
           <div
             className="chat-viewer-media"
             data-dragging={drag ? "" : undefined}
+            data-enter={enter === 1 ? "next" : enter === -1 ? "previous" : undefined}
             style={drag && { transform: `translate(${drag.x}px, ${drag.y}px)` }}
           >
             {image ? (
@@ -330,6 +360,8 @@ export default function MediaViewer({
   onExpired?: (ids: string[]) => void;
 }) {
   const [currentId, setCurrentId] = useState(attachmentId);
+  /** Which way the last page turn went, so the next file arrives from that side. */
+  const [entering, setEntering] = useState<1 | -1>();
   // URLs that failed to load. A refreshed URL is a new key, so it loads again.
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const reported = useRef(new Set<string>());
@@ -346,7 +378,9 @@ export default function MediaViewer({
   const next = viewerStep(attachments, currentId, 1);
   const step = (direction: 1 | -1) => {
     const id = direction === 1 ? next : previous;
-    if (id) setCurrentId(id);
+    if (!id) return;
+    setEntering(direction);
+    setCurrentId(id);
   };
   const date = sentAt ? new Date(sentAt) : undefined;
   const time =
@@ -482,6 +516,7 @@ export default function MediaViewer({
               <ViewerItem
                 key={current.id}
                 attachment={current}
+                enter={entering}
                 failed={failed.has(current.url!)}
                 onError={() => expired(current)}
                 onStep={step}

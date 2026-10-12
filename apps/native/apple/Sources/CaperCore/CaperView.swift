@@ -262,8 +262,99 @@ private protocol SlideDrawer: AnyObject {
     var drag: CGFloat? { get set }
     /// How far it moves between closed and open.
     var travel: CGFloat { get }
+    /// The slide to rest under way, so a finger that lands during it picks the
+    /// view up where it is on screen instead of where it is headed.
+    var settle: DrawerSettle? { get set }
     /// The finger's direction to open it: right (1) or left (-1).
     static var opening: CGFloat { get }
+}
+
+extension SlideDrawer {
+    /// How far open it is on screen, or nil once it is at rest.
+    var inFlight: CGFloat? {
+        guard let settle, !settle.finished() else { return nil }
+        return settle.value()
+    }
+    /// Records a slide that a model change or button starts (a swipe records
+    /// its own release), from wherever the view is now.
+    func slide(to target: CGFloat, timing: DrawerSettle.Timing, reduceMotion: Bool) {
+        guard drag == nil, settle?.to != target else { return }
+        settle = reduceMotion ? nil : DrawerSettle(from: inFlight ?? 1 - target, to: target, timing: timing)
+    }
+}
+
+/// A drawer slide's path and timing. Slides use one cubic curve with the web's
+/// `SETTLE` easing, which SwiftUI animates and this evaluates, so a finger
+/// catching a moving view starts exactly where it is drawn.
+struct DrawerSettle {
+    struct Timing {
+        let duration: Double
+        let curve: UnitCurve
+        /// Web `SETTLE`: cubic-bezier(0.32, 0.72, 0, 1).
+        static let easing = UnitCurve.bezier(startControlPoint: UnitPoint(x: 0.32, y: 0.72), endControlPoint: UnitPoint(x: 0, y: 1))
+        /// Settling back after a cancelled drag, and the member list's buttons.
+        static let settle = Timing(duration: 0.32, curve: easing)
+        /// Buttons, Back and channel choices: a quicker version of the finger's slide.
+        static let tap = Timing(duration: 0.22, curve: easing)
+        /// A released swipe (web `releaseTiming`).
+        static func release(_ release: DrawerRelease) -> Timing {
+            Timing(duration: release.duration, curve: .bezier(startControlPoint: UnitPoint(x: 0.2, y: 0.2 * release.slope),
+                                                               endControlPoint: UnitPoint(x: 0.35, y: 1)))
+        }
+        var animation: Animation { .timingCurve(curve, duration: duration) }
+    }
+    let from: CGFloat
+    let to: CGFloat
+    let start: Date
+    let timing: Timing
+
+    init(from: CGFloat, to: CGFloat, start: Date = Date(), timing: Timing) {
+        self.from = from
+        self.to = to
+        self.start = start
+        self.timing = timing
+    }
+
+    func value(at date: Date = Date()) -> CGFloat {
+        guard timing.duration > 0 else { return to }
+        let progress = min(1, max(0, date.timeIntervalSince(start) / timing.duration))
+        return from + (to - from) * CGFloat(timing.curve.value(at: progress))
+    }
+    func finished(at date: Date = Date()) -> Bool { date.timeIntervalSince(start) >= timing.duration }
+}
+
+/// Where a released drawer swipe goes and how fast, as web `releaseTiming`:
+/// past halfway, or flung 40 points toward the other view, it switches; a
+/// held drag gets the full finish, and a fling carries its bounded speed into
+/// a curve that cannot overshoot.
+struct DrawerRelease: Equatable {
+    /// Switches to the other view.
+    let commit: Bool
+    /// How far open it ends, 0 or 1.
+    let target: CGFloat
+    let duration: Double
+    /// The curve's initial slope: the release speed over the average speed, up to 3.
+    let slope: Double
+
+    /// - Parameters:
+    ///   - open: The swipe started on the open drawer.
+    ///   - position: How far open it is, from 0 to 1.
+    ///   - velocity: The finger's speed toward open, in points per second.
+    ///   - distance: How far the finger moved toward open, in points.
+    ///   - travel: The drawer's travel, in points.
+    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat) {
+        // Toward the other view, in points per second.
+        let toward = open ? -velocity : velocity
+        let travelled = abs(position - (open ? 1 : 0))
+        commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(distance) >= 40))
+        target = commit != open ? 1 : 0
+        let remaining = target - position
+        let left = Double(abs(remaining))
+        // Toward the target, in travels per second.
+        let speed = Double((remaining > 0 ? 1 : -1) * velocity / max(travel, 1))
+        duration = speed > 0 ? min(0.32, max(0.16, 3 * left / speed)) : 0.32
+        slope = left > 0 ? min(3, max(0, speed * duration / left)) : 0
+    }
 }
 
 /// Phones show the conversation or Browse (spaces and channels), never both.
@@ -274,9 +365,8 @@ private protocol SlideDrawer: AnyObject {
     var drag: CGFloat?
     /// How far the conversation moves: the full width and its edge shadow.
     var travel: CGFloat = 1
+    @ObservationIgnored var settle: DrawerSettle?
     static let opening: CGFloat = 1
-    static let settle = Animation.interpolatingSpring(duration: 0.35, bounce: 0)
-    static let tap = Animation.interpolatingSpring(duration: 0.22, bounce: 0)
     /// While a released swipe navigates, which already set its speed-matched curve.
     @ObservationIgnored var releasing = false
 }
@@ -292,13 +382,14 @@ private extension Transaction {
 }
 
 /// The member list on phones: a panel that slides in from the trailing edge
-/// over the conversation with Browse's spring, following a finger the same
+/// over the conversation with Browse's curve, following a finger the same
 /// way. It opens from the conversation and closes from the panel or backdrop.
 @Observable private final class MembersDrawer: SlideDrawer {
     /// While a finger drags: how much of the panel is in view, from 0 to 1.
     var drag: CGFloat?
     /// How far the panel moves: its width and margin, plus room for its shadow.
     var travel: CGFloat = 1
+    @ObservationIgnored var settle: DrawerSettle?
     static let opening: CGFloat = -1
 }
 
@@ -306,6 +397,15 @@ private extension Transaction {
 /// home indicator.
 private struct SideClip: Shape {
     func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: 0, dy: -rect.height)) }
+}
+
+/// The animation for a drawer layer's pose: none while a finger drags, the
+/// recorded slide while one runs, and otherwise `fallback` for a change that
+/// brought no animation of its own.
+private func drawerAnimation(_ transaction: inout Transaction, drag: CGFloat?, settle: DrawerSettle?, reduceMotion: Bool, fallback: DrawerSettle.Timing) {
+    if drag != nil || reduceMotion { transaction.animation = nil }
+    else if let settle, !settle.finished() { transaction.animation = settle.timing.animation }
+    else if transaction.animation == nil { transaction.animation = fallback.animation }
 }
 
 /// Poses a layer for the slide on phones: the conversation, or the account bar
@@ -322,16 +422,16 @@ private struct BrowseLayer: ViewModifier {
 
     func body(content: Content) -> some View {
         let drag = drawer?.drag
+        let settle = drawer?.settle
         let uncovered = drag ?? (showsBrowse ? 1 : 0)
         let reduceMotion = self.reduceMotion
-        // Follow the finger while dragged and spring into place otherwise,
+        // Follow the finger while dragged and slide into place otherwise,
         // keeping a release's own timing.
         content.transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
         .transaction { transaction in
-            if drag != nil || reduceMotion { transaction.animation = nil }
-            else if transaction.animation == nil { transaction.animation = BrowseDrawer.tap }
+            drawerAnimation(&transaction, drag: drag, settle: settle, reduceMotion: reduceMotion, fallback: .tap)
         } body: { layer in
             layer.offset(pose(uncovered)).opacity(hidesCovered && uncovered == 0 ? 0 : 1)
         }
@@ -339,16 +439,49 @@ private struct BrowseLayer: ViewModifier {
 }
 
 /// Lifting a drawer swipe also ends the press on the control under the finger,
-/// which then taps it: swiping Browse closed along the New message row opened
-/// the New message dialog. SwiftUI can't cancel a press that has started, so
-/// Browse's rows skip a tap
-/// that lands while a swipe follows the finger or just after it lets go, as
-/// the web suppresses a drag's release click.
+/// which then taps it: the view moves with the finger, so it lifts on the same
+/// image, avatar, reaction or row it started on. SwiftUI can't cancel a press
+/// that has started, so controls on swiping surfaces skip a tap or long press
+/// that lands while a swipe follows the finger or as it lifts, as the web
+/// suppresses a drag's release click. A tap once it has lifted works at once.
 @MainActor enum SwipeTapGuard {
+    private static var following: Set<UUID> = []
     private static var followedAt = Date.distantPast
-    static func follow() { followedAt = Date() }
-    /// A row was "tapped" by lifting a swipe.
-    static var swiping: Bool { Date().timeIntervalSince(followedAt) < 0.35 }
+    private static var quietUntil = Date.distantPast
+    /// A swipe follows the finger.
+    static func follow(_ swipe: UUID) {
+        following.insert(swipe)
+        followedAt = Date()
+    }
+    /// The finger lifted, or the system took the touch. The lift's own tap
+    /// arrives with it, in the same touch event, so a moment covers it.
+    static func release(_ swipe: UUID) {
+        guard following.remove(swipe) != nil else { return }
+        quietUntil = max(quietUntil, Date().addingTimeInterval(0.12))
+    }
+    /// A control was "tapped" by a swipe. A swipe held still for seconds stops
+    /// counting, so a lost release can't disable controls for good.
+    static var swiping: Bool {
+        let now = Date()
+        return (!following.isEmpty && now.timeIntervalSince(followedAt) < 3) || now < quietUntil
+    }
+    /// `action`, skipped when a swipe's lift triggered it.
+    static func unlessSwiping(_ action: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+        { if !swiping { action() } }
+    }
+}
+
+/// A message's links skip a swipe's lift (the text moves with the finger, so
+/// it lifts on the link it started on) and otherwise open as they would have.
+private struct SwipeGuardedLinks: ViewModifier {
+    @Environment(\.openURL) private var openURL
+    func body(content: Content) -> some View {
+        let openURL = self.openURL
+        content.environment(\.openURL, OpenURLAction { url in
+            if !SwipeTapGuard.swiping { openURL(url) }
+            return .handled
+        })
+    }
 }
 
 private typealias BrowseSwipe = DrawerSwipe<BrowseDrawer>
@@ -367,6 +500,9 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Undecided until the first move; then following the finger, or not this gesture's.
     @State private var tracking: Bool?
+    /// Where the drawer was and the finger's offset (toward open) when it started following.
+    @State private var grab: (position: CGFloat, offset: CGFloat)?
+    @State private var id = UUID()
     @GestureState private var dragging = false
 
     func body(content: Content) -> some View {
@@ -374,7 +510,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
         // Global coordinates: the view itself moves with the finger. The list
         // stops scrolling while it follows a slide. Turning off hit-testing
         // mid-swipe let the system cancel it over a scrolling list, so it slid
-        // back; Browse's rows skip the lift's tap instead (`SwipeTapGuard`).
+        // back; controls skip the lift's tap instead (`SwipeTapGuard`).
         content.contentShape(Rectangle()).scrollDisabled(tracking == true)
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
@@ -383,29 +519,27 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
                         tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
+                        guard tracking == true, let drawer else { return }
+                        // Catch a view still sliding where it is drawn, and follow
+                        // from here rather than jumping by the gesture's start distance.
+                        grab = (drawer.inFlight ?? (open ? 1 : 0), dx)
+                        drawer.settle = nil
                     }
-                    guard tracking == true, let drawer else { return }
-                    SwipeTapGuard.follow()
-                    drawer.drag = min(1, max(0, (open ? 1 : 0) + dx / drawer.travel))
+                    guard tracking == true, let drawer, let grab else { return }
+                    SwipeTapGuard.follow(id)
+                    drawer.drag = min(1, max(0, grab.position + (dx - grab.offset) / drawer.travel))
                 }
                 .onEnded { value in
-                    defer { tracking = nil }
-                    guard tracking == true, let drawer, let uncovered = drawer.drag else { return }
-                    SwipeTapGuard.follow()
-                    // Toward the other view, in points per second.
-                    let toward = (open ? -1 : 1) * opening * value.velocity.width
-                    let travelled = abs(uncovered - (open ? 1 : 0))
-                    let commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(value.translation.width) >= 40))
-                    let target: CGFloat = commit != open ? 1 : 0
-                    // A held drag gets the full finish; flings carry bounded speed into a curve that cannot overshoot.
-                    let remaining = target - uncovered
-                    let distance = abs(remaining)
-                    let speed = (remaining > 0 ? 1 : -1) * opening * value.velocity.width / drawer.travel
-                    let duration = speed > 0 ? min(0.32, max(0.16, 3 * distance / speed)) : 0.32
-                    let slope = distance > 0 ? min(3, max(0, speed * duration / distance)) : 0
-                    withAnimation(reduceMotion ? nil : .timingCurve(0.2, Double(0.2 * slope), 0.35, 1, duration: Double(duration))) {
+                    defer { tracking = nil; grab = nil }
+                    guard tracking == true, let drawer, let position = drawer.drag else { SwipeTapGuard.release(id); return }
+                    let release = DrawerRelease(open: open, position: position, velocity: opening * value.velocity.width,
+                                                distance: opening * value.translation.width, travel: drawer.travel)
+                    let timing = DrawerSettle.Timing.release(release)
+                    drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
+                    SwipeTapGuard.release(id)
+                    withAnimation(reduceMotion ? nil : timing.animation) {
                         drawer.drag = nil
-                        if commit {
+                        if release.commit {
                             // Only Browse marks its switch; the member list animates inside the conversation.
                             if let browse = drawer as? BrowseDrawer {
                                 browse.releasing = true
@@ -421,11 +555,16 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                 DispatchQueue.main.async {
                     guard let followed = tracking else { return }
                     tracking = nil
-                    if followed {
-                        withAnimation(reduceMotion ? nil : BrowseDrawer.settle) { drawer?.drag = nil }
-                    }
+                    grab = nil
+                    guard followed, let drawer, let position = drawer.drag else { SwipeTapGuard.release(id); return }
+                    let timing = DrawerSettle.Timing.settle
+                    drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: timing)
+                    SwipeTapGuard.release(id)
+                    withAnimation(reduceMotion ? nil : timing.animation) { drawer.drag = nil }
                 }
             }
+            // A surface that leaves mid-swipe (a conversation switch) must not keep controls off.
+            .onDisappear { SwipeTapGuard.release(id) }
     }
 }
 
@@ -486,6 +625,7 @@ private struct WorkspaceView: View {
     @State private var browseDrawer = BrowseDrawer()
     @State private var membersDrawer = MembersDrawer()
     @State private var browseBarHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let parityFixture: String?
     private let parityMode: Bool
 
@@ -593,14 +733,14 @@ private struct WorkspaceView: View {
                                     if geometry.size.width - 60 - min(liveSidebarWidth, sidebarMaximum(for: geometry.size.width)) >= 540 {
                                         HStack(spacing: 0) {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                                membersPreference = !membersVisible
+                                                showMembers(!membersVisible)
                                             }
                                             if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                                membersPreference = !membersVisible
+                                                showMembers(!membersVisible)
                                             }
                                             if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
                                         }
@@ -618,11 +758,11 @@ private struct WorkspaceView: View {
                     if narrow && conversationAvailable {
                         ZStack(alignment: .trailing) {
                             ConversationStage(model: model, narrow: true, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                membersPreference = !membersVisible
+                                showMembers(!membersVisible)
                             }
                             if model.selectedDirectMessageID == nil && model.visit == nil {
                                 MembersOverlay(model: model, shows: membersVisible && !model.previewingChannel,
-                                               width: min(280, geometry.size.width - 64)) { membersPreference = false }
+                                               width: min(280, geometry.size.width - 64)) { showMembers(false) }
                             }
                         }
                         // Returning from Browse must not reopen the keyboard on its own.
@@ -656,7 +796,12 @@ private struct WorkspaceView: View {
                 .clipShape(SideClip())
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: narrow, initial: true) { _, narrow in model.narrowLayout = narrow }
-                .onChange(of: showsBrowse) { _, _ in endEditing() }
+                .onChange(of: showsBrowse) { _, shows in
+                    // A model change (a channel that finished opening) slides too:
+                    // record it so a finger can catch the conversation mid-slide.
+                    if narrow { browseDrawer.slide(to: shows ? 1 : 0, timing: .tap, reduceMotion: reduceMotion) }
+                    endEditing()
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
@@ -669,9 +814,19 @@ private struct WorkspaceView: View {
     /// swipe keeps the curve it set to match the finger's speed.
     private func slide(open: Bool) {
         if browseDrawer.releasing { model.navigationOpen = open; return }
-        var transaction = Transaction(animation: BrowseDrawer.tap)
+        guard model.navigationOpen != open else { return }
+        browseDrawer.slide(to: open ? 1 : 0, timing: .tap, reduceMotion: reduceMotion)
+        var transaction = Transaction(animation: DrawerSettle.Timing.tap.animation)
         transaction.browseSlide = true
         withTransaction(transaction) { model.navigationOpen = open }
+    }
+
+    /// Opens or closes the member list. Recorded first, so a closing phone
+    /// panel keeps its list in view until it has slid away.
+    private func showMembers(_ visible: Bool) {
+        guard membersPreference != visible else { return }
+        membersDrawer.slide(to: visible ? 1 : 0, timing: .settle, reduceMotion: reduceMotion)
+        membersPreference = visible
     }
 
     /// The hidden view stays in place to slide back, so it must not keep the keyboard.
@@ -808,7 +963,7 @@ private struct SpaceRail: View {
                     Text("INVITES").font(CaperTheme.font(8, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityLabel("Pending invitations")
                     ForEach(model.invitations) { invitation in
-                        Button { openInvitation(invitation) } label: {
+                        Button { if !SwipeTapGuard.swiping { openInvitation(invitation) } } label: {
                             Text(String(invitation.name.prefix(1)).uppercased()).font(CaperTheme.font(13, weight: .black))
                                 .frame(width: 40, height: 40).background(CaperTheme.surface)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -816,7 +971,7 @@ private struct SpaceRail: View {
                         }.buttonStyle(.plain).modifier(ControlHover()).help("Invitation to \(invitation.name)").accessibilityLabel("Invitation to \(invitation.name)")
                     }
                 }
-                Button(action: model.account == nil ? showLogin : create) {
+                Button(action: SwipeTapGuard.unlessSwiping(model.account == nil ? showLogin : create)) {
                     CaperIcon(name: "plus", size: 20).foregroundStyle(CaperTheme.terracottaBright)
                         .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
                         .background(CaperTheme.surface)
@@ -852,7 +1007,7 @@ private struct SpaceRailButton: View {
     }
 
     var body: some View {
-        Button { Task { await model.select(space: space) } } label: {
+        Button { if !SwipeTapGuard.swiping { Task { await model.select(space: space) } } } label: {
             Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                 .font(CaperTheme.font(13, weight: .black))
                 .opacity(muted ? 0.5 : 1)
@@ -933,7 +1088,7 @@ private struct ChannelSidebar: View {
                             .modifier(ControlPointer())
                             .accessibilityLabel(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper")
                             .accessibilityIdentifier("selected-space-name")
-                        if narrow { Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
+                        if narrow { Button(action: SwipeTapGuard.unlessSwiping(close)) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
                     }
                     .padding(.horizontal, 16).frame(height: 50)
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
@@ -950,7 +1105,7 @@ private struct ChannelSidebar: View {
                 VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        Button { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } label: {
+                        Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
                             HStack(spacing: 6) {
                                 // One chevron that turns, as for message requests and voice rosters.
                                 CaperIcon(name: "chevron-down")
@@ -966,7 +1121,7 @@ private struct ChannelSidebar: View {
                         Spacer()
                         if model.isOwner {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
-                            Button { sheet = .createChannel } label: { CaperIcon(name: "plus") }
+                            Button { if !SwipeTapGuard.swiping { sheet = .createChannel } } label: { CaperIcon(name: "plus") }
                                 .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
                             // Web's owner-only Channel options menu.
                             Menu {
@@ -1015,7 +1170,7 @@ private struct ChannelSidebar: View {
                                 .accessibilityValue(unread ? "Unread activity" : "")
                             // Web's owner-only Manage button, also for channels you haven't joined.
                             if model.isOwner {
-                                Button { sheet = .manageChannel(channel) } label: { CaperIcon(name: "settings", size: 16) }
+                                Button { if !SwipeTapGuard.swiping { sheet = .manageChannel(channel) } } label: { CaperIcon(name: "settings", size: 16) }
                                     .buttonStyle(SidebarIconButton()).help("Manage \(channel.name)")
                                     .accessibilityLabel("Manage \(channel.name)")
                             }
@@ -1025,7 +1180,7 @@ private struct ChannelSidebar: View {
                     if let invitations = model.detail?.channelInvitations, !invitations.isEmpty {
                         Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
                         ForEach(invitations) { invitation in
-                            Button { sheet = .channelInvitation(invitation) } label: {
+                            Button { if !SwipeTapGuard.swiping { sheet = .channelInvitation(invitation) } } label: {
                                 // Satoshi like the channel rows, with the whole row as the target.
                                 Text("#\(invitation.channel.name) · from @\(invitation.inviter.username)").lineLimit(1)
                                     .font(CaperTheme.font(13, weight: .medium))
@@ -1061,7 +1216,7 @@ private struct ChannelSidebar: View {
                     HStack {
                         Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         Spacer()
-                        Button { sheet = .newDirectMessage } label: { CaperIcon(name: "plus") }
+                        Button { if !SwipeTapGuard.swiping { sheet = .newDirectMessage } } label: { CaperIcon(name: "plus") }
                             .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
                             #if os(macOS)
                             .focused($directActionFocused)
@@ -1469,7 +1624,7 @@ private struct ChannelVoiceSlot: View {
         if !occupants.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Button { collapsed.toggle() } label: {
+                    Button { if !SwipeTapGuard.swiping { collapsed.toggle() } } label: {
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 6) {
                                 HStack(spacing: -6) {
@@ -1585,7 +1740,7 @@ private struct HeaderVoice: View {
     /// While people are talking here and you are not in this channel's call, it glows.
     @ViewBuilder private func join(_ action: ChannelVoiceAction, compact: Bool, occupied: Bool) -> some View {
         let glows = occupied && action.enabled && !action.active
-        let button = Button { Task { await model.joinVoice(channel: channel) } } label: {
+        let button = Button { if !SwipeTapGuard.swiping { Task { await model.joinVoice(channel: channel) } } } label: {
             if compact {
                 CaperIcon(name: "headphones", size: 20)
             } else {
@@ -1678,7 +1833,10 @@ private struct HeaderVoiceIconButton: ButtonStyle {
 private struct HeaderMuteButton: View {
     @Bindable var voice: VoiceClient
     var body: some View {
-        Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
+        Button {
+            guard !SwipeTapGuard.swiping else { return }
+            CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) }
+        } label: {
             CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
         }
         // Web's phone header tints a muted microphone red (#ff7182).
@@ -1695,7 +1853,10 @@ private struct HeaderMuteButton: View {
 private struct HeaderDeafenButton: View {
     @Bindable var voice: VoiceClient
     var body: some View {
-        Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
+        Button {
+            guard !SwipeTapGuard.swiping else { return }
+            CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) }
+        } label: {
             CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
         }
         .buttonStyle(HeaderVoiceIconButton(tint: voice.deafened ? headerVoiceAlert : CaperTheme.muted))
@@ -1714,6 +1875,7 @@ private struct HeaderLeaveButton: View {
     var body: some View {
         let connected = model.voice.phase == .connected
         let button = Button {
+            guard !SwipeTapGuard.swiping else { return }
             if connected { CaperEffects.shared.play(.disconnect) }
             model.leaveVoice()
         } label: {
@@ -1794,7 +1956,7 @@ private struct MemberPresenceView: View {
                     Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                 }
                 if let close {
-                    Button(action: close) { CaperIcon(name: "x") }
+                    Button(action: SwipeTapGuard.unlessSwiping(close)) { CaperIcon(name: "x") }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Close member list")
                 }
             }.padding(.horizontal, 12).frame(height: 50)
@@ -1809,6 +1971,8 @@ private struct MemberPresenceView: View {
             } else {
                 ForEach(presence.visibleMembers) { member in
                     Button {
+                        // Swiping the phone panel closed lifts on the row it started on.
+                        guard !SwipeTapGuard.swiping else { return }
                         profile = MentionCardTarget(pill: MentionPill(id: member.id, username: member.username), pointer: pointer.location)
                     } label: {
                         HStack(spacing: 10) {
@@ -1833,9 +1997,9 @@ private struct MemberPresenceView: View {
                 }
                 if presence.pageCount > 1 {
                     HStack {
-                        Button("Previous") { Task { await presence.showPage(presence.page - 1) } }.disabled(presence.page == 0)
+                        Button("Previous") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page - 1) } } }.disabled(presence.page == 0)
                         Spacer(); Text("\(presence.page + 1) / \(presence.pageCount)")
-                        Spacer(); Button("Next") { Task { await presence.showPage(presence.page + 1) } }.disabled(presence.page + 1 >= presence.pageCount)
+                        Spacer(); Button("Next") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page + 1) } } }.disabled(presence.page + 1 >= presence.pageCount)
                     }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
             }
@@ -1854,7 +2018,7 @@ private struct MemberPresenceView: View {
 }
 
 /// The member list on phones, over the conversation below its header. It
-/// slides in and out with Browse's spring and follows a finger the same way.
+/// slides in and out with Browse's curve and follows a finger the same way.
 private struct MembersOverlay: View {
     @Bindable var model: AppModel
     let shows: Bool
@@ -1862,36 +2026,41 @@ private struct MembersOverlay: View {
     let close: () -> Void
     @Environment(MembersDrawer.self) private var drawer: MembersDrawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Bumped once a closing slide ends, to drop the list it kept in view.
+    @State private var settled = 0
 
     var body: some View {
         let drag = drawer?.drag
+        let settle = drawer?.settle
         let shown = drag ?? (shows ? 1 : 0)
+        // Still sliding: the list stays until it is out of view (`settled`).
+        let moving = settled >= 0 && settle.map { !$0.finished() } == true
         // Past the screen's edge, so the panel's shadow leaves with it.
         let travel = width + 8 + 48
         let reduceMotion = self.reduceMotion
-        // As in BrowseLayer: follow the finger while dragged and spring into
+        // As in BrowseLayer: follow the finger while dragged and slide into
         // place otherwise, keeping a release's own timing.
-        let settle: (inout Transaction) -> Void = { transaction in
-            if drag != nil || reduceMotion { transaction.animation = nil }
-            else if transaction.animation == nil { transaction.animation = BrowseDrawer.settle }
+        let animate: (inout Transaction) -> Void = { transaction in
+            drawerAnimation(&transaction, drag: drag, settle: settle, reduceMotion: reduceMotion, fallback: .settle)
         }
         ZStack(alignment: .trailing) {
             Color.black.opacity(0.25)
                 .contentShape(Rectangle())
-                .onTapGesture(perform: close)
+                .onTapGesture { if !SwipeTapGuard.swiping { close() } }
                 // Each layer swipes closed within its own bounds, before its
                 // margins: closed, the overlay must leave the conversation's
                 // header and timeline gestures alone.
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 50)
-                .transaction(settle) { $0.opacity(shown) }
+                .transaction(animate) { $0.opacity(shown) }
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
             Group {
                 // Only rendered while some of it is in view: hidden or transparent,
                 // the closed list's "Members" header stayed in the iOS accessibility
-                // tree for VoiceOver and the UI tests. Closing slides the empty panel away.
-                if shown > 0 { MemberPresenceView(model: model, close: close) } else { Color.clear }
+                // tree for VoiceOver and the UI tests. Closing keeps the list until
+                // it has slid away, rather than emptying the panel as it leaves.
+                if shown > 0 || moving { MemberPresenceView(model: model, close: close) } else { Color.clear }
             }
                 .frame(width: width)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -1903,12 +2072,19 @@ private struct MembersOverlay: View {
                 }
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                .transaction(settle) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 ? 0 : 1) }
+                .transaction(animate) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 && !moving ? 0 : 1) }
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
+        .onChange(of: shown == 0) { _, closed in
+            // Model changes slide too; buttons and swipes recorded theirs first.
+            if drag == nil { drawer?.slide(to: shows ? 1 : 0, timing: .settle, reduceMotion: reduceMotion) }
+            guard closed, let settle = drawer?.settle, !settle.finished() else { return }
+            let remaining = settle.timing.duration - Date().timeIntervalSince(settle.start)
+            DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.02) { settled += 1 }
+        }
     }
 }
 
@@ -2447,6 +2623,7 @@ private struct ChatView: View {
 
     private var reactorContext: ReactorContext {
         ReactorContext(viewerID: viewerID, sheetOpen: reactorsTarget != nil) { messageID, emoji in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
@@ -2557,8 +2734,9 @@ private struct ChatView: View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) {
-            // Holding a chip opens who reacted, not message actions.
-            guard reactorsTarget == nil else { return }
+            // Holding a chip opens who reacted, not message actions; a swipe
+            // that paused before moving opens neither.
+            guard reactorsTarget == nil, !SwipeTapGuard.swiping else { return }
             showingEmojiPicker = false
             reactionMessage = message
         }
@@ -2581,10 +2759,13 @@ private struct ChatView: View {
     }
 
     private var mentionCards: MentionCardContext {
+        // A swipe that starts on an avatar, a name or a pill lifts on it too.
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
         }, openAuthor: { author in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
@@ -2710,7 +2891,7 @@ private struct ChatView: View {
         VStack(spacing: 0) {
             HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
-                    Button(action: browse) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
+                    Button(action: SwipeTapGuard.unlessSwiping(browse)) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
                     // Phones: the name opens the conversation's menu, as in Slack; Pins,
                     // Members and a 1:1 DM's Block move there.
@@ -2802,10 +2983,10 @@ private struct ChatView: View {
                             if !chat.loadFailed { HStack(spacing: 6) {
                                 if chat.olderError != nil {
                                     Text("Couldn’t load older messages.")
-                                    Button("Retry", action: loadOlder).disabled(chat.loadingOlder)
+                                    Button("Retry", action: SwipeTapGuard.unlessSwiping(loadOlder)).disabled(chat.loadingOlder)
                                         .accessibilityIdentifier("load-older-messages")
                                 } else if chat.hasMore {
-                                    Button(chat.loadingOlder ? "Loading…" : "Load older messages", action: loadOlder)
+                                    Button(chat.loadingOlder ? "Loading…" : "Load older messages", action: SwipeTapGuard.unlessSwiping(loadOlder))
                                         .disabled(chat.loadingOlder)
                                         .accessibilityIdentifier("load-older-messages")
                                 }
@@ -2854,7 +3035,7 @@ private struct ChatView: View {
                             // Web's failed first load: the error with Try again, in place of the conversation.
                             VStack(spacing: 10) {
                                 Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
-                                Button("Try again") { Task { await chat.retryLoad() } }.buttonStyle(VoiceJoinButton())
+                                Button("Try again") { if !SwipeTapGuard.swiping { Task { await chat.retryLoad() } } }.buttonStyle(VoiceJoinButton())
                                     .accessibilityIdentifier("chat-try-again")
                             }.padding(.top, 80).padding(.horizontal, 24)
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
@@ -3631,6 +3812,7 @@ private struct MessageRow: View {
                         // Links take the tint. Person pills are links too: keep them in
                         // the pill text colour, not the accent, when the text has any.
                         .tint(pills.isEmpty ? CaperTheme.terracottaBright : CaperTheme.text)
+                        .modifier(SwipeGuardedLinks())
                         .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
                     if grouped && edited { editedMarker }
                 }
@@ -3648,18 +3830,19 @@ private struct MessageRow: View {
                         .accessibilityIdentifier("feedback-notified-\(message.id)")
                 }
                 ForwardCardView(message: message) {
+                    guard !SwipeTapGuard.swiping else { return }
                     Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
                 }
                 ReactionRow(message: message, chat: chat, reactors: reactors)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
-                        Button("Retry") { Task { await chat.retryPin(messageID: message.id) } }
+                        Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryPin(messageID: message.id) } } }
                             .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
-                    Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
+                    Button { if !SwipeTapGuard.swiping { Task { await chat.openThread(message.threadRootId ?? message.id) } } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
@@ -3677,7 +3860,7 @@ private struct MessageRow: View {
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
-                        Button("Retry") { Task { await chat.retryReaction(messageID: message.id) } }
+                        Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryReaction(messageID: message.id) } } }
                             .disabled(!chat.canInteract)
                     }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                 }
@@ -3844,7 +4027,7 @@ private struct MessageRow: View {
     }
     /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.
     private var editedMarker: some View {
-        Button("(edited)") { history = true }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history")
+        Button("(edited)") { if !SwipeTapGuard.swiping { history = true } }.buttonStyle(.plain).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("View edit history")
     }
     /// A grouped row's empty avatar column. With a pointer (macOS) it shows
     /// the short time ("8:28") while the row is hovered or one of its controls
@@ -4073,6 +4256,8 @@ private struct MentionPillInteraction: ViewModifier {
         } else {
             content
                 .environment(\.openURL, OpenURLAction { url in
+                    // A swipe that starts on a pill or link lifts on it too.
+                    if SwipeTapGuard.swiping { return .handled }
                     guard url.scheme == MentionCard.scheme else { return .systemAction }
                     if let id = MentionCard.userID(from: url), let pill = pills.first(where: { $0.id == id }) { cards.open(pill) }
                     return .handled
@@ -4487,6 +4672,7 @@ private struct ReactionChip: View {
             #if os(iOS)
             if suppressTap { suppressTap = false; return }
             #endif
+            guard !SwipeTapGuard.swiping else { return }
             Task { await chat.setReaction(messageID: message.id, emoji: reaction.emoji, active: !own) }
         } label: {
             HStack(spacing: 4) {
@@ -5667,7 +5853,7 @@ private struct MessageRequestsRow: View {
     let rowHeight: CGFloat
     var body: some View {
         let count = model.messageRequests.count
-        Button { model.showingMessageRequests.toggle() } label: {
+        Button { if !SwipeTapGuard.swiping { model.showingMessageRequests.toggle() } } label: {
             HStack(spacing: 9) {
                 // Turns like the Channels chevron instead of swapping icons.
                 CaperIcon(name: "chevron-down", size: 14)
@@ -5701,6 +5887,7 @@ private struct FeedbackRow: View {
         // The archived list has no waiting count.
         let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
         Button {
+            guard !SwipeTapGuard.swiping else { return }
             // Phones push the inbox; sidebars expand it in place.
             if narrow { model.showingFeedback = true } else { model.showingFeedback.toggle() }
         } label: {

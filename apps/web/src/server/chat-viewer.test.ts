@@ -121,3 +121,14 @@ test("swipes change file left/right and close downward; short or diagonal drags 
   assert.equal(swipeAction(0, -200), undefined, "swiping up doesn't close");
   assert.equal(swipeAction(70, 90), undefined, "mostly vertical, not far enough to close");
 });
+
+test("flings page or close with less distance, and a fling back cancels", () => {
+  assert.equal(swipeAction(-45, 0, -0.6), "next", "a quick flick pages");
+  assert.equal(swipeAction(45, 0, 0.6), "previous");
+  assert.equal(swipeAction(0, 50, 0.5), "close", "a quick flick down closes");
+  assert.equal(swipeAction(-20, 0, -1), undefined, "a twitch is not a page turn");
+  assert.equal(swipeAction(-120, 0, 0.5), undefined, "thrown back toward the start");
+  assert.equal(swipeAction(0, 160, -0.5), undefined, "thrown back up");
+  assert.equal(swipeAction(0, -60, -1), undefined, "flinging up doesn't close");
+  assert.equal(swipeAction(-80, 0, -0.1), "next", "slow but far enough still pages");
+});

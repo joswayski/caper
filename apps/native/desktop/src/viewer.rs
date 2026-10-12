@@ -33,6 +33,81 @@ const MAX_ANIMATION_BYTES: usize = 512 * 1024 * 1024;
 /// Videos decode at most at 1080p however large the window.
 const MAX_VIDEO: egui::Vec2 = egui::vec2(1920.0, 1080.0);
 const NOTICE: Duration = Duration::from_secs(4);
+/// One-finger drags past these, while not zoomed, change file or close
+/// (web's `viewer.ts`).
+const SWIPE_DISTANCE: f32 = 60.0;
+const CLOSE_DISTANCE: f32 = 100.0;
+/// How far a finger moves before it swipes rather than taps.
+const SWIPE_SLOP: f32 = 10.0;
+/// How far a file turned to by a swipe or arrow slides in from.
+const PAGE_OFFSET: f32 = 40.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwipeAction {
+    Next,
+    Previous,
+    Close,
+}
+
+/// What a finished one-finger drag means while not zoomed, as web's
+/// `swipeAction`: left shows the next file, like paging; down closes.
+pub fn swipe_action(dx: f32, dy: f32) -> Option<SwipeAction> {
+    if dx.abs() > dy.abs() {
+        if dx <= -SWIPE_DISTANCE {
+            Some(SwipeAction::Next)
+        } else if dx >= SWIPE_DISTANCE {
+            Some(SwipeAction::Previous)
+        } else {
+            None
+        }
+    } else if dy >= CLOSE_DISTANCE {
+        Some(SwipeAction::Close)
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+/// A finger on the media. It locks to one axis once it moves past the slop,
+/// and the media follows it on that axis (downwards only, to close).
+struct Swipe {
+    device: egui::TouchDeviceId,
+    id: egui::TouchId,
+    start: egui::Pos2,
+    axis: Option<Axis>,
+    offset: egui::Vec2,
+}
+
+impl Swipe {
+    fn follow(&mut self, pos: egui::Pos2) {
+        let delta = pos - self.start;
+        if self.axis.is_none() && delta.length() > SWIPE_SLOP {
+            self.axis = Some(if delta.x.abs() > delta.y.abs() {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            });
+        }
+        self.offset = match self.axis {
+            Some(Axis::Horizontal) => egui::vec2(delta.x, 0.0),
+            Some(Axis::Vertical) => egui::vec2(0.0, delta.y.max(0.0)),
+            None => egui::Vec2::ZERO,
+        };
+    }
+
+    fn action(&self, pos: egui::Pos2) -> Option<SwipeAction> {
+        let delta = pos - self.start;
+        match self.axis? {
+            Axis::Horizontal => swipe_action(delta.x, 0.0),
+            Axis::Vertical => swipe_action(0.0, delta.y),
+        }
+    }
+}
 
 /// What the viewer shows: ready images and videos with a URL.
 pub fn viewable(attachment: &Attachment) -> bool {
@@ -116,6 +191,15 @@ pub struct Viewer {
     saving: Option<Receiver<Result<String, String>>>,
     notice: Option<(String, Instant)>,
     opened: bool,
+    swipe: Option<Swipe>,
+    /// An unfinished swipe's offset easing back, from when it let go.
+    returning: Option<(egui::Vec2, f64)>,
+    /// The side (-1 left, 1 right) a newly turned-to file slides in from, and
+    /// when it started once drawn.
+    paged: Option<(f32, Option<f64>)>,
+    /// Where the video's control bar starts on the layer, so swipes move
+    /// only the picture.
+    controls_mark: Option<usize>,
 }
 
 impl Viewer {
@@ -134,6 +218,10 @@ impl Viewer {
             saving: None,
             notice: None,
             opened: false,
+            swipe: None,
+            returning: None,
+            paged: None,
+            controls_mark: None,
         }
     }
 
@@ -149,6 +237,9 @@ impl Viewer {
 
     fn go(&mut self, index: usize) {
         if index < self.items.len() && index != self.index {
+            self.paged = Some((if index > self.index { 1.0 } else { -1.0 }, None));
+            self.swipe = None;
+            self.returning = None;
             self.index = index;
             self.zoom = 1.0;
             self.pan = egui::Vec2::ZERO;
@@ -203,6 +294,15 @@ impl Viewer {
         if next {
             self.go(self.index + 1);
         }
+        // Touch swipes turn the page or close before anything is drawn, so
+        // the whole frame shows the file they leave.
+        let screen = context.content_rect();
+        let video = self.items[self.index].kind == AttachmentKind::Video;
+        let now = context.input(|input| input.time);
+        if self.track_swipe(context, stage_rect(screen, video), now) {
+            self.stop_video(proxy.as_ref());
+            return false;
+        }
         let current = media.resolve(&self.items[self.index]);
         if !viewable(&current) {
             // Removed while open.
@@ -222,7 +322,6 @@ impl Viewer {
         {
             player.toggle();
         }
-        let screen = context.content_rect();
         let response = egui::Modal::new(egui::Id::new("media-viewer"))
             .frame(egui::Frame::NONE)
             // Nearly opaque: GPUs that blend in linear light make lighter
@@ -391,13 +490,8 @@ impl Viewer {
     ) -> bool {
         let (rect, backdrop) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
         let mut close = false;
-        let video = current.kind == AttachmentKind::Video;
         let top = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TOP_BAR));
-        let bottom = if video { CONTROLS } else { 16.0 };
-        let stage = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + SIDE, top.bottom() + 8.0),
-            egui::pos2(rect.right() - SIDE, rect.bottom() - bottom - 8.0),
-        );
+        let stage = stage_rect(rect, current.kind == AttachmentKind::Video);
 
         // Top bar: name and position on the left, actions on the right.
         let painter = ui.painter_at(rect);
@@ -472,12 +566,23 @@ impl Viewer {
             self.save(current, media);
         }
 
-        // The media itself.
+        // The media itself, carried by a finger or sliding in after a page turn.
         let mut over_media = false;
+        let from = crate::motion::mark(ui);
+        self.controls_mark = None;
         match current.kind {
             AttachmentKind::Video => over_media |= self.video_stage(ui, stage, current, media),
             _ => over_media |= self.image_stage(ui, stage, current, media),
         }
+        let until = self.controls_mark.take().unwrap_or(usize::MAX);
+        let (offset, opacity) = self.media_pose(ui.ctx(), ui.input(|input| input.time));
+        crate::motion::carry(
+            ui.ctx(),
+            ui.layer_id(),
+            from..until,
+            opacity,
+            egui::emath::TSTransform::from_translation(offset),
+        );
 
         // Previous and next, disabled at the ends (no wrap, like web).
         if self.items.len() > 1 {
@@ -518,6 +623,123 @@ impl Viewer {
             close = true;
         }
         close
+    }
+
+    /// Follows one finger on the stage while not zoomed: past the slop it
+    /// owns the gesture, so nothing under it (the picture, the dark area, a
+    /// video's play toggle) treats its release as a click. Left and right
+    /// turn the page, down closes; anything shorter eases back. Returns
+    /// whether to close.
+    fn track_swipe(&mut self, context: &egui::Context, stage: egui::Rect, now: f64) -> bool {
+        let (events, pinching) =
+            context.input(|input| (input.events.clone(), input.multi_touch().is_some()));
+        if pinching || self.zoom > 1.0 {
+            self.cancel_swipe(now);
+            return false;
+        }
+        let mut close = false;
+        for event in events {
+            let egui::Event::Touch {
+                device_id,
+                id,
+                phase,
+                pos,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if phase == egui::TouchPhase::Start {
+                if self.swipe.is_some() {
+                    // A second finger: a pinch, not a swipe.
+                    self.cancel_swipe(now);
+                } else if stage.contains(pos) {
+                    self.swipe = Some(Swipe {
+                        device: device_id,
+                        id,
+                        start: pos,
+                        axis: None,
+                        offset: egui::Vec2::ZERO,
+                    });
+                }
+                continue;
+            }
+            let Some(swipe) = self
+                .swipe
+                .as_mut()
+                .filter(|swipe| swipe.device == device_id && swipe.id == id)
+            else {
+                continue;
+            };
+            if phase == egui::TouchPhase::Cancel {
+                self.cancel_swipe(now);
+                continue;
+            }
+            swipe.follow(pos);
+            if swipe.axis.is_some() {
+                context.set_dragged_id(egui::Id::new("viewer-swipe"));
+            }
+            if phase != egui::TouchPhase::End {
+                continue;
+            }
+            let action = swipe.action(pos);
+            let swiped = swipe.axis.is_some();
+            match action {
+                Some(SwipeAction::Next) if self.index + 1 < self.items.len() => {
+                    self.go(self.index + 1);
+                }
+                Some(SwipeAction::Previous) if self.index > 0 => self.go(self.index - 1),
+                Some(SwipeAction::Close) => {
+                    self.swipe = None;
+                    close = true;
+                }
+                _ => self.cancel_swipe(now),
+            }
+            if swiped {
+                context.stop_dragging();
+            }
+        }
+        if self.swipe.is_some() || self.returning.is_some() {
+            context.request_repaint();
+        }
+        close
+    }
+
+    /// Lets go of a swipe without acting: the media eases back.
+    fn cancel_swipe(&mut self, now: f64) {
+        if let Some(swipe) = self.swipe.take()
+            && swipe.offset != egui::Vec2::ZERO
+        {
+            self.returning = Some((swipe.offset, now));
+        }
+    }
+
+    /// Where the media is drawn, relative to its place, and its opacity.
+    fn media_pose(&mut self, context: &egui::Context, now: f64) -> (egui::Vec2, f32) {
+        if let Some(swipe) = &self.swipe {
+            return (swipe.offset, 1.0);
+        }
+        let mut offset = egui::Vec2::ZERO;
+        if let Some((from, started)) = self.returning {
+            let progress = crate::motion::progress(context, started, crate::motion::BASE);
+            if progress >= 1.0 {
+                self.returning = None;
+            } else {
+                offset += from * (1.0 - progress);
+            }
+        }
+        let mut opacity = 1.0;
+        if let Some((side, started)) = &mut self.paged {
+            let started = *started.get_or_insert(now);
+            let progress = crate::motion::progress(context, started, crate::motion::BASE);
+            if progress >= 1.0 {
+                self.paged = None;
+            } else {
+                offset.x += *side * PAGE_OFFSET * (1.0 - progress);
+                opacity = progress;
+            }
+        }
+        (offset, opacity)
     }
 
     /// Returns whether the pointer is over the picture.
@@ -748,6 +970,7 @@ impl Viewer {
                     egui::pos2(stage.left(), stage.bottom() + 8.0),
                     egui::pos2(stage.right(), stage.bottom() + 8.0 + CONTROLS),
                 );
+                self.controls_mark = Some(crate::motion::mark(ui));
                 // GIF-style videos have no timeline, like a GIF.
                 if !current.animated {
                     over |= controls(ui, bar, player, &mut self.scrub);
@@ -783,6 +1006,16 @@ impl Viewer {
         });
         self.saving = Some(receiver);
     }
+}
+
+/// Where the media sits on `screen`: below the top bar, between the arrows,
+/// above a video's control bar.
+fn stage_rect(screen: egui::Rect, video: bool) -> egui::Rect {
+    let bottom = if video { CONTROLS } else { 16.0 };
+    egui::Rect::from_min_max(
+        egui::pos2(screen.left() + SIDE, screen.top() + TOP_BAR + 8.0),
+        egui::pos2(screen.right() - SIDE, screen.bottom() - bottom - 8.0),
+    )
 }
 
 /// The poster (inline preview) and a spinner while a video starts.
@@ -1199,6 +1432,104 @@ mod tests {
         viewer.go(0);
         assert_eq!(viewer.index(), 0);
         assert_eq!(viewer.zoom, 1.0, "moving resets zoom");
+    }
+
+    #[test]
+    fn swipes_page_close_or_ease_back_as_on_web() {
+        assert_eq!(swipe_action(-60.0, 0.0), Some(SwipeAction::Next));
+        assert_eq!(swipe_action(60.0, 0.0), Some(SwipeAction::Previous));
+        assert_eq!(swipe_action(59.0, 0.0), None);
+        assert_eq!(swipe_action(0.0, 100.0), Some(SwipeAction::Close));
+        assert_eq!(swipe_action(0.0, -200.0), None, "up never closes");
+        assert_eq!(swipe_action(30.0, 99.0), None);
+
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let stage = stage_rect(screen, false);
+        let items = vec![
+            attachment("a", AttachmentKind::Image),
+            attachment("b", AttachmentKind::Image),
+        ];
+        let mut viewer = Viewer::open(items, 0);
+        let mut time = 0.0;
+        let mut frame = |viewer: &mut Viewer, touches: &[(egui::TouchPhase, u64, egui::Pos2)]| {
+            time += 0.016;
+            let events = touches
+                .iter()
+                .map(|&(phase, id, pos)| egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId(id),
+                    phase,
+                    pos,
+                    force: None,
+                })
+                .collect();
+            let mut close = false;
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |context| close = viewer.track_swipe(context, stage, time),
+            );
+            close
+        };
+        use egui::TouchPhase::{End, Move, Start};
+        let center = stage.center();
+        // The media follows a finger on one axis, then turns the page.
+        frame(&mut viewer, &[(Start, 1, center)]);
+        frame(&mut viewer, &[(Move, 1, center + egui::vec2(-40.0, 12.0))]);
+        assert_eq!(
+            viewer.swipe.as_ref().map(|swipe| swipe.offset),
+            Some(egui::vec2(-40.0, 0.0))
+        );
+        assert!(!frame(
+            &mut viewer,
+            &[(End, 1, center + egui::vec2(-90.0, 20.0))]
+        ));
+        assert_eq!(viewer.index(), 1);
+        assert!(viewer.paged.is_some(), "the next file slides in");
+        // Past the last file it eases back instead.
+        frame(&mut viewer, &[(Start, 1, center)]);
+        frame(&mut viewer, &[(End, 1, center + egui::vec2(-90.0, 0.0))]);
+        assert_eq!(viewer.index(), 1);
+        assert_eq!(
+            viewer.returning.map(|(offset, _)| offset),
+            Some(egui::vec2(-90.0, 0.0))
+        );
+        // Short swipes ease back; a tap neither moves nor eases.
+        frame(
+            &mut viewer,
+            &[(Start, 1, center), (End, 1, center + egui::vec2(30.0, 0.0))],
+        );
+        assert_eq!(viewer.index(), 1);
+        viewer.returning = None;
+        frame(&mut viewer, &[(Start, 1, center), (End, 1, center)]);
+        assert!(viewer.returning.is_none() && viewer.swipe.is_none());
+        // Down closes; a finger starting outside the stage (the top bar's
+        // buttons) never swipes.
+        frame(&mut viewer, &[(Start, 1, center)]);
+        assert!(frame(
+            &mut viewer,
+            &[(End, 1, center + egui::vec2(10.0, 120.0))]
+        ));
+        let button = egui::pos2(780.0, 20.0);
+        frame(&mut viewer, &[(Start, 1, button)]);
+        assert!(!frame(
+            &mut viewer,
+            &[(End, 1, button + egui::vec2(0.0, 200.0))]
+        ));
+        // A second finger makes a pinch, not a swipe; zoomed media pans.
+        frame(&mut viewer, &[(Start, 1, center)]);
+        frame(&mut viewer, &[(Start, 2, center + egui::vec2(50.0, 0.0))]);
+        frame(&mut viewer, &[(End, 1, center + egui::vec2(120.0, 0.0))]);
+        assert_eq!(viewer.index(), 1);
+        viewer.zoom = 2.0;
+        frame(&mut viewer, &[(Start, 1, center)]);
+        frame(&mut viewer, &[(End, 1, center + egui::vec2(120.0, 0.0))]);
+        assert_eq!(viewer.index(), 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 /** The media viewer's set, navigation, and zoom and swipe math; MediaViewer renders it. */
+import { FLING, FLING_DISTANCE } from "../components/swipe.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 
 export interface Size {
@@ -85,11 +86,17 @@ export function toggleZoom(view: ZoomView, point: Point, size: Size, box: Size) 
 }
 
 /** What a finished one-finger drag means while not zoomed. Swiping left shows the
- * next file, like paging; down closes. */
-export function swipeAction(dx: number, dy: number): "next" | "previous" | "close" | undefined {
-  if (Math.abs(dx) > Math.abs(dy)) {
-    if (dx <= -SWIPE_DISTANCE) return "next";
-    if (dx >= SWIPE_DISTANCE) return "previous";
-  } else if (dy >= CLOSE_DISTANCE) return "close";
+ * next file, like paging; down closes. A fling (`velocity`, in pixels per
+ * millisecond along the drag's axis) needs less distance, and one thrown back
+ * toward where the drag started cancels it. */
+export function swipeAction(dx: number, dy: number, velocity = 0): "next" | "previous" | "close" | undefined {
+  const horizontal = Math.abs(dx) > Math.abs(dy);
+  const distance = horizontal ? dx : dy;
+  const fling = Math.abs(velocity) >= FLING;
+  if (fling && Math.sign(velocity) !== Math.sign(distance)) return undefined;
+  const far = (threshold: number) => Math.abs(distance) >= (fling ? Math.min(threshold, FLING_DISTANCE) : threshold);
+  if (horizontal) {
+    if (far(SWIPE_DISTANCE)) return dx < 0 ? "next" : "previous";
+  } else if (dy > 0 && far(CLOSE_DISTANCE)) return "close";
   return undefined;
 }

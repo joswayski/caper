@@ -5,7 +5,11 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.Orientation
@@ -24,6 +28,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -77,6 +82,8 @@ import coil3.compose.AsyncImage
 import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.size.Size
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -177,7 +184,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
     val context = LocalContext.current
     val density = LocalDensity.current
     var notice by remember { mutableStateOf<String?>(null) }
-    var dragged by remember { mutableFloatStateOf(0f) }
+    val dismiss = remember(scope) { ViewerDismiss(scope) }
     val live = { page: Int -> attachments.firstOrNull { it.id == ids[page] }?.takeIf { it.viewable() } }
     val go: (Int) -> Unit = { page -> if (page in ids.indices) scope.launch { pager.animateScrollToPage(page) } }
     LaunchedEffect(notice) { if (notice != null) { delay(4000); notice = null } }
@@ -191,7 +198,10 @@ private const val DOUBLE_TAP_ZOOM = 2f
         val current = live(page)
         val url = current?.url
         Column(
-            Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.92f * (1f - (dragged / dismissAt).coerceIn(0f, 1f) / 2f)))
+            // A swipe that pages or closes never presses the buttons it starts on.
+            Modifier.fillMaxSize().swipeCancelsPresses()
+                // Drawn, not composed, so the backdrop fades with the finger without recomposing the viewer.
+                .drawBehind { drawRect(Blackout.copy(alpha = 0.92f * dismiss.backdrop(dismissAt))) }
                 .semantics { paneTitle = "Image viewer" }
                 // Hardware keyboards: Left/Right move between files.
                 .onKeyEvent { event ->
@@ -234,14 +244,16 @@ private const val DOUBLE_TAP_ZOOM = 2f
             }
             Box(
                 Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                    .onSizeChanged { dismiss.viewport = it.height.toFloat() }
                     .draggable(
-                        rememberDraggableState { dragged = (dragged + it).coerceAtLeast(0f) }, Orientation.Vertical,
-                        onDragStopped = { velocity ->
-                            if (dragged > dismissAt || velocity > flingAt) close() else animate(dragged, 0f) { value, _ -> dragged = value }
-                        },
+                        rememberDraggableState { dismiss.drag(it) }, Orientation.Vertical, enabled = !dismiss.leaving,
+                        // A finger that catches the file on its way back holds it there.
+                        onDragStarted = { dismiss.stop() },
+                        onDragStopped = { velocity -> dismiss.release(velocity, dismissAt, flingAt, close) },
                     ),
             ) {
-                HorizontalPager(pager, Modifier.fillMaxSize().graphicsLayer { translationY = dragged }, pageSpacing = 16.dp, key = { ids[it] }) { index ->
+                HorizontalPager(pager, Modifier.fillMaxSize().graphicsLayer { translationY = dismiss.offset }, pageSpacing = 16.dp,
+                    userScrollEnabled = !dismiss.leaving, key = { ids[it] }) { index ->
                     val attachment = live(index)
                     val active = index == pager.settledPage
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -260,6 +272,65 @@ private const val DOUBLE_TAP_ZOOM = 2f
                 }
             }
         }
+    }
+}
+
+/**
+ * The viewer's swipe-down-to-close. A finger moves the file 1:1 (never above its place); a short
+ * or flung-back release springs it home from the finger's speed without bouncing, and a long or
+ * flung release carries it off the bottom at that speed while the backdrop fades, then closes.
+ * A finger that lands meanwhile grabs it where it is. Animations follow the system's animator
+ * duration scale, so with animations removed it closes at once.
+ */
+@Stable
+private class ViewerDismiss(private val scope: CoroutineScope) {
+    /** How far down the file is, in pixels. */
+    var offset by mutableFloatStateOf(0f)
+        private set
+    /** Where a closing slide began, or null while the viewer stays. */
+    private var leavingFrom by mutableStateOf<Float?>(null)
+    val leaving get() = leavingFrom != null
+    /** The file area's height: how far the file falls to leave. */
+    var viewport = 0f
+    private var motion: Job? = null
+
+    fun stop() {
+        motion?.cancel()
+        motion = null
+    }
+
+    fun drag(delta: Float) {
+        if (leaving) return
+        stop()
+        offset = (offset + delta).coerceAtLeast(0f)
+    }
+
+    fun release(velocity: Float, dismissAt: Float, flingAt: Float, close: () -> Unit) {
+        if (leaving) return
+        stop()
+        val from = offset
+        if (viewerDismisses(from, velocity, dismissAt, flingAt)) {
+            val to = maxOf(viewport, from + 1f)
+            leavingFrom = from
+            val timing = releaseTiming(to - from, velocity, maxMillis = MOTION_SLOW)
+            motion = scope.launch {
+                animate(from, to, animationSpec = tween(timing.durationMillis, easing = CubicBezierEasing(0.2f, 0.2f * timing.slope, 0.35f, 1f))) { value, _ -> offset = value }
+                close()
+            }
+        } else motion = scope.launch {
+            animate(from, 0f, initialVelocity = velocity, animationSpec = spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMediumLow)) { value, _ ->
+                offset = value.coerceAtLeast(0f)
+            }
+        }
+    }
+
+    /** The backdrop's opacity: half gone by [dismissAt], then fading out as the file leaves. */
+    fun backdrop(dismissAt: Float): Float {
+        val from = leavingFrom
+        val held = 1f - ((from ?: offset) / dismissAt).coerceIn(0f, 1f) / 2f
+        if (from == null) return held
+        val left = ((offset - from) / (viewport - from).coerceAtLeast(1f)).coerceIn(0f, 1f)
+        return held * (1f - left)
     }
 }
 
@@ -315,8 +386,11 @@ private const val DOUBLE_TAP_ZOOM = 2f
     var offset by remember { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     val bounds by rememberUpdatedState(contentSize)
+    val scope = rememberCoroutineScope()
+    // A double tap's zoom, which a pinch or pan takes over from where it is.
+    val zoomMotion = remember { object { var job: Job? = null } }
     // Moving to another file resets the zoom.
-    LaunchedEffect(active) { if (!active) { scale = 1f; offset = Offset.Zero } }
+    LaunchedEffect(active) { if (!active) { zoomMotion.job?.cancel(); scale = 1f; offset = Offset.Zero } }
     fun clamped(value: Offset, zoom: Float): Offset {
         val (width, height) = fittedSize(
             bounds?.width?.toFloat() ?: 0f, bounds?.height?.toFloat() ?: 0f, viewport.width.toFloat(), viewport.height.toFloat(),
@@ -330,8 +404,18 @@ private const val DOUBLE_TAP_ZOOM = 2f
             .pointerInput(Unit) {
                 detectTapGestures(onDoubleTap = { tap ->
                     val center = Offset(size.width / 2f, size.height / 2f)
-                    if (scale > 1f) { scale = 1f; offset = Offset.Zero }
-                    else { scale = DOUBLE_TAP_ZOOM; offset = clamped((center - tap) * (DOUBLE_TAP_ZOOM - 1f), DOUBLE_TAP_ZOOM) }
+                    val toScale = if (scale > 1f) 1f else DOUBLE_TAP_ZOOM
+                    val toOffset = if (toScale == 1f) Offset.Zero else clamped((center - tap) * (DOUBLE_TAP_ZOOM - 1f), DOUBLE_TAP_ZOOM)
+                    val fromScale = scale
+                    val fromOffset = offset
+                    zoomMotion.job?.cancel()
+                    // Zooms about the tapped point, rather than jumping there.
+                    zoomMotion.job = scope.launch {
+                        animate(0f, 1f, animationSpec = tween(MOTION_BASE, easing = EaseOut)) { t, _ ->
+                            scale = fromScale + (toScale - fromScale) * t
+                            offset = fromOffset + (toOffset - fromOffset) * t
+                        }
+                    }
                 })
             }
             .pointerInput(Unit) {
@@ -340,6 +424,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     do {
                         val event = awaitPointerEvent()
                         if (event.changes.count { it.pressed } > 1 || scale > 1f) {
+                            zoomMotion.job?.cancel()
                             val center = Offset(size.width / 2f, size.height / 2f)
                             val centroid = event.calculateCentroid()
                             val next = (scale * event.calculateZoom()).coerceIn(1f, MAX_ZOOM)

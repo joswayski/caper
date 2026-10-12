@@ -263,6 +263,8 @@ private struct AttachmentImageView: View {
 
     var body: some View {
         Button {
+            // A drawer swipe that started on the image lifts on it too.
+            guard !SwipeTapGuard.swiping else { return }
             if let openViewer { openViewer() } else { openAttachment(attachment, chat: chat, openURL: openURL) }
         } label: {
             ZStack {
@@ -307,7 +309,10 @@ private struct AttachmentVideoView: View {
             if let player {
                 VideoPlayer(player: player)
             } else {
-                Button { if let openViewer { openViewer() } else { start() } } label: {
+                Button {
+                    guard !SwipeTapGuard.swiping else { return }
+                    if let openViewer { openViewer() } else { start() }
+                } label: {
                     ZStack {
                         if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         Image(systemName: "play.fill").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
@@ -355,7 +360,7 @@ private struct AttachmentAudioView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: toggle) {
+            Button(action: SwipeTapGuard.unlessSwiping(toggle)) {
                 Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
                     .frame(width: 32, height: 32).background(Circle().fill(CaperTheme.terracotta))
                     #if os(iOS)
@@ -424,7 +429,7 @@ struct AttachmentFileCard: View {
 
     var body: some View {
         if let action {
-            Button(action: action) { card.contentShape(Rectangle()) }
+            Button(action: SwipeTapGuard.unlessSwiping(action)) { card.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
                 .accessibilityLabel("File \(attachment.name), \(AttachmentPolicy.formatBytes(attachment.size))")
                 .accessibilityHint("Opens the file")
@@ -672,7 +677,10 @@ private struct AttachmentAnimationView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
         .contentShape(Rectangle())
-        .onTapGesture { if let openViewer { openViewer() } else { toggle() } }
+        .onTapGesture {
+            guard !SwipeTapGuard.swiping else { return }
+            if let openViewer { openViewer() } else { toggle() }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Animation \(attachment.name)")
         .accessibilityValue(playing ? "Playing" : "Paused")
@@ -1042,28 +1050,59 @@ private struct MediaViewerPage: View {
     let chat: ChatModel?
     let active: Bool
     let close: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var zoomed = false
-    @GestureState private var pull: CGFloat = 0
-    @State private var dismissalPull: CGFloat?
+    @GestureState private var touching = false
+    /// Decided on the first move: a page swipe, or a pull down that follows
+    /// the finger from its offset then.
+    private enum Direction { case sideways, down(from: CGFloat) }
+    @State private var direction: Direction?
+    @State private var pull: CGFloat = 0
+    @State private var dismissing = false
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             #if os(iOS)
-            .offset(y: dismissalPull ?? pull)
+            .offset(y: pull)
             // Global coordinates: the page itself moves with the finger.
             .simultaneousGesture(DragGesture(minimumDistance: 16, coordinateSpace: .global)
-                .updating($pull) { value, state, _ in
-                    if value.translation.height > abs(value.translation.width) { state = value.translation.height }
+                .updating($touching) { _, active, _ in active = true }
+                .onChanged { value in
+                    guard !dismissing else { return }
+                    if direction == nil {
+                        // A page swipe stays sideways; only a downward start pulls.
+                        let downward = value.translation.height > abs(value.translation.width)
+                        direction = downward ? .down(from: value.translation.height) : .sideways
+                    }
+                    guard case .down(let start) = direction else { return }
+                    // Follows from where it started, without the gesture's start
+                    // distance; back above it, it resists.
+                    let moved = value.translation.height - start
+                    pull = moved >= 0 ? moved : moved / 3
                 }
                 .onEnded { value in
-                    let downward = value.translation.height > abs(value.translation.width)
-                    if downward && (value.translation.height > 120 || value.predictedEndTranslation.height > 360) {
-                        // GestureState resets at release; keep the file in place while the cover dismisses.
-                        dismissalPull = value.translation.height
+                    defer { direction = nil }
+                    guard !dismissing, case .down(let start) = direction else { return }
+                    let moved = value.translation.height - start
+                    if moved > 120 || (moved > 24 && value.velocity.height > 700) || value.predictedEndTranslation.height - start > 360 {
+                        // Keep the file where the finger left it while the cover dismisses.
+                        dismissing = true
                         close()
+                    } else {
+                        withAnimation(reduceMotion ? nil : .timingCurve(DrawerSettle.Timing.easing, duration: 0.26)) { pull = 0 }
                     }
                 }, including: zoomed ? .subviews : .all)
+            .onChange(of: touching) { _, active in
+                guard !active else { return }
+                // After onEnded, if it runs: a pull the system cancelled slides back.
+                DispatchQueue.main.async {
+                    guard direction != nil else { return }
+                    direction = nil
+                    guard !dismissing else { return }
+                    withAnimation(reduceMotion ? nil : .timingCurve(DrawerSettle.Timing.easing, duration: 0.26)) { pull = 0 }
+                }
+            }
             #endif
     }
 

@@ -122,6 +122,9 @@ struct NavigationTouch {
     id: egui::TouchId,
     origin: egui::Pos2,
     slide: Option<NavigationSlide>,
+    /// The drawer's pose when the finger took it: a finger that catches a
+    /// settling drawer carries on from where it was drawn.
+    base: f32,
     travel: f32,
     distance: f32,
     /// Horizontal positions, one per frame: egui gives a frame's touch events
@@ -131,23 +134,184 @@ struct NavigationTouch {
 
 impl NavigationTouch {
     fn progress(&self) -> f32 {
-        let fraction = (self.distance / self.travel).clamp(0.0, 1.0);
+        let moved = self.distance / self.travel;
         if self.slide.is_some_and(NavigationSlide::open) {
-            fraction
+            (self.base + moved).clamp(0.0, 1.0)
         } else {
-            1.0 - fraction
+            (self.base - moved).clamp(0.0, 1.0)
         }
     }
 }
 
+/// Which drawer a horizontal swipe moves. Browse wins while it shows at all,
+/// then the member list; a drawer still settling can be caught and pushed
+/// either way, so a swipe never waits for an animation to finish.
+fn navigation_slide(
+    browse: (bool, f32),
+    members: (bool, f32),
+    members_available: bool,
+    rightward: bool,
+) -> Option<NavigationSlide> {
+    let (browse_open, browse_pose) = browse;
+    let (members_open, members_pose) = members;
+    if browse_open || browse_pose > 0.0 {
+        if rightward {
+            (browse_pose < 1.0).then_some(NavigationSlide::Browse(true))
+        } else {
+            Some(NavigationSlide::Browse(false))
+        }
+    } else if members_open || members_pose > 0.0 {
+        if rightward {
+            Some(NavigationSlide::Members(false))
+        } else {
+            (members_available && members_pose < 1.0).then_some(NavigationSlide::Members(true))
+        }
+    } else if rightward {
+        Some(NavigationSlide::Browse(true))
+    } else {
+        members_available.then_some(NavigationSlide::Members(true))
+    }
+}
+
+/// Whether a released swipe reaches the end it was heading for: past half
+/// way, or flung at least 300pt/s after 40pt. A finger flung back cancels.
+/// `velocity` is points per second toward that end, `distance` how far the
+/// finger moved toward it and `progress` the drawer's pose.
+fn swipe_commits(opening: bool, progress: f32, distance: f32, velocity: f32) -> bool {
+    let past_half = if opening {
+        progress >= 0.5
+    } else {
+        progress <= 0.5
+    };
+    velocity > -300.0 && (past_half || (velocity >= 300.0 && distance >= 40.0))
+}
+
+/// Web's `SETTLE`: what buttons and state changes slide with.
+const SETTLE_SECONDS: f64 = 0.32;
+const SETTLE_CURVE: [f32; 4] = [0.32, 0.72, 0.0, 1.0];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct NavigationSettle {
-    slide: NavigationSlide,
     from: f32,
     to: f32,
     started: f64,
-    /// Seconds, and the curve's starting slope, from `release_timing`.
     duration: f64,
-    slope: f32,
+    /// CSS `cubic-bezier` control points.
+    curve: [f32; 4],
+}
+
+impl NavigationSettle {
+    /// After a finger lets go: the web's speed-matched curve. `speed` is
+    /// progress per second toward `to`.
+    fn release(from: f32, to: f32, started: f64, speed: f32) -> Self {
+        let (duration, slope) = release_timing((to - from).abs(), speed);
+        Self {
+            from,
+            to,
+            started,
+            duration,
+            curve: [0.2, 0.2 * slope, 0.35, 1.0],
+        }
+    }
+
+    /// After a button or another state change, from wherever it is. One
+    /// that turns a drawer around mid-slide starts from rest, so it eases
+    /// into the new direction instead of snapping into it at full speed.
+    fn toggle(from: f32, to: f32, started: f64) -> Self {
+        let resting = from == 0.0 || from == 1.0;
+        Self {
+            from,
+            to,
+            started,
+            duration: SETTLE_SECONDS,
+            curve: if resting {
+                SETTLE_CURVE
+            } else {
+                [0.2, 0.0, 0.35, 1.0]
+            },
+        }
+    }
+
+    /// The pose at `now` (egui input time, so any frame rate lands on the
+    /// same curve) and whether it has landed. Never past either end.
+    fn at(&self, now: f64) -> (f32, bool) {
+        let elapsed = if self.duration > 0.0 {
+            ((now - self.started) / self.duration) as f32
+        } else {
+            1.0
+        };
+        if elapsed >= 1.0 {
+            return (self.to, true);
+        }
+        let [x1, y1, x2, y2] = self.curve;
+        let eased = cubic_bezier(x1, y1, x2, y2, elapsed.max(0.0)).clamp(0.0, 1.0);
+        (self.from + (self.to - self.from) * eased, false)
+    }
+}
+
+/// One narrow drawer (Browse or the member list), from 0 closed to 1 open.
+/// Fingers, buttons and state changes all move it from where it was last
+/// drawn, so one interrupting another never makes it jump.
+#[derive(Default)]
+struct DrawerMotion {
+    /// The pose last drawn and the egui pass that drew it.
+    drawn: Option<(f32, u64)>,
+    settle: Option<NavigationSettle>,
+}
+
+impl DrawerMotion {
+    /// Where it is at `now`, if it has been drawn.
+    fn current(&self, now: f64) -> Option<f32> {
+        match &self.settle {
+            Some(settle) => Some(settle.at(now).0),
+            None => self.drawn.map(|(pose, _)| pose),
+        }
+    }
+
+    /// The pose to draw on `pass` at `now`, `dt` after the previous frame,
+    /// for state `open`. A finger's pose wins. Without `animate` (reduced
+    /// motion) or after a pass without it (wide layout) it rests at once.
+    /// Returns the pose and whether it is still moving.
+    fn pose(
+        &mut self,
+        now: f64,
+        dt: f64,
+        pass: u64,
+        open: bool,
+        finger: Option<f32>,
+        animate: bool,
+    ) -> (f32, bool) {
+        let target = if open { 1.0 } else { 0.0 };
+        let continuing = self.drawn.is_some_and(|(_, seen)| seen + 1 >= pass);
+        let pose = if let Some(finger) = finger {
+            self.settle = None;
+            finger
+        } else if !animate || !continuing {
+            self.settle = None;
+            target
+        } else {
+            if self.settle.is_none_or(|settle| settle.to != target) {
+                // The change came during the last frame: turn from where that
+                // frame drew it, so this one already shows the new motion.
+                let changed = now - dt.clamp(0.0, 0.05);
+                let current = self.current(changed).unwrap_or(target);
+                self.settle =
+                    (current != target).then(|| NavigationSettle::toggle(current, target, changed));
+            }
+            match self.settle {
+                Some(settle) => {
+                    let (pose, landed) = settle.at(now);
+                    if landed {
+                        self.settle = None;
+                    }
+                    pose
+                }
+                None => target,
+            }
+        };
+        self.drawn = Some((pose, pass));
+        (pose, self.settle.is_some())
+    }
 }
 
 /// As the web's `releaseTiming`: carries on from a finger without accelerating
@@ -896,7 +1060,8 @@ struct CaperApp {
     members_visible: bool,
     narrow_members_visible: bool,
     navigation_touch: Option<NavigationTouch>,
-    navigation_settle: Option<NavigationSettle>,
+    browse_motion: DrawerMotion,
+    members_motion: DrawerMotion,
     /// The top of the composer, measured while laying out the conversation.
     navigation_swipe_bottom: f32,
     /// Browse's search editor keeps text selection, just like the composer.
@@ -1152,7 +1317,8 @@ impl CaperApp {
             members_visible: false,
             narrow_members_visible: false,
             navigation_touch: None,
-            navigation_settle: None,
+            browse_motion: DrawerMotion::default(),
+            members_motion: DrawerMotion::default(),
             navigation_swipe_bottom: 0.0,
             navigation_search_rect: egui::Rect::NOTHING,
             browse_bar: 0.0,
@@ -7203,9 +7369,45 @@ impl CaperApp {
     }
 }
 
+/// egui-winit releases a touch's emulated pointer where the finger last
+/// moved, not where it lifted. A flick whose last stretch only arrives with
+/// its release would look like a still tap and click whatever it started on
+/// (an image, a link, a row). Move the pointer to the lift point first, so
+/// egui sees the whole travel and never mistakes a swipe for a tap.
+fn pointer_follows_touch_release(events: &mut Vec<egui::Event>) {
+    let mut index = 0;
+    while index + 1 < events.len() {
+        let lifted = match &events[index] {
+            egui::Event::Touch {
+                phase: egui::TouchPhase::End,
+                pos,
+                ..
+            } => Some(*pos),
+            _ => None,
+        };
+        if let Some(lifted) = lifted
+            && let egui::Event::PointerButton {
+                pressed: false,
+                pos,
+                ..
+            } = &mut events[index + 1]
+            && *pos != lifted
+        {
+            *pos = lifted;
+            events.insert(index + 1, egui::Event::PointerMoved(lifted));
+            index += 1;
+        }
+        index += 1;
+    }
+}
+
 impl eframe::App for CaperApp {
     fn persist_egui_memory(&self) -> bool {
         self.persist_preferences
+    }
+
+    fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
+        pointer_follows_touch_release(&mut raw_input.events);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -7225,6 +7427,13 @@ impl eframe::App for CaperApp {
     }
 
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        if motion::reduced() && context.style().animation_time > 0.0 {
+            // egui's own fades, scrolls and disclosures rest at once too.
+            context.all_styles_mut(|style| {
+                style.animation_time = 0.0;
+                style.scroll_animation = egui::style::ScrollAnimation::none();
+            });
+        }
         if let Some(icon) = &mut self.daily_icon {
             context.request_repaint_after(Duration::from_secs(60));
             icon.refresh(chrono::Utc::now());
@@ -8097,6 +8306,7 @@ impl CaperApp {
                         id,
                         origin: pos,
                         slide: None,
+                        base: 0.0,
                         travel: 1.0,
                         distance: 0.0,
                         samples: vec![(now, pos.x)],
@@ -8145,27 +8355,34 @@ impl CaperApp {
                     self.navigation_touch = None;
                     continue;
                 }
-                touch.slide = match (
-                    self.navigation_open,
-                    self.narrow_members_visible,
+                // Where each drawer is drawn now, settling or not: the finger
+                // takes the drawer from there.
+                let resting = |open: bool| if open { 1.0 } else { 0.0 };
+                let browse = self
+                    .browse_motion
+                    .current(now)
+                    .unwrap_or(resting(self.navigation_open));
+                let members = self
+                    .members_motion
+                    .current(now)
+                    .unwrap_or(resting(self.narrow_members_visible));
+                touch.slide = navigation_slide(
+                    (self.navigation_open, browse),
+                    (self.narrow_members_visible, members),
+                    members_available,
                     delta.x > 0.0,
-                ) {
-                    (true, _, false) => Some(NavigationSlide::Browse(false)),
-                    (false, true, true) => Some(NavigationSlide::Members(false)),
-                    (false, false, true) => Some(NavigationSlide::Browse(true)),
-                    (false, false, false) if members_available => {
-                        Some(NavigationSlide::Members(true))
-                    }
-                    _ => None,
-                };
+                );
                 let Some(slide) = touch.slide else {
                     self.navigation_touch = None;
                     continue;
                 };
-                touch.travel = if slide.members() {
-                    280.0_f32.min(screen.width() - 64.0) + 32.0
+                (touch.base, touch.travel) = if slide.members() {
+                    (
+                        members,
+                        280.0_f32.min(screen.width() - 64.0).max(0.0) + 32.0,
+                    )
                 } else {
-                    screen.width() + 16.0
+                    (browse, screen.width() + 16.0)
                 };
             }
             let direction = touch.slide.unwrap().direction();
@@ -8178,9 +8395,12 @@ impl CaperApp {
                     Some(&(time, x)) if now > time => (pos.x - x) * direction / (now - time) as f32,
                     _ => 0.0,
                 };
-                let commit = velocity > -300.0
-                    && (touch.distance >= touch.travel / 2.0
-                        || (velocity >= 300.0 && touch.distance >= 40.0));
+                let commit = swipe_commits(
+                    touch.slide.is_some_and(NavigationSlide::open),
+                    touch.progress(),
+                    touch.distance,
+                    velocity,
+                );
                 self.finish_navigation_touch(context, now, commit, velocity);
             }
         }
@@ -8204,67 +8424,41 @@ impl CaperApp {
         // Progress per second toward where it settles.
         let toward = if commit { velocity } else { -velocity };
         let speed = toward / touch.travel;
-        let (duration, slope) = release_timing((to - from).abs(), speed);
-        self.navigation_settle = Some(NavigationSettle {
-            slide,
-            from,
-            to,
-            started: now,
-            duration,
-            slope,
-        });
+        let settle = NavigationSettle::release(from, to, now, speed);
         match slide {
-            NavigationSlide::Browse(_) => self.navigation_open = open,
-            NavigationSlide::Members(_) => self.narrow_members_visible = open,
+            NavigationSlide::Browse(_) => {
+                self.navigation_open = open;
+                self.browse_motion.settle = Some(settle);
+            }
+            NavigationSlide::Members(_) => {
+                self.narrow_members_visible = open;
+                self.members_motion.settle = Some(settle);
+            }
         }
         context.stop_dragging();
         context.request_repaint();
     }
 
-    /// Finger poses override the existing button animations until settled.
-    fn navigation_pose(&mut self, context: &egui::Context, members: bool, normal: f32) -> f32 {
-        if let Some(touch) = &self.navigation_touch
-            && touch.slide.is_some_and(|slide| slide.members() == members)
-        {
-            return touch.progress();
+    /// Where a narrow drawer is drawn this pass, for its state `open`: under
+    /// the finger while one drags it, else settling from wherever it was.
+    fn navigation_pose(&mut self, context: &egui::Context, members: bool, open: bool) -> f32 {
+        let finger = self
+            .navigation_touch
+            .as_ref()
+            .filter(|touch| touch.slide.is_some_and(|slide| slide.members() == members))
+            .map(NavigationTouch::progress);
+        let (now, dt) = context.input(|input| (input.time, f64::from(input.stable_dt)));
+        let pass = context.cumulative_pass_nr();
+        let drawer = if members {
+            &mut self.members_motion
+        } else {
+            &mut self.browse_motion
+        };
+        let (pose, moving) = drawer.pose(now, dt, pass, open, finger, !motion::reduced());
+        if moving {
+            context.request_repaint();
         }
-        if let Some(settle) = &self.navigation_settle
-            && settle.slide.members() == members
-        {
-            let open = if members {
-                self.narrow_members_visible
-            } else {
-                self.navigation_open
-            };
-            if open != (settle.to > 0.5) {
-                self.navigation_settle = None;
-                return normal;
-            }
-            // The web's and phones' speed-matched curve.
-            let elapsed =
-                ((context.input(|input| input.time) - settle.started) / settle.duration) as f32;
-            let progress = settle.from
-                + (settle.to - settle.from)
-                    * cubic_bezier(0.2, 0.2 * settle.slope, 0.35, 1.0, elapsed);
-            if elapsed >= 1.0 {
-                // A throttled/paused frame can outlast the slide. Land the
-                // button animation too, rather than revealing an older pose.
-                context.animate_bool_with_time(
-                    egui::Id::new(if members {
-                        "members-slide"
-                    } else {
-                        "browse-slide"
-                    }),
-                    open,
-                    0.0,
-                );
-                self.navigation_settle = None;
-            } else {
-                context.request_repaint();
-            }
-            return progress;
-        }
-        normal
+        pose
     }
 
     fn shell(&mut self, context: &egui::Context) {
@@ -8284,13 +8478,7 @@ impl CaperApp {
                 if narrow {
                     // As on phones, the conversation slides fully off a still Browse;
                     // they never share the window.
-                    let uncovered = context.animate_bool_with_time_and_easing(
-                        egui::Id::new("browse-slide"),
-                        self.navigation_open,
-                        0.22,
-                        egui::emath::easing::cubic_out,
-                    );
-                    let uncovered = self.navigation_pose(context, false, uncovered);
+                    let uncovered = self.navigation_pose(context, false, self.navigation_open);
                     if uncovered > 0.0 {
                         // Browse stops above the account bar, which rises over the
                         // conversation below.
@@ -8331,13 +8519,7 @@ impl CaperApp {
                         let members_open = self.selected_direct.is_none()
                             && self.narrow_members_visible
                             && !self.no_accessible_channels();
-                        let shown = context.animate_bool_with_time_and_easing(
-                            egui::Id::new("members-slide"),
-                            members_open,
-                            0.3,
-                            egui::emath::easing::cubic_out,
-                        );
-                        let shown = self.navigation_pose(context, true, shown);
+                        let shown = self.navigation_pose(context, true, members_open);
                         if shown > 0.0 {
                             let body = egui::Rect::from_min_max(
                                 egui::pos2(stage.left(), stage.top() + 54.0),
@@ -16758,15 +16940,35 @@ impl CaperApp {
                 Color32::from_black_alpha((190.0 * scrim).round() as u8),
             );
         if dialog_was_open && dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
-            // A fast click can deliver press and release in the opening frame.
-            // Neither event may dismiss the dialog that click just opened.
-            close |= context.input(|input| {
-                input.pointer.any_pressed()
-                    && input
-                        .pointer
-                        .interact_pos()
-                        .is_some_and(|position| !modal.response.rect.contains(position))
+            // A click outside (press and release there, without moving)
+            // closes; a drag or scroll that starts on the backdrop does not.
+            // A fast click can deliver press and release in the opening
+            // frame: the press must come while the dialog already showed.
+            let pressed_outside = egui::Id::new("dialog-backdrop-press");
+            let outside = |input: &egui::InputState| {
+                input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !modal.response.rect.contains(position))
+            };
+            let (pressed, released, clicked) = context.input(|input| {
+                (
+                    input.pointer.any_pressed() && outside(input),
+                    input.pointer.any_released(),
+                    input.pointer.any_click() && outside(input),
+                )
             });
+            if pressed {
+                context.data_mut(|data| data.insert_temp(pressed_outside, true));
+            }
+            if released {
+                let started_outside = context
+                    .data_mut(|data| data.remove_temp::<bool>(pressed_outside))
+                    .unwrap_or(false);
+                close |= started_outside && clicked;
+            }
+        } else {
+            context.data_mut(|data| data.remove::<bool>(egui::Id::new("dialog-backdrop-press")));
         }
         // A join navigates when it finishes, so its dialog stays until then.
         let joining = join_dialog && self.invite_join.joining;
@@ -18740,8 +18942,20 @@ fn join_glow_color(time: f64) -> Color32 {
 
 /// Web's pulsing `box-shadow: 0 0 14px 2px` behind an occupied Join, into
 /// `slot` (reserved before the button so the glow sits behind it). It only
-/// repaints while drawn. Desktop has no reduced-motion setting to honor.
+/// repaints while drawn. With reduced motion it holds web's still glow,
+/// `0 0 10px 1px rgb(219 104 73 / 0.35)`.
 fn join_glow(ui: &egui::Ui, slot: egui::layers::ShapeIdx, rect: egui::Rect, corner: f32) {
+    if motion::reduced() {
+        let shadow = egui::Shadow {
+            offset: [0, 0],
+            blur: 10,
+            spread: 1,
+            color: Color32::from_rgba_unmultiplied(219, 104, 73, 89),
+        };
+        ui.painter()
+            .set(slot, shadow.as_shape(rect, CornerRadius::from(corner)));
+        return;
+    }
     let shadow = egui::Shadow {
         offset: [0, 0],
         blur: 14,
@@ -21464,6 +21678,7 @@ fn main() -> eframe::Result {
         },
         Box::new(move |creation| {
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
+            motion::watch_reduced(&creation.egui_ctx);
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);
             }
@@ -23827,6 +24042,29 @@ mod tests {
                 bounds.left_top() + egui::vec2(10.0, 10.0),
             );
             assert!(app.dialog.is_some(), "inside click dismissed settings");
+            // A drag or scroll that starts on the backdrop is not a click.
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let (start, end) = (egui::pos2(5.0, 5.0), egui::pos2(5.0, 120.0));
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(start), button(start, true)],
+            );
+            assert!(
+                app.dialog.is_some(),
+                "pressing the backdrop dismissed settings"
+            );
+            render(&mut app, &context, vec![egui::Event::PointerMoved(end)]);
+            render(&mut app, &context, vec![button(end, false)]);
+            assert!(
+                app.dialog.is_some(),
+                "a drag from the backdrop dismissed settings"
+            );
             click(&mut app, &context, egui::pos2(5.0, 5.0));
             assert!(
                 app.dialog.is_none(),
@@ -25408,6 +25646,217 @@ mod tests {
         frame(&mut app, 0.048, &[(Move, 255.0), (End, 295.0)]);
         frame(&mut app, 0.6, &[]);
         assert!(app.navigation_open);
+    }
+
+    #[test]
+    fn narrow_swipes_and_state_changes_continue_from_the_drawn_pose() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        let frame = |app: &mut CaperApp, time: f64, touch: Option<(egui::TouchPhase, f32)>| {
+            let mut events = Vec::new();
+            if let Some((phase, x)) = touch {
+                let pos = egui::pos2(x, 422.0);
+                events.push(egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId(1),
+                    phase,
+                    pos,
+                    force: None,
+                });
+                events.push(egui::Event::PointerMoved(pos));
+                if phase != egui::TouchPhase::Move {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: phase == egui::TouchPhase::Start,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            );
+            // The conversation's Browse button rides with the conversation.
+            node_center(&output, "Browse").x
+        };
+        use egui::TouchPhase::{End, Move, Start};
+        frame(&mut app, 0.0, None);
+        let rest = frame(&mut app, 0.016, None);
+        let travel = 390.0 + 16.0;
+        let pose = |x: f32| (x - rest) / travel;
+        // Browse starts opening from a button; the next frames show it moving.
+        app.navigation_open = true;
+        let mut time = 0.032;
+        let mut last = pose(frame(&mut app, time, None));
+        assert!(last > 0.0, "the first frame already moves");
+        while time < 0.1 {
+            time += 0.016;
+            let next = pose(frame(&mut app, time, None));
+            assert!(next > last && next < 1.0, "{next} after {last}");
+            last = next;
+        }
+        // A finger catches it mid-way: the conversation continues from where
+        // it was drawn, never jumping to the end the button was heading for.
+        frame(&mut app, time + 0.008, Some((Start, 195.0)));
+        let caught = pose(frame(&mut app, time + 0.016, Some((Move, 175.0))));
+        let expected = last - 20.0 / travel;
+        assert!(
+            caught <= last && (caught - expected).abs() < 0.08,
+            "caught at {caught}, drawn at {last}"
+        );
+        // Released held still, it settles back without jumping either.
+        let released = pose(frame(&mut app, time + 0.2, Some((End, 175.0))));
+        assert!(
+            (released - caught).abs() < 0.02,
+            "{released} after {caught}"
+        );
+        frame(&mut app, time + 1.0, None);
+        assert!(app.navigation_open, "still over half way, it stays open");
+        assert!((pose(frame(&mut app, time + 1.1, None)) - 1.0).abs() < 1e-3);
+        app.navigation_open = false;
+        frame(&mut app, time + 1.15, None);
+
+        // A state change mid-slide reverses from the drawn pose.
+        app.navigation_open = true;
+        let start = time + 1.2;
+        frame(&mut app, start, None);
+        let midway = pose(frame(&mut app, start + 0.04, None));
+        assert!(midway > 0.1 && midway < 0.95, "{midway}");
+        app.navigation_open = false;
+        let reversed = pose(frame(&mut app, start + 0.056, None));
+        assert!(
+            reversed <= midway && midway - reversed < 0.05,
+            "{reversed} after {midway}"
+        );
+        assert!(pose(frame(&mut app, start + 1.0, None)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn drawer_motion_is_frame_rate_independent_and_never_overshoots() {
+        use super::{DrawerMotion, NavigationSettle};
+        // The same moment reads the same pose at 30, 60 or 144 frames a second.
+        let run = |fps: f64| {
+            let mut drawer = DrawerMotion::default();
+            let dt = 1.0 / fps;
+            drawer.pose(0.0, dt, 1, false, None, true);
+            let mut poses = Vec::new();
+            let mut pass = 1;
+            let mut time = 0.0;
+            while time < 0.5 {
+                pass += 1;
+                time += dt;
+                let (pose, _) = drawer.pose(time, dt, pass, true, None, true);
+                poses.push((time, pose));
+            }
+            poses
+        };
+        let slow = run(30.0);
+        let fast = run(144.0);
+        for &(time, pose) in &slow {
+            let (_, nearest) = fast
+                .iter()
+                .min_by(|a, b| (a.0 - time).abs().total_cmp(&(b.0 - time).abs()))
+                .copied()
+                .unwrap();
+            assert!(
+                (pose - nearest).abs() < 0.08,
+                "{pose} vs {nearest} at {time}"
+            );
+        }
+        for poses in [&slow, &fast] {
+            assert!(poses.windows(2).all(|pair| pair[1].1 >= pair[0].1));
+            assert!(poses.iter().all(|(_, pose)| (0.0..=1.0).contains(pose)));
+            assert_eq!(poses.last().unwrap().1, 1.0);
+        }
+        // Every release curve, however fast the fling, stays between its ends.
+        for speed in [-20.0, 0.0, 1.0, 5.0, 50.0] {
+            let settle = NavigationSettle::release(0.3, 1.0, 0.0, speed);
+            let mut last = 0.3;
+            for step in 0..=40 {
+                let (pose, _) = settle.at(f64::from(step) * settle.duration / 40.0);
+                assert!(
+                    pose >= last - 1e-6 && pose <= 1.0,
+                    "{pose} at speed {speed}"
+                );
+                last = pose;
+            }
+            assert_eq!(settle.at(settle.duration), (1.0, true));
+        }
+    }
+
+    #[test]
+    fn drawer_motion_rests_at_once_with_reduced_motion_or_after_a_wide_layout() {
+        use super::DrawerMotion;
+        let mut drawer = DrawerMotion::default();
+        // First drawn: no slide in from nowhere.
+        assert_eq!(drawer.pose(0.0, 0.016, 1, true, None, true), (1.0, false));
+        // Reduced motion: state changes land immediately.
+        assert_eq!(
+            drawer.pose(0.016, 0.016, 2, false, None, false),
+            (0.0, false)
+        );
+        // A finger still poses it directly.
+        assert_eq!(
+            drawer.pose(0.032, 0.016, 3, false, Some(0.4), false),
+            (0.4, false)
+        );
+        // A pass without it (the wide layout) leaves nothing to animate back.
+        drawer.pose(0.048, 0.016, 4, false, None, true);
+        assert_eq!(drawer.pose(1.0, 0.016, 60, true, None, true), (1.0, false));
+        // With motion, a change animates and reports that it is moving.
+        let (pose, moving) = drawer.pose(1.016, 0.016, 61, false, None, true);
+        assert!(moving && pose < 1.0 && pose > 0.5, "{pose}");
+    }
+
+    #[test]
+    fn swipes_pick_the_drawer_that_shows_and_catch_settling_ones() {
+        use super::{NavigationSlide, navigation_slide, swipe_commits};
+        let slide = |browse, members, rightward| {
+            navigation_slide(browse, members, true, rightward).map(|slide| match slide {
+                NavigationSlide::Browse(open) => ("browse", open),
+                NavigationSlide::Members(open) => ("members", open),
+            })
+        };
+        let closed = (false, 0.0);
+        let open = (true, 1.0);
+        assert_eq!(slide(closed, closed, true), Some(("browse", true)));
+        assert_eq!(slide(closed, closed, false), Some(("members", true)));
+        assert_eq!(slide(open, closed, false), Some(("browse", false)));
+        assert_eq!(slide(open, closed, true), None);
+        assert_eq!(slide(closed, open, true), Some(("members", false)));
+        assert_eq!(slide(closed, open, false), None);
+        // Still sliding: a finger can push it on or pull it back.
+        assert_eq!(slide((true, 0.4), closed, true), Some(("browse", true)));
+        assert_eq!(slide((false, 0.4), closed, true), Some(("browse", true)));
+        assert_eq!(slide((false, 0.4), closed, false), Some(("browse", false)));
+        assert_eq!(slide(closed, (false, 0.3), false), Some(("members", true)));
+        assert_eq!(slide(closed, (true, 0.3), true), Some(("members", false)));
+        assert!(navigation_slide(closed, closed, false, false).is_none());
+        // Past half way, or a fling after 40pt, reaches the end; a fling back
+        // cancels.
+        assert!(swipe_commits(true, 0.5, 200.0, 0.0));
+        assert!(!swipe_commits(true, 0.49, 190.0, 0.0));
+        assert!(swipe_commits(true, 0.2, 40.0, 300.0));
+        assert!(!swipe_commits(true, 0.2, 39.0, 900.0));
+        assert!(!swipe_commits(true, 0.9, 350.0, -300.0));
+        assert!(swipe_commits(false, 0.5, 200.0, 0.0));
+        assert!(!swipe_commits(false, 0.7, 120.0, 0.0));
+        // A finger catching a settling drawer is judged by where it leaves it.
+        assert!(swipe_commits(false, 0.45, 20.0, 0.0));
     }
 
     #[test]
@@ -31280,6 +31729,9 @@ mod tests {
             app.startup_error.is_some(),
             "closing settings must not lose an error"
         );
+        // The backdrop closes on release; egui blocks the page beneath a
+        // modal until the frame after it last showed.
+        render(&mut app, &context, vec![]);
         click(&mut app, &context, egui::pos2(307.0, 867.0));
         let menu = render(&mut app, &context, vec![]);
         click(&mut app, &context, text_position(&menu, "Settings…"));
@@ -32261,6 +32713,79 @@ mod tests {
                 egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
             )), "{draft:?}: Attach must be inside the message box");
         }
+    }
+
+    #[test]
+    fn a_touch_flick_from_an_image_never_opens_it_on_release() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let gif = text_position(&output, "GIF");
+        // What egui-winit sends for one finger: the release keeps the last
+        // moved position, and a fast flick's final stretch arrives with it.
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(1),
+            phase,
+            pos,
+            force: None,
+        };
+        let flick = |app: &mut CaperApp, lift: egui::Pos2, hook: bool| {
+            render(
+                app,
+                &context,
+                vec![
+                    touch(egui::TouchPhase::Start, gif),
+                    egui::Event::PointerMoved(gif),
+                    egui::Event::PointerButton {
+                        pos: gif,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            let mut events = vec![
+                touch(egui::TouchPhase::End, lift),
+                egui::Event::PointerButton {
+                    pos: gif,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerGone,
+            ];
+            if hook {
+                super::pointer_follows_touch_release(&mut events);
+            }
+            render(app, &context, events);
+            render(app, &context, vec![]);
+            app.viewer.take().is_some()
+        };
+        let away = gif + egui::vec2(-120.0, 0.0);
+        assert!(
+            flick(&mut app, away, false),
+            "egui alone treats it as a tap"
+        );
+        assert!(!flick(&mut app, away, true), "a flick is not a tap");
+        // A still tap still opens it.
+        assert!(flick(&mut app, gif, true));
+        let mut tap = vec![
+            touch(egui::TouchPhase::End, gif),
+            egui::Event::PointerButton {
+                pos: gif,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        super::pointer_follows_touch_release(&mut tap);
+        assert_eq!(tap.len(), 2, "nothing to add when it lifts where it moved");
     }
 
     #[test]

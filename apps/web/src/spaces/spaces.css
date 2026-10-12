@@ -2222,6 +2222,9 @@
    room is captured; the rest of the page stays live. */
 html[data-browse-transition] {
   view-transition-name: none;
+  /* Touches during a slide land here, under its snapshots; a horizontal drag
+     catches the slide (browseTransition.ts) instead of panning the page. */
+  touch-action: pan-y pinch-zoom;
 }
 html[data-browse-transition] .call-room.spaces-room {
   view-transition-name: browse-room;

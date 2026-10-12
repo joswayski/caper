@@ -1886,12 +1886,15 @@ export default function Spaces({
     navigationTarget.current = open;
     showNavigation(open);
   }, []);
-  const setNavigationOpen = useCallback((next: boolean | ((open: boolean) => boolean)) => {
-    const open = typeof next === "function" ? next(navigationTarget.current) : next;
-    if (open === navigationTarget.current) return;
-    navigationTarget.current = open;
-    transitionBrowse(open, () => showNavigation(open));
-  }, []);
+  const setNavigationOpen = useCallback(
+    (next: boolean | ((open: boolean) => boolean)) => {
+      const open = typeof next === "function" ? next(navigationTarget.current) : next;
+      if (open === navigationTarget.current) return;
+      navigationTarget.current = open;
+      transitionBrowse(open, changeNavigation);
+    },
+    [changeNavigation],
+  );
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const channelNavigationRef = useRef<HTMLElement>(null);

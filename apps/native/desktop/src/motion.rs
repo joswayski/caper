@@ -11,6 +11,83 @@ use eframe::egui::{
     self, Color32, Context, Id, LayerId, Pos2, Shape, Vec2, emath::TSTransform, layers::ShapeIdx,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static REDUCED: AtomicBool = AtomicBool::new(false);
+
+/// The system asks for less motion (web's `prefers-reduced-motion`): slides
+/// and entrances show their resting pose at once.
+pub fn reduced() -> bool {
+    REDUCED.load(Ordering::Relaxed)
+}
+
+/// Reads the system's setting off the UI thread and repaints if it asks for
+/// less motion. GNOME's "Animations" (`enable-animations`), KDE's animation
+/// speed set to instant, and Windows' "Animation effects" (`MinAnimate`) count.
+pub fn watch_reduced(context: &Context) {
+    let context = context.clone();
+    std::thread::spawn(move || {
+        if system_reduces_motion() {
+            REDUCED.store(true, Ordering::Relaxed);
+            context.request_repaint();
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn system_reduces_motion() -> bool {
+    let gnome = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "false");
+    let kde = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
+        })
+        .and_then(|config| std::fs::read_to_string(config.join("kdeglobals")).ok())
+        .is_some_and(|globals| kde_animations_off(&globals));
+    gnome || kde
+}
+
+#[cfg(target_os = "windows")]
+fn system_reduces_motion() -> bool {
+    winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey("Control Panel\\Desktop\\WindowMetrics")
+        .and_then(|key| key.get_value::<String, _>("MinAnimate"))
+        .is_ok_and(|value| value.trim() == "0")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn system_reduces_motion() -> bool {
+    false
+}
+
+/// `AnimationDurationFactor=0` in `kdeglobals`' `[KDE]` group: "Instant".
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn kde_animations_off(globals: &str) -> bool {
+    let mut group = "";
+    for line in globals.lines().map(str::trim) {
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            group = name;
+        } else if group == "KDE"
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "AnimationDurationFactor"
+        {
+            return value
+                .trim()
+                .parse::<f32>()
+                .is_ok_and(|factor| factor <= 0.0);
+        }
+    }
+    false
+}
 
 /// `--motion-fast`, `--motion-base` and `--motion-slow` in seconds.
 pub const FAST: f32 = 0.14;
@@ -30,7 +107,7 @@ fn enabled_id() -> Id {
 fn enabled(context: &Context) -> bool {
     context
         .data(|data| data.get_temp(enabled_id()))
-        .unwrap_or(!cfg!(test))
+        .unwrap_or(!cfg!(test) && !reduced())
 }
 
 #[cfg(test)]
@@ -125,6 +202,30 @@ fn settle_range(
         for index in range.start..range.end.min(shapes.next_idx().0) {
             shapes.mutate_shape(ShapeIdx(index), |clipped| {
                 clipped.shape.transform(transform);
+                fade(&mut clipped.shape, opacity);
+            });
+        }
+    });
+}
+
+/// Like [`settle`] for shapes in `range`, but their clip rectangles travel
+/// with them: content a finger drags past its frame is carried, not cut off.
+pub fn carry(
+    context: &Context,
+    layer: LayerId,
+    range: std::ops::Range<usize>,
+    opacity: f32,
+    transform: TSTransform,
+) {
+    if opacity >= 1.0 && transform == TSTransform::IDENTITY {
+        return;
+    }
+    context.graphics_mut(|graphics| {
+        let shapes = graphics.entry(layer);
+        for index in range.start..range.end.min(shapes.next_idx().0) {
+            shapes.mutate_shape(ShapeIdx(index), |clipped| {
+                clipped.shape.transform(transform);
+                clipped.clip_rect = transform * clipped.clip_rect;
                 fade(&mut clipped.shape, opacity);
             });
         }
@@ -283,8 +384,18 @@ impl Arrivals {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARRIVAL, Arrivals, BASE, enable, entrance};
+    use super::{ARRIVAL, Arrivals, BASE, enable, entrance, kde_animations_off};
     use eframe::egui;
+
+    #[test]
+    fn kde_instant_animations_reduce_motion() {
+        assert!(kde_animations_off(
+            "[General]\nfoo=1\n[KDE]\nAnimationDurationFactor=0\n"
+        ));
+        assert!(!kde_animations_off("[KDE]\nAnimationDurationFactor=0.5\n"));
+        assert!(!kde_animations_off("[Other]\nAnimationDurationFactor=0\n"));
+        assert!(!kde_animations_off(""));
+    }
 
     /// Runs one pass at `time` seconds and returns the entrance's progress.
     fn entrance_at(context: &egui::Context, time: f64, motion: bool) -> f32 {

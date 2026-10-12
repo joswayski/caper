@@ -2338,6 +2338,36 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(iOS)
+    /// The conversation moves with the finger, so a swipe lifts on the control
+    /// it started on: opening Browse from a mention or an author must not also
+    /// open their card (as swiping from an image opened the media viewer).
+    func testSwipeFromMessageControlsDoesNotTapThem() throws {
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m04"], timeout: 30,
+                              "Missing the seeded message that mentions you")
+        let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
+                               timeout: 5, "The @fixture_owner pill must be a link")
+        let author = row.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open profile for")).firstMatch
+        let close = app.buttons["Close navigation"]
+        let browser = app.descendants(matching: .any)["channel-browser"]
+        let navigation = app.buttons["Back to Browse"]
+        for control in [pill, author] where control.exists {
+            let start = control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: app.frame.width * 0.8, dy: 0)),
+                        withVelocity: .fast, thenHoldForDuration: 0)
+            XCTAssertTrue(close.waitForExistence(timeout: 3), "Swiping right from a message control opens Browse")
+            XCTAssertFalse(app.descendants(matching: .any)["mention-card"].waitForExistence(timeout: 1),
+                           "Lifting a swipe must not open the card under the finger")
+            browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
+                thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+            XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
+        }
+        // A plain tap still opens it, once the swipe has lifted.
+        Thread.sleep(forTimeInterval: 0.3)
+        pill.tap()
+        _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
+    }
+
     func testNarrowConversationAndBrowse() {
         let app = launch()
         let navigation = app.buttons["Back to Browse"]
