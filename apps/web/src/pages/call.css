@@ -1706,25 +1706,28 @@
   min-height: 34px;
   padding: 0 12px;
 }
-/* Disconnect reads as such: red at rest, stronger on hover or focus. */
+/* Disconnect reads as such by its red icon and text alone; hover and focus
+   add only the neutral wash other header controls use. */
 .header-voice .voice-leave {
   width: auto;
   min-height: 34px;
   gap: 6px;
   padding: 0 12px;
-  border: 1px solid rgb(212 67 85 / 0.45);
+  border: 0;
   border-radius: 8px;
   color: #ff7182;
-  background: rgb(212 67 85 / 0.14);
+  background: transparent;
   font-size: 0.78rem;
   font-weight: 700;
 }
 .header-voice .voice-leave:focus-visible {
-  background: rgb(212 67 85 / 0.26);
+  color: #ff7182;
+  background: var(--surface);
 }
 @media (hover: hover) {
   .header-voice .voice-leave:hover {
-    background: rgb(212 67 85 / 0.26);
+    color: #ff7182;
+    background: var(--surface);
   }
 }
 /* People are talking here: Join glows softly until you are in. */
@@ -1778,7 +1781,6 @@
   }
   .chat-heading .header-voice .voice-leave {
     color: #ff7182;
-    background: rgb(212 67 85 / 0.18);
   }
   .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
     background: rgb(182 77 50 / 0.16);

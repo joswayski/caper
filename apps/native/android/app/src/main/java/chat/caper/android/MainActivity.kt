@@ -1290,10 +1290,9 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             }
         }
         val padding = PaddingValues(horizontal = 12.dp)
-        // Web: disconnect is red in the header, on a red wash with a red-tinted border.
-        if (action == HeaderVoiceAction.Leave) OutlinedButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
-            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(containerColor = LeaveWash, contentColor = HeaderRed),
-            border = BorderStroke(1.dp, LeaveBorder), contentPadding = padding) {
+        // Web: disconnect reads as such by its red icon and text alone, with no fill or border.
+        if (action == HeaderVoiceAction.Leave) TextButton(onLeave, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Leave voice" },
+            shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = HeaderRed), contentPadding = padding) {
             Icon(painterResource(R.drawable.lucide_phone_off), null, Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
             Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
@@ -1319,19 +1318,15 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) { content() }
 }
 
-/** Phones' icon-only Leave, red on a red wash: it ends the call the same way as the dock's. */
+/** Phones' icon-only Leave, a red icon only: it ends the call the same way as the dock's. */
 @Composable private fun HeaderLeaveIcon(onLeave: () -> Unit) {
-    IconButton(onLeave, Modifier.size(48.dp).background(LeaveWashPhone, RoundedCornerShape(6.dp))) {
+    IconButton(onLeave, Modifier.size(48.dp)) {
         Icon(painterResource(R.drawable.lucide_phone_off), "Leave voice", Modifier.size(20.dp), tint = HeaderRed)
     }
 }
 
 /** Web's header red: Leave, and the phone header's active mute and deafen. */
 private val HeaderRed = Color(0xFFFF7182)
-/** Web's Leave wash, rgb(212 67 85 / 0.14), and its border at 0.45; phones use a 0.18 wash. */
-private val LeaveWash = Color(0x24D44355)
-private val LeaveBorder = Color(0x73D44355)
-private val LeaveWashPhone = Color(0x2ED44355)
 /** Web's occupied Join on phones: rgb(182 77 50 / 0.16). */
 private val OccupiedJoinWash = Color(0x29B64D32)
 /** Web's `voice-join-glow` colour, rgb(219 104 73). */

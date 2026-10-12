@@ -138,7 +138,7 @@ in voice" beneath it) opens the channel's menu of Pins and Members, and one
 bordered group holds icon-only voice buttons (headphones to join or switch;
 mute, deafen and a red disconnect while in voice, also in a DM). While others
 are in a channel's voice and you are not, its Join glows softly (static with
-reduced motion); Leave is red in every header. Phones show no faces in the
+reduced motion); Leave is a red icon and label, with no fill or border, in every header. Phones show no faces in the
 header: the subtitle already says how many are in voice, and Browse lists them.
 Voice errors appear above the composer, and channels, rosters, the account bar
 and the voice dock stay in Browse.

@@ -1543,8 +1543,6 @@ private struct CompactVoiceGroup: ViewModifier {
 
 /// Web's #ff7182: a muted microphone, deafened audio and the header's disconnect.
 private let headerVoiceAlert = Color(red: 1, green: 113/255, blue: 130/255)
-/// Web's rgb(212 67 85): the tint behind the header's disconnect.
-private let headerVoiceDanger = Color(red: 212/255, green: 67/255, blue: 85/255)
 
 /// Web's voice-join-glow: a soft terracotta glow pulsing on a 2.4s cycle while
 /// people are in voice here and you are not; Reduce Motion keeps it still.
@@ -1634,8 +1632,8 @@ private struct HeaderLeaveButton: View {
             }
         }
         Group {
-            // Disconnect is red everywhere in the header, as on web.
-            if compact { button.buttonStyle(HeaderVoiceIconButton(tint: headerVoiceAlert, fill: headerVoiceDanger.opacity(0.18))) }
+            // Disconnect is a red icon and label everywhere in the header, with no fill or border, as on web.
+            if compact { button.buttonStyle(HeaderVoiceIconButton(tint: headerVoiceAlert)) }
             else { button.buttonStyle(HeaderLeaveButtonStyle()).fixedSize() }
         }
         .help(connected ? "Disconnect" : "Cancel joining voice")
@@ -1644,7 +1642,8 @@ private struct HeaderLeaveButton: View {
     }
 }
 
-/// The wider header's labelled disconnect: #ff7182 on a red tint with a red-tinted border.
+/// The wider header's labelled disconnect: #ff7182 text and icon only; pressing
+/// adds the neutral raised wash other header controls use.
 private struct HeaderLeaveButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(12, weight: .bold))
@@ -1655,8 +1654,7 @@ private struct HeaderLeaveButtonStyle: ButtonStyle {
             #else
             .frame(minHeight: 30)
             #endif
-            .background(headerVoiceDanger.opacity(configuration.isPressed ? 0.26 : 0.14))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(headerVoiceDanger.opacity(0.45)))
+            .background(configuration.isPressed ? CaperTheme.raised : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
             .modifier(ControlHover())

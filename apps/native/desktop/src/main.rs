@@ -8649,7 +8649,7 @@ impl CaperApp {
                     &mut ui,
                     NavIcon::PhoneOff,
                     (MUTED_MIC, MUTED_MIC),
-                    Some((LEAVE_TINT, LEAVE_HOVER)),
+                    None,
                     "Leave voice",
                 );
                 if button.on_hover_text("Leave this voice channel").clicked() {
@@ -15120,9 +15120,6 @@ fn voice_icon_button(
     response
 }
 
-/// Phones' Leave: a red tint behind the red icon.
-const LEAVE_TINT: Color32 = Color32::from_rgba_unmultiplied_const(212, 67, 85, 46);
-const LEAVE_HOVER: Color32 = Color32::from_rgba_unmultiplied_const(212, 67, 85, 66);
 /// Phones' occupied Join: a faint terracotta tint.
 const OCCUPIED_JOIN_TINT: Color32 = Color32::from_rgba_unmultiplied_const(182, 77, 50, 41);
 /// Web's `voice-join-glow`: one 2.4s ease-in-out breath.
@@ -16833,23 +16830,12 @@ const VOICE_TONE: Tone = Tone {
     ),
 };
 
-/// Web's `.header-voice .voice-leave`: red on a red tint, with a red border.
+/// Web's `.header-voice .voice-leave`: red text and icon only; hover and
+/// press add the neutral wash other header controls use.
 const HANGUP_TONE: Tone = Tone {
-    rest: (
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 36),
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 115),
-        MUTED_MIC,
-    ),
-    hover: (
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 66),
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 115),
-        MUTED_MIC,
-    ),
-    press: (
-        Color32::from_rgba_unmultiplied_const(212, 67, 85, 66),
-        MUTED_MIC,
-        MUTED_MIC,
-    ),
+    rest: (Color32::TRANSPARENT, Color32::TRANSPARENT, MUTED_MIC),
+    hover: (RAISED, Color32::TRANSPARENT, MUTED_MIC),
+    press: (COMPOSER, Color32::TRANSPARENT, MUTED_MIC),
 };
 
 /// Adds `button` with `tone`'s hover and pressed states. An explicit
@@ -21185,11 +21171,12 @@ mod tests {
         for button in [mute, deafen, leave] {
             assert_eq!(button.size(), egui::vec2(42.0, 44.0));
         }
-        // Leave is red: a red tint behind it.
+        // Leave is a red icon only: nothing fills or outlines it at rest.
         assert!(
-            closed.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.rect == leave && rect.fill == super::LEAVE_TINT)),
-            "Leave sits on a red tint"
+            !closed.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect == leave
+                    && (rect.fill != super::Color32::TRANSPARENT || rect.stroke.width > 0.0))),
+            "Leave has no fill or border"
         );
         let people = app.voice_people("chan00000001").0;
         if let Some(summary) = super::voice_summary(&people) {
@@ -22137,13 +22124,15 @@ mod tests {
             })
             .expect("the header offers Leave");
         assert!(leave.x > 340.0);
+        // Red text and icon only: no fill or border while at rest.
         assert!(
-            output.shapes.iter().any(|shape| matches!(&shape.shape,
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::Rect(rect) if rect.rect.contains(leave)
                     && rect.rect.height() == 34.0
-                    && rect.fill == super::HANGUP_TONE.rest.0
-                    && rect.stroke.color == super::HANGUP_TONE.rest.1)),
-            "the header's Leave is red on a red tint with a red border"
+                    && (rect.fill != super::Color32::TRANSPARENT
+                        || (rect.stroke.width > 0.0
+                            && rect.stroke.color != super::Color32::TRANSPARENT)))),
+            "the header's Leave has no fill or border"
         );
         assert_eq!(super::HANGUP_TONE.rest.2, super::MUTED_MIC);
         click(&mut app, &context, leave);
