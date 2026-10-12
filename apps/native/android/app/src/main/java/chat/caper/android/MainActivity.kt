@@ -167,6 +167,7 @@ import chat.caper.android.data.messageRequests
 import chat.caper.android.data.withFreshUrls
 import chat.caper.android.data.ADMIN_BADGE
 import chat.caper.android.data.CAPER_TEAM_NOTIFIED
+import chat.caper.android.data.CAPER_DM_EMPTY_NOTE
 import chat.caper.android.data.notifiesCaperTeam
 import chat.caper.android.data.visitTitle
 import chat.caper.android.model.*
@@ -2364,13 +2365,19 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         } }
         if (empty) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            // Inset like messages, so longer notes wrap clear of the edges on phones.
+            Column(Modifier.padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
                     Text("You can message yourself here to keep notes, reminders, and ideas.", color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 } else {
                     Text("No messages yet.", color = TextMuted)
                     val name = state.selectedChannel?.name.orEmpty()
-                    if (state.visit == null) Text(if (state.selectedChannel?.direct == true) "Only you and $name can read this conversation." else "Start the conversation in #$name.", color = TextMuted, fontSize = 12.sp)
+                    if (state.visit == null) Text(when {
+                        state.selectedChannel?.direct != true -> "Start the conversation in #$name."
+                        // The Caper DM: each top-level message becomes a report the team answers in its thread.
+                        state.selectedDirect?.peer?.team == true -> CAPER_DM_EMPTY_NOTE
+                        else -> "Only you and $name can read this conversation."
+                    }, color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         } }

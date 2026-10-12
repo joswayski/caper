@@ -960,6 +960,7 @@ mod tests {
                 username: username.into(),
                 display_name: display_name.into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),

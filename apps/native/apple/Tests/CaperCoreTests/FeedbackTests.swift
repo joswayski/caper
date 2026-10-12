@@ -115,6 +115,22 @@ final class FeedbackTests: XCTestCase {
         XCTAssertTrue(archived.archived)
     }
 
+    func testCaperDirectMessagePeerIsTheTeam() throws {
+        let response = try JSONDecoder().decode(DirectMessagesResponse.self, from: Data(#"""
+        {"conversations":[
+          {"id":"dm0000000001","peer":{"id":"Caper0000001","username":"caper","displayName":"Caper","team":true},"lastSeq":"1","readSeq":"0","status":"accepted"},
+          {"id":"dm0000000002","peer":{"id":"Pat000000001","username":"pat","displayName":"Pat"},"lastSeq":"0","readSeq":"0"}
+        ]}
+        """#.utf8))
+        let caper = response.conversations[0].peer, pat = response.conversations[1].peer
+        XCTAssertTrue(caper.isTeam)
+        XCTAssertFalse(pat.isTeam, "missing means false")
+        XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: caper, name: "Caper"),
+                       "Messages here go to the Caper team. They’ll reply in a thread on each one.")
+        XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: pat, name: "Pat"), "Only you and Pat can read this conversation.")
+        XCTAssertEqual(FeedbackInbox.emptyDirectNote(peer: nil, name: "Pat"), "Only you and Pat can read this conversation.")
+    }
+
     func testVisitorAdminAndFeedbackMentionDecode() throws {
         let history = try JSONDecoder().decode(ChatHistory.self, from: Data(#"""
         {"space":{"id":"","name":"Direct messages"},"channel":{"id":"Dm0000000001","name":"Alice & Bob","direct":true},

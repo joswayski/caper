@@ -2811,7 +2811,8 @@ private struct ChatView: View {
                                         .font(CaperTheme.font(14, weight: .medium)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
                                 } else {
                                     Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                    Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : FeedbackInbox.emptyDirectNote(peer: model.selectedDirectMessage?.peer, name: chat.channelName))
+                                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center).padding(.horizontal, 24)
                                 }
                             }.padding(.top, 80)
                         }

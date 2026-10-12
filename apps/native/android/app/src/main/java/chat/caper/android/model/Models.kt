@@ -38,7 +38,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val direct: Boolean = false,
     val joined: Boolean = true,
 )
-@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+/** [team]: the server's "Caper" account; every top-level message to it reaches the Caper team. */
+@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false)
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means

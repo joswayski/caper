@@ -76,6 +76,11 @@ public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public let username: String
     public let displayName: String
     public var avatarId: Int? = nil
+    /// The server-side "Caper" account: every top-level message sent to it is
+    /// a feedback report. Missing means false.
+    public var team: Bool? = nil
+
+    public var isTeam: Bool { team == true }
 }
 
 public struct DirectMessageConversation: Codable, Equatable, Identifiable, Sendable {

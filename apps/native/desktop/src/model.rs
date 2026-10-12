@@ -86,6 +86,10 @@ pub struct DirectPeer {
     pub display_name: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// The server's "Caper" account: messages there reach the feedback team.
+    /// Old servers omit it.
+    #[serde(default)]
+    pub team: bool,
 }
 
 /// Whether a DM is a message request. Old servers omit it: `Accepted`.
@@ -3139,6 +3143,14 @@ mod tests {
             "old servers omit status"
         );
         assert!(!direct.blocked, "old servers omit blocked");
+        assert!(!direct.peer.team, "old servers omit team");
+        let caper: DirectConversations = serde_json::from_value(serde_json::json!({
+            "conversations": [{"id": "dm0000000009", "lastSeq": "0", "readSeq": "0",
+                "status": "accepted",
+                "peer": {"id": "team", "username": "caper", "displayName": "Caper", "team": true}}]
+        }))
+        .unwrap();
+        assert!(caper.conversations[0].peer.team);
         assert_eq!(direct.peer.avatar_id, None);
     }
 

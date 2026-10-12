@@ -4,6 +4,7 @@ import chat.caper.android.model.Account
 import chat.caper.android.model.ChatContent
 import chat.caper.android.model.ChatHistory
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.DirectConversationList
 import chat.caper.android.model.FeedbackReports
 import chat.caper.android.model.MessageMention
 import chat.caper.android.model.ThreadHistory
@@ -25,6 +26,14 @@ class FeedbackTest {
          "text":"","attachments":2,"reporter":{"id":"bob000000001","username":"bob","displayName":"Bob","avatarId":null},
          "channel":{"id":"direct000001","name":"Alice & Bob","direct":true},"space":null,"replyCount":0,"answered":false,"future":1}
         ],"cursor":"123"}""")
+
+    @Test fun `the Caper DM's peer is marked team, and the empty note says where messages go`() {
+        val list = json.decodeFromString<DirectConversationList>("""{"conversations":[
+            {"id":"direct000001","peer":{"id":"caper0000001","username":"caper","displayName":"Caper","avatarId":1,"team":true},"lastSeq":"0","readSeq":"0","status":"accepted"},
+            {"id":"direct000002","peer":{"id":"sam000000001","username":"sam","displayName":"Sam"},"lastSeq":"0","readSeq":"0"}]}""").conversations
+        assertEquals(listOf(true, false), list.map { it.peer.team })
+        assertEquals("Messages here go to the Caper team. They’ll reply in a thread on each one.", CAPER_DM_EMPTY_NOTE)
+    }
 
     @Test fun `the account says whether it is on the feedback team`() {
         assertTrue(json.decodeFromString<Account>("""{"id":"account00001","username":"jose","displayName":"Jose","feedbackTeam":true}""").feedbackTeam)

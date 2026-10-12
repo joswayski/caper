@@ -1379,6 +1379,7 @@ impl CaperApp {
                             username: username.into(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: Some(avatar),
+                            team: false,
                         };
                     let direct =
                         |id: &str, peer: model::DirectPeer, status| model::DirectConversation {
@@ -1471,6 +1472,7 @@ impl CaperApp {
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
                             avatar_id: None,
+                            team: false,
                         },
                         last_seq: "2".into(),
                         read_seq: "2".into(),
@@ -1526,6 +1528,7 @@ impl CaperApp {
                             username: name.to_lowercase(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: None,
+                            team: false,
                         },
                         last_seq: "4".into(),
                         read_seq: "1".into(),
@@ -3400,6 +3403,8 @@ impl CaperApp {
             return String::new();
         }
         match self.selected_direct_conversation() {
+            // The Caper DM: every top-level message there is a report.
+            Some(direct) if direct.peer.team => TEAM_DM_NOTE.to_owned(),
             Some(direct) => format!(
                 "Only you and {} can read this conversation.",
                 direct.peer.display_name
@@ -17801,6 +17806,10 @@ fn rich_text(
     body
 }
 
+/// Under "No messages yet." in the Caper DM.
+const TEAM_DM_NOTE: &str =
+    "Messages here go to the Caper team. They’ll reply in a thread on each one.";
+
 /// Web's confirmation after inviting someone to a space or a private channel.
 const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
 
@@ -20523,6 +20532,7 @@ mod tests {
                 username: "kim".into(),
                 display_name: "TEST FIXTURE Kim".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "1".into(),
             read_seq: "0".into(),
@@ -23344,6 +23354,7 @@ mod tests {
                 username: "maya".into(),
                 display_name: "TEST FIXTURE Maya".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -26329,6 +26340,7 @@ mod tests {
             username: "newbie".into(),
             display_name: "Newbie".into(),
             avatar_id: None,
+            team: false,
         };
         assert_eq!(
             names(&app, ""),
@@ -27144,6 +27156,7 @@ mod tests {
                 username: "alex".into(),
                 display_name: "Alex".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -28946,6 +28959,7 @@ mod tests {
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "3".into(),
             read_seq: "2".into(),
@@ -29003,6 +29017,7 @@ mod tests {
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
@@ -31065,6 +31080,20 @@ mod tests {
     }
 
     #[test]
+    fn the_caper_dm_explains_where_messages_go() {
+        let (_, mut app) = fixture("parity-direct");
+        assert_eq!(
+            app.empty_conversation_note(),
+            "Only you and TEST FIXTURE Maya can read this conversation."
+        );
+        app.directs[0].peer.team = true;
+        assert_eq!(
+            app.empty_conversation_note(),
+            "Messages here go to the Caper team. They’ll reply in a thread on each one."
+        );
+    }
+
+    #[test]
     fn direct_read_cursor_requires_foreground_and_never_regresses() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -31081,6 +31110,7 @@ mod tests {
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),
                 avatar_id: None,
+                team: false,
             },
             last_seq: "9".into(),
             read_seq: "1".into(),
