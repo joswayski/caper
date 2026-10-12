@@ -214,6 +214,7 @@ import kotlinx.coroutines.launch
                 }
                 field = limited; text(limited.text)
             }, Modifier.weight(1f), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+            visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
             leadingIcon = {
                 AttachButton(
                     when {

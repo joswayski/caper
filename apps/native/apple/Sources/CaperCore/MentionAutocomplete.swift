@@ -243,6 +243,18 @@ enum MentionAutocomplete {
         return (result, NSRange(location: match.replacementRange.location + insertion.utf16.count, length: 0))
     }
 
+    /// Complete locally known names, without changing the editable text or its UTF-16 offsets.
+    static func draftHighlights(in text: String, source: MentionSource) -> [NSRange] {
+        let people = Set(source.members.map { $0.username.lowercased() })
+        return tokens(in: text).filter { token in
+            switch token.name {
+            case "everyone", "here": return source.specials
+            case let name where isFeedbackAlias(name): return source.feedback
+            default: return people.contains(token.name)
+            }
+        }.map { NSRange($0.range, in: text) }
+    }
+
     // MARK: Messages
 
     /// Every grammar token in `text`, in order (names of 1–32 characters).

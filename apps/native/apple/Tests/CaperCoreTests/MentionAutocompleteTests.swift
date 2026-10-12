@@ -15,6 +15,19 @@ final class MentionAutocompleteTests: XCTestCase {
     }
     private var space: MentionSource { .space(members: members, excluding: selfID) }
 
+    func testDraftHighlightsUseCompleteNamesAndConversationScope() {
+        let text = "🙂 @Alice, @ali @missing bob@alice.com @@alice (@feedback)\n@Here @everyone @feedbacks"
+        func highlighted(_ source: MentionSource) -> [String] {
+            MentionAutocomplete.draftHighlights(in: text, source: source).map { (text as NSString).substring(with: $0) }
+        }
+        XCTAssertEqual(highlighted(space), ["@Alice", "@feedback", "@Here", "@everyone"])
+        XCTAssertEqual(MentionAutocomplete.draftHighlights(in: text, source: space).first, NSRange(location: 3, length: 6))
+        XCTAssertEqual(highlighted(MentionSource(members: space.members, specials: false)), ["@Alice", "@feedback"])
+        XCTAssertTrue(highlighted(.empty).isEmpty)
+        let long = String(repeating: "a", count: 33)
+        XCTAssertTrue(MentionAutocomplete.draftHighlights(in: "@\(long)", source: MentionSource(members: [.member(id: "long", username: long, displayName: long)], specials: true)).isEmpty)
+    }
+
     private func caret(_ text: String) -> NSRange { NSRange(location: (text as NSString).length, length: 0) }
     private func query(_ text: String, selection: NSRange? = nil, markedText: Bool = false) -> MentionQuery? {
         MentionAutocomplete.activeQuery(text: text, selection: selection ?? caret(text), markedText: markedText)

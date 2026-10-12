@@ -149,6 +149,19 @@ export interface MentionSegment {
   user?: MentionedUser;
 }
 
+/** Preview complete names from this conversation; sending still resolves them on the server. */
+export function draftMentionSegments(
+  text: string,
+  people: MentionCandidate[] = [],
+  specials = false,
+): MentionSegment[] {
+  return mentionSegments(text, [
+    ...people.map((person) => ({ type: "user", id: person.id, username: person.username })),
+    { type: "feedback" },
+    ...(specials ? [{ type: "everyone" }, { type: "here" }] : []),
+  ]);
+}
+
 /** Splits message text into plain runs and mentions the server resolved. */
 export function mentionSegments(text: string, mentions: ChatMention[] | undefined): MentionSegment[] {
   const resolved = new Map<string, MentionedUser | undefined>();

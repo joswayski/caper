@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+  draftMentionSegments,
   excludePeople,
   insertMention,
   mentionCardPerson,
@@ -69,6 +70,34 @@ test("insertion replaces the token, adds a space and enforces the limit", () => 
   const long = `${"🙂".repeat(3994)} @m`;
   assert.equal(insertMention(long, mentionToken(long, long.length)!, "maya"), undefined);
   assert.ok(insertMention(long, mentionToken(long, long.length)!, "mo"));
+});
+
+test("drafts highlight complete known names and team aliases, with channel specials only in channels", () => {
+  const text = "🙂 @Maya, @ma @missing bob@maya.com @@maya (@feedback)\n@Here @everyone @feedbacks";
+  const channel = draftMentionSegments(text, members, true);
+  assert.equal(channel.map((segment) => segment.text).join(""), text);
+  assert.deepEqual(
+    channel.filter((segment) => segment.mention).map((segment) => segment.text),
+    ["@Maya", "@feedback", "@Here", "@everyone"],
+  );
+  assert.deepEqual(
+    draftMentionSegments(text, members, false)
+      .filter((segment) => segment.mention)
+      .map((segment) => segment.text),
+    ["@Maya", "@feedback"],
+  );
+  assert.deepEqual(
+    draftMentionSegments("@maya @Admin")
+      .filter((segment) => segment.mention)
+      .map((segment) => segment.text),
+    ["@Admin"],
+  );
+  assert.deepEqual(
+    draftMentionSegments(`@${"a".repeat(33)}`, [{ id: "long", username: "a".repeat(33), displayName: "Long" }]).filter(
+      (segment) => segment.mention,
+    ),
+    [],
+  );
 });
 
 test("only server-resolved names render as mentions", () => {

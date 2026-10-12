@@ -4229,7 +4229,8 @@ private struct MentionCardView: View {
                     NativeMessageComposer(text: Binding(get: { draft.text }, set: { if draft.editable { draft.text = $0 } }),
                                           placeholder: "Message @\(person.username ?? person.title)", controller: autocomplete, mentions: .empty,
                                           submit: { send() }, editable: draft.editable && pending == nil,
-                                          accessibilityID: "mention-card-composer", pasteAttachments: uploadsAvailable ? pasteAttachments : nil)
+                                          accessibilityID: "mention-card-composer", pasteAttachments: uploadsAvailable ? pasteAttachments : nil,
+                                          highlightSource: MentionSource(members: person.username.map { [.member(id: person.id, username: $0, displayName: person.title)] } ?? [], specials: false))
                 }
                 .frame(minHeight: 42, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
                 Button {

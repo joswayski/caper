@@ -315,6 +315,21 @@ fn tokens(text: &str) -> Vec<(Range<usize>, String)> {
     found
 }
 
+/// Complete names known to this composer. Ranges remain UTF-8 bytes; text and cursors are unchanged.
+pub fn draft_highlights(text: &str, people: &[Person], specials: Specials) -> Vec<Range<usize>> {
+    tokens(text)
+        .into_iter()
+        .filter(|(_, name)| match name.as_str() {
+            "everyone" | "here" => specials.channel,
+            name if FEEDBACK_ALIASES.contains(&name) => specials.feedback,
+            name => people
+                .iter()
+                .any(|person| person.username.eq_ignore_ascii_case(name)),
+        })
+        .map(|(range, _)| range)
+        .collect()
+}
+
 /// The server entry backing a token's lowercase name. Unresolved names, and
 /// `everyone`/`here` without their entry (as in DMs), stay plain. One
 /// `feedback` entry backs every team-name token (`@feedback`, `@caper`, …).
@@ -481,6 +496,40 @@ mod tests {
 
     fn user(id: &str, username: &str) -> Mention {
         entry("user", Some(id), Some(username))
+    }
+
+    #[test]
+    fn draft_highlights_match_whole_known_names_and_conversation_scope() {
+        let text =
+            "🙂 @Maya, @ma @missing bob@maya.com @@maya (@feedback)\n@Here @everyone @feedbacks";
+        let people = [person("maya", "Maya")];
+        let specials = Specials {
+            channel: true,
+            feedback: true,
+        };
+        let highlighted = |specials| {
+            draft_highlights(text, &people, specials)
+                .into_iter()
+                .map(|range| &text[range])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            highlighted(specials),
+            ["@Maya", "@feedback", "@Here", "@everyone"]
+        );
+        assert_eq!(draft_highlights(text, &people, specials)[0], 5..10);
+        assert_eq!(
+            highlighted(Specials {
+                channel: false,
+                ..specials
+            }),
+            ["@Maya", "@feedback"]
+        );
+        assert!(draft_highlights("@feedback @maya", &[], Specials::default()).is_empty());
+        let long = "a".repeat(33);
+        assert!(
+            draft_highlights(&format!("@{long}"), &[person(&long, "Long")], specials).is_empty()
+        );
     }
 
     #[test]
