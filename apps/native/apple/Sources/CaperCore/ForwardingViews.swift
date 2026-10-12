@@ -166,11 +166,6 @@ struct ForwardConversationView: View {
             HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Heads up! New reactions and replies appear here automatically.")
-                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.pinGold)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     if let root {
                         SharedOriginalView(message: root)
                         let count = conversation?.root?.thread?.replyCount ?? conversation?.messages.count ?? 0

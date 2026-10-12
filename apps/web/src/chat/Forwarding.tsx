@@ -496,9 +496,6 @@ export function ForwardConversation({
   return (
     <ForwardDialog title="Forwarded conversation" anchor={target.anchor} onClose={onClose}>
       <div className="chat-forward-body" aria-busy={loading}>
-        <p className="chat-forward-notice">
-          <strong>Heads up!</strong> New reactions and replies appear here automatically.
-        </p>
         {root ? (
           <>
             <OriginalMessage message={root} onView={view(root.id)} />

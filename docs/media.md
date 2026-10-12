@@ -6633,6 +6633,8 @@ line breaks overflow the preview. Web, Android and Apple automatically move a
 feathered terracotta light with a bright neutral center inside the wire from the replying author
 toward the quoted source, with gradual falloff at both ends and a soft surrounding
 halo with a wider, fainter outer bloom, rather than a solid moving stroke. The
+round light field illuminates the curved wire instead of intersecting it with a
+flattened streak, so the highlight follows the bend without a chopped edge. The
 selected single-glow design uses 80% light opacity; the neutral wire stays
 unchanged. Each pass lasts about 2.8 seconds and fades directly into the next
 pass without a parked interval. Reduced motion and blocked-source context disable

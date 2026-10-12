@@ -26,8 +26,6 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
 import chat.caper.android.ui.ErrorText
-import chat.caper.android.ui.PinGold
-import chat.caper.android.ui.PinGoldWash
 import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.TextMuted
 import kotlinx.coroutines.CancellationException
@@ -190,9 +188,6 @@ import java.util.UUID
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
         Column(Modifier.fillMaxWidth().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Surface(color = PinGoldWash, shape = MaterialTheme.shapes.small) {
-                Text("Heads up! New reactions and replies appear here automatically.", Modifier.padding(horizontal = 10.dp, vertical = 8.dp), color = PinGold, fontSize = 12.sp)
-            }
             val root = if (conversation != null) conversation?.root else if (error == null) message.forward?.message else null
             root?.let { SharedOriginal(it) }
             if (conversation?.hasMore == true) TextButton({ pages++ }, enabled = !loading, shape = MaterialTheme.shapes.small) { Text("Load older replies") }

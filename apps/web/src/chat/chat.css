@@ -3097,15 +3097,6 @@ a.chat-draft-preview:focus-visible strong {
   font-size: 0.8rem;
   line-height: 1.5;
 }
-.chat-forward-notice {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--pin-wash);
-  color: var(--pin-gold);
-  font-size: 0.75rem;
-  line-height: 1.5;
-}
 .chat-forward-body > label {
   display: grid;
   gap: 8px;

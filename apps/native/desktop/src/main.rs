@@ -70,9 +70,6 @@ const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
 const CAPER: Color32 = Color32::from_rgb(99, 122, 67);
 const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
-const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
-/// `--pin-wash`: pin gold at 6%.
-const PIN_WASH: Color32 = Color32::from_rgba_unmultiplied_const(228, 199, 106, 15);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
 const MEMBER_PAGE_SIZE: usize = 25;

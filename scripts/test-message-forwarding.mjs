@@ -339,8 +339,9 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-forward-body h3, .chat-forward-status")'), null);
   assert.equal(evaluate('document.querySelector(".chat-forward-body [role=status]").className'), "sr-only");
   assert.equal(
-    evaluate('document.querySelector(".chat-forward-notice").textContent'),
-    "Heads up! New reactions and replies appear here automatically.",
+    evaluate('document.querySelector(".chat-forward-body").textContent.includes("Heads up!")'),
+    false,
+    "The forwarded conversation has no update warning",
   );
   screenshot("forward-conversation-fetching-desktop");
   browser("set", "viewport", "390", "844", "2");

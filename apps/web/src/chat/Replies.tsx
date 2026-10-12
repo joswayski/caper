@@ -114,7 +114,7 @@ export function ReplyContext({
             </g>
             <g clipPath={`url(#${clipId})`}>
               <g className="chat-reply-flow" style={{ offsetPath: `url(#${routeId})` }}>
-                <ellipse rx="36" ry="3" fill={`url(#${lightId})`} />
+                <circle r="36" fill={`url(#${lightId})`} />
               </g>
             </g>
           </g>

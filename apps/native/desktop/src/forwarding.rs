@@ -412,9 +412,6 @@ impl Forwarding {
                         if self.error.is_some() && destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
-                        egui::Frame::new().fill(crate::PIN_WASH).corner_radius(8).inner_margin(8).show(ui, |ui| {
-                            ui.label(RichText::new("Heads up! New reactions and replies appear here automatically.").size(12.0).color(crate::PIN_GOLD));
-                        });
                         if let Some(page) = page {
                             if let Some(root) = &page.root { original(ui, root, textures); }
                             if page.has_more && ui.add_enabled(!self.busy, egui::Button::new("Load older replies")).clicked() { *pages += 1; operation = Some(Operation::Conversation { token: token.into(), wrapper: wrapper.clone(), pages: *pages, oldest: oldest.clone() }); }
