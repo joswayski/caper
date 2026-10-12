@@ -126,7 +126,7 @@ struct ArchiveInput {
 }
 
 /// Hides a reported thread from every team member's inbox, or brings it back.
-/// A later report in the thread arrives unarchived, so the thread returns.
+/// Anyone but the team posting in the thread afterwards brings it back.
 async fn archive(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -143,7 +143,7 @@ async fn archive(
     }
     let updated = sqlx::query(
         "UPDATE public.feedback_reports r
-         SET archived_at = CASE WHEN $3 THEN COALESCE(r.archived_at, now()) END
+         SET archived_at = CASE WHEN $3 THEN now() END
          FROM public.channels c, public.messages root
          WHERE c.id=r.channel_id AND root.id=r.thread_root_id
            AND c.external_id=$1 AND root.external_id=$2",
@@ -179,7 +179,7 @@ pub(crate) async fn page(
                                  ELSE lo.display_name || ' & ' || hi.display_name END),
                 'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name) END,
                 'replyCount', COALESCE((root.payload->'thread'->>'replyCount')::bigint, 0),
-                'archived', r.archived_at IS NOT NULL,
+                'archived', z.archived,
                 -- Answered while the newest message in its thread is the
                 -- team's; anyone else replying makes it wait again.
                 'answered', COALESCE((SELECT EXISTS(SELECT 1 FROM public.feedback_team t
@@ -196,7 +196,13 @@ pub(crate) async fn page(
          LEFT JOIN public.direct_conversations d ON d.channel_id=c.id
          LEFT JOIN public.users lo ON lo.id=d.low_user_id
          LEFT JOIN public.users hi ON hi.id=d.high_user_id
-         WHERE ($1::bigint IS NULL OR r.id<$1) AND (r.archived_at IS NOT NULL) = $3
+         -- Archived until someone other than the team posts in the thread.
+         CROSS JOIN LATERAL (SELECT r.archived_at IS NOT NULL AND NOT EXISTS(
+             SELECT 1 FROM public.messages a JOIN public.chat_sessions cs ON cs.id=a.session_id
+             WHERE a.channel_id=r.channel_id AND a.thread_root_id=r.thread_root_id AND a.created_at>r.archived_at
+               AND NOT EXISTS(SELECT 1 FROM public.feedback_team t WHERE t.user_id=cs.user_id AND t.deleted_at IS NULL)
+         ) AS archived) z
+         WHERE ($1::bigint IS NULL OR r.id<$1) AND z.archived = $3
            AND c.deleted_at IS NULL AND u.deleted_at IS NULL
            AND (s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
            AND (d.channel_id IS NULL OR (lo.deleted_at IS NULL AND hi.deleted_at IS NULL))

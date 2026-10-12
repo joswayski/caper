@@ -2565,7 +2565,7 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
         .collect();
     assert_eq!(answered, [json!(true), json!(true)]);
 
-    // Archiving hides the whole thread for the team; a new report brings it back.
+    // Archiving hides the whole thread for the team until someone else posts in it.
     let archive = |archived: bool| {
         let app = h.app.clone();
         let token = jose.token.clone();
@@ -2602,6 +2602,9 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "only the team archives");
+    // The team posting doesn't bring it back; anyone else replying does.
+    send(&h, &jose, &private, "One more note", Some(&report)).await;
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
     let returned = send(
         &h,
         &alice,
@@ -2611,8 +2614,21 @@ async fn feedback_lets_the_team_read_and_answer_where_it_was_asked(pool: PgPool)
     )
     .await;
     let reports = inbox("").await;
-    assert_eq!(reports["reports"].as_array().unwrap().len(), 1);
+    assert_eq!(reports["reports"].as_array().unwrap().len(), 3);
     assert_eq!(reports["reports"][0]["messageId"], returned.as_str());
+    assert_eq!(reports["reports"][2]["archived"], false);
+    assert!(
+        inbox("?archived=true").await["reports"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Archiving again restarts the clock; a plain reply resurfaces it too.
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
+    assert!(inbox("").await["reports"].as_array().unwrap().is_empty());
+    send(&h, &alice, &private, "still there?", Some(&report)).await;
+    assert_eq!(inbox("").await["reports"].as_array().unwrap().len(), 3);
+    assert_eq!(archive(true).await, StatusCode::NO_CONTENT);
     assert_eq!(archive(false).await, StatusCode::NO_CONTENT);
     assert_eq!(inbox("").await["reports"].as_array().unwrap().len(), 3);
     expand(&h).await;
