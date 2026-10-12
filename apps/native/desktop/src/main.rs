@@ -19253,21 +19253,9 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
 fn reply_motion_enabled() -> bool {
     #[cfg(target_os = "windows")]
     {
-        #[link(name = "user32")]
-        unsafe extern "system" {
-            fn SystemParametersInfoW(
-                action: u32,
-                parameter: u32,
-                value: *mut std::ffi::c_void,
-                flags: u32,
-            ) -> i32;
-        }
-        let mut enabled = 1_i32;
-        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to a live, aligned i32.
-        unsafe {
-            SystemParametersInfoW(0x1042, 0, (&raw mut enabled).cast(), 0);
-        }
-        enabled != 0
+        windows::UI::ViewManagement::UISettings::new()
+            .and_then(|settings| settings.AnimationsEnabled())
+            .unwrap_or(true)
     }
     #[cfg(not(target_os = "windows"))]
     {
