@@ -4693,6 +4693,17 @@ the merged commit with the existing **Deploy Caper apps** action (or
 `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha=MERGED_COMMIT_SHA`),
 then update installed clients once. Merging does not publish a native release.
 
+**Desktop restart recovery:** the shared updater runs outside the install, with
+null standard streams and, on Unix, its own process group. Successful swaps reopen
+the new app; failed download/verification/swap attempts reopen the working install
+after the original process exits. macOS uses `/usr/bin/open -n` through
+LaunchServices and checks its exit status. Errors and launch requests are recorded
+in the system temporary directory's `caper-updater.log`. Local Linux subprocess
+checks cover relocation, replacement/relaunch, and failure recovery, not a live
+signed-release update or a macOS/Windows GUI launch. Those platform checks remain
+release acceptance. Install the fixed native release manually once if the old
+updater still closes without reopening; no server/configuration rollout is needed.
+
 ### Native distribution and acceptance
 
 The [native clients](../apps/native/README.md) are separately implemented,

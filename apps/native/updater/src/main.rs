@@ -21,7 +21,7 @@ use std::{
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -185,7 +185,6 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     let current = options.current_build.ok_or("apply needs --current-build")?;
     let install = options.install.as_deref().ok_or("apply needs --install")?;
     let install = fs::canonicalize(install)?;
-    let key = PUBLIC_KEY.ok_or("this build has no update key")?;
     let platform = manifest::current_platform().ok_or("unsupported platform")?;
     let layout = Layout::for_platform(platform).ok_or("unsupported platform")?;
     if !install::is_self_contained(layout, &install) {
@@ -206,35 +205,45 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         "updating {} from build {current}",
         install.display()
     ));
-
-    let manifest = fetch_manifest(key)?;
-    let artifact = manifest
-        .update_for(platform, current)
-        .ok_or("no newer build for this platform")?;
-    let archive = env::temp_dir().join(format!("caper-update-{}", manifest.build));
-    download(&artifact.url, artifact.size, &archive)?;
-    let digest = install::sha256_file(&archive)?;
-    if digest != artifact.sha256 {
-        fs::remove_file(&archive).ok();
-        return Err(
-            format!("download checksum {digest} does not match the signed manifest").into(),
-        );
-    }
-
-    let stage = install::sibling(&install, "update")?;
-    let replacement = install::unpack(layout, &archive, &stage)?;
-    if layout == Layout::MacBundle {
-        install::check_mac_signature(&install, &replacement)?;
-    }
     if let Some(pid) = options.wait_pid {
         wait_for_exit(pid, EXIT_WAIT)?;
     }
-    let old = install::swap(&install, &replacement)?;
-    log(&format!("installed build {}", manifest.build));
-    install::remove_if_present(&stage).ok();
-    install::remove_if_present(&old).ok();
-    fs::remove_file(&archive).ok();
-    relaunch(layout, &install)
+
+    // The app has already quit. A failed download, verification or swap must
+    // still reopen the working install instead of leaving Caper closed.
+    let result = (|| -> Result<()> {
+        let key = PUBLIC_KEY.ok_or("this build has no update key")?;
+        let manifest = fetch_manifest(key)?;
+        let artifact = manifest
+            .update_for(platform, current)
+            .ok_or("no newer build for this platform")?;
+        let archive = env::temp_dir().join(format!("caper-update-{}", manifest.build));
+        download(&artifact.url, artifact.size, &archive)?;
+        let digest = install::sha256_file(&archive)?;
+        if digest != artifact.sha256 {
+            fs::remove_file(&archive).ok();
+            return Err(
+                format!("download checksum {digest} does not match the signed manifest").into(),
+            );
+        }
+
+        let stage = install::sibling(&install, "update")?;
+        let replacement = install::unpack(layout, &archive, &stage)?;
+        if layout == Layout::MacBundle {
+            install::check_mac_signature(&install, &replacement)?;
+        }
+        let old = install::swap(&install, &replacement)?;
+        log(&format!("installed build {}", manifest.build));
+        install::remove_if_present(&stage).ok();
+        install::remove_if_present(&old).ok();
+        fs::remove_file(&archive).ok();
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        log(&format!("update failed: {error}; reopening installed app"));
+    }
+    relaunch(layout, &install)?;
+    result
 }
 
 fn relocate_command(args: &[OsString]) -> Result<Command> {
@@ -255,6 +264,17 @@ fn relocate_command(args: &[OsString]) -> Result<Command> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    // The original app's launcher may tear down its process group and pipes
+    // when it exits. The relocated updater must survive that shutdown.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     command.args(args).arg(RELOCATED_FLAG);
     Ok(command)
 }
@@ -262,10 +282,37 @@ fn relocate_command(args: &[OsString]) -> Result<Command> {
 fn relaunch(layout: Layout, install: &Path) -> Result<()> {
     let target = layout.launch_target(install);
     if layout == Layout::MacBundle {
-        Command::new("/usr/bin/open").arg(&target).spawn()?;
+        // LaunchServices owns the new app's lifetime. Force a new instance and
+        // wait for the launch request (not the app) to report success.
+        let output = Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg(&target)
+            .stdin(Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "could not reopen {}: {}: {}",
+                target.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
     } else {
-        Command::new(&target).current_dir(install).spawn()?;
+        let mut command = Command::new(&target);
+        command
+            .current_dir(install)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command.spawn()?;
     }
+    log(&format!("reopened {}", target.display()));
     Ok(())
 }
 
@@ -571,6 +618,25 @@ mod tests {
         const REPORT: &str = "CAPER_TEST_RELOCATION_REPORT";
         if let Some(report) = env::var_os(REPORT) {
             assert!(env::args_os().any(|arg| arg == RELOCATED_FLAG));
+            #[cfg(unix)]
+            {
+                use std::os::unix::{
+                    fs::{FileTypeExt, MetadataExt},
+                    io::AsFd,
+                };
+                // SAFETY: getpgrp only reads the current process group.
+                assert_eq!(unsafe { libc::getpgrp() } as u32, std::process::id());
+                let null = fs::metadata("/dev/null").unwrap();
+                for fd in [
+                    io::stdin().as_fd().try_clone_to_owned().unwrap(),
+                    io::stdout().as_fd().try_clone_to_owned().unwrap(),
+                    io::stderr().as_fd().try_clone_to_owned().unwrap(),
+                ] {
+                    let metadata = fs::File::from(fd).metadata().unwrap();
+                    assert!(metadata.file_type().is_char_device());
+                    assert_eq!(metadata.rdev(), null.rdev());
+                }
+            }
             fs::write(
                 report,
                 serde_json::to_vec(&env::current_dir().unwrap().canonicalize().unwrap()).unwrap(),
@@ -595,13 +661,15 @@ mod tests {
             .unwrap()
             .canonicalize()
             .unwrap();
-        let output = command.env(REPORT, &report).output().unwrap();
+        // Do not use output(): that would replace the null streams under test.
+        let status = command
+            .env(REPORT, &report)
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
         install::remove_if_present(&relocated_folder).unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(status.success(), "relocated updater failed: {status}");
         let working_folder: PathBuf = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         // Check the actual child process, not only Command's configuration.
         assert_eq!(working_folder, relocated_folder);
@@ -612,6 +680,68 @@ mod tests {
             .canonicalize()
             .unwrap();
         assert!(!working_folder.starts_with(original_folder));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn replaced_app_reopens_from_its_install_without_the_old_process_context() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("Caper with spaces");
+        fs::create_dir(&install).unwrap();
+        fs::write(install.join("caper-desktop"), "old app").unwrap();
+        let archive = root.path().join("update.tar.gz");
+        // Preserve the inherited descriptors before report redirections alter
+        // the shell's stdout; inspect those, not the report file's descriptor.
+        let app = br#"#!/bin/sh
+set -eu
+exec 3<&0 4>&1 5>&2
+printf 'updated\n' > launch-report
+pwd >> launch-report
+printf '%s\n' "$$" >> launch-report
+ps -o pgid= -p "$$" >> launch-report
+for fd in 3 4 5; do readlink "/proc/$$/fd/$fd" >> launch-report; done
+mv launch-report launch-report.ready
+"#;
+        let encoder = flate2::write::GzEncoder::new(
+            fs::File::create(&archive).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut tarball = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(app.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tarball
+            .append_data(&mut header, "Caper-linux-x64/caper-desktop", &app[..])
+            .unwrap();
+        tarball.into_inner().unwrap().finish().unwrap();
+        let stage = install::sibling(&install, "update").unwrap();
+        let replacement = install::unpack(Layout::LinuxTarball, &archive, &stage).unwrap();
+        let old = install::swap(&install, &replacement).unwrap();
+        install::remove_if_present(&stage).unwrap();
+        install::remove_if_present(&old).unwrap();
+        relaunch(Layout::LinuxTarball, &install).unwrap();
+
+        let report = install.join("launch-report.ready");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !report.exists() {
+            assert!(Instant::now() < deadline, "updated app did not reopen");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let contents = fs::read_to_string(report).unwrap();
+        let lines: Vec<_> = contents.lines().map(str::trim).collect();
+        assert_eq!(lines[0], "updated");
+        assert_eq!(Path::new(lines[1]), install.canonicalize().unwrap());
+        assert_eq!(lines[2], lines[3], "app needs its own process group");
+        assert_eq!(&lines[4..], &["/dev/null", "/dev/null", "/dev/null"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rejected_mac_launch_is_reported_as_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("Missing Caper.app");
+        assert!(relaunch(Layout::MacBundle, &missing).is_err());
     }
 
     #[test]
