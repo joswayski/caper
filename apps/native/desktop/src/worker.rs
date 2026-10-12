@@ -26,6 +26,13 @@ pub enum Command {
         generation: u64,
         token: String,
     },
+    OpenInvitation {
+        epoch: u64,
+        navigation: u64,
+        token: String,
+        space: String,
+        channel: Option<String>,
+    },
     /// Web's background membership reconcile: `GET /api/spaces`, then the
     /// open space's detail while it is still listed. `revision` and
     /// `navigation` come back unchanged so the app can discard a snapshot
@@ -209,6 +216,10 @@ pub enum Command {
         token: String,
         ids: Vec<String>,
     },
+    CancelAssets {
+        token: String,
+        ids: Vec<String>,
+    },
     /// Prepare (compress) and upload one file off the UI thread, reporting
     /// progress.
     Upload {
@@ -216,6 +227,7 @@ pub enum Command {
         token: String,
         channel: String,
         path: PathBuf,
+        prepared: Option<Arc<crate::uploads::Prepared>>,
         settings: crate::compress::Compression,
         cancel: Arc<AtomicBool>,
     },
@@ -493,6 +505,13 @@ pub enum Event {
         epoch: u64,
         error: String,
     },
+    InvitationLoaded {
+        epoch: u64,
+        navigation: u64,
+        space: String,
+        channel: Option<String>,
+        result: Result<(Spaces, Option<SpaceDetail>), String>,
+    },
     Forward {
         generation: u64,
         request: u64,
@@ -643,9 +662,10 @@ pub enum Event {
         ids: Vec<String>,
         result: Result<BTreeMap<String, crate::attachments::FreshUrl>, String>,
     },
-    /// Fenced by draft key: removed or abandoned drafts ignore late updates.
+    /// Keep the upload's account for cleanup even after sign-out/navigation.
     Upload {
         key: u64,
+        token: String,
         update: UploadUpdate,
     },
     Reactors {
@@ -693,6 +713,7 @@ pub enum Event {
 }
 
 pub enum UploadUpdate {
+    Retained(Arc<crate::uploads::Prepared>),
     Prepared {
         name: String,
         kind: crate::model::AttachmentKind,
@@ -1144,12 +1165,23 @@ fn upload_file(
     token: &str,
     channel: &str,
     path: &std::path::Path,
+    retained: Option<Arc<crate::uploads::Prepared>>,
     settings: &crate::compress::Compression,
     cancel: Arc<AtomicBool>,
     events: &Sender<Event>,
     context: &egui::Context,
 ) {
-    let update = |update| send(events, context, Event::Upload { key, update });
+    let update = |update| {
+        send(
+            events,
+            context,
+            Event::Upload {
+                key,
+                token: token.to_owned(),
+                update,
+            },
+        )
+    };
     // Whole-percent steps, like upload progress below.
     let compressed = std::sync::Mutex::new(-1_i32);
     let compressing = |fraction: f32| {
@@ -1162,15 +1194,35 @@ fn upload_file(
             update(UploadUpdate::Compressing(fraction));
         }
     };
-    let mut prepared =
-        match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel) {
-            Ok(prepared) => prepared,
-            Err(message) => {
-                update(UploadUpdate::Finished(Err(
-                    crate::uploads::UploadError::new(message),
-                )));
-                return;
+    let prepared =
+        if let Some(prepared) = retained {
+            prepared
+        } else {
+            let mut prepared =
+                match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel)
+                    .and_then(|mut prepared| {
+                        prepared.retain_file()?;
+                        Ok(prepared)
+                    }) {
+                    Ok(prepared) => prepared,
+                    Err(message) => {
+                        update(UploadUpdate::Finished(Err(
+                            crate::uploads::UploadError::new(message),
+                        )));
+                        return;
+                    }
+                };
+            if let Some(image) = prepared.thumbnail.take() {
+                update(UploadUpdate::Thumbnail(
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    ),
+                ));
             }
+            let prepared = Arc::new(prepared);
+            update(UploadUpdate::Retained(prepared.clone()));
+            prepared
         };
     update(UploadUpdate::Prepared {
         name: prepared.name.clone(),
@@ -1178,18 +1230,11 @@ fn upload_file(
         source_size: prepared.source_size,
         stored_size: prepared.size,
     });
-    if let Some(image) = prepared.thumbnail.take() {
-        update(UploadUpdate::Thumbnail(
-            egui::ColorImage::from_rgba_unmultiplied(
-                [image.width() as usize, image.height() as usize],
-                image.as_raw(),
-            ),
-        ));
-    }
     // Whole-percent steps keep the event queue small for large files.
     let progress: Arc<dyn Fn(f32) + Send + Sync> = {
         let events = events.clone();
         let context = context.clone();
+        let token = token.to_owned();
         let last = std::sync::Mutex::new(-1_i32);
         Arc::new(move |fraction: f32| {
             let percent = (fraction.clamp(0.0, 1.0) * 100.0) as i32;
@@ -1203,28 +1248,43 @@ fn upload_file(
                     &context,
                     Event::Upload {
                         key,
+                        token: token.clone(),
                         update: UploadUpdate::Progress(fraction),
                     },
                 );
             }
         })
     };
-    let result = crate::uploads::upload(api, token, channel, prepared, progress, cancel);
+    let result = crate::uploads::upload(
+        api,
+        token,
+        channel,
+        prepared.as_ref().clone(),
+        progress,
+        cancel,
+    );
     update(UploadUpdate::Finished(result));
 }
 
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::CancelAssets { token, ids } => {
+            for id in ids {
+                api.cancel_asset(&token, &id);
+            }
+            return;
+        }
         Command::Upload {
             key,
             token,
             channel,
             path,
+            prepared,
             settings,
             cancel,
         } => {
             upload_file(
-                api, key, &token, &channel, &path, &settings, cancel, events, context,
+                api, key, &token, &channel, &path, prepared, &settings, cancel, events, context,
             );
             return;
         }
@@ -1239,6 +1299,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             ids,
         },
+        Command::OpenInvitation {
+            epoch,
+            navigation,
+            token,
+            space,
+            channel,
+        } => {
+            let result = api
+                .spaces(&token)
+                .and_then(|spaces| {
+                    let detail =
+                        if channel.is_some() && spaces.spaces.iter().any(|item| item.id == space) {
+                            Some(api.space(&token, &space)?)
+                        } else {
+                            None
+                        };
+                    Ok((spaces, detail))
+                })
+                .map_err(|error| error.to_string());
+            Event::InvitationLoaded {
+                epoch,
+                navigation,
+                space,
+                channel,
+                result,
+            }
+        }
         Command::RefreshMembership {
             epoch,
             request,

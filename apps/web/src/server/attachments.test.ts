@@ -11,6 +11,7 @@ import {
   type ChatMessage,
 } from "../chat/types.ts";
 import {
+  AttachmentUpload,
   formatBytes,
   refreshAttachmentUrls,
   uploadPrepared,
@@ -166,6 +167,7 @@ function transport(complete: Array<() => Response>, withPreview = false) {
           { status: 201 },
         );
       }
+      if (String(input).endsWith("/cancel")) return new Response(null, { status: 204 });
       const next = complete.shift();
       assert.ok(next, "unexpected extra /complete call");
       return next();
@@ -235,6 +237,34 @@ test("uploads reserve the compressed size with source size and preview, PUT the 
   assert.deepEqual(progress, [0.125, 0.25, 0.625, 1, 1], "progress spans preview and file by size");
 });
 
+test("removing during reservation, storage PUT or completion cancels the reservation without cancelling cleanup", async () => {
+  for (const stage of ["reservation", "put", "complete"]) {
+    const controller = new AbortController();
+    const t = transport([ready]);
+    const original = t.value.fetch;
+    t.value.fetch = async (input, init) => {
+      const response = await original(input, init);
+      if (
+        (stage === "reservation" && String(input) === "/api/assets") ||
+        (stage === "complete" && String(input).endsWith("/complete"))
+      )
+        controller.abort();
+      return response;
+    };
+    if (stage === "put")
+      t.value.put = async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      };
+    await assert.rejects(
+      uploadPrepared("c1", prepared(), t.value, () => undefined, controller.signal),
+      { name: "AbortError" },
+    );
+    assert.equal(t.calls.at(-1), "POST /api/assets/f1/cancel");
+    if (stage === "reservation") assert.equal(t.puts.length, 0);
+  }
+});
+
 test("files without a preview or a browser type reserve only what they have", async () => {
   const t = transport([ready]);
   await uploadPrepared(
@@ -252,6 +282,37 @@ test("files without a preview or a browser type reserve only what they have", as
     sourceByteSize: 3,
   });
   assert.equal(t.puts.length, 1);
+});
+
+test("retained drafts coalesce focus and Send, renew after 23 hours, and retry the same bytes", async () => {
+  let now = 1000;
+  const t = transport([ready, ready, () => new Response(null, { status: 503 }), ready]);
+  const upload = new AttachmentUpload(
+    "c1",
+    new File(["local source"], "notes.txt", { type: "text/plain" }),
+    DEFAULT_COMPRESSION,
+    () => {},
+    t.value,
+    () => now,
+  );
+  const first = upload.ensure();
+  assert.equal(upload.ensure(), first, "concurrent triggers share one upload");
+  await first;
+  now += 23 * 60 * 60 * 1000 - 1;
+  await upload.ensure();
+  assert.equal(t.puts.length, 1, "fresh files are reused");
+  now++;
+  await Promise.all([upload.ensure(), upload.ensure()]);
+  assert.equal(t.puts.length, 2);
+  upload.invalidate();
+  await assert.rejects(upload.ensure());
+  assert.equal(upload.state.error, "Failed to upload.");
+  await upload.ensure();
+  assert.equal(upload.state.error, undefined);
+  assert.deepEqual(await Promise.all(t.puts.map(({ body }) => body.text())), Array(4).fill("local source"));
+  const cancelled = t.calls.filter((call) => call.endsWith("/cancel")).length;
+  upload.release();
+  assert.equal(t.calls.filter((call) => call.endsWith("/cancel")).length, cancelled, "confirming does not cancel");
 });
 
 test("a reserved preview without an upload URL is refused rather than left to fail verification", async () => {

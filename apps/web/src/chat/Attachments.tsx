@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import MediaViewer from "./MediaViewer.tsx";
 import { attachmentView, type ChatAttachment } from "./types.ts";
-import { formatBytes } from "./uploads.ts";
+import { formatBytes, type UploadState } from "./uploads.ts";
 
 const MAX_WIDTH = 360;
 const MAX_HEIGHT = 300;
@@ -305,23 +305,22 @@ export function MessageAttachments({
   );
 }
 
-export interface DraftAttachment {
+export interface DraftAttachment extends UploadState {
   key: string;
-  name: string;
   /** Local file for previewing before sending, also used by the pending row. */
   localUrl?: string;
   localKind?: "image" | "video";
-  sourceSize: number;
-  /** Size after browser compression; unset while preparing. */
-  storedSize?: number;
-  /** Set while a video is being re-encoded before upload. */
-  compressing?: number;
-  progress: number;
-  error?: string;
-  attachment?: ChatAttachment;
 }
 
-export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment[]; onRemove: (key: string) => void }) {
+export function DraftAttachments({
+  drafts,
+  onRemove,
+  onRetry,
+}: {
+  drafts: DraftAttachment[];
+  onRemove: (key: string) => void;
+  onRetry: (key: string) => void;
+}) {
   const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
   const closeViewer = useCallback(() => setViewing(undefined), []);
   const media: ChatAttachment[] = drafts.flatMap((draft) => {
@@ -335,7 +334,8 @@ export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment
         name: draft.name,
         kind,
         contentType: draft.attachment?.contentType ?? `${kind}/*`,
-        size: draft.sourceSize,
+        // The size that will be sent, once known; the viewer omits a zero.
+        size: draft.storedSize ?? draft.attachment?.size ?? 0,
         url,
         status: draft.localUrl ? "ready" : draft.attachment?.status,
       },
@@ -406,6 +406,16 @@ export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment
               )}
               {!draft.attachment && !draft.error && (
                 <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
+              )}
+              {draft.error && (
+                <button
+                  type="button"
+                  className="chat-draft-retry"
+                  aria-label={`Retry uploading ${draft.name}`}
+                  onClick={() => onRetry(draft.key)}
+                >
+                  Retry
+                </button>
               )}
               <button
                 type="button"

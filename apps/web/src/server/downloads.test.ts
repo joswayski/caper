@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { detectDownloadPlatform, downloads, intelMacDownload } from "../downloads.ts";
+import { detectDownloadPlatform, downloads, intelMacDownload, mobileBetas, playTestingUrl } from "../downloads.ts";
 
 test("desktop hints select current platform packages", () => {
   for (const [userAgent, expected] of [
@@ -16,17 +16,25 @@ test("desktop hints select current platform packages", () => {
   assert.equal(detectDownloadPlatform({ userAgent: "", platform: "MacIntel" }), "macos");
 });
 
-test("mobile, tablets and ChromeOS never receive a desktop installer", () => {
-  for (const userAgent of [
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
-    "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)",
-    "Mozilla/5.0 (Linux; Android 15; Pixel 9)",
-    "Mozilla/5.0 (X11; CrOS x86_64 16093.0.0)",
-  ])
-    assert.equal(detectDownloadPlatform({ userAgent }), null, userAgent);
+test("phones and tablets get their mobile beta, never a desktop installer", () => {
+  for (const [userAgent, expected] of [
+    ["Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", "ios"],
+    ["Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)", "ios"],
+    ["Mozilla/5.0 (Linux; Android 15; Pixel 9)", "android"],
+    ["Mozilla/5.0 (Linux; Android 10; K)", "android"],
+    ["Mozilla/5.0 (X11; CrOS x86_64 16093.0.0)", null],
+  ] as const)
+    assert.equal(detectDownloadPlatform({ userAgent }), expected, userAgent);
+  assert.equal(detectDownloadPlatform({ userAgent: "", platform: '"Android"', mobile: true }), "android");
   assert.equal(detectDownloadPlatform({ userAgent: "Linux", mobile: true }), null);
-  assert.equal(detectDownloadPlatform({ userAgent: "Macintosh", maxTouchPoints: 5 }), null);
+  // iPadOS sends a Mac user agent; touch points give it away after hydration.
+  assert.equal(detectDownloadPlatform({ userAgent: "Macintosh", maxTouchPoints: 5 }), "ios");
   assert.equal(detectDownloadPlatform({ userAgent: "Macintosh", maxTouchPoints: 0 }), "macos");
+});
+
+test("Android installs come from the Play closed test, never a sideloaded APK", () => {
+  assert.equal(playTestingUrl, "https://play.google.com/apps/testing/chat.caper.android");
+  for (const beta of Object.values(mobileBetas)) if (beta) assert.doesNotMatch(beta.url, /\.apk$/);
 });
 
 test("all desktop links use the rolling native release, never legacy previews", () => {

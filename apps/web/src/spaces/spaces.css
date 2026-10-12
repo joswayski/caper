@@ -616,7 +616,7 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
-/* Collapsing navigation must not hide the active call's only Leave action. */
+/* Collapsing navigation keeps the active call's channel and roster in view. */
 .spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
   display: grid;
 }
@@ -738,7 +738,8 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .channel-section-toggle,
+  /* Outranks the compact `.channel-section-heading button` size. */
+  .channel-section-heading .channel-section-toggle,
   .pending-channel-invite {
     min-height: 44px;
   }
@@ -1153,10 +1154,10 @@
 .spaces-empty .primary {
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
@@ -1176,22 +1177,6 @@
 :is(.spaces-state, .spaces-empty) :focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
-}
-/* The first-run page shows the DM list outside the sidebar's list resets.
-   :where() keeps these below the message-request group's own rules. */
-.spaces-empty :where(.direct-section ul) {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-  margin: 2px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.spaces-empty :where(.direct-section li) {
-  position: relative;
-  min-width: 0;
-  display: flex;
-  align-items: center;
 }
 .spaces-empty > section > p:not(.eyebrow) {
   color: var(--text-muted);
@@ -1218,13 +1203,6 @@
   display: block;
   margin-top: 10px;
   color: var(--text-muted);
-}
-/* Direct messages sit below the form as a secondary option, not as a sidebar.
-   The rows' padding and centered icon column hang outside the form's edge, so
-   the icons line up with the heading and field above. */
-.spaces-empty .direct-section {
-  margin-top: 40px;
-  margin-left: -16px;
 }
 .empty-channel {
   flex: 1;
@@ -1269,9 +1247,9 @@
   cursor: pointer;
 }
 .empty-channel-actions > .primary {
-  border-color: var(--terracotta);
-  color: #fff;
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 /* On phones the stage has no header; the Browse toggle takes its place. */
 .empty-channel {
@@ -1673,8 +1651,9 @@
   cursor: pointer;
 }
 .space-dialog .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .space-dialog .danger {
   border-color: #b93646;
@@ -1989,10 +1968,10 @@
 .channel-preview .primary {
   min-height: 38px;
   padding: 0 14px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.76rem;
   font-weight: 700;
@@ -2000,8 +1979,8 @@
 }
 @media (hover: hover) {
   .channel-preview .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
 }
 .channel-preview .primary:disabled {
@@ -2039,8 +2018,8 @@
   .spaces-state button:hover:not(:disabled),
   .spaces-empty .primary:hover:not(:disabled),
   .empty-channel-actions > .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
   .space-dialog .danger:hover:not(:disabled) {
     border-color: #d44355;
@@ -2055,6 +2034,31 @@
     color: #ff8c9a;
     background: rgb(185 54 70 / 0.12);
   }
+}
+:is(
+    .space-dialog .primary,
+    .spaces-state button,
+    .spaces-empty .primary,
+    .empty-channel-actions > .primary,
+    .channel-preview .primary,
+    .direct-request-bar .primary
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .space-dialog .primary,
+  .spaces-state button,
+  .spaces-empty .primary,
+  .empty-channel-actions > .primary,
+  .channel-preview .primary,
+  .direct-request-bar .primary
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 /* Gated: on touch, Back would keep its hover after the tap that opened Browse. */
 @media (hover: hover) {
@@ -2302,70 +2306,8 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     max-height: none;
     overflow: visible;
   }
-  /* As in the homepage room on phones, the viewed channel's line (who is in
-     its voice, and Join) and the voice panel sit above the conversation, so
-     joining, muting and leaving never depend on Browse. Browse still opens
-     every space and channel. */
-  .call-room.spaces-room:has(.voice-panel):not(.navigation-open) {
-    grid-template: auto minmax(0, 1fr) / 1fr;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .people-panel {
-    grid-area: 1 / 1;
-    display: flex;
-    border-bottom: 1px solid var(--border);
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .stage {
-    grid-area: 2 / 1;
-  }
-  /* The member list overlays the conversation below its header. */
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .space-member-presence {
-    position: relative;
-    grid-area: 2 / 1;
-    top: auto;
-    right: auto;
-    bottom: auto;
-    justify-self: end;
-    margin: 62px 8px 8px 0;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) > .member-list-backdrop {
-    position: relative;
-    grid-area: 2 / 1;
-    inset: auto;
-    margin-top: 54px;
-  }
-  .spaces-room:has(.voice-panel):not(.navigation-open) .sidebar-channels {
-    flex: none;
-    padding: 12px 12px 0;
-  }
-  .spaces-room:not(.navigation-open) :is(.direct-section, .pending-channel-invites) {
-    display: none;
-  }
-  .spaces-room[data-direct]:not(.navigation-open) .sidebar-channels {
-    display: none;
-  }
-  .spaces-room:not(.navigation-open) .channel-navigation > :is(header, .channel-section-heading),
-  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])) {
-    display: none;
-  }
-  .spaces-room:not(.navigation-open) .channel-navigation > ul {
-    margin: 0;
-  }
-  /* The one-row channel strip must not clip its row's "…" menu. */
-  .spaces-room:not(.navigation-open) :is(.sidebar-channels, .channel-navigation) {
-    overflow: visible;
-  }
-  .spaces-room:not(.navigation-open) > .people-panel:has(.channel-menu[open]) {
-    z-index: 9;
-  }
-  /* A collapsed channel section still shows the channel being viewed. */
-  .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] {
-    display: grid;
-  }
-  .spaces-room:not(.navigation-open)
-    #space-channel-list[data-collapsed]
-    > li:has(.channel-select[aria-current="page"]) {
-    display: flex;
-  }
+  /* Phones show the conversation alone: its header joins, mutes and leaves
+     voice, and Browse holds channels, rosters and the account bar. */
   .navigation-toggle {
     display: inline-flex;
     justify-content: center;
@@ -2528,13 +2470,14 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
   cursor: pointer;
 }
 .direct-request-bar .primary {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 @media (hover: hover) {
   .direct-request-bar .primary:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
   .direct-request-bar .secondary:hover:not(:disabled) {
     border-color: var(--text-muted);

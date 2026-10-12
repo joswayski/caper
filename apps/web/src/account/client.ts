@@ -31,14 +31,33 @@ export class AccountApiError extends Error {
 }
 
 let currentAccount: Account | undefined;
+let profileRevision = 0;
+const accountListeners = new Set<() => void>();
 
 function rememberAccount<T extends Account | null>(account: T): T {
+  const changed = JSON.stringify(currentAccount) !== JSON.stringify(account ?? undefined);
   currentAccount = account ?? undefined;
+  if (changed) for (const listener of accountListeners) listener();
   return account;
 }
 
 export function getRememberedAccount() {
   return currentAccount;
+}
+
+export function subscribeAccount(listener: () => void) {
+  accountListeners.add(listener);
+  return () => void accountListeners.delete(listener);
+}
+
+/** The saved account wins over retained or in-flight member/peer snapshots. */
+export function withAccountProfile<T extends { id: string; username?: string | null; displayName?: string | null }>(
+  person: T,
+  account: Account | undefined,
+): T {
+  return person.id === account?.id && account.username && account.displayName
+    ? { ...person, username: account.username, displayName: account.displayName }
+    : person;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -55,8 +74,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getAccount(): Promise<Account | null> {
+  const revision = profileRevision;
   try {
-    return rememberAccount(await request<Account>("/api/account/me"));
+    const account = await request<Account>("/api/account/me");
+    return revision === profileRevision ? rememberAccount(account) : (currentAccount ?? null);
   } catch (error) {
     if (error instanceof AccountApiError && error.status === 401) return rememberAccount(null);
     throw error;
@@ -79,12 +100,12 @@ export async function verifyEmailCode(challengeId: string, code: string) {
 }
 
 export async function updateProfile(username: string, displayName: string) {
-  return rememberAccount(
-    await request<Account>("/api/account/profile", {
-      method: "POST",
-      body: JSON.stringify({ username, displayName }),
-    }),
-  );
+  const account = await request<Account>("/api/account/profile", {
+    method: "POST",
+    body: JSON.stringify({ username, displayName }),
+  });
+  profileRevision++;
+  return rememberAccount(account);
 }
 
 /** Browser storage key for the chat capability minted from the account session. */

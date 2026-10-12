@@ -18,8 +18,10 @@ Signed-in accounts can start persistent, private one-to-one messages by username
 The Direct messages list is shared across spaces. Phone push is implemented behind
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
 tabs and running desktop apps also implement local OS notifications; alerts after
-desktop quit or browser close are not implemented. Real-provider and physical-device
-validation is still pending. See [notification behavior and rollout](docs/notifications.md).
+desktop quit or browser close are not implemented. Space/private-channel invites
+and new DM requests notify recipients and open explicit request review. Pending
+DM messages stay quiet until acceptance. Real-provider and physical-device validation
+is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
@@ -72,7 +74,8 @@ earlier builds, excluding test-only, CI, infrastructure, tooling, documentation,
 and dependency-maintenance changes; the prompt says when older notes were never
 recorded or are no longer retained.
 Existing apps keep their previous update UI and schedule until updated once.
-Android APK updates remain manual; iPhone builds use TestFlight.
+Phones install public betas from the homepage: iPhone through a TestFlight public
+link and Android through a Google Play closed test. Both update automatically.
 
 ## Development
 

@@ -143,6 +143,11 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     public let displayName: String
     public let owner: Bool
     public var avatarId: Int? = nil
+
+    func withProfile(_ account: Account?) -> Member {
+        guard id == account?.id, let username = account?.username, let name = account?.displayName else { return self }
+        return Member(id: id, username: username, displayName: name, owner: owner, avatarId: avatarId)
+    }
 }
 
 public struct SpaceLimits: Codable, Equatable, Sendable {
@@ -173,6 +178,10 @@ public struct SpaceDetail: Codable, Sendable {
     public let channels: [Channel]
     public let members: [Member]
     public let channelInvitations: [ChannelInvitation]
+
+    func withProfile(_ account: Account?) -> SpaceDetail {
+        SpaceDetail(space: space, channels: channels, members: members.map { $0.withProfile(account) }, channelInvitations: channelInvitations)
+    }
 
     private enum CodingKeys: String, CodingKey { case space, channels, members, channelInvitations }
     public init(space: Space, channels: [Channel], members: [Member], channelInvitations: [ChannelInvitation] = []) {
@@ -435,7 +444,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let channelId: String
     public let seq: String
-    public let author: ChatAuthor
+    public var author: ChatAuthor
     public var content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
@@ -455,6 +464,17 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var editedAt: String? = nil
     public var editSeq: String? = nil
     public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
+
+    func withProfile(_ own: ChatAuthor?) -> ChatMessage {
+        guard let own, !own.isGuest else { return self }
+        func author(_ value: ChatAuthor) -> ChatAuthor { value.id == own.id ? own : value }
+        var result = self
+        result.author = author(self.author)
+        if let pin { result.pin = MessagePin(author: author(pin.author), createdAt: pin.createdAt) }
+        if let thread { result.thread = ThreadSummary(replyCount: thread.replyCount, participants: thread.participants.map(author), seq: thread.seq) }
+        if let forward { result.forward = MessageForward(message: forward.message?.withProfile(own), seq: forward.seq) }
+        return result
+    }
 }
 
 /// Immutable reference breaks the recursive message/forward value layout.
@@ -851,6 +871,15 @@ public struct ChatDeliveryState: Sendable {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
         let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast)
+        pending = command
+        return command
+    }
+
+    /// Only before HTTP, or after a definitive attachment refusal; never on timeout.
+    public mutating func replaceAttachments(id: String, attachments: [ChatAttachment]) -> PendingMessage? {
+        guard let old = pending, old.id == id else { return nil }
+        let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
+                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast)
         pending = command
         return command
     }

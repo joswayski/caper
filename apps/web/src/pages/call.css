@@ -226,6 +226,10 @@
   background: transparent;
   cursor: pointer;
 }
+/* The layered base disabled cursor (index.css) cannot outrank this unlayered pointer. */
+.call-settings-trigger:is(:disabled, [aria-disabled="true"]) {
+  cursor: default;
+}
 .call-settings-trigger:is(:focus-visible, [aria-expanded="true"]) {
   background: var(--surface-composer);
   color: #fff;
@@ -948,22 +952,28 @@
 .mic-test-button {
   width: 160px;
   height: 48px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font-weight: 700;
   cursor: pointer;
 }
 .mic-test-button:disabled {
-  opacity: 0.55;
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
   cursor: wait;
 }
 @media (hover: hover) {
   .mic-test-button:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+.mic-test-button:active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
 }
 .mic-comparison {
   display: grid;
@@ -1428,14 +1438,14 @@
   overflow-wrap: anywhere;
 }
 
-/* Chat navigation and voice are distinct targets. Quiet voice actions sit
-   beneath the name; the active roster is grouped with its channel. */
+/* Chat navigation and voice are distinct targets. Occupied channels show who
+   is in voice beneath the name; the active roster is grouped with its channel. */
 .channel-row,
 .channel-line {
   position: relative;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   border-radius: 8px;
   transition: background-color 140ms ease;
@@ -1542,7 +1552,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.channel-join.voice-button,
 .voice-leave {
   width: 84px;
   min-height: 28px;
@@ -1561,25 +1570,172 @@
   font-size: 0.72rem;
   font-weight: 500;
 }
-.channel-join.voice-button:focus-visible {
-  border-color: var(--border);
-  color: var(--text);
-  background: var(--surface-hover);
-}
-@media (hover: hover) {
-  .channel-join.voice-button:hover:not([aria-disabled="true"]) {
-    border-color: var(--border);
-    color: var(--text);
-    background: var(--surface-hover);
-  }
-}
 .voice-leave > svg {
   width: 14px;
   height: 14px;
   flex: none;
 }
-.channel-join.voice-button[aria-busy="true"] {
+.channel-join[aria-busy="true"] {
   cursor: progress;
+}
+/* A one-click join on channel rows for fine pointers, revealed on hover or
+   keyboard focus like the row menu. Touch has no hover: it joins from the header. */
+.channel-quick-join {
+  display: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .channel-quick-join {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    color: var(--text-muted);
+    background: transparent;
+    cursor: pointer;
+  }
+  .channel-quick-join svg {
+    width: 16px;
+    height: 16px;
+  }
+  .channel-quick-join:hover:not([aria-disabled="true"]),
+  .channel-quick-join:focus-visible {
+    color: var(--text);
+    background: var(--border);
+  }
+  .channel-quick-join[data-placeholder] {
+    visibility: hidden;
+  }
+  .channel-quick-join[aria-disabled="true"]:not([aria-busy="true"]) {
+    cursor: default;
+  }
+  :is(.channel-line, .channel-row):not(:hover, :has(:focus-visible)) .channel-quick-join:not([aria-busy="true"]) {
+    opacity: 0;
+  }
+}
+/* The open channel's voice: who is there, then Join, Switch here or Leave. It
+   follows the channel name, apart from the Pins and Members icons. */
+.header-voice {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 6px;
+  padding-right: 14px;
+  border-right: 1px solid var(--border);
+}
+/* Mute, and Leave from a DM, live in the account bar and dock beside the
+   conversation on wider layouts. */
+.header-voice-mute,
+.header-voice-elsewhere {
+  display: none;
+}
+.header-voice-people {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.header-voice-people .voice-stack-avatar {
+  width: 24px;
+  height: 24px;
+}
+.header-voice-join {
+  min-height: 34px;
+  padding: 0 12px;
+}
+/* Disconnect reads as such by its red icon and text alone; hover and focus
+   add only the neutral wash other header controls use. */
+.header-voice .voice-leave {
+  width: auto;
+  min-height: 34px;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #ff7182;
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.header-voice .voice-leave:focus-visible {
+  color: #ff7182;
+  background: var(--surface);
+}
+@media (hover: hover) {
+  .header-voice .voice-leave:hover {
+    color: #ff7182;
+    background: var(--surface);
+  }
+}
+/* People are talking here: Join glows softly until you are in. */
+.header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+  animation: voice-join-glow 2.4s ease-in-out infinite;
+}
+@keyframes voice-join-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(219 104 73 / 0);
+  }
+  50% {
+    box-shadow: 0 0 14px 2px rgb(219 104 73 / 0.45);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+    animation: none;
+    box-shadow: 0 0 10px 1px rgb(219 104 73 / 0.35);
+  }
+}
+/* Phones: one bordered group of icons beside the name, as in Slack. Who is in
+   voice is the subtitle under the name ("2 in voice"), so no faces here; the
+   labels stay as accessible names. */
+@media (max-width: 760px) {
+  .header-voice {
+    flex: none;
+    gap: 2px;
+    margin-right: 0;
+    padding: 0 2px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .header-voice-elsewhere {
+    display: flex;
+  }
+  .header-voice-people,
+  .header-voice :is(.channel-join-label, .voice-leave > span) {
+    display: none;
+  }
+  .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) {
+    width: 42px;
+    min-height: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+  }
+  .chat-heading .header-voice .voice-leave {
+    color: #ff7182;
+  }
+  .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+    background: rgb(182 77 50 / 0.16);
+  }
+  .chat-heading .header-voice :is(.header-voice-join, .voice-leave, .header-voice-mute) svg {
+    width: 20px;
+    height: 20px;
+  }
+  .header-voice .header-voice-mute.active {
+    color: #ff7182;
+  }
 }
 @media (hover: hover) {
   .voice-stack:hover {
@@ -1650,7 +1806,7 @@
     min-height: 44px;
     padding-block: 12px;
   }
-  .channel-join.voice-button,
+  .header-voice-join,
   .voice-leave,
   .voice-stack {
     min-height: 44px;
@@ -1759,27 +1915,4 @@
   .range-slider-thumb {
     transition: none;
   }
-}
-/* Voice for a conversation the feedback team visits, in its header. */
-.visit-voice {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.visit-voice .channel-voice {
-  padding: 0;
-}
-.visit-voice .voice-occupants {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
-  min-width: 220px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.visit-voice .voice-occupants:not([data-open]) {
-  display: none;
 }

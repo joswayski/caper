@@ -13,7 +13,6 @@ import {
   Plus,
   Search,
   Settings,
-  Speech,
   Users,
 } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
@@ -467,12 +466,6 @@ export default function LiveWindow() {
                         <span className="channel-manage" aria-hidden="true">
                           <MoreHorizontal />
                         </span>
-                        <span className="channel-voice">
-                          <span className="channel-join voice-button">
-                            <Speech aria-hidden="true" />
-                            Join voice
-                          </span>
-                        </span>
                       </div>
                     </li>
                   </ul>
@@ -577,6 +570,33 @@ export default function LiveWindow() {
                   <h2 className="chat-channel-title"># general</h2>
                   <ChevronDown aria-hidden="true" />
                 </div>
+                <span
+                  className="header-voice"
+                  role="img"
+                  aria-label={`Simulated voice: ${voicePeople.length} in voice in general${present[0].voice ? ", with Leave" : ", with Join voice"}`}
+                >
+                  <span className="header-voice-people">
+                    <span className="voice-stack-faces">
+                      {voicePeople.slice(0, 3).map((person) => (
+                        <span className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`} key={person.name}>
+                          <Avatar person={person} />
+                        </span>
+                      ))}
+                    </span>
+                    <span className="header-voice-count">{voicePeople.length}</span>
+                  </span>
+                  {present[0].voice ? (
+                    <span className="voice-hangup voice-leave">
+                      <PhoneOff />
+                      <span>Leave</span>
+                    </span>
+                  ) : (
+                    <span className="channel-join voice-button header-voice-join">
+                      <Headphones />
+                      <span>Join voice</span>
+                    </span>
+                  )}
+                </span>
                 <span
                   className="member-list-toggle"
                   role="img"
@@ -713,21 +733,21 @@ export default function LiveWindow() {
             </section>
           </div>
         </div>
-        <a
-          className="live-activator"
-          data-live-activator
-          data-live-control
-          href="/spaces"
-          aria-label="Join Caper"
-          draggable={false}
-        >
-          <span className="live-invite">
-            <i aria-hidden="true" />
-            <span className="live-invite-fine">Click to join</span>
-            <span className="live-invite-coarse">Tap to join</span>
-          </span>
-        </a>
       </div>
+      <a
+        className="live-activator"
+        data-live-activator
+        data-live-control
+        href="/spaces"
+        aria-label="Join Caper"
+        draggable={false}
+      >
+        <span className="live-invite">
+          <i aria-hidden="true" />
+          <span className="live-invite-fine">Click to join</span>
+          <span className="live-invite-coarse">Tap to join</span>
+        </span>
+      </a>
     </div>
   );
 }

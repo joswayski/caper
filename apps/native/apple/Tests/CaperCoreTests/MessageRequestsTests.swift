@@ -57,6 +57,7 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertEqual(DirectMessagePrivacy.anyone.detail, "People outside your spaces send a message request first.")
         XCTAssertEqual(DirectMessagePrivacy.nobody.detail, "Conversations you already have stay open.")
         XCTAssertNil(DirectMessagePrivacy.spaces.detail)
+        XCTAssertEqual(PrivacySettings.deleteAccountURL.absoluteString, "https://caper.chat/privacy#delete-account")
     }
 
     // MARK: Lists, unread and errors

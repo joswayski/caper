@@ -350,6 +350,18 @@ struct NativeMessageComposer: UIViewRepresentable {
 final class ComposerTextView: NSTextView {
     var handleKey: ((NSEvent) -> Bool)?
     var focusChanged: ((Bool) -> Void)?
+    /// Only text drags edit the draft. File drags fall through to the
+    /// conversation's drop target, which attaches them, instead of typing
+    /// their paths (NSTextView's default for file URLs).
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
+    /// A drag carrying text and files together still reaches the text view;
+    /// refuse it rather than insert a path.
+    private func carriesFiles(_ drag: NSDraggingInfo) -> Bool {
+        drag.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
     override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
     override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
     override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
@@ -375,6 +387,7 @@ struct NativeMessageComposer: NSViewRepresentable {
         view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = true
         view.isRichText = false
+        view.updateDragTypeRegistration()
         view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder)
         view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); context.coordinator.view = view
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) == true }

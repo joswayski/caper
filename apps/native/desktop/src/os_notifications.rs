@@ -14,10 +14,14 @@ use std::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
-    /// `mention.user`, `feedback`, … Older servers may omit it.
+    /// `mention.user`, `feedback`, `space.invitation`, … Older servers
+    /// may omit it.
+    pub kind: Option<String>,
+    /// Absent for invitations and message requests.
     #[serde(default)]
-    pub kind: String,
-    pub message_id: String,
+    pub message_id: Option<String>,
+    #[cfg(target_os = "windows")]
+    pub notification_id: Option<String>,
     /// Present when the message is a thread reply (every kind).
     #[serde(default)]
     pub thread_root_id: Option<String>,
@@ -34,27 +38,57 @@ pub struct Alert {
 }
 
 impl Alert {
+    pub fn invitation(&self) -> bool {
+        matches!(
+            self.kind.as_deref(),
+            Some("space.invitation" | "channel.invitation")
+        )
+    }
     pub fn conversation(&self) -> Option<&str> {
+        if self.invitation() || self.kind.as_deref() == Some("direct.request") {
+            return None;
+        }
         self.conversation_id
             .as_deref()
             .or(self.channel_id.as_deref())
     }
-    /// Where a click goes. `feedback` opens the conversation as the Caper
-    /// team at the report, in its thread. A feedback team member's
-    /// notification from a space or DM missing from their lists (`known`
-    /// false) visits it too, in the reply's thread if it was one.
+    /// Where a click goes: `feedback` first, opening the conversation as
+    /// the Caper team at the report, in its thread; then invitations; then a
+    /// feedback team member's notification from a space or DM missing from
+    /// their lists (`known` false), visited in the reply's thread if it was
+    /// one; then the conversation as before.
     pub fn route(&self, feedback_team: bool, known: bool) -> Option<Route> {
-        if self.kind == "feedback" || (feedback_team && !known) {
-            let message = self.message_id.clone();
-            return Some(Route::Visit(crate::feedback::VisitTarget {
-                channel: self.conversation()?.to_owned(),
-                thread: self
-                    .thread_root_id
+        let visit = |thread: Option<String>| {
+            let message = self.message_id.clone()?;
+            Some(Route::Visit(crate::feedback::VisitTarget {
+                channel: self
+                    .conversation_id
                     .clone()
-                    .or_else(|| (self.kind == "feedback").then(|| message.clone())),
+                    .or_else(|| self.channel_id.clone())?,
+                thread,
                 message,
                 reporter: None,
-            }));
+            }))
+        };
+        if self.kind.as_deref() == Some("feedback") {
+            return visit(
+                self.thread_root_id
+                    .clone()
+                    .or_else(|| self.message_id.clone()),
+            );
+        }
+        if self.invitation() {
+            return Some(Route::Invitation {
+                space: self.space_id.clone()?,
+                channel: self.channel_id.clone(),
+            });
+        }
+        if feedback_team
+            && !known
+            && self.kind.as_deref() != Some("direct.request")
+            && let Some(route) = visit(self.thread_root_id.clone())
+        {
+            return Some(route);
         }
         if let Some(id) = &self.conversation_id {
             return Some(Route::Direct(id.clone()));
@@ -76,7 +110,15 @@ impl Alert {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
     Direct(String),
-    Channel { space: String, channel: String },
+    Channel {
+        space: String,
+        channel: String,
+    },
+    /// A space (or private channel) invitation to answer.
+    Invitation {
+        space: String,
+        channel: Option<String>,
+    },
     Visit(crate::feedback::VisitTarget),
 }
 
@@ -214,11 +256,15 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
-        || !["/original/", "/preview/"].iter().any(|prefix| {
-            url.path().strip_prefix(prefix).is_some_and(|id| {
-                !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        || !["/assets/", "/original/", "/preview/"]
+            .iter()
+            .any(|prefix| {
+                url.path().strip_prefix(prefix).is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 64
+                        && id.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
             })
-        })
         || !(1..=50_000_000).contains(&size)
         || !matches!(
             content_type,
@@ -376,10 +422,17 @@ fn platform_show(
     register(APP_ID, "Caper", None)
         .map_err(|_| "Couldn’t register desktop notifications.".to_owned())?;
     let mut toast = Toast::new();
-    toast
-        .text1(&alert.title)
-        .text2(&alert.body)
-        .tag(&alert.message_id);
+    let tag = if let Some(id) = &alert.notification_id {
+        let prefix = if alert.kind.as_deref() == Some("direct.request") {
+            "request"
+        } else {
+            "invitation"
+        };
+        format!("{prefix}:{id}")
+    } else {
+        alert.message_id.clone().unwrap_or_default()
+    };
+    toast.text1(&alert.title).text2(&alert.body).tag(&tag);
     if let Some(image) = image.and_then(|path| Image::new_local(path).ok()) {
         toast.image(
             1,
@@ -410,7 +463,7 @@ fn platform_show(
     {
         std::thread::sleep(Duration::from_millis(200));
     }
-    let _ = manager.remove(&alert.message_id);
+    let _ = manager.remove(&tag);
     Ok(())
 }
 
@@ -512,12 +565,51 @@ mod tests {
         );
         assert_eq!(threaded.thread_root_id.as_deref(), Some("msg000000001"));
         let old = alert(json!({"conversationId": "dm0000000003"}));
-        assert_eq!(old.kind, "", "older servers omit the kind");
+        assert_eq!(old.kind, None, "older servers omit the kind");
         assert_eq!(
             old.route(false, true),
             Some(Route::Direct("dm0000000003".into()))
         );
         assert_eq!(alert(json!({"kind": "feedback"})).route(true, true), None);
+        // Main's kinds keep their routes, even for the team outside the space.
+        let invitation = alert(json!({"kind": "space.invitation", "spaceId": "space0000009"}));
+        assert_eq!(
+            invitation.route(true, false),
+            Some(Route::Invitation {
+                space: "space0000009".into(),
+                channel: None
+            })
+        );
+        let request = alert(json!({"kind": "direct.request", "conversationId": "dm0000000009"}));
+        assert_eq!(
+            request.route(true, false),
+            Some(Route::Direct("dm0000000009".into())),
+            "a message request is never a visit"
+        );
+        assert_eq!(request.conversation(), None, "never suppressed as visible");
+    }
+
+    #[test]
+    fn invitation_is_not_a_message_or_a_focused_conversation() {
+        let alert: Alert = serde_json::from_value(json!({
+            "kind":"channel.invitation", "notificationId":"91", "title":"You’re invited!",
+            "body":"Maya invited you to #planning in Studio.", "createdAt":Utc::now().to_rfc3339(),
+            "spaceId":"space0000001", "channelId":"channel00001"
+        }))
+        .unwrap();
+        assert!(alert.invitation());
+        assert_eq!(alert.conversation(), None);
+        assert!(alert.fresh());
+        assert_eq!(alert.channel_id.as_deref(), Some("channel00001"));
+        let request: Alert = serde_json::from_value(json!({
+            "kind":"direct.request", "notificationId":"92", "title":"Message request",
+            "body":"Maya wants to message you.", "createdAt":Utc::now().to_rfc3339(),
+            "conversationId":"direct000001"
+        }))
+        .unwrap();
+        assert!(!request.invitation());
+        assert_eq!(request.conversation(), None);
+        assert_eq!(request.conversation_id.as_deref(), Some("direct000001"));
     }
 
     #[test]

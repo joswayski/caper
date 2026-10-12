@@ -19,6 +19,8 @@ pub(super) enum Kind {
     MentionEveryone,
     /// `@feedback`, for every feedback team member.
     Feedback,
+    Invitation,
+    DirectRequest,
 }
 
 impl Kind {
@@ -29,19 +31,9 @@ impl Kind {
             Self::MentionUser => "mention.user",
             Self::MentionEveryone => "mention.everyone",
             Self::Feedback => "feedback",
+            Self::Invitation => "invitation",
+            Self::DirectRequest => "direct.request",
         }
-    }
-
-    pub(super) fn parse(name: &str) -> Option<Self> {
-        [
-            Self::DirectMessage,
-            Self::ChannelMessage,
-            Self::MentionUser,
-            Self::MentionEveryone,
-            Self::Feedback,
-        ]
-        .into_iter()
-        .find(|kind| kind.name() == name)
     }
 }
 
@@ -63,6 +55,10 @@ pub(super) struct Preferences {
 pub(super) fn notifies(kind: Kind, preferences: &Preferences) -> bool {
     if preferences.account == Some(Level::Nothing) || preferences.paused {
         return false;
+    }
+    // Conversation levels/mutes govern messages, not new consent requests.
+    if matches!(kind, Kind::Invitation | Kind::DirectRequest) {
+        return true;
     }
     if (preferences.channel_muted || preferences.space_muted)
         && !matches!(kind, Kind::MentionUser | Kind::Feedback)

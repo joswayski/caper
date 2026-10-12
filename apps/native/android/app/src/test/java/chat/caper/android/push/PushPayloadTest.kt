@@ -59,8 +59,41 @@ class PushPayloadTest {
         assertEquals(CHANNEL_MESSAGES_CHANNEL, PushPayload.parse(channel + ("kind" to "reaction.added"))?.channel)
         assertEquals(CHANNEL_MESSAGES_CHANNEL, PushPayload.parse(channel - "kind")?.channel)
         assertEquals(DIRECT_MESSAGES_CHANNEL, PushPayload.parse(direct + ("kind" to "something.new"))?.channel)
-        assertEquals(listOf(DIRECT_MESSAGES_CHANNEL, CHANNEL_MESSAGES_CHANNEL, MENTIONS_CHANNEL), pushChannels.map { it.first })
-        assertEquals(listOf("Direct messages", "Channel messages", "Mentions"), pushChannels.map { it.second })
+        assertEquals(listOf(DIRECT_MESSAGES_CHANNEL, CHANNEL_MESSAGES_CHANNEL, MENTIONS_CHANNEL, INVITATIONS_CHANNEL, MESSAGE_REQUESTS_CHANNEL), pushChannels.map { it.first })
+        assertEquals(listOf("Direct messages", "Channel messages", "Mentions", "Invitations", "Message requests"), pushChannels.map { it.second })
+    }
+
+    @Test fun `invitations have independent tags and do not require a message or grant`() {
+        val invitation = mapOf("kind" to "space.invitation", "notificationId" to "91",
+            "spaceId" to "space0000001", "title" to "You’re invited!", "body" to "Maya invited you to Studio.")
+        val space = requireNotNull(PushPayload.parse(invitation))
+        assertTrue(space.invitation)
+        assertEquals(INVITATIONS_CHANNEL, space.channel)
+        assertEquals("invitation:91", space.tag)
+        assertNull(space.channelId)
+        val privateInvite = invitation + mapOf("kind" to "channel.invitation", "notificationId" to "92", "channelId" to "channel00001")
+        assertEquals("invitation:92", PushPayload.parse(privateInvite)?.tag)
+        assertNull(PushPayload.parse(invitation - "notificationId"))
+        assertNull(PushPayload.parse(invitation + ("notificationId" to "0")))
+        assertNull(PushPayload.parse(invitation + ("channelId" to "channel00001")))
+        assertNull(PushPayload.parse(privateInvite - "channelId"))
+        assertNull(PushPayload.parse(privateInvite + ("conversationId" to "direct000001")))
+    }
+
+    @Test fun `message requests have independent tags and open the DM review without a message`() {
+        val request = mapOf("kind" to "direct.request", "notificationId" to "93",
+            "conversationId" to "direct000001", "title" to "Message request", "body" to "Maya wants to message you.")
+        val payload = requireNotNull(PushPayload.parse(request))
+        assertTrue(payload.consent)
+        assertFalse(payload.invitation)
+        assertEquals("direct000001", payload.conversationId)
+        assertEquals("request:93", payload.tag)
+        assertEquals(MESSAGE_REQUESTS_CHANNEL, payload.channel)
+        assertEquals("Maya wants to message you.", payload.body)
+        assertNull(payload.attachment)
+        assertNull(PushPayload.parse(request - "notificationId"))
+        assertNull(PushPayload.parse(request - "conversationId"))
+        assertNull(PushPayload.parse(request + ("spaceId" to "space0000001")))
     }
 
     @Test fun `feedback reports use the mentions channel and carry their thread`() {
@@ -118,9 +151,11 @@ class PushPayloadTest {
     }
 
     @Test fun `one bounded image or poster is optional and invalid media preserves the message`() {
-        val media = mapOf("attachmentUrl" to "https://cdn.caper.chat/original/photo1?exp=123&sig=test",
+        val media = mapOf("attachmentUrl" to "https://cdn.caper.chat/assets/photo1?exp=123&sig=test",
             "attachmentContentType" to "image/webp", "attachmentSize" to "50000000")
         assertEquals(50_000_000L, PushPayload.parse(direct + media)?.attachment?.size)
+        assertEquals(50_000_000L, PushPayload.parse(direct + media +
+            ("attachmentUrl" to "https://cdn.caper.chat/original/photo1?exp=123&sig=test"))?.attachment?.size)
         val poster = requireNotNull(PushPayload.parse(direct + media + mapOf(
             "attachmentUrl" to "https://cdn.caper.chat/preview/video1?exp=123&sig=test",
             "attachmentContentType" to "image/jpeg", "attachmentSize" to "321"))?.attachment)
@@ -129,9 +164,9 @@ class PushPayloadTest {
         assertNull(PushPayload.parse(direct)?.attachment)
         for (bad in listOf(
             media + ("attachmentSize" to "50000001"), media + ("attachmentSize" to "0"),
-            media + ("attachmentUrl" to "http://cdn.caper.chat/original/photo1"),
+            media + ("attachmentUrl" to "http://cdn.caper.chat/assets/photo1"),
             media + ("attachmentUrl" to "https://cdn.caper.chat/other/photo1"),
-            media + ("attachmentUrl" to "https://user:password@cdn.caper.chat/original/photo1"),
+            media + ("attachmentUrl" to "https://user:password@cdn.caper.chat/assets/photo1"),
             media + ("attachmentContentType" to "video/mp4"),
             media + ("attachmentContentType" to "application/pdf"), media - "attachmentSize",
         )) {

@@ -503,7 +503,37 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     )
     .await
     .unwrap();
+    // A broker outage after projection commits leaves the source event pending
+    // (projection holds no locks across the broker call); the retry re-projects
+    // as a no-op, so the destination gets exactly one update.
+    // Forward events written for this reaction, and whether the reaction
+    // itself is still waiting to be published.
+    let state = || {
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*) FILTER (WHERE payload->>'type'='message.forward'),
+                    count(*) FILTER (WHERE payload->>'type'='message.reactions' AND published_at IS NULL)
+             FROM public.channel_events",
+        )
+        .fetch_one(&pool)
+    };
+    let (forwards, _) = state().await.unwrap();
+    let down = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
+    assert!(publish_pending(&down).await.is_err());
+    let (projected_forwards, pending) = state().await.unwrap();
+    assert!(
+        projected_forwards > forwards,
+        "projection commits before publishing"
+    );
+    assert_eq!(pending, 1, "the source event stays pending");
     while publish_pending(&chat).await.unwrap() {}
+    assert_eq!(
+        state().await.unwrap(),
+        (projected_forwards, 0),
+        "the retry publishes without projecting again"
+    );
     let mut stream = subscriber.on_message();
     let published = tokio::time::timeout(Duration::from_secs(5), stream.next())
         .await

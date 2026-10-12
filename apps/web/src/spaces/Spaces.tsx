@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -25,7 +26,15 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
+import {
+  getAccount,
+  getRememberedAccount,
+  normalizeUsername,
+  subscribeAccount,
+  usernameError,
+  withAccountProfile,
+  type Account,
+} from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
@@ -672,8 +681,8 @@ function RemoveMemberDialog({
 }
 
 function MemberManager({
-  members,
-  invitations,
+  members: memberSnapshots,
+  invitations: invitationSnapshots,
   channel = false,
   onCancel,
   onAdd,
@@ -694,6 +703,9 @@ function MemberManager({
   pending: boolean;
   loading?: boolean;
 }) {
+  const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const members = memberSnapshots.map((member) => withAccountProfile(member, account));
+  const invitations = invitationSnapshots?.map((member) => withAccountProfile(member, account));
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -1481,12 +1493,10 @@ function BrowseChannelsDialog({
 
 function ChannelInvitationDialog({
   invitation,
-  spaceName,
   onClose,
   onRespond,
 }: {
   invitation: ChannelInvitation;
-  spaceName: string;
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
@@ -1518,12 +1528,9 @@ function ChannelInvitationDialog({
         <LockKeyhole aria-hidden="true" />
         <h3>Join #{invitation.channel.name}?</h3>
         <p>
-          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private
-          channel in <strong>{spaceName}</strong>.
-        </p>
-        <p>
-          Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations
-          expire seven days after they’re sent.
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to private
+          channel
+          <strong> #{invitation.channel.name}</strong>.
         </p>
         {error && (
           <p className="space-form-error" role="alert">
@@ -1628,7 +1635,9 @@ export default function Spaces({
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
-  const [account, setAccount] = useState<Account | undefined>(initialAccount);
+  const [loadedAccount, setAccount] = useState<Account | undefined>(initialAccount);
+  const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
+  const account = rememberedAccount ?? loadedAccount;
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
@@ -1670,7 +1679,11 @@ export default function Spaces({
   const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
-  const [directs, setDirects] = useState<DirectConversation[]>([]);
+  const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
+  const directs = directSnapshots.map((conversation) => ({
+    ...conversation,
+    peer: withAccountProfile(conversation.peer, account),
+  }));
   const [directsLoading, setDirectsLoading] = useState(true);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
@@ -1716,11 +1729,15 @@ export default function Spaces({
       current = false;
     };
   }, [directId, account?.id]);
-  const detail =
+  const detailSnapshot =
     view?.detail ??
     (!spaces.length
       ? { space: { id: "", name: "Direct messages", ownerId: "" }, channels: [], members: [] }
       : undefined);
+  const detail = detailSnapshot && {
+    ...detailSnapshot,
+    members: detailSnapshot.members.map((member) => withAccountProfile(member, account)),
+  };
   const navigation = useRef(createSpaceNavigation());
   // The rendered detail, for the poll below whose effect tracks only the space id.
   const shownDetail = useRef(detail);
@@ -1748,6 +1765,16 @@ export default function Spaces({
   const [membershipError, setMembershipError] = useState<string>();
   const [browseOpen, setBrowseOpen] = useState(false);
   const [channelInvitation, setChannelInvitation] = useState<ChannelInvitation>();
+  const notificationInvite = useRef(
+    embedded || typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("invite"),
+  );
+  useEffect(() => {
+    if (!view || view.detail.space.id !== selected.spaceId || !notificationInvite.current) return;
+    const invite = view.detail.channelInvitations?.find((item) => item.channel.id === notificationInvite.current);
+    notificationInvite.current = null;
+    if (invite) setChannelInvitation(invite);
+    else setNotice("This invitation is no longer available.");
+  }, [view, selected.spaceId]);
   const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
@@ -2755,7 +2782,6 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
-          {directNavigation}
         </section>
       </main>
     );
@@ -2796,7 +2822,6 @@ export default function Spaces({
         <ChannelInvitationDialog
           key={channelInvitation.channel.id}
           invitation={channelInvitation}
-          spaceName={detail.space.name}
           onClose={() => setChannelInvitation(undefined)}
           onRespond={(accept) =>
             changeChannelMembership(
@@ -3097,6 +3122,7 @@ export default function Spaces({
                   )}
                   {voice?.timer}
                 </button>
+                {voice?.join}
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"

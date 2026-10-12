@@ -88,7 +88,7 @@ fn delivery_urls_are_stable_for_a_day_and_expire_within_two() {
     );
     assert_eq!(
         fixed.url("original/abc", 0),
-        "https://cdn.test/original/abc?exp=172800&sig=2GDNk1-0tzBzLEfmuQIvaGGFQ3ItbeJMj8gWdbnL8Ck"
+        "https://cdn.test/assets/abc?exp=172800&sig=2GDNk1-0tzBzLEfmuQIvaGGFQ3ItbeJMj8gWdbnL8Ck"
     );
 }
 
@@ -107,7 +107,7 @@ fn messages_gain_urls_only_when_signed_and_available() {
         attachments[0]["url"]
             .as_str()
             .unwrap()
-            .starts_with("https://cdn.test/original/one?exp=")
+            .starts_with("https://cdn.test/assets/one?exp=")
     );
     assert!(
         attachments[0]["previewUrl"]
@@ -126,7 +126,7 @@ fn messages_gain_urls_only_when_signed_and_available() {
         forwarded["message"]["forward"]["message"]["content"]["attachments"][0]["url"]
             .as_str()
             .unwrap()
-            .contains("/original/src?")
+            .contains("/assets/src?")
     );
     let event = sign_attachments(
         json!({"type":"message.created","message":{"content":{"attachments":[{"id":"x","kind":"file"}]}}}),
@@ -297,11 +297,13 @@ fn names_and_types_are_normalized() {
 }
 
 type Store = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+type DeleteFailures = Arc<Mutex<std::collections::HashSet<String>>>;
 
 /// Minimal path-style S3 stand-in. It records objects but does not verify
 /// signatures; live R2 validation is a separate deployment check.
-async fn fake_r2() -> (String, Store) {
+async fn fake_r2() -> (String, Store, DeleteFailures) {
     let store: Store = Arc::default();
+    let failures: DeleteFailures = Arc::default();
     let shared = store.clone();
     let app = Router::new().route(
         "/{bucket}/{*key}",
@@ -328,7 +330,11 @@ async fn fake_r2() -> (String, Store) {
         })
         .delete({
             let store = shared.clone();
+            let failures = failures.clone();
             move |AxumPath((_, key)): AxumPath<(String, String)>| async move {
+                if failures.lock().unwrap().remove(&key) {
+                    return StatusCode::SERVICE_UNAVAILABLE;
+                }
                 store.lock().unwrap().remove(&key);
                 StatusCode::NO_CONTENT
             }
@@ -337,7 +343,7 @@ async fn fake_r2() -> (String, Store) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{address}"), store)
+    (format!("http://{address}"), store, failures)
 }
 
 fn principal(id: i64, external_id: &str) -> Principal {
@@ -439,7 +445,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")
         .bind(random_id(12)).bind(Sha256::digest(b"owner-chat").as_slice()).bind(owner.user.id).bind(&account_hash).execute(&pool).await.unwrap();
 
-    let (endpoint, store) = fake_r2().await;
+    let (endpoint, store, failures) = fake_r2().await;
     let assets = Assets::new(
         pool.clone(),
         R2::new(endpoint, "test".into(), "key".into(), "secret".into()),
@@ -541,11 +547,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     put(&doc, "upload", b"hello").await;
     let doc_id = doc["id"].as_str().unwrap().to_owned();
     let _ = complete_as(&owner, &doc_id).await.unwrap();
+    let client_message_id = Uuid::new_v4();
     let message = crate::chat::send_message(
         &pool,
         &channel,
         "owner-chat",
-        Uuid::new_v4(),
+        client_message_id,
         "",
         &[shot_id.clone(), doc_id.clone()],
         None,
@@ -560,6 +567,28 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         attachments[0].get("url").is_none(),
         "stored payloads never contain URLs"
     );
+    // An accepted but unacknowledged Send still retries successfully after the
+    // unsent lifetime. Expiry must not run before idempotency lookup.
+    sqlx::query(
+        "UPDATE public.assets SET uploaded_at=now()-interval '25 hours' WHERE external_id=ANY($1)",
+    )
+    .bind([&shot_id, &doc_id])
+    .execute(&pool)
+    .await
+    .unwrap();
+    let retry = crate::chat::send_message(
+        &pool,
+        &channel,
+        "owner-chat",
+        client_message_id,
+        "",
+        &[shot_id.clone(), doc_id.clone()],
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry, message);
     assert_eq!(
         crate::chat::send_message(
             &pool,
@@ -607,7 +636,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         listed[1]["url"]
             .as_str()
             .unwrap()
-            .contains(&format!("/original/{doc_id}?exp="))
+            .contains(&format!("/assets/{doc_id}?exp="))
     );
 
     let refreshed = urls(
@@ -621,6 +650,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .unwrap()
     .0;
     assert!(refreshed["urls"][&shot_id]["previewUrl"].is_string());
+    assert!(
+        refreshed["urls"][&shot_id]["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/assets/{shot_id}?exp="))
+    );
     assert!(refreshed["urls"].get(&fake_id).is_none());
     let hidden = urls(
         State(state.clone()),
@@ -654,6 +689,23 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .execute(&pool)
     .await
     .unwrap();
+    // Expiry is enforced on Send even before the next cleanup tick.
+    let expired = crate::chat::send_message(
+        &pool,
+        &channel,
+        "owner-chat",
+        Uuid::new_v4(),
+        "keep this text",
+        &[stale["id"].as_str().unwrap().to_owned()],
+        None,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        (expired.status, expired.code),
+        (StatusCode::CONFLICT, Some("attachment_unavailable"))
+    );
     assert_eq!(purge(&assets).await.unwrap(), 2);
     assert!(!store.lock().unwrap().contains_key(&original_key(&fake_id)));
     assert!(store.lock().unwrap().contains_key(&original_key(&shot_id)));
@@ -690,6 +742,222 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap();
     assert_eq!(rows, 4);
+
+    let cancel_as = |who: &Principal, id: &str| {
+        cancel(
+            State(state.clone()),
+            Extension(who.clone()),
+            Path(id.to_owned()),
+        )
+    };
+    assert_eq!(
+        cancel_as(&owner, &shot_id).await.unwrap_err().status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        cancel_as(&outsider, &shot_id).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        cancel_as(&owner, "missing").await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Both completed and incomplete removals release quota at the next purge,
+    // not a day later. Cancellation is idempotent and prevents completion/Send.
+    for completed in [false, true] {
+        let (_, Json(removed)) = create_as(&owner, input("remove.png", "image/png", 8, Some(20)))
+            .await
+            .unwrap();
+        let id = removed["id"].as_str().unwrap();
+        put(&removed, "upload", &png(8)).await;
+        put(&removed, "previewUpload", b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0").await;
+        if completed {
+            let _ = complete_as(&owner, id).await.unwrap();
+        }
+        assert_eq!(
+            cancel_as(&outsider, id).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+        for _ in 0..2 {
+            assert_eq!(cancel_as(&owner, id).await.unwrap(), StatusCode::NO_CONTENT);
+        }
+        assert_eq!(
+            complete_as(&owner, id).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+        let refused = crate::chat::send_message(
+            &pool,
+            &channel,
+            "owner-chat",
+            Uuid::new_v4(),
+            "unsent",
+            &[id.to_owned()],
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code, Some("attachment_unavailable"));
+        assert_eq!(
+            usage(State(state.clone()), Extension(owner.clone()))
+                .await
+                .unwrap()
+                .0["used"],
+            148
+        );
+        let failed_key = if completed {
+            preview_key(id)
+        } else {
+            original_key(id)
+        };
+        failures.lock().unwrap().insert(failed_key.clone());
+        assert_eq!(purge(&assets).await.unwrap(), 0);
+        assert!(store.lock().unwrap().contains_key(&failed_key));
+        assert_eq!(
+            usage(State(state.clone()), Extension(owner.clone()))
+                .await
+                .unwrap()
+                .0["used"],
+            148,
+            "both objects must be deleted before quota is released"
+        );
+        assert_eq!(purge(&assets).await.unwrap(), 1);
+        assert!(!store.lock().unwrap().contains_key(&original_key(id)));
+        assert!(!store.lock().unwrap().contains_key(&preview_key(id)));
+        assert_eq!(
+            usage(State(state.clone()), Extension(owner.clone()))
+                .await
+                .unwrap()
+                .0["used"],
+            120
+        );
+        // Even a very late PUT must not recreate a permanently forgotten orphan.
+        sqlx::query("UPDATE public.assets SET deleted_at=now()-interval '30 days', purged_at=now()-interval '29 days' WHERE external_id=$1")
+            .bind(id).execute(&pool).await.unwrap();
+        let purged_at: DateTime<Utc> =
+            sqlx::query_scalar("SELECT purged_at FROM public.assets WHERE external_id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        put(&removed, "upload", &png(8)).await;
+        put(&removed, "previewUpload", b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0").await;
+        PurgeSweep::default().run(&assets).await.unwrap();
+        assert!(!store.lock().unwrap().contains_key(&original_key(id)));
+        assert!(!store.lock().unwrap().contains_key(&preview_key(id)));
+        assert_eq!(
+            sqlx::query_scalar::<_, DateTime<Utc>>(
+                "SELECT purged_at FROM public.assets WHERE external_id=$1"
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            purged_at
+        );
+        assert!(
+            store.lock().unwrap().contains_key(&original_key(&shot_id)),
+            "sweeps never delete sent objects"
+        );
+    }
+
+    // Concurrent Send and removal have exactly one winner; cancellation must
+    // never make an accepted message's attachment unavailable.
+    let (_, Json(racing)) = create_as(&owner, input("race.txt", "text/plain", 5, None))
+        .await
+        .unwrap();
+    let race_id = racing["id"].as_str().unwrap();
+    put(&racing, "upload", b"hello").await;
+    let _ = complete_as(&owner, race_id).await.unwrap();
+    let ids = [race_id.to_owned()];
+    let (sent, cancelled) = tokio::join!(
+        crate::chat::send_message(
+            &pool,
+            &channel,
+            "owner-chat",
+            Uuid::new_v4(),
+            "racing",
+            &ids,
+            None,
+            false
+        ),
+        cancel_as(&owner, race_id)
+    );
+    match sent {
+        Ok(_) => {
+            assert_eq!(cancelled.unwrap_err().status, StatusCode::CONFLICT);
+            assert_eq!(purge(&assets).await.unwrap(), 0);
+            assert!(store.lock().unwrap().contains_key(&original_key(race_id)));
+            // Fixture cleanup follows sent-file retention, not cancellation.
+            sqlx::query("UPDATE public.assets SET deleted_at=now()-interval '25 hours' WHERE external_id=$1")
+                .bind(race_id).execute(&pool).await.unwrap();
+        }
+        Err(error) => {
+            assert_eq!(error.code, Some("attachment_unavailable"));
+            assert_eq!(cancelled.unwrap(), StatusCode::NO_CONTENT);
+        }
+    }
+    assert_eq!(purge(&assets).await.unwrap(), 1);
+
+    // Reconciliation progresses beyond a full batch and wraps to revisit old
+    // keys; arrivals during a pass must not extend its fixed ceiling.
+    sqlx::query("INSERT INTO public.assets (external_id,owner_id,purpose,channel_id,kind,content_type,filename,byte_size,deleted_at,purged_at)
+        SELECT 'sweep-' || n,$1,'attachment',c.id,'file','text/plain','sweep.txt',1,now(),now()
+        FROM public.channels c CROSS JOIN generate_series(1,30) n WHERE c.external_id=$2")
+        .bind(owner.user.id).bind(&channel).execute(&pool).await.unwrap();
+    for n in 1..=30 {
+        store
+            .lock()
+            .unwrap()
+            .insert(original_key(&format!("sweep-{n}")), vec![1]);
+    }
+    let mut sweep = PurgeSweep::default();
+    failures.lock().unwrap().insert(original_key("sweep-1"));
+    sweep.run(&assets).await.unwrap();
+    assert!(
+        store
+            .lock()
+            .unwrap()
+            .contains_key(&original_key("sweep-30"))
+    );
+    sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,channel_id,kind,content_type,filename,byte_size,deleted_at,purged_at)
+        SELECT 'sweep-new',owner_id,purpose,channel_id,kind,content_type,filename,byte_size,deleted_at,purged_at
+        FROM public.assets WHERE external_id='sweep-1'")
+        .execute(&pool).await.unwrap();
+    store
+        .lock()
+        .unwrap()
+        .insert(original_key("sweep-new"), vec![1]);
+    // Recreate an early key after it was already visited in this pass.
+    store
+        .lock()
+        .unwrap()
+        .insert(original_key("sweep-1"), vec![2]);
+    sweep.run(&assets).await.unwrap();
+    assert!(
+        !store
+            .lock()
+            .unwrap()
+            .contains_key(&original_key("sweep-30"))
+    );
+    assert!(store.lock().unwrap().contains_key(&original_key("sweep-1")));
+    assert!(
+        store
+            .lock()
+            .unwrap()
+            .contains_key(&original_key("sweep-new")),
+        "new arrivals wait for the next pass"
+    );
+    sweep.run(&assets).await.unwrap();
+    assert!(!store.lock().unwrap().contains_key(&original_key("sweep-1")));
+    sweep.run(&assets).await.unwrap();
+    assert!(
+        !store
+            .lock()
+            .unwrap()
+            .contains_key(&original_key("sweep-new"))
+    );
 
     // Scripted floods hit the pending and per-minute reservation limits.
     sqlx::query("UPDATE public.assets SET created_at = now() - interval '2 minutes'")

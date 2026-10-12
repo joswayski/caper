@@ -366,8 +366,10 @@
   border-radius: 0;
 }
 
-/* The centered join link is the demo's only action. */
+/* Keep the only action outside the tilted scene: 3D compositing must not hide
+   the pill, and idle motion must not move its touch target. */
 .live-activator {
+  --counter-scale: 1;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -381,7 +383,6 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
-  transform: translateZ(calc(var(--depth) * 80px));
 }
 .live-invite {
   pointer-events: auto;
@@ -640,9 +641,10 @@
 .sim-demo .voice-stack-avatar:not(.speaking) {
   border-color: transparent;
 }
-/* Match the single-line composer, including its outer bottom inset. */
+/* Like the app (#451), the 40px account row and its border pixels match the
+   42px single-line composer, so the panel shares the composer's 12px inset. */
 .sim-voice-panel {
-  margin-bottom: 11px;
+  margin-bottom: 12px;
 }
 .sim-voice-avatar > .sim-avatar {
   width: 100%;
@@ -668,6 +670,9 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
+}
+.sim-chat > .chat-heading > .header-voice {
+  margin-left: auto;
 }
 .sim-channel-heading > svg {
   width: 14px;
@@ -775,9 +780,6 @@
   .sim-direct,
   .sim-sidebar .browse-channels,
   .sim-sidebar .voice-dock {
-    display: none;
-  }
-  .sim-channel-list > li:last-child .channel-voice {
     display: none;
   }
   /* Keep every demo participant visible without taking over the phone card. */

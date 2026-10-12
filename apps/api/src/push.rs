@@ -1,4 +1,4 @@
-//! Phone push (APNs and FCM) for DMs and channel messages, and the account,
+//! Phone push (APNs and FCM) for invitations, DMs and channel messages, and the account,
 //! space, channel and DM notification preferences that govern it.
 //!
 //! A committed account-authored message enqueues one `notification_jobs` row
@@ -112,13 +112,18 @@ pub(crate) enum Conversation {
         title: String,
         recipient_count: i64,
     },
+    Invitation {
+        space_id: String,
+        channel_id: Option<String>,
+    },
 }
 
-/// Notification content, built at send time from the stored message.
+/// Notification content, built at send time from the message or consent request.
 #[derive(Clone, Debug)]
 pub(crate) struct Alert {
     pub kind: String,
     pub message_id: String,
+    pub notification_id: Option<String>,
     pub conversation: Conversation,
     pub title: String,
     pub body: String,
@@ -154,10 +159,12 @@ impl Alert {
             _ if kind == "feedback" => format!("{sender} · Feedback"),
             Conversation::Direct { .. } => sender.to_owned(),
             Conversation::Channel { title, .. } => format!("{sender} · {title}"),
+            Conversation::Invitation { .. } => "You’re invited!".into(),
         };
         Self {
             kind: kind.to_owned(),
             message_id: message_id.to_owned(),
+            notification_id: None,
             conversation,
             title,
             body: preview(text),
@@ -167,6 +174,58 @@ impl Alert {
             attachment: None,
             thread_root_id: None,
         }
+    }
+
+    pub(crate) fn invitation(
+        id: i64,
+        space_id: &str,
+        space_name: &str,
+        channel: Option<(&str, &str)>,
+        sender: &str,
+        sender_id: &str,
+        avatar: Option<i16>,
+    ) -> Self {
+        let (kind, target) = match channel {
+            Some((_, name)) => ("channel.invitation", format!("private channel #{name}")),
+            None => ("space.invitation", space_name.to_owned()),
+        };
+        let mut alert = Self::new(
+            kind,
+            "",
+            Conversation::Invitation {
+                space_id: space_id.into(),
+                channel_id: channel.map(|(id, _)| id.into()),
+            },
+            sender,
+            sender_id,
+            avatar,
+            &format!("{sender} invited you to {target}."),
+        );
+        alert.notification_id = Some(id.to_string());
+        alert
+    }
+
+    pub(crate) fn request(
+        id: i64,
+        conversation: &str,
+        sender: &str,
+        sender_id: &str,
+        avatar: Option<i16>,
+    ) -> Self {
+        let mut alert = Self::new(
+            "direct.request",
+            "",
+            Conversation::Direct {
+                id: conversation.into(),
+            },
+            sender,
+            sender_id,
+            avatar,
+            &format!("{sender} wants to message you."),
+        );
+        alert.title = "Message request".into();
+        alert.notification_id = Some(id.to_string());
+        alert
     }
 
     /// Call only after recipient authorization and preparing notification content.
@@ -231,11 +290,19 @@ impl Alert {
         self
     }
 
-    /// The conversation or channel ID: APNs `thread-id`, FCM `collapse_key`.
-    pub(crate) fn thread(&self) -> &str {
+    /// APNs `thread-id`, FCM `collapse_key`; invitations never group with messages.
+    pub(crate) fn thread(&self) -> String {
         match &self.conversation {
-            Conversation::Direct { id } => id,
-            Conversation::Channel { channel_id, .. } => channel_id,
+            Conversation::Direct { .. } if self.kind == "direct.request" => format!(
+                "request:{}",
+                self.notification_id.as_deref().unwrap_or_default()
+            ),
+            Conversation::Direct { id } => id.clone(),
+            Conversation::Channel { channel_id, .. } => channel_id.clone(),
+            Conversation::Invitation { .. } => format!(
+                "invitation:{}",
+                self.notification_id.as_deref().unwrap_or_default()
+            ),
         }
     }
 }
@@ -508,15 +575,18 @@ pub(crate) fn start(
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+    // Pruning runs beside delivery so a large backlog never delays a send.
+    let pruning = workers.pool.clone();
     tokio::spawn(async move {
-        let mut pruned: Option<tokio::time::Instant> = None;
+        loop {
+            delivery::prune(&pruning).await;
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
+    tokio::spawn(async move {
         loop {
             // Never race a batch against a timer: cancelling one mid-send
             // could deliver a notification twice.
-            if pruned.is_none_or(|at| at.elapsed() >= Duration::from_secs(600)) {
-                delivery::prune(&workers.pool).await;
-                pruned = Some(tokio::time::Instant::now());
-            }
             match if workers.push.enabled() {
                 delivery::deliver_pending(&workers).await
             } else {
@@ -547,6 +617,45 @@ pub(crate) async fn enqueue(
         .bind(message)
         .execute(connection)
         .await?;
+    Ok(())
+}
+
+/// The caller already holds the recipient lock, serializing account cursor IDs.
+/// The notification and its deliveries commit atomically with the consent request.
+pub(crate) async fn consent(
+    connection: &mut sqlx::PgConnection,
+    recipient: i64,
+    actor: i64,
+    kind: &str,
+    space: Option<i64>,
+    channel: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let notification: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO public.notifications(user_id,kind,space_id,channel_id,actor_id)
+         SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS(
+           SELECT 1 FROM public.notification_settings WHERE user_id=$1
+           AND (default_level='nothing' OR paused_until>now())) RETURNING id",
+    )
+    .bind(recipient)
+    .bind(kind)
+    .bind(space)
+    .bind(channel)
+    .bind(actor)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(notification) = notification {
+        sqlx::query(
+            "INSERT INTO public.notification_deliveries(notification_id,device_id)
+             SELECT $1,d.id FROM public.notification_devices d
+             JOIN public.account_sessions a ON a.token_hash=d.account_session_hash
+             WHERE d.user_id=$2 AND d.revoked_at IS NULL AND a.revoked_at IS NULL
+               AND a.expires_at>now() AND a.user_id=d.user_id",
+        )
+        .bind(notification)
+        .bind(recipient)
+        .execute(connection)
+        .await?;
+    }
     Ok(())
 }
 

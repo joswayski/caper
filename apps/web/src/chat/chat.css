@@ -12,8 +12,185 @@
   min-height: 360px;
   display: grid;
   grid-template-rows: auto minmax(140px, 1fr) auto auto;
+  position: relative;
   overflow: hidden;
   background: var(--surface-conversation);
+}
+/* Files dragged over the conversation. The overlay never takes pointer events,
+   so the drag keeps reporting the elements underneath. */
+.chat-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(12 13 15 / 82%);
+  pointer-events: none;
+  animation: chat-drop-fade 140ms ease-out both;
+}
+.chat-drop-card {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: min(360px, 100%);
+  padding: 20px 24px 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: 1.5px dashed var(--terracotta);
+  outline-offset: -9px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+  text-align: center;
+  animation: chat-drop-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.chat-drop-card strong {
+  font-size: 18px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.chat-drop-card > span {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.chat-drop-art {
+  position: relative;
+  width: 176px;
+  height: 128px;
+  margin-bottom: 8px;
+}
+/* Resting pose; the keyframes only describe the way in. */
+.chat-drop-file {
+  --x: 0px;
+  --y: 0px;
+  --turn: 0deg;
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  width: 54px;
+  height: 66px;
+  margin-left: -27px;
+  transform: translate(var(--x), var(--y)) rotate(var(--turn));
+  transform-origin: 50% 100%;
+  animation: chat-drop-fan 420ms cubic-bezier(0.34, 1.56, 0.64, 1) 60ms backwards;
+}
+.chat-drop-file[data-position="0"] {
+  --x: -46px;
+  --y: 10px;
+  --turn: -16deg;
+  z-index: 1;
+}
+.chat-drop-file[data-position="1"] {
+  --y: -26px;
+}
+.chat-drop-file[data-position="2"] {
+  --x: 46px;
+  --y: 10px;
+  --turn: 16deg;
+  z-index: 1;
+}
+.chat-drop-file > span {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  transform-origin: 50% 100%;
+  animation: chat-drop-sway 2.4s ease-in-out 480ms infinite alternate;
+}
+.chat-drop-file[data-position="1"] > span {
+  animation-delay: 780ms;
+}
+.chat-drop-file[data-position="2"] > span {
+  animation-direction: alternate-reverse;
+}
+/* A folded corner on each card. */
+.chat-drop-file > span::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-radius: 0 var(--radius) 0 4px;
+  background: var(--surface);
+}
+.chat-drop-character {
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  z-index: 2;
+  width: 76px;
+  height: 76px;
+  margin-left: -38px;
+  animation: chat-drop-rise 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 120ms backwards;
+}
+.chat-drop-character img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 4px 6px rgb(0 0 0 / 35%));
+  transform-origin: 50% 100%;
+  animation: chat-drop-hop 1.6s ease-in-out 500ms infinite;
+}
+@keyframes chat-drop-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes chat-drop-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+@keyframes chat-drop-fan {
+  from {
+    opacity: 0;
+    transform: translate(0, 24px) rotate(0deg) scale(0.7);
+  }
+}
+@keyframes chat-drop-sway {
+  to {
+    transform: rotate(4deg) translateY(-3px);
+  }
+}
+@keyframes chat-drop-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.6);
+  }
+}
+/* A small hop with a squash on landing. */
+@keyframes chat-drop-hop {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    transform: translateY(-9px) scale(0.97, 1.03);
+  }
+  52% {
+    transform: translateY(0) scale(1.05, 0.95);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-drop,
+  .chat-drop-card,
+  .chat-drop-file,
+  .chat-drop-file > span,
+  .chat-drop-character,
+  .chat-drop-character img {
+    animation: none;
+  }
 }
 .chat-heading {
   position: relative;
@@ -1187,10 +1364,10 @@
 }
 .chat-mention-card-message {
   min-height: 40px;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--action);
   border-radius: 8px;
-  color: #fff;
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
   font: inherit;
   font-size: 0.82rem;
   font-weight: 700;
@@ -1263,9 +1440,30 @@
   .chat-thread-send-row button:hover:not(:disabled),
   .chat-forward-body .chat-forward-send:hover:not(:disabled),
   .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
-    border-color: var(--terracotta-bright);
-    background: var(--terracotta-bright);
+    border-color: var(--action-hover);
+    background: var(--action-hover);
   }
+}
+:is(
+    .chat-mention-card-message,
+    .chat-thread-send-row button,
+    .chat-forward-body .chat-forward-send,
+    .chat-edit-dialog .chat-edit-save
+  ):active:not(:disabled) {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+/* Disabled primaries step back to neutral chrome rather than a faded cream. */
+:is(
+  .chat-mention-card-message,
+  .chat-thread-send-row button,
+  .chat-forward-body .chat-forward-send,
+  .chat-edit-dialog .chat-edit-save
+):disabled {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  opacity: 1;
 }
 .chat-mention-card-message:focus-visible {
   outline: 2px solid var(--text);
@@ -1561,6 +1759,8 @@
   color: var(--text-muted);
 }
 .chat-drafts li[data-error] {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  width: min(290px, 100%);
   border-color: #8a4334;
 }
 .chat-draft-preview {
@@ -1650,6 +1850,14 @@ a.chat-draft-preview:focus-visible strong {
 }
 .chat-drafts progress::-moz-progress-bar {
   background: var(--terracotta);
+}
+.chat-draft-retry {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 6px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
 }
 .chat-draft-remove {
   width: 24px;
@@ -1902,8 +2110,18 @@ a.chat-draft-preview:focus-visible strong {
   font-size: 0.85rem;
 }
 .chat-viewer-title small {
+  display: flex;
   color: var(--text-muted);
   font-size: 0.72rem;
+}
+.chat-viewer-title small > span:not(.chat-viewer-size) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-viewer-size {
+  flex: none;
+  white-space: pre;
 }
 .chat-viewer-counter {
   margin-right: 8px;
@@ -2489,8 +2707,8 @@ a.chat-draft-preview:focus-visible strong {
   height: 36px;
   border: 0;
   border-radius: 8px;
-  background: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  color: var(--on-action);
   cursor: pointer;
 }
 .chat-thread-send-row button:disabled {
@@ -2733,9 +2951,9 @@ a.chat-draft-preview:focus-visible strong {
 .chat-forward-body .chat-forward-send {
   align-self: end;
   min-width: 100px;
-  background: var(--terracotta);
-  border-color: var(--terracotta);
-  color: var(--text);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--on-action);
   font-weight: 700;
 }
 .chat-forward-dialog button:disabled {
@@ -2871,8 +3089,9 @@ a.chat-draft-preview:focus-visible strong {
   margin-top: 22px;
 }
 .chat-edit-dialog .chat-edit-save {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
 }
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
@@ -3080,6 +3299,105 @@ a.chat-draft-preview:focus-visible strong {
     height: 44px;
   }
 }
+/* Phones open the channel's menu from its name, as in Slack: Pins and Members
+   move there, leaving the header to the name and voice. Wider layouts keep the
+   plain title and separate buttons. */
+.chat-title-menu {
+  position: static;
+  min-width: 0;
+  flex: 1;
+  display: none;
+}
+.chat-title-menu > summary {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 8px;
+  list-style: none;
+  cursor: pointer;
+}
+.chat-title-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-title-menu[open] > summary {
+  background: var(--surface);
+}
+.chat-title-menu > summary:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-title-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.chat-title-name > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+.chat-title-subtitle {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header-menu {
+  position: absolute;
+  z-index: 9;
+  top: calc(100% + 6px);
+  right: 8px;
+  left: 8px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+.chat-header-menu button {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-header-menu button svg {
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+}
+.chat-header-menu button small {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 760px) {
+  .chat-title-menu {
+    display: block;
+  }
+  .chat-heading > .chat-channel-title,
+  .chat-heading :is(.chat-pins-toggle, .member-list-toggle) {
+    display: none;
+  }
 
 /* Caper admins, in the pin gold with a soft glow; outranks the generic header tag. */
 .chat-admin-badge,

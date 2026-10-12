@@ -28,6 +28,7 @@ import chat.caper.android.ui.EmojiImage
 import chat.caper.android.ui.ErrorText
 import chat.caper.android.ui.PinGold
 import chat.caper.android.ui.PinGoldWash
+import chat.caper.android.ui.primaryButtonColors
 import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.TextMuted
 import kotlinx.coroutines.CancellationException
@@ -161,7 +162,7 @@ import java.util.UUID
                         error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
+            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }

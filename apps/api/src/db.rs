@@ -197,6 +197,8 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE ON public.notification_devices, public.notification_settings, public.notification_overrides, public.notifications TO {role}"
         ),
+        format!("GRANT SELECT ON public.notification_invitation_sources TO {role}"),
+        format!("GRANT SELECT ON public.notification_request_sources TO {role}"),
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_jobs, public.notification_deliveries TO {role}"
         ),

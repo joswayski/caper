@@ -23,6 +23,7 @@ const attachButton = (enabled: boolean, drafts: DraftAttachment[] = []) =>
         drafts,
         onAdd: () => {},
         onRemove: () => {},
+        onRetry: () => {},
       }}
     />,
   );
@@ -118,7 +119,8 @@ test("draft files can be previewed before uploading finishes, with removal separ
     { key: "document", name: "notes.pdf", localUrl: "blob:notes", sourceSize: 1000, progress: 0 },
     { key: "missing", name: "missing.zip", sourceSize: 1000, progress: 0 },
   ];
-  const markup = renderToStaticMarkup(<DraftAttachments drafts={drafts} onRemove={() => {}} />);
+  const markup = renderToStaticMarkup(<DraftAttachments drafts={drafts} onRemove={() => {}} onRetry={() => {}} />);
+  expect(markup).toContain('aria-label="Retry uploading failed.png"');
   for (const name of ["photo.jpg", "clip.mp4", "failed.png", "photo.webp"]) {
     expect(markup).toContain(`aria-label="Preview ${name}" aria-haspopup="dialog"`);
     expect(markup).toMatch(new RegExp(`</button>.*?<button[^>]*aria-label="Remove ${name.replaceAll(".", "\\.")}"`));

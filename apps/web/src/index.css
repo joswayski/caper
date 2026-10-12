@@ -2,6 +2,7 @@
    text-content, disabled:cursor-wait) on the login, profile and privacy pages. */
 @import "../../../shared/design.css" layer(base);
 @import "tailwindcss";
+@import "./motion.css";
 
 @font-face {
   font-family: "Satoshi";
@@ -45,6 +46,10 @@
   --color-terracotta: var(--terracotta);
   --color-terracotta-bright: var(--terracotta-bright);
   --color-caper: var(--caper);
+  --color-action: var(--action);
+  --color-action-hover: var(--action-hover);
+  --color-action-press: var(--action-press);
+  --color-on-action: var(--on-action);
   --font-satoshi: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
   --radius-control: var(--radius);
 }
@@ -283,12 +288,8 @@
     color 0.2s ease;
 }
 .app-downloads .download-button {
-  color: var(--blackout);
-  background: var(--text);
-}
-.app-downloads .download-button:focus-visible {
-  color: var(--text);
-  background: var(--terracotta);
+  color: var(--on-action);
+  background: var(--action);
 }
 .app-downloads .source-button {
   color: var(--text);
@@ -296,11 +297,10 @@
   background: var(--surface);
 }
 /* Hover only where a pointer hovers, so a tapped button doesn't stay lit on
-   touch; a press still shows the same terracotta. */
+   touch; a press still shows the pressed fill. */
 @media (hover: hover) {
   .app-downloads .download-button:hover {
-    color: var(--text);
-    background: var(--terracotta);
+    background: var(--action-hover);
   }
   .app-downloads .source-button:hover {
     color: var(--text);
@@ -308,8 +308,7 @@
   }
 }
 .app-downloads .download-button:active {
-  color: var(--text);
-  background: var(--terracotta);
+  background: var(--action-press);
 }
 .app-downloads .source-button:active {
   color: var(--text);
@@ -335,6 +334,13 @@
     color: var(--text);
     text-decoration: underline;
   }
+}
+/* The Android beta's second step must read as a link, not as muted copy. */
+.app-downloads .download-step {
+  color: var(--text);
+}
+.app-downloads .download-step a {
+  text-decoration: underline;
 }
 .hero-copy > .made-by {
   margin: 20px 0 0;

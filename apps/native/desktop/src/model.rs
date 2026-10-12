@@ -858,6 +858,31 @@ impl MessageVersions {
 }
 
 impl Message {
+    pub fn refresh_profile(&mut self, account: &Account) {
+        let Some(name) = &account.display_name else {
+            return;
+        };
+        let author = |value: &mut Author| {
+            if value.id == account.id {
+                value.name.clone_from(name);
+            }
+        };
+        author(&mut self.author);
+        if let Some(pin) = &mut self.pin {
+            author(&mut pin.author);
+        }
+        if let Some(thread) = &mut self.thread {
+            thread.participants.iter_mut().for_each(author);
+        }
+        if let Some(original) = self
+            .forward
+            .as_mut()
+            .and_then(|forward| forward.message.as_mut())
+        {
+            original.refresh_profile(account);
+        }
+    }
+
     pub fn is_channel_message(&self) -> bool {
         self.thread_root_id.is_none() || self.broadcast
     }
@@ -1090,6 +1115,29 @@ pub enum Apply {
 }
 
 impl Timeline {
+    pub fn refresh_profile(&mut self, account: &Account) {
+        for message in self
+            .messages
+            .values_mut()
+            .chain(self.buffered.values_mut())
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.values_mut())
+            .chain(self.forward_updates.values_mut())
+            .chain(self.edits.values_mut())
+        {
+            message.refresh_profile(account);
+        }
+        if let Some(name) = &account.display_name {
+            for summary in self.thread_summaries.values_mut() {
+                for author in &mut summary.participants {
+                    if author.id == account.id {
+                        author.name.clone_from(name);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn reset(&mut self, messages: Vec<Message>, cursor: &str) -> Result<(), String> {
         self.cursor = sequence(cursor)?;
         self.pin_snapshot_cursor = 0;
@@ -2451,6 +2499,58 @@ mod tests {
             "an old pin does not enter paginated history"
         );
         assert_eq!(timeline.pinned_messages().next().unwrap().id, "old");
+    }
+
+    #[test]
+    fn profile_refresh_changes_identity_by_id_without_rewriting_history_or_cursor() {
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "id": "author", "username": "new_user", "displayName": "New Name"
+        }))
+        .unwrap();
+        let mut own = message("self", 3);
+        own.content.text = "Keep @old_user".into();
+        let mut other = message("other", 5);
+        other.author.id = "other".into();
+        own.thread = Some(ThreadSummary {
+            reply_count: 1,
+            participants: vec![own.author.clone(), other.author.clone()],
+            seq: "5".into(),
+        });
+        other.forward = Some(Box::new(MessageForward {
+            message: Some(own.clone()),
+            seq: "5".into(),
+        }));
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![own, other], "5").unwrap();
+        timeline
+            .apply_pin(pin_update(message("old", 1), 6, true))
+            .unwrap();
+        timeline.refresh_profile(&account);
+        let messages: Vec<_> = timeline.messages().collect();
+        assert_eq!(messages[0].author.name, "New Name");
+        assert_eq!(messages[0].content.text, "Keep @old_user");
+        assert_eq!(
+            messages[0].thread.as_ref().unwrap().participants[1].name,
+            "A"
+        );
+        assert_eq!(messages[1].author.name, "A");
+        assert_eq!(
+            messages[1]
+                .forward
+                .as_ref()
+                .unwrap()
+                .message
+                .as_ref()
+                .unwrap()
+                .author
+                .name,
+            "New Name"
+        );
+        let pin = timeline.pinned_messages().next().unwrap();
+        assert_eq!(pin.author.name, "New Name");
+        assert_eq!(pin.pin.as_ref().unwrap().author.name, "New Name");
+        assert_eq!(timeline.cursor(), "6");
+        assert_eq!(messages.len(), 2);
     }
 
     #[test]

@@ -58,7 +58,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Sending up to 10 files per message from the + attachment picker (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window. Files are compressed on the device, off the UI thread, with the
+  window, which shows the drop overlay while they hover. Files are compressed on the device, off the UI thread, with the
   server's `GET /api/assets/usage` `compression` settings: lossless stills
   (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
   smaller of an exact-palette indexed PNG (when the colours fit
@@ -92,6 +92,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. An independent account gateway feed presents local OS notifications
   with sender avatars and click navigation while the app runs, including minimized.
+  Space/private-channel invitation taps refresh pending invitations and open
+  Accept/Decline review, never automatic acceptance, private history or voice.
+  New DM requests alert once without message content and open the existing
+  read-only request review; pending messages stay quiet until acceptance.
   Quitting exits the app; there is no keep-running-in-tray behavior.
 - The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
   popup; the thread reply box and message editor do not yet. Space channels
@@ -135,7 +139,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   opens the conversation by channel id at the message and in its thread.
   Without membership (`visitor: true`) the team takes part like a member
   (replies, files, reactions, typing, pins, forwarding, and a visited space
-  channel's voice from a row under the header), but there is no member list,
+  channel's voice from its header, as for any channel), but there is no member list,
   read marker, join/leave, settings or notification menu. Back returns to
   the inbox (or the conversation a notification interrupted). Conversations
   the team member already belongs to open normally.
@@ -364,8 +368,8 @@ exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
 mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.
-`parity-direct-no-spaces` previews the first-space page's Direct messages entry
-and the global list without any space membership.
+`parity-direct-no-spaces` previews first-space setup without DM navigation,
+even when the account has an existing conversation.
 `parity-attachments` previews ready, processing (with poster and percent, and
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or

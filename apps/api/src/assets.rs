@@ -376,7 +376,12 @@ impl CdnSigner {
     fn signed_url(&self, key: &str, expires: i64) -> String {
         let signature =
             URL_SAFE_NO_PAD.encode(hmac(&self.secret, format!("{key}\n{expires}").as_bytes()));
-        format!("{}/{key}?exp={expires}&sig={signature}", self.origin)
+        // Public URLs need not expose the R2 prefix; signatures still bind the
+        // stored object, so the Worker can also honor already-issued URLs.
+        let path = key
+            .strip_prefix("original/")
+            .map_or_else(|| key.to_owned(), |id| format!("assets/{id}"));
+        format!("{}/{path}?exp={expires}&sig={signature}", self.origin)
     }
 }
 
@@ -594,6 +599,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/assets/usage", get(usage))
         .route("/api/assets/urls", post(urls))
         .route("/api/assets/{asset}/complete", post(complete))
+        .route("/api/assets/{asset}/cancel", post(cancel))
 }
 
 fn enabled(state: &AppState) -> Result<&Assets, ApiError> {
@@ -896,12 +902,47 @@ async fn complete(
             return reject(assets, &asset).await;
         }
     }
-    sqlx::query("UPDATE public.assets SET uploaded_at=now() WHERE external_id=$1 AND uploaded_at IS NULL AND deleted_at IS NULL")
+    let completed = sqlx::query("UPDATE public.assets SET uploaded_at=COALESCE(uploaded_at,now()) WHERE external_id=$1 AND deleted_at IS NULL")
         .bind(&asset)
         .execute(&assets.pool)
         .await
         .map_err(database_error)?;
+    if completed.rows_affected() == 0 {
+        return Err(not_found());
+    }
     Ok(Json(describe(&row)))
+}
+
+/// Cancellation races safely with Send's row lock: only an unlinked file can
+/// be abandoned. Repeating it does not postpone cleanup or erase message files.
+async fn cancel(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(asset): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let assets = enabled(&state)?;
+    let mut tx = assets.pool.begin().await.map_err(database_error)?;
+    let message: Option<i64> = sqlx::query_scalar(
+        "SELECT message_id FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
+    )
+    .bind(&asset)
+    .bind(principal.user.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(not_found)?;
+    if message.is_some() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "file already sent"));
+    }
+    sqlx::query(
+        "UPDATE public.assets SET deleted_at=COALESCE(deleted_at,now()) WHERE external_id=$1",
+    )
+    .bind(&asset)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Refuse an upload whose bytes do not match what was reserved. The purge loop
@@ -1003,6 +1044,7 @@ pub(crate) async fn attach(
         "SELECT {COLUMNS} FROM public.assets
          WHERE external_id = ANY($1) AND owner_id=$2 AND channel_id=$3 AND purpose='attachment'
            AND uploaded_at IS NOT NULL AND message_id IS NULL AND deleted_at IS NULL
+           AND uploaded_at > now() - interval '24 hours'
          FOR UPDATE"
     ))
     .bind(ids)
@@ -1016,10 +1058,8 @@ pub(crate) async fn attach(
         .map(|id| by_id.get(id.as_str()).map(|row| describe(row)))
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "attachment is not ready or already sent",
-            )
+            ApiError::new(StatusCode::CONFLICT, "Failed to upload.")
+                .with_code("attachment_unavailable")
         })
 }
 
@@ -1146,13 +1186,63 @@ pub(crate) async fn notification_content(
 /// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain.
 pub(crate) fn spawn_purger(assets: Assets) {
     tokio::spawn(async move {
+        let mut sweep = PurgeSweep::default();
         loop {
             if purge(&assets).await.is_err() {
                 tracing::warn!(event_name = "asset_purge_retry", "asset purge will retry");
             }
+            if sweep.run(&assets).await.is_err() {
+                tracing::warn!(event_name = "asset_sweep_retry", "asset sweep will retry");
+            }
             tokio::time::sleep(PURGE_INTERVAL).await;
         }
     });
+}
+
+/// A presigned PUT can finish after deletion. Retained rows are permanent
+/// cleanup records, even after the first deletion has released account quota.
+/// Each bounded pass has a fixed ceiling so new uploads cannot starve old ones.
+#[derive(Default)]
+struct PurgeSweep {
+    cursor: i64,
+    ceiling: Option<i64>,
+}
+
+impl PurgeSweep {
+    async fn run(&mut self, assets: &Assets) -> Result<(), ()> {
+        let ceiling = match self.ceiling {
+            Some(ceiling) => ceiling,
+            None => {
+                let ceiling = sqlx::query_scalar("SELECT COALESCE(max(id),0) FROM public.assets")
+                    .fetch_one(&assets.pool)
+                    .await
+                    .map_err(|_| ())?;
+                self.ceiling = Some(ceiling);
+                ceiling
+            }
+        };
+        let rows: Vec<(i64, String, bool)> = sqlx::query_as(
+            "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
+             WHERE deleted_at IS NOT NULL AND message_id IS NULL AND id > $1 AND id <= $2
+             ORDER BY id LIMIT 25",
+        )
+        .bind(self.cursor)
+        .bind(ceiling)
+        .fetch_all(&assets.pool)
+        .await
+        .map_err(|_| ())?;
+        if let Some((last, _, _)) = rows.last() {
+            self.cursor = *last;
+        }
+        if rows.len() < 25 || self.cursor >= ceiling {
+            self.cursor = 0;
+            self.ceiling = None;
+        }
+        // Advance even on delete failure; the next pass retries without
+        // letting a few failing keys starve all the later records.
+        delete_objects(assets, rows).await?;
+        Ok(())
+    }
 }
 
 pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
@@ -1177,6 +1267,11 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     .fetch_all(&assets.pool)
     .await
     .map_err(|_| ())?;
+    delete_objects(assets, rows).await
+}
+
+async fn delete_objects(assets: &Assets, rows: Vec<(i64, String, bool)>) -> Result<usize, ()> {
+    let attempted = rows.len();
     let done: Vec<i64> = futures_util::stream::iter(rows)
         .map(|(id, external, preview)| async move {
             let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
@@ -1189,16 +1284,25 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
         .filter_map(std::future::ready)
         .collect()
         .await;
-    let purged = done.len();
-    if purged > 0 {
+    if done.len() < attempted {
+        tracing::warn!(
+            event_name = "asset_delete_retry",
+            count = attempted - done.len(),
+            "asset object deletion will retry"
+        );
+    }
+    let purged = if done.is_empty() {
+        0
+    } else {
         sqlx::query(
             "UPDATE public.assets SET purged_at=now() WHERE id = ANY($1) AND purged_at IS NULL",
         )
         .bind(&done)
         .execute(&assets.pool)
         .await
-        .map_err(|_| ())?;
-    }
+        .map_err(|_| ())?
+        .rows_affected() as usize
+    };
     if purged > 0 {
         tracing::info!(
             event_name = "assets_purged",

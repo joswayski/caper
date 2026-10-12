@@ -27,7 +27,9 @@ export function setBrowserNotificationsEnabled(on: boolean) {
 export interface MessageNotification {
   type: "notification.created";
   seq: string;
-  messageId: string;
+  kind?: string;
+  messageId?: string;
+  notificationId?: string;
   title: string;
   body: string;
   createdAt: string;
@@ -38,7 +40,6 @@ export interface MessageNotification {
   conversationId?: string;
   spaceId?: string;
   channelId?: string;
-  kind?: string;
   /** The thread a reply belongs to. */
   threadRootId?: string;
 }
@@ -48,10 +49,33 @@ export function notificationLocation(event: MessageNotification) {
   const message = /^[A-Za-z0-9]{15}$/;
   // The feedback team visits the conversation in place, at the report's thread.
   const visit = event.conversationId ?? event.channelId;
-  if (event.kind === "feedback" && visit && id.test(visit) && message.test(event.messageId)) {
+  if (event.kind === "feedback" && visit && id.test(visit) && event.messageId && message.test(event.messageId)) {
     const root = event.threadRootId && message.test(event.threadRootId) ? event.threadRootId : event.messageId;
     return `/spaces?feedback=${visit}&message=${event.messageId}&thread=${root}`;
   }
+  if (event.kind === "direct.request") {
+    if (event.conversationId && id.test(event.conversationId) && !event.spaceId && !event.channelId)
+      return `/spaces?dm=${event.conversationId}`;
+    return;
+  }
+  if (
+    event.kind === "space.invitation" &&
+    event.spaceId &&
+    id.test(event.spaceId) &&
+    !event.channelId &&
+    !event.conversationId
+  )
+    return `/spaces?space=${event.spaceId}`;
+  if (
+    event.kind === "channel.invitation" &&
+    event.spaceId &&
+    event.channelId &&
+    id.test(event.spaceId) &&
+    id.test(event.channelId) &&
+    !event.conversationId
+  )
+    return `/spaces?space=${event.spaceId}&invite=${event.channelId}`;
+  if (event.kind === "space.invitation" || event.kind === "channel.invitation") return;
   if (event.conversationId && id.test(event.conversationId)) return `/spaces?dm=${event.conversationId}`;
   if (event.spaceId && event.channelId && id.test(event.spaceId) && id.test(event.channelId))
     return `/spaces?space=${event.spaceId}&channel=${event.channelId}`;
@@ -96,10 +120,18 @@ export function watchBrowserNotifications(
   };
   const receive = async (value: unknown) => {
     const event = value as MessageNotification;
+    const invitation = event?.kind === "space.invitation" || event?.kind === "channel.invitation";
+    const request = event?.kind === "direct.request";
+    const identity =
+      invitation || request
+        ? typeof event.notificationId === "string" && /^[1-9][0-9]*$/.test(event.notificationId)
+          ? `${request ? "request" : "invitation"}:${event.notificationId}`
+          : undefined
+        : event?.messageId;
     if (
       !event ||
       event.type !== "notification.created" ||
-      typeof event.messageId !== "string" ||
+      typeof identity !== "string" ||
       typeof event.title !== "string" ||
       typeof event.body !== "string"
     )
@@ -111,7 +143,7 @@ export function watchBrowserNotifications(
       return Number.isFinite(age) && age >= -30_000 && age <= 120_000;
     };
     if (!location || !fresh()) return;
-    const subject = event.conversationId ?? event.channelId;
+    const subject = invitation || request ? identity : (event.conversationId ?? event.channelId);
     const allowed = () => active && browserNotificationPermission() === "granted" && browserNotificationsEnabled();
     const reading = () => {
       visibility();
@@ -133,8 +165,8 @@ export function watchBrowserNotifications(
       const key = `caper.notificationSeen.${accountId}`;
       try {
         const seen: string[] = JSON.parse(localStorage.getItem(key) ?? "[]");
-        if (Array.isArray(seen) && seen.includes(event.messageId)) return false;
-        localStorage.setItem(key, JSON.stringify([...(Array.isArray(seen) ? seen : []), event.messageId].slice(-128)));
+        if (Array.isArray(seen) && seen.includes(identity)) return false;
+        localStorage.setItem(key, JSON.stringify([...(Array.isArray(seen) ? seen : []), identity].slice(-128)));
       } catch {
         /* Private browsing may disallow storage; the OS tag still groups duplicates. */
       }
@@ -153,7 +185,7 @@ export function watchBrowserNotifications(
       const options: NotificationOptions & { image?: string } = {
         body: event.body,
         icon: avatarUrl(event.senderAvatarId),
-        tag: `caper:${accountId}:${event.messageId}`,
+        tag: `caper:${accountId}:${identity}`,
         ...(image ? { image } : {}),
       };
       const notification = new Notification(event.title, options);

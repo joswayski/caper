@@ -70,3 +70,6 @@ internal val directPrivacyOptions = listOf(
     Triple("spaces", "People in my spaces", null),
     Triple("nobody", "No one new", "Conversations you already have stay open."),
 )
+
+/** How to request account deletion, linked from Privacy settings (Google Play requires an in-app path). */
+internal const val DELETE_ACCOUNT_URL = "https://caper.chat/privacy#delete-account"

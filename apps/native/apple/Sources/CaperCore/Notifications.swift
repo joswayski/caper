@@ -362,6 +362,7 @@ public enum NotificationLabels {
 public enum NotificationRoute: Equatable, Sendable {
     case channel(spaceID: String, channelID: String)
     case direct(conversationID: String)
+    case invitation(spaceID: String, channelID: String?)
     /// A `feedback` notification: visit the conversation at the reported
     /// message, in its thread (`threadRootId`, else the message's own).
     case feedback(FeedbackTarget)
@@ -377,11 +378,23 @@ public enum NotificationRoute: Equatable, Sendable {
             return string
         }
         let conversationID = value("conversationId")
+        // `feedback` first, then invitations, then the conversation fallback.
         if value("kind") == Self.feedbackKind, let messageID = value("messageId"),
            let channelID = conversationID ?? value("channelId") {
             self = .feedback(FeedbackTarget(channelID: channelID, spaceID: conversationID == nil ? value("spaceId") : nil,
                                             messageID: messageID, threadRootID: value("threadRootId")))
-        } else if let conversationID {
+            return
+        }
+        if let kind = value("kind"), kind == "space.invitation" || kind == "channel.invitation" {
+            func valid(_ id: String) -> Bool { id.range(of: "^[A-Za-z0-9]{12}$", options: .regularExpression) != nil }
+            guard value("conversationId") == nil, let spaceID = value("spaceId"), valid(spaceID) else { return nil }
+            let channelID = value("channelId")
+            if kind == "space.invitation" && channelID != nil { return nil }
+            if kind == "channel.invitation" && (channelID == nil || !valid(channelID!)) { return nil }
+            self = .invitation(spaceID: spaceID, channelID: channelID)
+            return
+        }
+        if let conversationID {
             self = .direct(conversationID: conversationID)
         } else if let spaceID = value("spaceId"), let channelID = value("channelId") {
             self = .channel(spaceID: spaceID, channelID: channelID)
@@ -398,6 +411,7 @@ public enum NotificationRoute: Equatable, Sendable {
             return directMessageID == conversationID
         case let .channel(routeSpaceID, routeChannelID):
             return directMessageID == nil && spaceID == routeSpaceID && channelID == routeChannelID
+        case .invitation: return false
         case let .feedback(target):
             if visitChannelID == target.channelID || directMessageID == target.channelID { return true }
             return directMessageID == nil && channelID == target.channelID
