@@ -32,6 +32,8 @@ export function ReplyContext({
   const [clipped, setClipped] = useState(false);
   const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 17, height: 100 });
   const text = reference.fullText ?? reference.text;
+  const preview = [...text].slice(0, 100).join("");
+  const canExpand = preview !== text || clipped;
   useLayoutEffect(() => {
     const element = root.current!;
     const update = () => {
@@ -76,7 +78,12 @@ export function ReplyContext({
   const routeId = `reply-route-${excerptId}`;
   const lightId = `reply-light-${excerptId}`;
   return (
-    <div ref={root} className="chat-reply-context" data-expanded={expanded && !hidden}>
+    <div
+      ref={root}
+      className="chat-reply-context"
+      data-expanded={expanded && !hidden}
+      data-clipped={canExpand && !hidden}
+    >
       <svg
         className="chat-reply-connector"
         style={{ width: sourceX + 1, height }}
@@ -98,16 +105,19 @@ export function ReplyContext({
         </defs>
         <path className="chat-reply-line" d={ribbon} />
         {!hidden && (
-          <>
+          <g className="chat-reply-pulse">
+            <g className="chat-reply-flow chat-reply-haze" style={{ offsetPath: `url(#${routeId})` }}>
+              <ellipse rx="84" ry="24" fill={`url(#${lightId})`} />
+            </g>
             <g className="chat-reply-flow chat-reply-glow" style={{ offsetPath: `url(#${routeId})` }}>
-              <ellipse rx="36" ry="5" fill={`url(#${lightId})`} />
+              <ellipse rx="52" ry="10" fill={`url(#${lightId})`} />
             </g>
             <g clipPath={`url(#${clipId})`}>
               <g className="chat-reply-flow" style={{ offsetPath: `url(#${routeId})` }}>
                 <ellipse rx="36" ry="3" fill={`url(#${lightId})`} />
               </g>
             </g>
-          </>
+          </g>
         )}
       </svg>
       <div className="chat-reply-body">
@@ -134,11 +144,12 @@ export function ReplyContext({
           </span>
           {!hidden && (
             <span ref={excerpt} id={excerptId} className="chat-reply-excerpt">
-              {text || (reference.hasAttachments ? "Attachment" : "Message")}
+              {(expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
+              {!expanded && preview !== text && "…"}
             </span>
           )}
         </button>
-        {!hidden && clipped && (
+        {!hidden && canExpand && (
           <button
             type="button"
             className="chat-reply-expand"

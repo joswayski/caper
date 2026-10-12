@@ -11080,21 +11080,28 @@ impl CaperApp {
                             } else {
                                 text
                             };
+                            let preview: String = text.chars().take(100).collect();
                             let mut job = egui::text::LayoutJob::simple(
-                                text.to_owned(),
+                                if expanded {
+                                    text.to_owned()
+                                } else if preview != text {
+                                    format!("{preview}…")
+                                } else {
+                                    preview.clone()
+                                },
                                 egui::FontId::proportional(12.0),
                                 MUTED,
                                 ui.available_width(),
                             );
                             let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
-                            let clipped = full.rows.len() > 3;
+                            let clipped = preview != text || full.rows.len() > 3;
                             let galley = if expanded || !clipped {
                                 full
                             } else {
                                 job.wrap.max_rows = 3;
                                 ui.fonts_mut(|fonts| fonts.layout_job(job))
                             };
-                            open |= ui
+                            let excerpt = ui
                                 .add_enabled(
                                     !self.context_loading,
                                     egui::Label::new(galley)
@@ -11102,8 +11109,26 @@ impl CaperApp {
                                         .show_tooltip_when_elided(false)
                                         .selectable(false),
                                 )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked();
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            open |= excerpt.clicked();
+                            if clipped && !expanded {
+                                let rect = excerpt.rect;
+                                let top = rect.bottom() - (rect.height() * 0.35).min(18.0);
+                                let mut fade = egui::Mesh::default();
+                                fade.colored_vertex(
+                                    egui::pos2(rect.left(), top),
+                                    Color32::TRANSPARENT,
+                                );
+                                fade.colored_vertex(
+                                    egui::pos2(rect.right(), top),
+                                    Color32::TRANSPARENT,
+                                );
+                                fade.colored_vertex(rect.right_bottom(), SURFACE);
+                                fade.colored_vertex(rect.left_bottom(), SURFACE);
+                                fade.add_triangle(0, 1, 2);
+                                fade.add_triangle(0, 2, 3);
+                                ui.painter().add(egui::Shape::mesh(fade));
+                            }
                             if clipped
                                 && ui
                                     .add(

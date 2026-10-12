@@ -4470,6 +4470,7 @@ private struct NativeReplyContext: View {
         let text = reference.fullText ?? reference.text
         return text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text
     }
+    private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { Task { _ = await chat.goToReply(reference) } } label: {
@@ -4485,9 +4486,18 @@ private struct NativeReplyContext: View {
                         Text("View original").font(CaperTheme.font(11)).fixedSize()
                     }.frame(minHeight: 20)
                     if !hidden {
-                        Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                        Text(expanded ? excerpt : preview + (preview != excerpt ? "…" : "")).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
+                            .overlay {
+                                if !expanded && (preview != excerpt || fullHeight > collapsedHeight + 1) {
+                                    LinearGradient(stops: [
+                                        .init(color: CaperTheme.surface.opacity(0), location: 0),
+                                        .init(color: CaperTheme.surface.opacity(0), location: 0.65),
+                                        .init(color: CaperTheme.surface, location: 1),
+                                    ], startPoint: .top, endPoint: .bottom).allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                            }
                             .background {
                                 Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
@@ -4504,7 +4514,7 @@ private struct NativeReplyContext: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
-            if !hidden && (expanded || fullHeight > collapsedHeight + 1) {
+            if !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1) {
                 Button { expanded.toggle() } label: { Text(expanded ? "Show less" : "Show more").font(CaperTheme.font(11)).underline() }
                     .buttonStyle(.plain)
                     #if os(iOS)
@@ -4522,7 +4532,7 @@ private struct NativeReplyContext: View {
             .overlay(alignment: .topLeading) {
                 GeometryReader { geometry in
                     TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || hidden)) { timeline in
-                        let progress = CGFloat(min(1, max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 4.2) / 2.8)))
+                        let progress = CGFloat(max(0, timeline.date.timeIntervalSince(sweepStart).truncatingRemainder(dividingBy: 2.8) / 2.8))
                         let bottom = geometry.size.height + 6
                         let ribbon = Path { path in
                             path.move(to: CGPoint(x: 16.45, y: bottom))
@@ -4547,15 +4557,24 @@ private struct NativeReplyContext: View {
                             rings.stroke(CaperTheme.muted.opacity(0.4), lineWidth: 1)
                             if !reduceMotion && !hidden && progress > 0 && progress < 1,
                                let center = path.trimmedPath(from: 0, to: progress).currentPoint {
-                                let fade = Double(min(1, min(progress / 0.105, (1 - progress) / 0.12)))
-                                let light = RadialGradient(stops: [
+                                let before = path.trimmedPath(from: 0, to: max(0, progress - 0.001)).currentPoint ?? center
+                                let angle = Angle.radians(Double(atan2(center.y - before.y, center.x - before.x)))
+                                let fade = 0.8 * Double(min(1, min(progress / 0.07, (1 - progress) / 0.12)))
+                                let stops: [Gradient.Stop] = [
                                     .init(color: CaperTheme.text, location: 0),
                                     .init(color: CaperTheme.text, location: 0.16),
                                     .init(color: CaperTheme.terracottaBright.opacity(0.95), location: 0.32),
                                     .init(color: CaperTheme.terracottaBright.opacity(0.3), location: 0.6),
                                     .init(color: .clear, location: 1),
-                                ], center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 36)
-                                path.stroke(light, style: StrokeStyle(lineWidth: 7, lineCap: .round)).opacity(0.5 * fade).blur(radius: 2)
+                                ]
+                                let light = RadialGradient(stops: stops, center: UnitPoint(x: center.x / 57, y: center.y / (geometry.size.height + 40)), startRadius: 0, endRadius: 36)
+                                let bloom = RadialGradient(stops: stops, center: .center, startRadius: 0, endRadius: 36)
+                                Circle().fill(bloom).frame(width: 72, height: 72)
+                                    .scaleEffect(x: 84.0 / 36.0, y: 24.0 / 36.0).rotationEffect(angle)
+                                    .position(center).opacity(0.14 * fade).blur(radius: 8)
+                                Circle().fill(bloom).frame(width: 72, height: 72)
+                                    .scaleEffect(x: 52.0 / 36.0, y: 10.0 / 36.0).rotationEffect(angle)
+                                    .position(center).opacity(0.35 * fade).blur(radius: 4)
                                 ribbon.fill(light).opacity(fade)
                             }
                         }.frame(width: 57, height: geometry.size.height + 40)

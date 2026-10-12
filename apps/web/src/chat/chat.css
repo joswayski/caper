@@ -549,6 +549,9 @@
 .chat-message:has(> .chat-reply-context) > .chat-avatar {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-muted) 40%, transparent);
 }
+.chat-reply-pulse {
+  opacity: 0.8;
+}
 .chat-reply-connector .chat-reply-flow {
   offset-position: 0 0;
   offset-anchor: center;
@@ -557,11 +560,17 @@
   transform-box: fill-box;
   opacity: 0;
 }
+.chat-reply-connector .chat-reply-haze {
+  filter: blur(8px);
+}
+.chat-reply-haze ellipse {
+  opacity: 0.14;
+}
 .chat-reply-connector .chat-reply-glow {
-  filter: blur(2px);
+  filter: blur(4px);
 }
 .chat-reply-glow ellipse {
-  opacity: 0.5;
+  opacity: 0.35;
 }
 @keyframes chat-reply-sweep {
   0% {
@@ -571,11 +580,9 @@
   7% {
     opacity: 1;
   }
-  65% {
-    offset-distance: 100%;
+  88% {
     opacity: 1;
   }
-  73%,
   100% {
     offset-distance: 100%;
     opacity: 0;
@@ -583,7 +590,7 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .chat-reply-flow {
-    animation: chat-reply-sweep 4.2s linear infinite;
+    animation: chat-reply-sweep 2.8s linear infinite;
   }
 }
 .chat-message:has(> .chat-reply-context)
@@ -625,6 +632,9 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   line-height: 18px;
+}
+.chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
+  mask-image: linear-gradient(to bottom, #000 max(65%, calc(100% - 18px)), transparent);
 }
 .chat-reply-context[data-expanded="true"] .chat-reply-excerpt {
   display: block;

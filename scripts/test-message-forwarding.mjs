@@ -77,7 +77,21 @@ try {
   const extraGeneral = allDestinations.find((item) => item.spaceName === "TEST FIXTURE Workshop").id;
   const source = (await request("/api/chat/channels/chan00000003/messages")).value.messages[0];
   await control({
-    incomingEdit: { messageId: source.id, text: "TEST FIXTURE — Live discussion from private planning." },
+    incomingEdit: {
+      messageId: source.id,
+      text: "TEST FIXTURE — Live discussion from private planning.",
+      attachments: [
+        {
+          id: "asset00000000001",
+          kind: "file",
+          contentType: "text/plain",
+          name: "TEST FIXTURE notes.txt",
+          size: 128,
+          status: "ready",
+          url: "https://example.test/fixture-notes.txt",
+        },
+      ],
+    },
   });
   await control({ incomingReply: { rootId: source.id, text: "An existing reply before sharing." } });
   browser("open", "about:blank");
@@ -101,6 +115,10 @@ try {
   );
   browser("find", "role", "button", "click", "--name", "Forward message", "--exact");
   wait('document.querySelectorAll(".chat-forward-destinations input").length > 0');
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-original .chat-file strong")?.textContent'),
+    "TEST FIXTURE notes.txt",
+  );
   assert.equal(evaluate('document.querySelector(".chat-forward-send").disabled'), true);
   assert.equal(evaluate('document.querySelectorAll(".chat-forward-destinations input[type=checkbox]").length'), 5);
   assert.equal(
@@ -204,6 +222,7 @@ try {
   const wrapper = forwards[0];
   assert.equal(wrapper.forward.message.id, source.id);
   assert.equal(wrapper.forward.message.thread.replyCount, 1);
+  assert.equal(wrapper.forward.message.content.attachments[0].name, "TEST FIXTURE notes.txt");
   browser("focus", `${sourceRow} .chat-message-actions-trigger`);
   browser("press", "Enter");
   browser("find", "role", "button", "click", "--name", "Forward message", "--exact");
@@ -253,6 +272,7 @@ try {
     [390, 844, "narrow"],
   ]) {
     browser("set", "viewport", String(width), String(height), "2");
+    browser("scrollintoview", `${wrapperRow} .chat-forward-card > button`);
     browser("click", `${wrapperRow} .chat-forward-card button`);
     wait(
       `document.querySelector('#chat-heading')?.textContent.includes('planning') && !!document.querySelector('${sourceRow}.chat-message-jump-target')`,
@@ -394,6 +414,10 @@ try {
   await control({ incomingReply: { rootId: source.id, text: "A future reply shared automatically." } });
   wait(
     'document.querySelector(".chat-forward-body h3")?.textContent === "2 replies" && document.querySelector(".chat-forward-body").textContent.includes("A future reply") && document.querySelector(".chat-forward-body").textContent.includes("The original changed") && !!document.querySelector(".chat-forward-reactions")',
+  );
+  assert.equal(
+    evaluate('document.querySelector(".chat-forward-original .chat-file strong")?.textContent'),
+    "TEST FIXTURE notes.txt",
   );
   screenshot("forward-conversation-desktop");
   checkReactionLayout();

@@ -88,6 +88,7 @@ import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onSizeChanged
@@ -180,7 +181,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -2480,6 +2483,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
+    val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
+    val surface = MaterialTheme.colorScheme.surface
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
     var clipped by remember(reference.id, hidden) { mutableStateOf(false) }
     val context = LocalContext.current
@@ -2490,7 +2495,6 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         while (isActive) {
             sweep.snapTo(0f)
             sweep.animateTo(1f, tween(2800, easing = LinearEasing))
-            delay(1400)
         }
     }
     val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
@@ -2514,19 +2518,29 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         drawPath(ribbon, TextMuted.copy(alpha = 0.65f))
         drawCircle(TextMuted.copy(alpha = 0.4f), 17.5.dp.toPx(), Offset(column, bottom + 17.dp.toPx()), style = Stroke(1.dp.toPx()))
         if (!hidden) drawCircle(TextMuted.copy(alpha = 0.4f), 8.5.dp.toPx(), Offset(sourceX + 8.dp.toPx(), sourceY), style = Stroke(1.dp.toPx()))
-        if (!hidden && !still && sweep.value > 0f && sweep.value < 1f) {
+        if (!hidden && !still) {
             val measure = PathMeasure().apply { setPath(path, false) }
-            val fade = minOf(1f, sweep.value / 0.105f, (1f - sweep.value) / 0.12f)
+            val progress = sweep.value
+            val distance = progress * measure.length
+            val center = measure.getPosition(distance)
+            val tangent = measure.getTangent(distance)
+            val angle = atan2(tangent.y, tangent.x) * 180f / PI.toFloat()
+            val fade = 0.8f * minOf(1f, progress / 0.07f, (1f - progress) / 0.12f)
+            val radius = 36.dp.toPx()
             val light = Brush.radialGradient(
                 0f to chat.caper.android.ui.Text.copy(alpha = fade),
                 0.16f to chat.caper.android.ui.Text.copy(alpha = fade),
                 0.32f to TerracottaBright.copy(alpha = 0.95f * fade),
                 0.6f to TerracottaBright.copy(alpha = 0.3f * fade),
                 1f to Color.Transparent,
-                center = measure.getPosition(sweep.value * measure.length), radius = 36.dp.toPx(),
+                center = center, radius = radius,
             )
-            drawPath(path, light, alpha = 0.08f, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round))
-            drawPath(path, light, alpha = 0.3f, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+            withTransform({ rotate(angle, center); scale(84f / 36f, 24f / 36f, center) }) {
+                drawCircle(light, radius, center, alpha = 0.14f)
+            }
+            withTransform({ rotate(angle, center); scale(52f / 36f, 10f / 36f, center) }) {
+                drawCircle(light, radius, center, alpha = 0.35f)
+            }
             drawPath(ribbon, light)
         }
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
@@ -2538,11 +2552,16 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
-                    if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
+                    if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier.drawWithContent {
+                        drawContent()
+                        if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
+                            listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.65f, endY = size.height,
+                        ))
+                    }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                 }
-                if (!hidden && clipped) TextButton({ expanded = !expanded }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
+                if (!hidden && (preview != text || clipped)) TextButton({ expanded = !expanded }, Modifier.heightIn(min = 44.dp), shape = MaterialTheme.shapes.small) {
                     Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp)
                 }
             }

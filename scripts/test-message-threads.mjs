@@ -337,9 +337,11 @@ const checkLongQuotePreview = async (layout) => {
   const peer = await session("fixture-member-token");
   const own = await session("fixture-owner-token");
   const fullText =
-    "TEST FIXTURE — Replies bring an earlier message back into the conversation without moving the original.\nThe quote preserves the original wording and line breaks, even if the source is edited later. This longer paragraph makes the three-line preview wrap on both wide and narrow screens.\nShow more reveals the complete saved quote; View original jumps to the live message. 🙂🚀\nhttps://example.test/" +
+    "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the original.\nThe quote preserves the original wording and line breaks, even if the source is edited later. This longer paragraph makes the three-line preview wrap on both wide and narrow screens.\nShow more reveals the complete saved quote; View original jumps to the live message.\nhttps://example.test/" +
     "a-long-unbroken-path-".repeat(9) +
     "END-OF-QUOTE";
+  const preview =
+    "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the ori…";
   const send = async (auth, text, replyToId) => {
     const response = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
       method: "POST",
@@ -379,17 +381,18 @@ const checkLongQuotePreview = async (layout) => {
     const beam = quote.querySelector('.chat-reply-route');
     const end = beam.getPointAtLength(beam.getTotalLength()).matrixTransform(beam.getScreenCTM());
     const start = beam.getPointAtLength(0).matrixTransform(beam.getScreenCTM());
-    return { clamp: getComputedStyle(excerpt).webkitLineClamp, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
+    return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
       connection: Math.abs(line.bottom - avatar.top - 1), overflow: document.documentElement.scrollWidth > innerWidth,
       sourceConnection: Math.hypot(end.x - source.left, end.y - source.top - source.height / 2),
       replyConnection: Math.hypot(start.x - avatar.left - avatar.width / 2, start.y - avatar.top - 1),
       separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
       quoteHeight: quote.getBoundingClientRect().height };
   })()`);
-  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), preview);
   const collapsed = geometry();
   assert.equal(collapsed.clamp, "3");
-  assert.ok(collapsed.natural > collapsed.height);
+  assert.ok(collapsed.height <= 54);
+  assert.notEqual(collapsed.mask, "none", "The collapsed quote fades into its dark card");
   assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
   assert.ok(
     collapsed.sourceConnection < 1 && collapsed.replyConnection < 1,
@@ -401,6 +404,8 @@ const checkLongQuotePreview = async (layout) => {
   browser("click", `${selector} .chat-reply-expand`);
   wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'true'`);
   const expanded = geometry();
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
+  assert.equal(expanded.mask, "none", "The expanded original has no fade");
   assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
   assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
@@ -420,7 +425,7 @@ const checkLongQuotePreview = async (layout) => {
       "The automatic motion does not require a hover or focus trigger",
     );
     const samples = evaluate(`new Promise(resolve => {
-      const beam = document.querySelector('${selector} .chat-reply-flow:not(.chat-reply-glow)');
+      const beam = document.querySelector('${selector} [clip-path] .chat-reply-flow');
       const samples = []; const start = performance.now();
       const sample = () => {
         const style = getComputedStyle(beam); const bounds = beam.getBoundingClientRect();
@@ -433,8 +438,8 @@ const checkLongQuotePreview = async (layout) => {
       "The light fades in while idle",
     );
     assert.ok(
-      samples.some((sample) => sample.opacity === 0),
-      "There is a quiet pause between passes",
+      samples.filter((sample) => sample.opacity < 0.1).length / samples.length < 0.15,
+      "The moving light has no long parked interval between passes",
     );
     assert.ok(
       samples.some(
@@ -449,7 +454,7 @@ const checkLongQuotePreview = async (layout) => {
     );
     assert.ok(
       samples.some((sample, index) => index > 0 && sample.offset < samples[index - 1].offset - 50),
-      "The motion repeats after its pause",
+      "The motion repeats",
     );
     browser("set", "media", "dark", "reduced-motion");
     assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-flow').getAnimations().length`), 0);
@@ -466,7 +471,7 @@ const checkLongQuotePreview = async (layout) => {
   wait(`document.querySelector('${channel(source.clientMessageId)} p')?.textContent === ${JSON.stringify(edited)}`);
   assert.equal(
     evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`),
-    fullText,
+    preview,
     "Source edits do not rewrite a quote",
   );
   browser("click", `${selector} .chat-reply-source`);
@@ -487,7 +492,7 @@ const checkLongQuotePreview = async (layout) => {
   browser("open", `${web}/spaces`);
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
-    `PASS: ${layout}: full immutable quote, three-line wrapping, expand/collapse, both avatar attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", automatic upward motion, pause, repeat and reduced motion" : ""}.`,
+    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", automatic upward motion without a parked interval, repetition and reduced motion" : ""}.`,
   );
 };
 

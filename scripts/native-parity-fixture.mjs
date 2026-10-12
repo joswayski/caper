@@ -356,7 +356,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     message.editedAt = new Date().toISOString();
     // Edits re-resolve @mentions like chat::editing.
     const mentions = mentionsFor(channelFor(message.channelId), text);
-    message.content = { version: 1, type: "text", text, ...(mentions.length ? { mentions } : {}) };
+    message.content = {
+      version: 1,
+      type: "text",
+      text,
+      ...(message.content.attachments ? { attachments: message.content.attachments } : {}),
+      ...(mentions.length ? { mentions } : {}),
+    };
     versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
     state.versions.set(message.id, versions);
     const event = {
@@ -542,6 +548,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             ? state.messages.get(channelId)?.find((message) => message.id === messageId)
             : messageFor(messageId);
           if (!message || typeof text !== "string") return reject(response, 400, "Invalid fixture edit.");
+          if (body.incomingEdit.attachments) message.content.attachments = body.incomingEdit.attachments;
           edit(message, text);
         }
         if (body.incomingReaction) {
