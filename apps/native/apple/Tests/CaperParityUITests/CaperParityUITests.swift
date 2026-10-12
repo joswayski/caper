@@ -2349,7 +2349,6 @@ final class CaperParityUITests: XCTestCase {
                                timeout: 5, "The @fixture_owner pill must be a link")
         let author = row.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open profile for")).firstMatch
         let close = app.buttons["Close navigation"]
-        let browser = app.descendants(matching: .any)["channel-browser"]
         let navigation = app.buttons["Back to Browse"]
         for control in [pill, author] where control.exists {
             let start = control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -2358,14 +2357,22 @@ final class CaperParityUITests: XCTestCase {
             XCTAssertTrue(close.waitForExistence(timeout: 3), "Swiping right from a message control opens Browse")
             XCTAssertFalse(app.descendants(matching: .any)["mention-card"].waitForExistence(timeout: 1),
                            "Lifting a swipe must not open the card under the finger")
-            browser.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
-                thenDragTo: browser.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+            // Browse fills the phone; swiping left anywhere on it returns.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 0.01,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
             XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
         }
         // A plain tap still opens it, once the swipe has lifted.
         Thread.sleep(forTimeInterval: 0.3)
         pill.tap()
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
+    }
+
+    /// The phone member list keeps its contents until it has slid away.
+    private func assertMembersClosed(in app: XCUIApplication, _ message: String) {
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: staticTexts("Members", in: app).firstMatch)
+        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, message)
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
     }
 
     func testNarrowConversationAndBrowse() {
@@ -2443,7 +2450,8 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
         app.buttons["Close member list"].tap()
-        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        // The list keeps its contents while it slides away.
+        assertMembersClosed(in: app, "Close member list closes the member list")
         // Members uses the same center-start gestures as Browse.
         timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
@@ -2451,9 +2459,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
-        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: staticTexts("Members", in: app).firstMatch)
-        XCTAssertEqual(XCTWaiter().wait(for: [closed], timeout: 3), .completed, "Swiping the backdrop right closes the member list")
-        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        assertMembersClosed(in: app, "Swiping the backdrop right closes the member list")
         chooseFromTitleMenu("Pins", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
         assertStaticText("No pinned messages", in: app, timeout: 2)
@@ -2465,7 +2471,7 @@ final class CaperParityUITests: XCTestCase {
         chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
-        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        assertMembersClosed(in: app, "Tapping the backdrop closes the member list")
         navigation.tap()
         assertElement("selected-space-name", label: "Fixture Studio", in: app, timeout: 5)
         let profile = app.buttons["account-profile"]
