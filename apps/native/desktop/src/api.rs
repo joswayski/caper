@@ -1,5 +1,6 @@
 use crate::attachments::FreshUrl;
 use crate::compress::Compression;
+use crate::invites::{InviteLink, InviteLinks, InvitePreview, JoinedInvite};
 use crate::model::{
     Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
     Member, Members, Message, NotificationLevel, NotificationOverride, NotificationSettings,
@@ -144,6 +145,51 @@ impl Api {
 
     pub fn direct_conversations(&self, token: &str) -> Result<DirectConversations, ApiError> {
         self.request(Method::GET, "api/dms", Some(token), None, None)
+    }
+
+    /// `GET /api/feedback[?before=<cursor>]`: the Caper team's inbox, newest
+    /// first. Everyone else gets 404.
+    /// `archived` lists only archived threads' reports.
+    pub fn feedback(
+        &self,
+        token: &str,
+        before: Option<&str>,
+        archived: bool,
+    ) -> Result<crate::feedback::Page, ApiError> {
+        let query: Vec<String> = archived
+            .then(|| "archived=true".to_owned())
+            .into_iter()
+            .chain(before.map(|cursor| format!("before={cursor}")))
+            .collect();
+        let path = if query.is_empty() {
+            "api/feedback".to_owned()
+        } else {
+            format!("api/feedback?{}", query.join("&"))
+        };
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
+    /// `PUT /api/feedback/archive`: archives or restores every report in a
+    /// thread, for the whole team. 204 on success.
+    pub fn archive_feedback(
+        &self,
+        token: &str,
+        channel: &str,
+        thread_root: &str,
+        archived: bool,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::PUT,
+            "api/feedback/archive",
+            Some(token),
+            None,
+            Some(serde_json::json!({
+                "channelId": channel,
+                "threadRootId": thread_root,
+                "archived": archived,
+            })),
+        )?)
+        .map(|_| ())
     }
 
     pub fn people(&self, token: &str) -> Result<People, ApiError> {
@@ -624,6 +670,73 @@ impl Api {
         checked(self.raw(
             Method::DELETE,
             &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    /// The public preview of a live invite link; works signed in or out.
+    pub fn invite_preview(
+        &self,
+        token: Option<&str>,
+        code: &str,
+    ) -> Result<InvitePreview, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/invites/{}", invite_path(code)?),
+            token,
+            None,
+            None,
+        )
+    }
+
+    pub fn join_invite(&self, token: &str, code: &str) -> Result<JoinedInvite, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/invites/{}/join", invite_path(code)?),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// The space's live invite links, newest first (owners only).
+    pub fn invite_links(&self, token: &str, space: &str) -> Result<Vec<InviteLink>, ApiError> {
+        self.request::<InviteLinks>(
+            Method::GET,
+            &format!("api/spaces/{space}/invite-links"),
+            Some(token),
+            None,
+            None,
+        )
+        .map(|value| value.links)
+    }
+
+    /// `max_age` in seconds (1 minute to 365 days) and `max_uses` (1 to 10,000);
+    /// `None` never expires or allows unlimited joins.
+    pub fn create_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+        max_age: Option<u32>,
+        max_uses: Option<u32>,
+    ) -> Result<InviteLink, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/invite-links"),
+            Some(token),
+            None,
+            Some(json!({"channelId":channel,"maxAge":max_age,"maxUses":max_uses})),
+        )
+    }
+
+    pub fn revoke_invite_link(&self, token: &str, space: &str, code: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invite-links/{}", invite_path(code)?),
             Some(token),
             None,
             None,
@@ -1191,6 +1304,22 @@ const SERVER_ERRORS: &[(&str, &str)] = &[
     ),
     ("space limit reached", "You’ve reached your space limit."),
     (
+        "invite link is invalid or has expired",
+        "This invite link is invalid or has expired.",
+    ),
+    (
+        "you can't join this space with a link; ask the owner to invite you",
+        "You can’t join this space with a link. Ask the owner to invite you.",
+    ),
+    (
+        "invite link limit reached",
+        "This space has too many active invite links. Revoke one to create another.",
+    ),
+    (
+        "invite links cannot target private channels",
+        "Invite links can only open public channels.",
+    ),
+    (
         "channel limit reached",
         "This space has reached its channel limit.",
     ),
@@ -1273,6 +1402,20 @@ fn friendly_error(message: &str) -> String {
     }
 }
 
+/// Invite codes go into a path only after the shared format check.
+fn invite_path(code: &str) -> Result<&str, ApiError> {
+    if crate::invites::valid_code(code) {
+        Ok(code)
+    } else {
+        Err(ApiError {
+            status: Some(StatusCode::NOT_FOUND),
+            message: crate::invites::INVALID_LINK.into(),
+            attempts_remaining: None,
+            code: None,
+        })
+    }
+}
+
 fn invalid(message: &str) -> ApiError {
     ApiError {
         status: None,
@@ -1320,6 +1463,158 @@ mod tests {
             "This channel is no longer accessible."
         );
         assert_eq!(friendly_error("  "), "That didn’t work. Try again.");
+    }
+
+    #[test]
+    fn invite_link_endpoints_send_choices_and_decode_responses() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let link = r#"{"code":"AbC123xYz9","channel":{"id":"chan00000002","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner","avatarId":3},"uses":0,"maxUses":10,"expiresAt":"2026-10-18T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#;
+        let exchanges = [
+            (
+                "POST /api/spaces/space0000001/invite-links",
+                Some(r#"{"channelId":"chan00000002","maxAge":604800,"maxUses":10}"#),
+                true,
+                "201 Created",
+                link.to_owned(),
+            ),
+            (
+                "POST /api/spaces/space0000001/invite-links",
+                Some(r#"{"channelId":null,"maxAge":null,"maxUses":null}"#),
+                true,
+                "409 Conflict",
+                r#"{"error":"invite link limit reached"}"#.into(),
+            ),
+            (
+                "GET /api/spaces/space0000001/invite-links",
+                None,
+                true,
+                "200 OK",
+                format!(r#"{{"links":[{link}]}}"#),
+            ),
+            (
+                "DELETE /api/spaces/space0000001/invite-links/AbC123xYz9",
+                None,
+                true,
+                "204 No Content",
+                String::new(),
+            ),
+            (
+                "GET /api/invites/AbC123xYz9",
+                None,
+                false,
+                "200 OK",
+                r#"{"code":"AbC123xYz9","space":{"name":"Studio"},"channel":null,"inviter":{"username":"owner","displayName":"Owner","avatarId":3},"memberCount":1,"expiresAt":null}"#.into(),
+            ),
+            (
+                "GET /api/invites/Zz9Yy8Xx7W",
+                None,
+                false,
+                "404 Not Found",
+                r#"{"error":"invite link is invalid or has expired"}"#.into(),
+            ),
+            (
+                "POST /api/invites/AbC123xYz9/join",
+                None,
+                true,
+                "403 Forbidden",
+                r#"{"error":"you can't join this space with a link; ask the owner to invite you"}"#.into(),
+            ),
+            (
+                "POST /api/invites/AbC123xYz9/join",
+                None,
+                true,
+                "200 OK",
+                r#"{"space":{"id":"space0000001","name":"Studio","ownerId":"owner01"},"channelId":"chan00000002","joined":true}"#.into(),
+            ),
+        ];
+        let worker = std::thread::spawn(move || {
+            for (path, expected, authorized, status, body) in exchanges {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                let (mut length, mut bearer) = (0, false);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    bearer |= lower == "authorization: bearer account\r\n";
+                    if let Some(value) = lower.strip_prefix("content-length: ") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                assert_eq!(bearer, authorized, "{path}");
+                let mut sent = vec![0; length];
+                std::io::Read::read_exact(&mut reader, &mut sent).unwrap();
+                if let Some(expected) = expected {
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&sent).unwrap(),
+                        serde_json::from_str::<serde_json::Value>(expected).unwrap()
+                    );
+                }
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let created = api
+            .create_invite_link(
+                "account",
+                "space0000001",
+                Some("chan00000002"),
+                Some(604_800),
+                Some(10),
+            )
+            .unwrap();
+        assert_eq!(created.code, "AbC123xYz9");
+        assert_eq!(created.channel.unwrap().name, "feedback");
+        assert_eq!(created.max_uses, Some(10));
+        let limit = api
+            .create_invite_link("account", "space0000001", None, None, None)
+            .unwrap_err();
+        assert_eq!(limit.status.map(|status| status.as_u16()), Some(409));
+        assert_eq!(
+            limit.message,
+            "This space has too many active invite links. Revoke one to create another."
+        );
+        let links = api.invite_links("account", "space0000001").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].created_by.username, "owner");
+        api.revoke_invite_link("account", "space0000001", "AbC123xYz9")
+            .unwrap();
+        let preview = api.invite_preview(None, "AbC123xYz9").unwrap();
+        assert_eq!(preview.space.name, "Studio");
+        assert_eq!(preview.member_count, 1);
+        assert!(preview.channel.is_none());
+        let expired = api.invite_preview(None, "Zz9Yy8Xx7W").unwrap_err();
+        assert_eq!(
+            expired.message,
+            "This invite link is invalid or has expired."
+        );
+        let refused = api.join_invite("account", "AbC123xYz9").unwrap_err();
+        assert_eq!(refused.status.map(|status| status.as_u16()), Some(403));
+        assert_eq!(
+            refused.message,
+            "You can’t join this space with a link. Ask the owner to invite you."
+        );
+        let joined = api.join_invite("account", "AbC123xYz9").unwrap();
+        assert_eq!(joined.space.name, "Studio");
+        assert_eq!(joined.channel_id.as_deref(), Some("chan00000002"));
+        // A malformed code never reaches the network.
+        let malformed = api.invite_preview(None, "../../x").unwrap_err();
+        assert_eq!(
+            malformed.message,
+            "This invite link is invalid or has expired."
+        );
+        worker.join().unwrap();
     }
 
     #[test]

@@ -53,7 +53,7 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
 /// recipient only; the sender keeps seeing theirs as waiting.
 pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
-        "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
+        "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'team',u.team_account),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
                 'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
@@ -146,8 +146,10 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
             "enter an exact username",
         ));
     }
-    let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE username=$1 AND display_name IS NOT NULL AND deleted_at IS NULL")
-        .bind(username).fetch_optional(pool).await.map_err(|_|chat::unavailable())?
+    // Every team name (@feedback, @caper, @admin, ...) opens the Caper DM.
+    let team = crate::mentions::FEEDBACK_ALIASES.contains(&username.as_str());
+    let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE (CASE WHEN $2 THEN team_account ELSE username=$1 END) AND display_name IS NOT NULL AND deleted_at IS NULL")
+        .bind(&username).bind(team).fetch_optional(pool).await.map_err(|_|chat::unavailable())?
         .ok_or_else(||ApiError::new(StatusCode::NOT_FOUND,"account not found"))?;
     let low = user.min(peer);
     let high = user.max(peer);
@@ -180,10 +182,15 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
         if you_blocked {
             return Err(blocked_by_you());
         }
-        if they_blocked || policy == "nobody" || (policy == "spaces" && !shared) {
-            return Err(not_accepting());
+        // The Caper account takes every conversation; the team answers.
+        if team {
+            true
+        } else {
+            if they_blocked || policy == "nobody" || (policy == "spaces" && !shared) {
+                return Err(not_accepting());
+            }
+            shared
         }
-        shared
     };
     // Only conversations this account started count, so strangers' requests
     // can't use up someone else's quota.
@@ -206,6 +213,11 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
         .bind(&id).fetch_one(&mut *tx).await.map_err(|_|chat::unavailable())?;
     sqlx::query("INSERT INTO public.direct_conversations (channel_id,low_user_id,high_user_id,requested_by,accepted_at) VALUES ($1,$2,$3,$4,CASE WHEN $5 THEN now() END)")
         .bind(channel).bind(low).bind(high).bind(user).bind(accepted).execute(&mut *tx).await.map_err(|_|chat::unavailable())?;
+    if !accepted {
+        crate::push::consent(&mut tx, peer, user, "direct.request", None, Some(channel))
+            .await
+            .map_err(|_| chat::unavailable())?;
+    }
     tx.commit().await.map_err(|_| chat::unavailable())?;
     Ok(id)
 }
@@ -230,19 +242,22 @@ async fn block_state(
     channel: i64,
     user: i64,
 ) -> Result<(bool, bool, bool), ApiError> {
-    sqlx::query_as(
+    // Someone outside the conversation got here through feedback access: no
+    // blocks apply to them, and their reply never accepts a request.
+    let state = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=peer AND b.deleted_at IS NULL),
                 EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=peer AND b.blocked_id=$2 AND b.deleted_at IS NULL),
                 pending_for_you
          FROM (SELECT CASE WHEN low_user_id=$2 THEN high_user_id ELSE low_user_id END AS peer,
                       accepted_at IS NULL AND requested_by<>$2 AS pending_for_you
-               FROM public.direct_conversations WHERE channel_id=$1) d",
+               FROM public.direct_conversations WHERE channel_id=$1 AND $2 IN (low_user_id,high_user_id)) d",
     )
     .bind(channel)
     .bind(user)
-    .fetch_one(connection)
+    .fetch_optional(connection)
     .await
-    .map_err(|_| chat::unavailable())
+    .map_err(|_| chat::unavailable())?;
+    Ok(state.unwrap_or((false, false, false)))
 }
 
 fn refuse_blocked(you_blocked: bool, they_blocked: bool) -> Result<(), ApiError> {

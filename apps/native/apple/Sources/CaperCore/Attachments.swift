@@ -168,14 +168,22 @@ public struct AttachmentCompression: Codable, Equatable, Sendable {
     public var imageMaxEdge: Int = 4096
     public var paletteColors: Int = 256
     public var previewEdge: Int = 640
-    public var videoMaxHeight: Int = 1080
-    public var videoBitrateKbps: Int = 6000
+    public var videoMaxHeight: Int = 1440
+    /// Video target at 1080p30, scaled by pixel count and frame rate.
+    public var videoBitrateKbps: Int = 8000
+    /// A re-encode never exceeds this percentage of a non-H.264 source's own
+    /// bitrate (H.264 sources: 100%); 0 removes the cap.
+    public var videoSourceBitratePercent: Int = 200
+    /// Above 30 fps the target grows with the frame rate, up to this
+    /// percentage; 100 turns it off.
+    public var videoHighFpsBoostPercent: Int = 150
     public var audioBitrateKbps: Int = 128
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case imageFormat, avifQuality, imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps, audioBitrateKbps
+        case imageFormat, avifQuality, imageQuality, imageMaxEdge, paletteColors, previewEdge, videoMaxHeight, videoBitrateKbps,
+             videoSourceBitratePercent, videoHighFpsBoostPercent, audioBitrateKbps
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -190,8 +198,10 @@ public struct AttachmentCompression: Codable, Equatable, Sendable {
         imageMaxEdge = value(.imageMaxEdge, 0...65_536, 4096)
         paletteColors = value(.paletteColors, 0...256, 256)
         previewEdge = value(.previewEdge, 0...4096, 640)
-        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1080)
-        videoBitrateKbps = value(.videoBitrateKbps, 1...1_000_000, 6000)
+        videoMaxHeight = value(.videoMaxHeight, 0...8192, 1440)
+        videoBitrateKbps = value(.videoBitrateKbps, 1...1_000_000, 8000)
+        videoSourceBitratePercent = value(.videoSourceBitratePercent, 0...1000, 200)
+        videoHighFpsBoostPercent = value(.videoHighFpsBoostPercent, 100...400, 150)
         audioBitrateKbps = value(.audioBitrateKbps, 1...10_000, 128)
     }
 }
@@ -476,10 +486,12 @@ public enum AttachmentPolicy {
         public var bitrateKbps: Double?
         /// The container is one the API serves inline (MP4, QuickTime, WebM).
         public var playableContainer: Bool
+        /// Frames per second; nil when unknown.
+        public var fps: Double?
 
-        public init(width: Int, height: Int, isH264: Bool, isHDR: Bool, bitrateKbps: Double?, playableContainer: Bool) {
+        public init(width: Int, height: Int, isH264: Bool, isHDR: Bool, bitrateKbps: Double?, playableContainer: Bool, fps: Double? = nil) {
             self.width = width; self.height = height; self.isH264 = isH264; self.isHDR = isHDR
-            self.bitrateKbps = bitrateKbps; self.playableContainer = playableContainer
+            self.bitrateKbps = bitrateKbps; self.playableContainer = playableContainer; self.fps = fps
         }
     }
 
@@ -498,29 +510,34 @@ public enum AttachmentPolicy {
     /// pixel count, with a floor so small videos are not starved.
     public static let videoBitrateFloorKbps = 1500.0
 
-    public static func videoTargetKbps(width: Int, height: Int, settings: AttachmentCompression) -> Double {
+    /// Above 30 fps (up to `videoHighFpsBoostPercent`) the target grows with
+    /// the frame rate.
+    public static func videoTargetKbps(width: Int, height: Int, settings: AttachmentCompression, fps: Double? = nil) -> Double {
         let pixels = Double(max(0, width) * max(0, height))
-        return max(videoBitrateFloorKbps, Double(settings.videoBitrateKbps) * pixels / (1920 * 1080))
+        let boost = fps.flatMap { $0 > 30 ? min($0 / 30, Double(settings.videoHighFpsBoostPercent) / 100) : nil }.map { max(1, $0) } ?? 1
+        return max(videoBitrateFloorKbps, Double(settings.videoBitrateKbps) * pixels * boost / (1920 * 1080))
     }
 
     public static func videoPlan(_ facts: VideoFacts, settings: AttachmentCompression) -> VideoPlan {
         guard settings.videoMaxHeight > 0, facts.width > 0, facts.height > 0 else { return .keep }
         let oversized = min(facts.width, facts.height) > settings.videoMaxHeight
-        let heavy = facts.bitrateKbps.map { $0 > 1.25 * videoTargetKbps(width: facts.width, height: facts.height, settings: settings) } ?? false
+        let heavy = facts.bitrateKbps.map { $0 > 1.25 * videoTargetKbps(width: facts.width, height: facts.height, settings: settings, fps: facts.fps) } ?? false
         let required = !facts.isH264 || facts.isHDR || !facts.playableContainer
         guard oversized || heavy || !facts.isH264 || facts.isHDR else { return facts.playableContainer ? .keep : .remux }
         let size = videoOutputSize(width: facts.width, height: facts.height, maxHeight: settings.videoMaxHeight)
-        let target = videoTargetKbps(width: size.width, height: size.height, settings: settings)
-        return .transcode(width: size.width, height: size.height,
-                          bitrateKbps: outputKbps(targetKbps: target, sourceKbps: facts.bitrateKbps), required: required)
+        let target = videoTargetKbps(width: size.width, height: size.height, settings: settings, fps: facts.fps)
+        let kbps = outputKbps(targetKbps: target, sourceKbps: facts.bitrateKbps, sourceIsH264: facts.isH264, settings: settings)
+        return .transcode(width: size.width, height: size.height, bitrateKbps: kbps, required: required)
     }
 
-    /// The target, but never above the source's own bitrate (web's
-    /// `outputKbps`): a compatibility transcode of a lean HEVC clip must not
-    /// grow it. The floor still applies.
-    public static func outputKbps(targetKbps: Double, sourceKbps: Double?) -> Int {
-        guard let source = sourceKbps, source > 0 else { return Int(targetKbps.rounded()) }
-        return Int(max(videoBitrateFloorKbps, min(targetKbps, source)).rounded())
+    /// The target, but never above `videoSourceBitratePercent` of the
+    /// source's own bitrate (100% for H.264, which more bits cannot improve),
+    /// as web's `outputKbps`. The floor still applies.
+    public static func outputKbps(targetKbps: Double, sourceKbps: Double?, sourceIsH264: Bool,
+                                  settings: AttachmentCompression) -> Int {
+        let percent = sourceIsH264 ? 100 : settings.videoSourceBitratePercent
+        guard let source = sourceKbps, source > 0, percent > 0 else { return Int(targetKbps.rounded()) }
+        return Int(max(videoBitrateFloorKbps, min(targetKbps, source * Double(percent) / 100)).rounded())
     }
 
     /// Even output dimensions with the short edge bounded by `maxHeight`

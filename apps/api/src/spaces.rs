@@ -9,10 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
+mod invite_links;
 mod joining;
 mod unread;
+pub(crate) use invite_links::{accept as accept_invite_link, preview as preview_invite_link};
 pub(crate) use joining::channel_participation;
 use joining::{add_channel_member, remove_channel_member};
+#[cfg(test)]
+mod invite_links_tests;
 #[cfg(test)]
 mod joining_tests;
 
@@ -134,7 +138,14 @@ macro_rules! channel_access_sql {
          JOIN public.direct_conversations d ON d.channel_id=c.id
          JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
          WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
-           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL"
+           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL
+         UNION ALL
+         -- The feedback team takes part where it was asked to, like a joined
+         -- member (voice, typing, pins), without being listed as one.
+         SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL
+           AND (s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)
+         LIMIT 1"
     };
 }
 
@@ -266,6 +277,15 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/spaces/{space}/members/{user}",
             delete(remove_space_member),
         )
+        .route(
+            "/api/spaces/{space}/invite-links",
+            get(invite_links::list_links).post(invite_links::create_link),
+        )
+        .route(
+            "/api/spaces/{space}/invite-links/{code}",
+            delete(invite_links::revoke_link),
+        )
+        .route("/api/invites/{code}/join", post(accept_invite_link))
         .route("/api/spaces/{space}/invitations", get(list_invitations))
         .route(
             "/api/spaces/{space}/invitations/{user}",
@@ -678,6 +698,16 @@ async fn add_space_member(
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
+    crate::push::consent(
+        &mut tx,
+        member.0,
+        principal.user.id,
+        "space.invitation",
+        Some(space_id),
+        None,
+    )
+    .await
+    .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,
@@ -870,12 +900,19 @@ async fn remove_space_member(
     if changed.rows_affected() != 1 {
         return Err(not_found());
     }
+    // Owner removals also bar rejoining through invite links; leaving does not.
+    let status = if target == principal.user.id {
+        "revoked"
+    } else {
+        "removed"
+    };
     sqlx::query(
-        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,'revoked')
-        ON CONFLICT(space_id,user_id) DO UPDATE SET status='revoked',updated_at=now()",
+        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,$3)
+        ON CONFLICT(space_id,user_id) DO UPDATE SET status=$3,updated_at=now()",
     )
     .bind(space_id)
     .bind(target)
+    .bind(status)
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;

@@ -5,6 +5,10 @@ import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
+import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
+import type { Arrivals } from "./arrivals.ts";
+import EmojiButton from "./EmojiButton.tsx";
+import { insertEmoji } from "./emoji-autocomplete.ts";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyContext, ReplyDraft } from "./Replies.tsx";
@@ -26,6 +30,7 @@ export default function ThreadPanel({
   onReplyChange,
   blockedIds,
   renderMessage,
+  arrivals,
   onClose,
 }: {
   state: ChatViewState;
@@ -46,9 +51,13 @@ export default function ThreadPanel({
     previous?: ChatMessage,
     next?: ChatMessage,
   ) => ReactNode;
+  /** Shared with the channel list, whose rows render through `renderMessage`. */
+  arrivals: Arrivals;
   onClose: () => void;
 }) {
-  const [drafts, setDrafts] = useState<Record<string, { text: string; broadcast: boolean }>>({});
+  // Kept in the page-wide store, so switching conversations never drops a reply.
+  const [drafts, setDrafts] = useState<Record<string, ThreadDraft>>(readThreadDrafts);
+  useEffect(() => saveThreadDrafts(drafts), [drafts]);
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
@@ -125,6 +134,20 @@ export default function ThreadPanel({
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
   };
+  const chooseEmoji = (emoji: string) => {
+    const input = composer.current;
+    const start = input?.selectionStart ?? draft.text.length;
+    const result = insertEmoji(draft.text, { start, end: input?.selectionEnd ?? start, query: "" }, emoji);
+    if (!result) {
+      setValidation("Messages must be 4,000 characters or fewer.");
+      return;
+    }
+    update({ text: result.value });
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(result.caret, result.caret);
+    });
+  };
   const suggestions = useComposerSuggestions({
     id: "chat-thread",
     draft: draft.text,
@@ -134,9 +157,6 @@ export default function ThreadPanel({
     onInsert: (text) => update({ text }),
     onTooLong: () => setValidation("Messages must be 4,000 characters or fewer."),
   });
-  useEffect(() => {
-    setDrafts({});
-  }, [state.channelId]);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
     const change = () => setMobile(query.matches);
@@ -242,6 +262,14 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
+  arrivals.observe(
+    "thread",
+    rootId ?? "",
+    pending
+      ? [...replies.map((message) => message.clientMessageId), pending.clientMessageId]
+      : replies.map((message) => message.clientMessageId),
+    !!state.thread && !state.thread.loading && !state.thread.hasNewer,
+  );
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
   const renderedReplies = useMemo(
@@ -406,7 +434,7 @@ export default function ThreadPanel({
           </button>
         )}
         {pending && (
-          <article className="chat-message chat-message-pending">
+          <article className="chat-message chat-message-pending chat-message-arrive">
             {pending.replyTo && (
               <ReplyContext
                 reference={pending.replyTo}
@@ -531,6 +559,7 @@ export default function ThreadPanel({
                   />
                   {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
+                <EmojiButton disabled={state.phase !== "ready" || state.thread.loading} onSelect={chooseEmoji} />
                 <button
                   type="submit"
                   disabled={

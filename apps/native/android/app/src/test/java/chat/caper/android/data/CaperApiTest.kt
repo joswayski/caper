@@ -95,6 +95,46 @@ class CaperApiTest {
         assertEquals("Bearer account-secret", read.headers["Authorization"])
     }
 
+    @Test fun `feedback inbox pages are authenticated GETs with a decimal cursor`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"reports":[{"id":"message00000002","messageId":"message00000002","threadRootId":"message00000002","createdAt":"2026-10-11T19:00:00+00:00","text":"","attachments":1,"reporter":{"id":"alice0000001","username":"alice","displayName":"Alice","avatarId":12},"channel":{"id":"direct000001","name":"Alice","direct":true},"space":null,"replyCount":0,"answered":false}],"cursor":"77"}"""))
+        server.enqueue(MockResponse().setBody("""{"reports":[],"cursor":null}"""))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val first = api.feedback("account-secret")
+        assertEquals("Sent 1 file", feedbackPreview(first.reports.single()))
+        assertEquals("77", first.cursor)
+        assertNull(api.feedback("account-secret", "77").cursor)
+        assertEquals(404, (runCatching { api.feedback("account-secret") }.exceptionOrNull() as ApiException).status)
+        assertTrue(runCatching { api.feedback("account-secret", "1;drop") }.exceptionOrNull() is IllegalArgumentException)
+
+        val requests = (1..3).map { server.takeRequest() }
+        assertEquals(listOf("GET /api/feedback", "GET /api/feedback?before=77", "GET /api/feedback"), requests.map { "${it.method} ${it.path}" })
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+    }
+
+    @Test fun `archived feedback is its own list and archiving is a PUT per thread`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"reports":[],"cursor":"12"}"""))
+        server.enqueue(MockResponse().setBody("""{"reports":[],"cursor":null}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("12", api.feedback("account-secret", archived = true).cursor)
+        api.feedback("account-secret", "12", archived = true)
+        api.archiveFeedback("account-secret", "channel00001", "message00000001", true)
+        api.archiveFeedback("account-secret", "direct000001", "message00000002", false)
+        assertEquals(404, (runCatching { api.archiveFeedback("account-secret", "channel00001", "message00000001", true) }.exceptionOrNull() as ApiException).status)
+        assertTrue(runCatching { api.archiveFeedback("account-secret", "channel00001", "../x", true) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { api.archiveFeedback("account-secret", "bad", "message00000001", true) }.exceptionOrNull() is IllegalArgumentException)
+
+        val requests = (1..5).map { server.takeRequest() }
+        assertEquals(listOf("GET /api/feedback?archived=true", "GET /api/feedback?archived=true&before=12",
+            "PUT /api/feedback/archive", "PUT /api/feedback/archive", "PUT /api/feedback/archive"), requests.map { "${it.method} ${it.path}" })
+        assertEquals("""{"channelId":"channel00001","threadRootId":"message00000001","archived":true}""", requests[2].body.readUtf8())
+        assertEquals("""{"channelId":"direct000001","threadRootId":"message00000002","archived":false}""", requests[3].body.readUtf8())
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer account-secret" })
+    }
+
     @Test fun `request, block and privacy routes`() = runTest {
         server.enqueue(MockResponse().setBody("""{"id":"direct000003","peer":{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412},"lastSeq":"1","readSeq":"0","status":"accepted","blocked":false}"""))
         server.enqueue(MockResponse().setResponseCode(204))

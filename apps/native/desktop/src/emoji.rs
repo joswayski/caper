@@ -24,6 +24,42 @@ pub fn catalog() -> &'static [Entry] {
     })
 }
 
+/// An entry's place in the emoji picker, approximating web's order: smileys
+/// (the emoticon block, then other faces by name or keyword) before people,
+/// then the other categories with flags last. The catalog itself is in code
+/// point order.
+pub fn picker_order(entry: &Entry) -> (usize, usize) {
+    let emoticon = u32::from_str_radix(entry.id.split('-').next().unwrap_or_default(), 16)
+        .is_ok_and(|point| (0x1f600..=0x1f64f).contains(&point));
+    let face = if entry.category != "smileys_people" || emoticon {
+        0
+    } else if entry.name.contains("face") || entry.keywords.split(' ').any(|word| word == "face") {
+        1
+    } else {
+        2
+    };
+    (picker_rank(&entry.category), face)
+}
+
+/// A category's place in the emoji picker, as on web: smileys and people
+/// first, flags last, uncategorized entries after them.
+pub fn picker_rank(category: &str) -> usize {
+    const ORDER: [&str; 8] = [
+        "smileys_people",
+        "animals_nature",
+        "food_drink",
+        "travel_places",
+        "activities",
+        "objects",
+        "symbols",
+        "flags",
+    ];
+    ORDER
+        .iter()
+        .position(|item| *item == category)
+        .unwrap_or(ORDER.len())
+}
+
 pub fn find(value: &str) -> Option<&'static Entry> {
     let id = unicode_id(value);
     catalog().iter().find(|entry| entry.id == id)
@@ -209,6 +245,23 @@ fn sheet(page: usize) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_order_starts_with_smileys_and_ends_with_flags() {
+        let mut choices: Vec<_> = catalog().iter().filter(|entry| entry.selectable).collect();
+        choices.sort_by_key(|entry| picker_order(entry));
+        assert_eq!(choices[0].emoji, "😀");
+        assert_eq!(choices.last().unwrap().category, "flags");
+        let people = choices
+            .iter()
+            .position(|entry| entry.emoji == "👍")
+            .unwrap();
+        let faces = choices
+            .iter()
+            .position(|entry| entry.emoji == "🤣")
+            .unwrap();
+        assert!(faces < people, "faces come before people, as on web");
+    }
     #[test]
     fn twemoji_ids_follow_shared_rules() {
         assert_eq!(unicode_id("❤️"), "2764");

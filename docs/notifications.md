@@ -5,7 +5,11 @@ notification and mute controls, and an account-wide gateway feed for local OS
 notifications in open web tabs and running macOS/Windows/Linux apps. Phone
 delivery alone is gated by `NOTIFICATIONS_ENABLED` and validated provider
 credentials. Desktop delivery needs no provider credentials. Closed-browser Web
-Push, notifications after desktop quit and invitation alerts remain unimplemented.
+Push and notifications after desktop quit remain unimplemented.
+Space/private-channel invitation alerts are implemented (October 11); see
+[the invitation contract and rollout](#invitation-alerts-october-11-2026).
+New DM requests also alert once at creation; see
+[the message-request contract](#new-message-request-alerts-october-11-2026).
 Space/channel unread dots are implemented (October 11) on all clients; see
 [the unread contract and rollout](media.md#space-and-channel-unread-indicators-october-11-2026).
 These dots are independent of notification levels, OS permission and mutes;
@@ -39,7 +43,8 @@ Per committed message (edits never notify; demo spaces and guests never do):
 1. Never the author.
 2. **DMs** (`direct.message`): the other participant only. Personal notes, a DM
    that is still a message request (not accepted), and a DM where either person
-   blocked the other notify nobody.
+   blocked the other send no message alerts. Creating a new request sends a
+   separate `direct.request` consent alert, not a preview of its messages.
 3. **Space channels**: everyone who can read the channel (active members; for a
    private channel, the owner and people with a grant), minus anyone who blocked
    the author. Joining a channel is consent to hear from it, so readers who
@@ -56,9 +61,17 @@ Per committed message (edits never notify; demo spaces and guests never do):
    `mentions`.
 5. One `notifications` row per recipient, and one delivery per active device on
    an advertised platform whose session is still valid.
+6. **`@feedback`, `@caper`, `@admin` or any team name** (`feedback`): every feedback team member except the
+   author, wherever it was written, including channels they aren't in, DMs and
+   thread replies. Like `mention.user`, it ignores mutes. A team member who only
+   visits the conversation through feedback access hears about nothing else
+   there, except being @named, which also arrives as `feedback` so that it
+   opens the visit view. A new message in the Caper DM is `feedback` too. When a
+   team member posts in a DM they visit, both participants (or the owner of
+   personal notes) get `direct.message`. See [Feedback](media.md#feedback-in-place).
 
-Kinds are `direct.message`, `channel.message`, `mention.user` and
-`mention.everyone`. Clients treat unknown kinds as a generic message.
+Kinds are `direct.message`, `channel.message`, `mention.user`,
+`mention.everyone` and `feedback`. Clients treat unknown kinds as a generic message.
 
 ### Phone hold (`mobile = whenInactive`)
 
@@ -101,7 +114,9 @@ offers the phone's platform, the app turns push on, unless the account turned
 
 ### Content and payloads
 
-- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`.
+- Title: DM → sender display name; channels and mentions → `Sender · #channel (Space)`;
+  `feedback` → `Sender · Feedback`.
+- Every payload whose message is a thread reply also carries `threadRootId`.
 - Body: the message text, trimmed, cut to 180 characters including a final `…`;
   empty text with attachments → `Sent a photo`, `Sent a video`, `Sent an audio
   file`, `Sent a file: filename`, or `Sent N files`. Empty text without files
@@ -202,6 +217,117 @@ reads only after the existing signature check, including cached responses.
   APNs registration, service worker or closed-browser Web Push. Mobile browsers
   requiring service-worker notifications still rely on the native phone apps.
 
+### Invitation alerts (October 11, 2026)
+
+- Space and private-channel owners inviting an existing account create
+  `space.invitation` or `channel.invitation` alerts for that recipient only.
+  The invite, notification and session-bound device deliveries commit together,
+  under the recipient lock used to order gateway cursors. No message, membership,
+  private grant or channel join is created. Duplicate/rejected attempts do not
+  notify, and existing invitations are not backfilled.
+- Account `nothing` and stored `paused_until` suppress invitations. `all` and
+  `mentions` allow them. Conversation levels and mutes apply to messages, not
+  new invitation consent requests. This change adds no new preferences or DND UI.
+- APNs, FCM and the gateway carry a positive decimal-string `notificationId`,
+  `kind`, `spaceId`, and `channelId` only for private-channel invitations; they
+  carry no `messageId` or `conversationId`. Title is `You’re invited!`; body is
+  `Alice invited you to Studio.` or `Alice invited you to private channel #planning.`
+  (the usual 180-character cutoff applies). IDs group each invitation separately
+  from conversation notifications. Android adds an **Invitations** OS channel
+  and a text/event notification; iOS uses a regular alert rather than donating
+  a message communication intent. Android/local desktop retain sender artwork;
+  iOS invitation alerts use the normal app icon.
+- Phone delivery uses the existing credentials/advertisement and 24-hour cutoff.
+  With `whenInactive`, its first attempt checks presence, holds for 60 seconds
+  while another session is active, then drops if still active; `always` sends
+  immediately. Gateway replay and provider retries recheck pending, unexpired
+  consent, the original invitation generation, blocks, live users/resources,
+  membership (required for a private-channel invite; absent for a space invite),
+  and account preferences. Acceptance, decline, cancellation or later reinvitation
+  cannot revive an old queued alert. Already-sent provider alerts cannot be recalled.
+- Taps refresh invitations and open existing Accept/Decline controls on web,
+  Android, iOS/macOS and Rust desktop. Web routes to `/spaces?space=…` for spaces
+  and `/spaces?space=…&invite=…` for private channels. Android and Rust desktop
+  show the private invitation cards in Browse; Apple and web show the review
+  sheet/dialog. A tap does not accept, request private history or enter voice.
+  Unavailable private invitations show a notice instead. Local alert delivery
+  still requires an open browser tab or running desktop app and OS permission.
+
+### New message-request alerts (October 11, 2026)
+
+- Creating a new pending DM sends one recipient-only `direct.request` alert
+  atomically with the request. Reopening the same pair and later pending
+  messages do not send more request alerts. Accepted/shared-space DMs and
+  personal notes send no request alert; ordinary accepted-DM messages retain
+  their existing behavior. There is no historical backfill.
+- Title is `Message request`; body is `Alice wants to message you.` without
+  message previews or attachments. Payloads carry a decimal `notificationId`
+  and `conversationId`, not `messageId`, `spaceId` or `channelId`. Grouping is
+  `request:<notificationId>`, separate from ordinary DM messages. Android uses
+  a **Message requests** OS channel; iOS uses a regular alert, not a message
+  communication intent. Taps use the existing DM route and read-only incoming
+  request review with Accept/Decline/Block, without accepting or replying.
+- Account Off/pause suppresses request alerts; All/Mentions permits them.
+  Conversation mutes/levels remain message-only. Phone holds, the 24-hour
+  cutoff, device/session validity and gateway replay follow invitation rules.
+  Acceptance, decline, either block, deleted accounts/conversations, and changed
+  account notification preferences suppress queued requests and provider retries.
+  Already-sent alerts cannot be recalled. DM privacy/rate limits are enforced
+  at creation; later privacy changes do not revoke existing conversations.
+
+#### Invitation and request deployment order
+
+1. No infrastructure, secrets, new provider credentials or capability changes
+   are needed. Existing account notification gateway, APNs/FCM enablement and
+   iOS extension provisioning must already work. Keep the existing API replica
+   and shared-state policy. Merging does not deploy anything.
+2. After merge and successful main image/native builds, set `MERGED_SHA` to that
+   full merged commit. Release the compatible web/native readers before emitting
+   invitations/requests from the server; they continue to handle existing message payloads.
+   Web and native can release independently. Complete native build and physical
+   Android/signed-iOS tap acceptance before distributing those builds. Older
+   clients may ignore these new alerts or route a private-channel tap as an
+   inaccessible conversation, so client uptake matters:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+
+3. Deploy API. Its existing direct migration startup applies additive
+   `202610110005_invitation_notifications.sql` and
+   `202610110006_message_request_notifications.sql`, permits non-message sources and
+   creates the shared eligibility views with runtime SELECT grants. No manual
+   database writes or backfill are required. Wait for the workflow for this SHA:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+4. Deploy the gateway after the migration. API supplies phone push; updated
+   gateways supply local alerts, so both roles need this backend revision:
+
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for this deployment workflow to finish, then:
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+5. With separate owner/recipient accounts, invite to a space and a private
+   channel, then start a request between accounts without a shared space.
+   Confirm one alert, correct review target, no automatic acceptance, no private-channel grant/history or voice
+   before acceptance, account Off, active-desktop phone hold, cancellation before
+   retry, stale taps and logout. Check physical phones and minimized desktops;
+   loopback APNs/FCM tests do not prove vendor delivery. Roll back clients with
+   the previous web image or a corrected higher native build number. For backend
+   rollback, use a reviewed build retaining the applied SQLx migration ledger;
+   do not drop the migration/view or delete invitation/notification data. No
+   deployment was performed in this change.
+
 ### HTTP contract
 
 All routes need account authentication (guests get 401), use camelCase JSON and
@@ -263,8 +389,11 @@ emits a clearly labelled test alert, never a live provider send.
   sandbox use separate keys. FCM uses an OAuth token from the service account's
   RS256 assertion, cached until 5 minutes before it expires. Signing uses
   `aws-lc-rs`, already the process's Rustls crypto provider.
-- Finished deliveries and expanded jobs are pruned after 7 days. Devices are
-  revoked, never deleted; settings and overrides are updated in place.
+- Finished deliveries and expanded jobs are pruned after 7 days. Every 10
+  minutes a separate task deletes them oldest first in 5,000-row batches through
+  partial indexes, up to 100,000 rows per table per pass (about 14 million a
+  day), without delaying delivery. Devices are revoked, never deleted; settings
+  and overrides are updated in place.
 - Expansion/pruning run in every API replica when `CHAT_ENABLED` supplies
   Postgres and Valkey. `NOTIFICATIONS_ENABLED` gates phone delivery and platform
   advertisement only. Bad credentials disable that platform with
@@ -297,6 +426,15 @@ token revocation, `Retry-After`, backoff and the 24-hour cutoff, logout
 revocation, and the parity fixture. Not yet validated: real APNs or FCM, and
 physical Android or signed iOS devices. Keep each platform out of
 `PUSH_PLATFORMS` until it has been.
+
+Invitation tests use disposable Postgres/Valkey and loopback provider servers
+to cover pending consent, cancellation/reinvitation, blocks, preferences,
+presence holds, expiry and logout. Browser tap checks use labelled fixtures at
+desktop/mobile widths; Rust desktop tests and standalone Kotlin payload tests
+pass. The full Android build is blocked by the missing SDK; Apple/Windows builds,
+native tap/rendering checks and physical-phone invitation delivery remain unverified.
+The request matrix also checks one-time creation, quiet pending messages,
+acceptance/decline, both block directions, privacy, preferences, presence and logout.
 
 ### Rollout
 
@@ -577,8 +715,9 @@ Android notification channels and iOS thread identifiers map from the category.
 | Kind | Category | When | Available |
 | --- | --- | --- | --- |
 | `direct.message` | Direct messages | Someone messages you 1:1 | Phase 1 |
+| `direct.request` | Message requests | A new pending DM request is created | Built; see request contract above |
 | `channel.message` | Channel messages | New message where your level is *All* | Phase 1 |
-| `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Phase 2 |
+| `space.invitation`, `channel.invitation` | Invitations | You were invited to a space or private channel | Built; see invitation contract above |
 | `mention.user`, `mention.everyone` | Mentions | You are @mentioned, or `@everyone`/`@here` is used | Mentions first, then phase 1 |
 | `message.reply`, `thread.reply` | Replies | Replies/threads exist (not implemented yet) | With replies |
 | `message.reaction` | Reactions | Opt-in: *All / DMs only / Never* | Later |

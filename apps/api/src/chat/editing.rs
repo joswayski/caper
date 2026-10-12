@@ -74,7 +74,8 @@ async fn locked_channel(
                  AND (NOT $3 OR EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL)))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))))",
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
+                OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2))))",
     )
     .bind(row.0)
     .bind(user)
@@ -175,7 +176,11 @@ async fn persist_edit(
         .execute(&mut *tx).await.map_err(database_error)?;
     // Edited text is re-resolved like a new message, so added or removed
     // `@mentions` follow the latest revision.
-    let content = with_mentions(&mut tx, content, &mentions::parse(text, !direct)).await?;
+    let mut found = mentions::parse(text, !direct);
+    if !crate::feedback::reported(&mut tx, message_id).await? {
+        found.retain(|mention| *mention != Mention::Feedback);
+    }
+    let content = with_mentions(&mut tx, content, &found).await?;
     let now = Utc::now();
     payload["content"] = content;
     payload["revision"] = json!(revision + 1);

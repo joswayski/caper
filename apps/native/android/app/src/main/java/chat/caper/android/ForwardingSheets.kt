@@ -26,6 +26,9 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
 import chat.caper.android.ui.ErrorText
+import chat.caper.android.ui.PinGold
+import chat.caper.android.ui.PinGoldWash
+import chat.caper.android.ui.primaryButtonColors
 import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.TextMuted
 import kotlinx.coroutines.CancellationException
@@ -41,6 +44,7 @@ import java.util.UUID
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId)
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            if (message.author.admin) AdminBadge()
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
         // A file-only original has empty text: show just its files, in their processing state.
@@ -158,7 +162,7 @@ import java.util.UUID
                         error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
+            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }

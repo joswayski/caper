@@ -52,12 +52,15 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func receive(_ event: [String: Any]) {
+        let prefix = event["kind"] as? String == "direct.request" ? "request" : "invitation"
         guard event["type"] as? String == "notification.created", let model, model.account?.id == accountID,
               let route = NotificationRoute(userInfo: event),
-              let messageID = event["messageId"] as? String,
+              let messageID = (event["notificationId"] as? String).map({ "\(prefix):\($0)" }) ?? event["messageId"] as? String,
               let title = event["title"] as? String, let body = event["body"] as? String,
               let timestamp = event["createdAt"] as? String else { return }
         model.scheduleUnreadRefresh()
+        // A new report for the feedback team's inbox.
+        if event["kind"] as? String == NotificationRoute.feedbackKind { model.feedbackNotificationArrived() }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
@@ -65,7 +68,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         if NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default; content.userInfo = event
-        content.threadIdentifier = event["conversationId"] as? String ?? event["channelId"] as? String ?? ""
+        content.threadIdentifier = (event["notificationId"] as? String).map({ "\(prefix):\($0)" }) ?? event["conversationId"] as? String ?? event["channelId"] as? String ?? ""
         var temporary: URL?
         if let image = CaperAvatar.image(for: event["senderAvatarId"] as? Int),
            let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),

@@ -22,6 +22,7 @@ enum FriendlyError {
             "This person recently responded to an invitation. You can invite them again after 24 hours.",
         "too many invitation attempts; try again in 10 minutes": "Too many invitations. Try again in 10 minutes.",
         "pending invitation limit reached": "Too many invitations are waiting for a response. Try again later.",
+        "invite link is invalid or has expired": "This invite link is invalid or has expired.",
         "membership limit reached": "You’ve reached the limit of spaces you can join. Leave one to join this space.",
         "space limit reached": "You’ve reached your space limit.",
         "channel limit reached": "This space has reached its channel limit.",

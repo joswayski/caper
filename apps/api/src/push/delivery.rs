@@ -23,6 +23,7 @@ pub(super) fn backoff(attempts: i16) -> Duration {
 #[derive(sqlx::FromRow)]
 struct Claimed {
     id: i64,
+    notification_id: i64,
     attempts: i16,
     held: bool,
     device_id: i64,
@@ -63,6 +64,9 @@ impl Claimed {
             "channel.message" => Kind::ChannelMessage,
             "mention.user" => Kind::MentionUser,
             "mention.everyone" => Kind::MentionEveryone,
+            "space.invitation" | "channel.invitation" => Kind::Invitation,
+            "direct.request" => Kind::DirectRequest,
+            "feedback" => Kind::Feedback,
             _ => return false,
         };
         let level = |value: &Option<String>| value.as_deref().and_then(Level::parse);
@@ -80,6 +84,27 @@ impl Claimed {
     }
 
     fn alert(&self, cdn: Option<&crate::assets::CdnSigner>) -> Alert {
+        if self.kind == "direct.request" {
+            return Alert::request(
+                self.notification_id,
+                &self.channel_id,
+                &self.sender,
+                &self.sender_id,
+                self.sender_avatar_id,
+            );
+        }
+        if self.kind == "space.invitation" || self.kind == "channel.invitation" {
+            return Alert::invitation(
+                self.notification_id,
+                self.space_id.as_deref().unwrap_or_default(),
+                self.space_name.as_deref().unwrap_or_default(),
+                (self.kind == "channel.invitation")
+                    .then_some((self.channel_id.as_str(), self.channel_name.as_str())),
+                &self.sender,
+                &self.sender_id,
+                self.sender_avatar_id,
+            );
+        }
         let conversation = match (&self.space_id, &self.space_name) {
             (Some(space_id), Some(space_name)) => Conversation::Channel {
                 space_id: space_id.clone(),
@@ -113,6 +138,7 @@ enum Attempt {
     /// Not sent: the session ended, the message expired or was read, or the
     /// recipient is still active elsewhere.
     Dropped(&'static str),
+    Hold,
     Sent(Outcome),
 }
 
@@ -143,34 +169,41 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
              JOIN public.channels ch ON ch.id=p.channel_id
              LEFT JOIN public.spaces s ON s.id=ch.space_id
          )
-         SELECT c.id, c.attempts, c.held, c.device_id, dev.transport, dev.address,
+         SELECT c.id, n.id AS notification_id, c.attempts, c.held, c.device_id, dev.transport, dev.address,
                 encode(substring(dev.account_session_hash FROM 1 FOR 8), 'hex') AS device_tag,
                 (dev.revoked_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > now()
                  AND a.user_id=dev.user_id AND dev.user_id=n.user_id) AS session_valid,
-                (ch.deleted_at IS NULL AND (ch.space_id IS NULL OR s.deleted_at IS NULL)) AS conversation_live,
-                (recipient.deleted_at IS NULL AND author.id IS NOT NULL
+                (s.deleted_at IS NULL AND (n.message_id IS NULL OR ch.deleted_at IS NULL)) AS conversation_live,
+                CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false)
+                WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false)
+                ELSE (recipient.deleted_at IS NULL AND author.id IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                      AND ((b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
                          OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))
-                 AND CASE WHEN ch.space_id IS NULL THEN
+                 AND (CASE WHEN ch.space_id IS NULL THEN
                      EXISTS(SELECT 1 FROM public.direct_conversations d WHERE d.channel_id=ch.id
-                         AND d.accepted_at IS NOT NULL AND d.low_user_id<>d.high_user_id
-                         AND n.user_id IN(d.low_user_id,d.high_user_id) AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                         AND d.accepted_at IS NOT NULL AND n.user_id IN(d.low_user_id,d.high_user_id)
+                         AND ((d.low_user_id<>d.high_user_id AND n.actor_id IN(d.low_user_id,d.high_user_id))
+                           -- The team answering in a DM it visits, personal notes included.
+                           OR (NOT n.actor_id IN(d.low_user_id,d.high_user_id) AND public.feedback_access(ch.id,n.actor_id))))
                  ELSE
                      NOT s.demo
                      AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=n.user_id AND sm.deleted_at IS NULL)
                      AND (NOT ch.private OR s.owner_id=n.user_id OR EXISTS(SELECT 1 FROM public.channel_members cm
                          WHERE cm.channel_id=ch.id AND cm.user_id=n.user_id AND cm.deleted_at IS NULL))
-                     AND (n.kind='mention.user' OR EXISTS(SELECT 1 FROM public.channel_joins cj
+                     AND (n.kind IN ('mention.user','feedback') OR EXISTS(SELECT 1 FROM public.channel_joins cj
                          WHERE cj.channel_id=ch.id AND cj.user_id=n.user_id AND cj.deleted_at IS NULL))
-                 END) AS recipient_eligible,
+                 END
+                 -- The feedback team, visiting where it was asked for.
+                 OR (n.kind='feedback' AND (s.id IS NULL OR NOT s.demo)
+                     AND public.feedback_access(ch.id,n.user_id)))) END AS recipient_eligible,
                 ns.default_level AS account_level, COALESCE(ns.paused_until > now(), false) AS paused,
                 co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
-                m.created_at AS message_at,
-                (ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq) AS read,
-                n.kind, m.external_id AS message_id, m.payload AS message,
-                ch.external_id AS channel_id, ch.name AS channel_name,
+                COALESCE(m.created_at,n.created_at) AS message_at,
+                COALESCE(ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq,false) AS read,
+                n.kind, COALESCE(m.external_id,'') AS message_id, COALESCE(m.payload,'{}'::jsonb) AS message,
+                COALESCE(ch.external_id,'') AS channel_id, COALESCE(ch.name,'') AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
                 COALESCE(author.display_name, m.payload->'author'->>'name', '') AS sender,
@@ -182,9 +215,11 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          JOIN public.notifications n ON n.id=c.notification_id
          JOIN public.notification_devices dev ON dev.id=c.device_id
          JOIN public.account_sessions a ON a.token_hash=dev.account_session_hash
-         JOIN public.messages m ON m.id=n.message_id
-         JOIN public.channels ch ON ch.id=n.channel_id
-         LEFT JOIN public.spaces s ON s.id=ch.space_id
+         LEFT JOIN public.messages m ON m.id=n.message_id
+         LEFT JOIN public.channels ch ON ch.id=n.channel_id
+         LEFT JOIN public.spaces s ON s.id=n.space_id
+         LEFT JOIN public.notification_invitation_sources inv ON inv.id=n.id
+         LEFT JOIN public.notification_request_sources req ON req.id=n.id
          JOIN public.users recipient ON recipient.id=n.user_id
          LEFT JOIN public.users author ON author.id=n.actor_id AND author.deleted_at IS NULL
          LEFT JOIN public.notification_settings ns ON ns.user_id=n.user_id
@@ -236,7 +271,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     if claimed.read {
         return Attempt::Dropped("read");
     }
-    if claimed.held && claimed.mobile != "always" {
+    let consent = matches!(
+        claimed.kind.as_str(),
+        "space.invitation" | "channel.invitation" | "direct.request"
+    );
+    if (claimed.held || consent) && claimed.mobile != "always" {
         // Still active on another session: that client already showed it.
         // Without presence the push goes out rather than being lost.
         let users = [claimed.recipient.clone()];
@@ -245,7 +284,11 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
                 .get(&claimed.recipient)
                 .is_some_and(|tags| tags.iter().any(|tag| *tag != claimed.device_tag))
         {
-            return Attempt::Dropped("active elsewhere");
+            return if claimed.held {
+                Attempt::Dropped("active elsewhere")
+            } else {
+                Attempt::Hold
+            };
         }
     }
     let Some(platform) = Platform::parse(&claimed.transport) else {
@@ -266,6 +309,16 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
 async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
     let pool = &workers.pool;
     let (done, error) = match result {
+        Attempt::Hold => {
+            let _ = sqlx::query(
+                "UPDATE public.notification_deliveries SET held=true,locked_at=NULL,
+                 available_at=now()+interval '60 seconds' WHERE id=$1",
+            )
+            .bind(claimed.id)
+            .execute(pool)
+            .await;
+            return;
+        }
         Attempt::Sent(Outcome::Delivered) => {
             let _ = sqlx::query(
                 "UPDATE public.notification_deliveries SET delivered_at=now(), locked_at=NULL, last_error=NULL WHERE id=$1",
@@ -338,19 +391,63 @@ async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
     }
 }
 
+/// Rows per prune statement: short locks and modest WAL per batch.
+const PRUNE_BATCH: i64 = 5_000;
+/// Batches per table per pass (every 10 minutes): about 14 million rows a day,
+/// far above one delivery per recipient device per message today.
+const PRUNE_BATCHES: usize = 20;
+
 /// Finished deliveries and expanded jobs are operational state: keep a week.
-pub(super) async fn prune(pool: &sqlx::PgPool) {
-    for statement in [
-        "DELETE FROM public.notification_deliveries WHERE id IN (
-             SELECT id FROM public.notification_deliveries
-             WHERE delivered_at < now() - interval '7 days' OR abandoned_at < now() - interval '7 days'
-             LIMIT 1000)",
-        "DELETE FROM public.notification_jobs WHERE id IN (
-             SELECT id FROM public.notification_jobs WHERE expanded_at < now() - interval '7 days'
-             LIMIT 1000)",
+/// Each table is drained in batches until nothing week-old remains or the pass
+/// reaches its cap; the next pass continues. Returns the rows deleted.
+pub(super) async fn prune(pool: &sqlx::PgPool) -> u64 {
+    // Oldest first through the partial indexes notification_deliveries_finished
+    // and notification_jobs_expanded; `= ANY(ARRAY(...))` keeps the delete on
+    // primary-key lookups instead of a hash join over the whole table.
+    let mut total = 0;
+    for (table, statement) in [
+        (
+            "notification_deliveries",
+            "DELETE FROM public.notification_deliveries WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_deliveries
+                 WHERE (delivered_at IS NOT NULL OR abandoned_at IS NOT NULL)
+                   AND LEAST(delivered_at, abandoned_at) < now() - interval '7 days'
+                 ORDER BY LEAST(delivered_at, abandoned_at) LIMIT $1))",
+        ),
+        (
+            "notification_jobs",
+            "DELETE FROM public.notification_jobs WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_jobs
+                 WHERE expanded_at IS NOT NULL AND expanded_at < now() - interval '7 days'
+                 ORDER BY expanded_at LIMIT $1))",
+        ),
     ] {
-        let _ = sqlx::query(statement).execute(pool).await;
+        let mut deleted = 0;
+        let mut drained = false;
+        for _ in 0..PRUNE_BATCHES {
+            let Ok(result) = sqlx::query(statement).bind(PRUNE_BATCH).execute(pool).await else {
+                break;
+            };
+            deleted += result.rows_affected();
+            if result.rows_affected() < PRUNE_BATCH.unsigned_abs() {
+                drained = true;
+                break;
+            }
+            // Let sends and deliveries interleave with a long backlog.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if deleted > 0 {
+            tracing::info!(
+                event_name = "push_pruned",
+                table,
+                deleted,
+                drained,
+                "operational rows pruned"
+            );
+        }
+        total += deleted;
     }
+    total
 }
 
 #[cfg(test)]

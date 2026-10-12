@@ -9,6 +9,9 @@ import {
   updateNotificationSettings,
 } from "../spaces/client.ts";
 import { isMuted, muteLabel, muteUntil } from "../spaces/notifications.ts";
+import { notificationLocation, type MessageNotification } from "../account/browser-notifications.ts";
+import { feedbackPlace, feedbackPreview, feedbackThreads } from "../spaces/FeedbackInbox.tsx";
+import type { FeedbackReport } from "../spaces/client.ts";
 
 // Outside a component the store's hook reads its snapshot directly, and its
 // subscribe function is kept so a test can listen the way React would.
@@ -209,4 +212,63 @@ test("a timed mute ends on its own, as it does on the server", async () => {
   assert.equal(read()?.mutedUntil, "2026-10-08T12:15:00Z");
   vi.advanceTimersByTime(15 * 60_000 + 1_000);
   assert.deepEqual(read(), { conversationId: "dm0000000001", level: "nothing", mutedUntil: null });
+});
+
+test("feedback notifications visit the conversation at the report's thread; others keep their routes", () => {
+  const base = {
+    type: "notification.created",
+    seq: "1",
+    messageId: "m".repeat(15),
+    title: "Alice · Feedback",
+    body: "help",
+    createdAt: new Date().toISOString(),
+  } as const satisfies Partial<MessageNotification>;
+  const channel = { ...base, kind: "feedback", spaceId: "s".repeat(12), channelId: "c".repeat(12) };
+  assert.equal(
+    notificationLocation(channel),
+    `/spaces?feedback=${"c".repeat(12)}&message=${"m".repeat(15)}&thread=${"m".repeat(15)}`,
+  );
+  assert.equal(
+    notificationLocation({ ...channel, threadRootId: "r".repeat(15) }),
+    `/spaces?feedback=${"c".repeat(12)}&message=${"m".repeat(15)}&thread=${"r".repeat(15)}`,
+  );
+  assert.equal(
+    notificationLocation({ ...base, kind: "feedback", conversationId: "d".repeat(12) }),
+    `/spaces?feedback=${"d".repeat(12)}&message=${"m".repeat(15)}&thread=${"m".repeat(15)}`,
+  );
+  assert.equal(
+    notificationLocation({ ...channel, kind: "mention.user" }),
+    `/spaces?space=${"s".repeat(12)}&channel=${"c".repeat(12)}`,
+  );
+  assert.equal(notificationLocation({ ...channel, channelId: "../x" }), undefined);
+});
+
+test("the feedback inbox lists each thread once by its newest report", () => {
+  const report = (id: string, root: string, extra: Partial<FeedbackReport> = {}): FeedbackReport => ({
+    id,
+    messageId: id,
+    threadRootId: root,
+    createdAt: "2026-10-11T19:00:00Z",
+    text: "",
+    attachments: 0,
+    reporter: { id: "u", username: "alice", displayName: "Alice" },
+    channel: { id: "c", name: "plans", direct: false },
+    space: { id: "s", name: "Studio" },
+    replyCount: 0,
+    answered: false,
+    ...extra,
+  });
+  const reports = [report("b", "a"), report("a", "a", { answered: true }), report("x", "x", { text: " hi " })];
+  assert.deepEqual(
+    feedbackThreads(reports).map((item) => item.id),
+    ["b", "x"],
+  );
+  assert.equal(feedbackPlace(reports[0]), "#plans · Studio");
+  assert.equal(
+    feedbackPlace(report("d", "d", { space: null, channel: { id: "d", name: "Alice & Bob", direct: true } })),
+    "DM · Alice & Bob",
+  );
+  assert.equal(feedbackPreview(reports[2]), "hi");
+  assert.equal(feedbackPreview(report("f", "f", { attachments: 1 })), "Sent a file");
+  assert.equal(feedbackPreview(report("g", "g", { attachments: 3 })), "Sent 3 files");
 });

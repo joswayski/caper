@@ -1,5 +1,6 @@
 use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
+use crate::invites::{InviteLink, InvitePreview, JoinedInvite};
 use crate::model::{
     Account, BlockedAccount, Channel, ChatSession, DirectConversation, History, Member, Message,
     NotificationSettings, Person, Space, SpaceDetail, Spaces,
@@ -17,6 +18,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    SendProfile {
+        epoch: u64,
+        person: String,
+        token: String,
+        send: Box<crate::profile_dm::Send>,
+    },
     Forward {
         generation: u64,
         request: u64,
@@ -25,6 +32,13 @@ pub enum Command {
     LoadDirects {
         generation: u64,
         token: String,
+    },
+    OpenInvitation {
+        epoch: u64,
+        navigation: u64,
+        token: String,
+        space: String,
+        channel: Option<String>,
     },
     /// Web's background membership reconcile: `GET /api/spaces`, then the
     /// open space's detail while it is still listed. `revision` and
@@ -38,7 +52,25 @@ pub enum Command {
         token: String,
         space: Option<String>,
     },
-    /// `GET /api/people`, for `@` suggestions in DMs.
+    /// `GET /api/feedback`: the Caper team's inbox (`before` pages older).
+    LoadFeedback {
+        epoch: u64,
+        request: u64,
+        token: String,
+        before: Option<String>,
+        /// The archived view instead of the inbox.
+        archived: bool,
+    },
+    /// `PUT /api/feedback/archive` for one reported thread.
+    ArchiveFeedback {
+        epoch: u64,
+        token: String,
+        channel: String,
+        thread_root: String,
+        archived: bool,
+    },
+    /// `GET /api/people`, for `@` suggestions in DMs and the space invite and
+    /// new DM username fields.
     LoadPeople {
         generation: u64,
         token: String,
@@ -99,6 +131,9 @@ pub enum Command {
         channel: Option<String>,
         name: String,
         cached: Option<History>,
+        /// Open `channel` by id even when it is a space channel outside the
+        /// lists: the Caper team visiting a feedback report.
+        visit: bool,
     },
     PrefetchNavigation {
         generation: u64,
@@ -315,6 +350,30 @@ pub enum AccountOperation {
         scope: Scope,
         change: Change,
     },
+    /// An owner's live invite links for one space.
+    LoadInviteLinks {
+        space: String,
+    },
+    CreateInviteLink {
+        space: String,
+        channel: Option<String>,
+        max_age: Option<u32>,
+        max_uses: Option<u32>,
+    },
+    RevokeInviteLink {
+        space: String,
+        code: String,
+    },
+    /// The "Join with invite link" preview and join; `request` drops answers
+    /// for an input the person has since changed or a dialog they closed.
+    PreviewInvite {
+        request: u64,
+        code: String,
+    },
+    JoinInvite {
+        request: u64,
+        code: String,
+    },
 }
 
 #[derive(Debug)]
@@ -352,6 +411,27 @@ pub enum AccountResult {
     NotificationsSaved {
         scope: Scope,
         result: Result<Saved, String>,
+    },
+    InviteLinks {
+        space: String,
+        result: Result<Vec<InviteLink>, String>,
+    },
+    InviteLinkCreated {
+        space: String,
+        result: Result<InviteLink, String>,
+    },
+    InviteLinkRevoked {
+        space: String,
+        code: String,
+        result: Result<(), String>,
+    },
+    InvitePreview {
+        request: u64,
+        result: Result<InvitePreview, String>,
+    },
+    InviteJoined {
+        request: u64,
+        result: Result<JoinedInvite, String>,
     },
 }
 
@@ -467,6 +547,17 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    ProfileStatus {
+        epoch: u64,
+        person: String,
+        status: String,
+    },
+    ProfileSent {
+        epoch: u64,
+        person: String,
+        send: Box<crate::profile_dm::Send>,
+        result: Result<DirectConversation, crate::profile_dm::Failure>,
+    },
     OpenNotification {
         epoch: u64,
         alert: crate::os_notifications::Alert,
@@ -478,6 +569,13 @@ pub enum Event {
     NotificationError {
         epoch: u64,
         error: String,
+    },
+    InvitationLoaded {
+        epoch: u64,
+        navigation: u64,
+        space: String,
+        channel: Option<String>,
+        result: Result<(Spaces, Option<SpaceDetail>), String>,
     },
     Forward {
         generation: u64,
@@ -508,6 +606,15 @@ pub enum Event {
         /// The open space's detail; `None` when not requested, no longer
         /// listed, or unreadable (the list still applies).
         result: Result<(Spaces, Option<SpaceDetail>), String>,
+    },
+    FeedbackLoaded {
+        epoch: u64,
+        request: u64,
+        result: Result<crate::feedback::Page, String>,
+    },
+    FeedbackArchived {
+        epoch: u64,
+        result: Result<(), String>,
     },
     PeopleLoaded {
         generation: u64,
@@ -743,6 +850,7 @@ fn prepare_navigation(
     channel: Option<&str>,
     name: &str,
     cached: Option<History>,
+    visit: bool,
 ) -> Result<PreparedNavigation, LoadError> {
     let detail = space
         .map(|space| api.space(token.unwrap_or_default(), space))
@@ -797,12 +905,13 @@ fn prepare_navigation(
         }
     } else if let Some(id) = channel.filter(|_| space.is_none()) {
         let history = match cached
-            .filter(|history| history.space.id.is_empty() && history.channel.id == id)
+            .filter(|history| !visit && history.space.id.is_empty() && history.channel.id == id)
         {
             Some(history) => history,
             None => api.history(token, id, None)?,
         };
-        if !history.space.id.is_empty() || history.channel.id != id {
+        // A visit may land in a space channel; the app decides how to show it.
+        if (!visit && !history.space.id.is_empty()) || history.channel.id != id {
             return Err(LoadError {
                 message: "Caper returned another conversation.".into(),
                 access_denied: false,
@@ -1230,6 +1339,30 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             }
             return;
         }
+        Command::SendProfile {
+            epoch,
+            person,
+            token,
+            send: mut operation,
+        } => {
+            let result = operation.run(api, &token, &|status| {
+                send(
+                    events,
+                    context,
+                    Event::ProfileStatus {
+                        epoch,
+                        person: person.clone(),
+                        status,
+                    },
+                )
+            });
+            Event::ProfileSent {
+                epoch,
+                person,
+                send: operation,
+                result,
+            }
+        }
         Command::Upload {
             key,
             token,
@@ -1255,6 +1388,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             ids,
         },
+        Command::OpenInvitation {
+            epoch,
+            navigation,
+            token,
+            space,
+            channel,
+        } => {
+            let result = api
+                .spaces(&token)
+                .and_then(|spaces| {
+                    let detail =
+                        if channel.is_some() && spaces.spaces.iter().any(|item| item.id == space) {
+                            Some(api.space(&token, &space)?)
+                        } else {
+                            None
+                        };
+                    Ok((spaces, detail))
+                })
+                .map_err(|error| error.to_string());
+            Event::InvitationLoaded {
+                epoch,
+                navigation,
+                space,
+                channel,
+                result,
+            }
+        }
         Command::RefreshMembership {
             epoch,
             request,
@@ -1282,6 +1442,31 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             result: api
                 .direct_conversations(&token)
                 .map(|value| value.conversations)
+                .map_err(|error| error.to_string()),
+        },
+        Command::LoadFeedback {
+            epoch,
+            request,
+            token,
+            before,
+            archived,
+        } => Event::FeedbackLoaded {
+            epoch,
+            request,
+            result: api
+                .feedback(&token, before.as_deref(), archived)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ArchiveFeedback {
+            epoch,
+            token,
+            channel,
+            thread_root,
+            archived,
+        } => Event::FeedbackArchived {
+            epoch,
+            result: api
+                .archive_feedback(&token, &channel, &thread_root, archived)
                 .map_err(|error| error.to_string()),
         },
         Command::LoadPeople { generation, token } => Event::PeopleLoaded {
@@ -1455,6 +1640,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             name,
             cached,
+            visit,
         } => Event::NavigationPrepared {
             generation,
             navigation,
@@ -1465,6 +1651,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 channel.as_deref(),
                 &name,
                 cached,
+                visit,
             ),
         },
         Command::PrefetchNavigation {
@@ -1823,6 +2010,34 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 result: result.map_err(text),
             }
         }
+        AccountOperation::LoadInviteLinks { space } => AccountResult::InviteLinks {
+            result: api.invite_links(token, &space).map_err(text),
+            space,
+        },
+        AccountOperation::CreateInviteLink {
+            space,
+            channel,
+            max_age,
+            max_uses,
+        } => AccountResult::InviteLinkCreated {
+            result: api
+                .create_invite_link(token, &space, channel.as_deref(), max_age, max_uses)
+                .map_err(text),
+            space,
+        },
+        AccountOperation::RevokeInviteLink { space, code } => AccountResult::InviteLinkRevoked {
+            result: api.revoke_invite_link(token, &space, &code).map_err(text),
+            space,
+            code,
+        },
+        AccountOperation::PreviewInvite { request, code } => AccountResult::InvitePreview {
+            request,
+            result: api.invite_preview(Some(token), &code).map_err(text),
+        },
+        AccountOperation::JoinInvite { request, code } => AccountResult::InviteJoined {
+            request,
+            result: api.join_invite(token, &code).map_err(text),
+        },
     }
 }
 
@@ -2046,6 +2261,7 @@ mod tests {
             Some("second"),
             "User",
             None,
+            false,
         )
         .unwrap();
         assert_eq!(prepared.detail.unwrap().space.id, "s");
@@ -2059,6 +2275,7 @@ mod tests {
             Some("revoked"),
             "User",
             Some(warm),
+            false,
         )
         .err()
         .unwrap();
@@ -2071,6 +2288,215 @@ mod tests {
             "an explicit revoked target must not fall back to the first channel"
         );
         worker.join().unwrap();
+    }
+
+    /// A tiny HTTP server answering each expected request line in order.
+    type Bodies = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// Also collects request bodies.
+    fn serve(
+        exchanges: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (crate::api::Api, std::thread::JoinHandle<()>, Bodies) {
+        let bodies = Bodies::default();
+        let received = bodies.clone();
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (path, status, body) in exchanges {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut sent = vec![0; length];
+                std::io::Read::read_exact(&mut reader, &mut sent).unwrap();
+                if !sent.is_empty() {
+                    received
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8(sent).unwrap());
+                }
+                write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (api, worker, bodies)
+    }
+
+    #[test]
+    fn visits_open_a_space_channel_by_id_and_other_navigation_still_refuses_it() {
+        let channel = r#"{"space":{"id":"space0000001","name":"Studio"},"channel":{"id":"chan00000001","name":"plans"},"messages":[],"pinnedMessages":[],"cursor":"4","hasMore":false,"visitor":true}"#;
+        let session =
+            r#"{"token":"chat","author":{"id":"u","name":"Jose","isGuest":false,"admin":true}}"#;
+        let (api, worker, _bodies) = serve(vec![
+            (
+                "GET /api/chat/channels/chan00000001/messages",
+                "200 OK",
+                channel,
+            ),
+            ("POST /api/chat/session", "200 OK", session),
+            (
+                "GET /api/chat/channels/chan00000001/messages",
+                "200 OK",
+                channel,
+            ),
+        ]);
+        let prepared = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("chan00000001"),
+            "Jose",
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(prepared.detail.is_none());
+        let (history, session) = prepared.conversation.unwrap();
+        assert!(history.visitor);
+        assert_eq!(history.space.name, "Studio");
+        assert!(
+            session.unwrap().author.admin,
+            "visitors still get a chat session"
+        );
+        let refused = super::prepare_navigation(
+            &api,
+            Some("account"),
+            None,
+            Some("chan00000001"),
+            "Jose",
+            None,
+            false,
+        );
+        assert_eq!(
+            refused.err().unwrap().message,
+            "Caper returned another conversation."
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn feedback_pages_load_with_the_account_bearer_and_their_cursor() {
+        let page = r#"{"reports":[{"id":"m2","messageId":"m2","threadRootId":"m1","createdAt":"2026-10-11T19:00:00Z","text":"@feedback hi","attachments":0,"reporter":{"id":"u1","username":"alice","displayName":"Alice","avatarId":3},"channel":{"id":"c1","name":"general","direct":false},"space":{"id":"s1","name":"Studio"},"replyCount":1,"answered":false}],"cursor":"41"}"#;
+        let (api, worker, bodies) = serve(vec![
+            ("GET /api/feedback", "200 OK", page),
+            (
+                "GET /api/feedback?before=41",
+                "200 OK",
+                r#"{"reports":[],"cursor":null}"#,
+            ),
+            (
+                "GET /api/feedback",
+                "404 Not Found",
+                r#"{"error":"not found"}"#,
+            ),
+            (
+                "GET /api/feedback?archived=true&before=7",
+                "200 OK",
+                r#"{"reports":[],"cursor":null}"#,
+            ),
+        ]);
+        let (events, receiver) = std::sync::mpsc::channel();
+        for (before, archived) in [
+            (None, false),
+            (Some("41".to_owned()), false),
+            (None, false),
+            (Some("7".to_owned()), true),
+        ] {
+            super::execute(
+                &api,
+                super::Command::LoadFeedback {
+                    epoch: 2,
+                    request: 5,
+                    token: "account".into(),
+                    before,
+                    archived,
+                },
+                &events,
+                &eframe::egui::Context::default(),
+            );
+        }
+        let mut results = receiver.try_iter().map(|event| match event {
+            super::Event::FeedbackLoaded {
+                epoch: 2,
+                request: 5,
+                result,
+            } => result,
+            _ => panic!("expected feedback"),
+        });
+        let first = results.next().unwrap().unwrap();
+        assert_eq!(first.reports[0].place(), "#general · Studio");
+        assert_eq!(first.cursor.as_deref(), Some("41"));
+        let last = results.next().unwrap().unwrap();
+        assert!(last.reports.is_empty() && last.cursor.is_none());
+        assert!(results.next().unwrap().is_err(), "not on the team");
+        assert!(results.next().unwrap().unwrap().reports.is_empty());
+        worker.join().unwrap();
+        assert!(bodies.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn archiving_puts_the_thread_and_reports_failures() {
+        let (api, worker, bodies) = serve(vec![
+            ("PUT /api/feedback/archive", "204 No Content", ""),
+            (
+                "PUT /api/feedback/archive",
+                "404 Not Found",
+                r#"{"error":"not found"}"#,
+            ),
+        ]);
+        let (events, receiver) = std::sync::mpsc::channel();
+        for archived in [true, false] {
+            super::execute(
+                &api,
+                super::Command::ArchiveFeedback {
+                    epoch: 3,
+                    token: "account".into(),
+                    channel: "chan00000001".into(),
+                    thread_root: "msg000000001".into(),
+                    archived,
+                },
+                &events,
+                &eframe::egui::Context::default(),
+            );
+        }
+        let results: Vec<_> = receiver
+            .try_iter()
+            .map(|event| match event {
+                super::Event::FeedbackArchived { epoch: 3, result } => result.is_ok(),
+                _ => panic!("expected an archive result"),
+            })
+            .collect();
+        assert_eq!(results, [true, false]);
+        worker.join().unwrap();
+        let bodies: Vec<serde_json::Value> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                serde_json::json!({"channelId": "chan00000001", "threadRootId": "msg000000001", "archived": true}),
+                serde_json::json!({"channelId": "chan00000001", "threadRootId": "msg000000001", "archived": false}),
+            ]
+        );
     }
 
     #[test]
@@ -2155,6 +2581,7 @@ mod tests {
             Some("dm0000000001"),
             "User",
             read.history,
+            false,
         )
         .unwrap();
         let mut retained = first.conversation.unwrap().0;
@@ -2166,6 +2593,7 @@ mod tests {
             Some("dm0000000001"),
             "User",
             Some(retained),
+            false,
         )
         .unwrap();
         assert!(revisited.detail.is_none());

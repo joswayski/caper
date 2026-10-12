@@ -50,6 +50,9 @@ private struct ChannelInput: Encodable {
     enum CodingKeys: String, CodingKey { case name; case privateChannel = "private" }
 }
 private struct UsernameInput: Encodable { let username: String }
+/// nil fields are omitted, which the API reads as null: default channel,
+/// never expires, no use limit.
+private struct InviteLinkInput: Encodable { let channelId: String?; let maxAge: Int?; let maxUses: Int? }
 private struct ReadInput: Encodable { let seq: String }
 /// `appId` is the bundle ID the server sends to (APNs topic); nil is left out.
 private struct PushDeviceInput: Encodable { let platform: String; let token: String; let appId: String? }
@@ -187,6 +190,22 @@ public actor APIClient {
     public func markDirectMessageRead(id: String, seq: String) async throws {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
+    /// The feedback team's inbox (or its archived threads), newest first; 404
+    /// for everyone else.
+    public func feedbackReports(before: String? = nil, archived: Bool = false) async throws -> FeedbackReportsPage {
+        var query: [String] = archived ? ["archived=true"] : []
+        if let before {
+            guard (try? Sequence.compare(before, "0")) != nil else { throw APIError(status: 400, message: "Invalid cursor.") }
+            query.append("before=\(before)")
+        }
+        return try await request("api/feedback" + (query.isEmpty ? "" : "?" + query.joined(separator: "&")))
+    }
+    /// Archives or restores every report in a thread, for the whole team.
+    public func setFeedbackArchived(channelID: String, threadRootID: String, archived: Bool) async throws {
+        struct Input: Encodable { let channelId: String; let threadRootId: String; let archived: Bool }
+        let _: Empty = try await request("api/feedback/archive", method: "PUT",
+                                         body: Input(channelId: channelID, threadRootId: threadRootID, archived: archived))
+    }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
     public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
         let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))
@@ -263,6 +282,34 @@ public actor APIClient {
 
     public func declineSpaceInvitation(spaceID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "DELETE")
+    }
+
+    // MARK: Invite links
+
+    /// Works signed out; 404 when the link is invalid, expired or used up.
+    public func invitePreview(code: String) async throws -> InvitePreview {
+        let preview: InvitePreview = try await request("api/invites/\(try inviteCodePath(code))")
+        guard preview.code == code else { throw APIError(status: 502, message: "Caper returned another invite.") }
+        return preview
+    }
+
+    public func joinInvite(code: String) async throws -> InviteJoin {
+        try await request("api/invites/\(try inviteCodePath(code))/join", method: "POST")
+    }
+
+    /// The space's live links, newest first (owner only).
+    public func inviteLinks(spaceID: String) async throws -> [InviteLink] {
+        let response: InviteLinksResponse = try await request("api/spaces/\(try pathID(spaceID))/invite-links")
+        return response.links
+    }
+
+    public func createInviteLink(spaceID: String, channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
+        try await request("api/spaces/\(try pathID(spaceID))/invite-links", method: "POST",
+                          body: InviteLinkInput(channelId: try channelID.map { try pathID($0) }, maxAge: maxAge, maxUses: maxUses))
+    }
+
+    public func revokeInviteLink(spaceID: String, code: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invite-links/\(try inviteCodePath(code))", method: "DELETE")
     }
 
     public func removeSpaceMember(spaceID: String, memberID: String) async throws {
@@ -540,6 +587,11 @@ public actor APIClient {
     private func pathID(_ id: String) throws -> String {
         guard id.count == 12, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw APIError(status: 400, message: "Invalid resource ID.") }
         return id
+    }
+
+    private func inviteCodePath(_ code: String) throws -> String {
+        guard InviteLinks.isCode(Substring(code)) else { throw APIError(status: 404, message: "invite link is invalid or has expired") }
+        return code
     }
 
     private func messagePathID(_ id: String) throws -> String {

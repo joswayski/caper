@@ -8,18 +8,36 @@ Custom photo/GIF avatars and an avatar gallery are not implemented yet.
 
 Signed-in members can attach up to 10 files per message on web, Android,
 iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.
-Clients compress on the device without visible quality loss (lossless for
-screenshots and graphics, high-quality WebP/JPEG for photos, H.264 video where
-the platform can encode it; other files upload unchanged) and upload straight
+Clients compress on the device: screenshots and graphics stay lossless, photos
+are re-encoded at very high quality (AVIF or WebP), and video is converted to
+H.264 up to 1440p so it plays everywhere, which loses some resolution and
+detail from 4K and HDR footage; other files upload unchanged and upload straight
 to storage, within a per-person allowance (10 GB by default). Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
+Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
+style: each link expires after a time you choose (1 minute to 365 days; 7 days by
+default) or never, can cap its uses (1 to 10,000; no limit by default), and opens in
+a chosen public channel. Anyone can preview a live link; signing in returns to it
+to join. Owners list, copy and revoke links in **Manage space**; signed-in people can
+also paste a link to join from web, Android, iPhone/Mac and desktop. Invite links open
+the installed app: iPhone and Android open `caper.chat/invite/...` directly, and the
+invite page's **Open in the Caper app** (`caper://invite/...`) opens the Mac, Windows
+and Linux apps, reusing an open Caper window. Android Play installs open links directly
+only once Play's app-signing fingerprint is published; until then they use that button
+([to do](docs/media.md#invite-links): that fingerprint and the iPhone signing check). See
+[invite links](docs/media.md#invite-links).
+
 Signed-in accounts can start persistent, private one-to-one messages by username.
+The new-message and invite fields suggest people you already share a space or DM
+with (avatar, display name and username); there is no account directory search.
 The Direct messages list is shared across spaces. Phone push is implemented behind
 server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
 tabs and running desktop apps also implement local OS notifications; alerts after
-desktop quit or browser close are not implemented. Real-provider and physical-device
-validation is still pending. See [notification behavior and rollout](docs/notifications.md).
+desktop quit or browser close are not implemented. Space/private-channel invites
+and new DM requests notify recipients and open explicit request review. Pending
+DM messages stay quiet until acceptance. Real-provider and physical-device validation
+is still pending. See [notification behavior and rollout](docs/notifications.md).
 
 Channel pins are shared with everyone who can read the channel. Joined members
 can pin or unpin in one action; the channel header opens the complete pins list.
@@ -37,6 +55,15 @@ not need source membership; their replies stay in a separate destination thread.
 Native validation and rollout are tracked in
 [the runbook](docs/media.md#live-message-forwarding). This change is not deployed
 by merging alone.
+
+Writing `@feedback` (or `@caper`, `@admin`, `@mods`, `@support`, `@team`…) in any
+channel, thread, DM or personal note asks the Caper team to look. The message stays
+where it is, marked **Caper team has been notified 🫡**. Feedback team members get a
+push and an inbox of reports, and take part in that conversation like a member
+without joining it: they read it for context and reply in place with an **ADMIN**
+badge, so everyone there sees the answer. Messaging `@caper` (or `@feedback`) from
+**New message** opens a private DM where each message goes to the team. Team membership is managed in
+SQL. See [Feedback](docs/media.md#feedback-in-place).
 
 Authors can edit messages on web, Android, Apple and Rust desktop, including
 thread roots/replies and DMs. The edited indicator opens retained history with

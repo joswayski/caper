@@ -3,6 +3,8 @@ export interface ChatAuthor {
   avatarId?: number | null;
   name: string;
   isGuest: boolean;
+  /** A Caper admin (feedback team member), stamped by the server when sent. */
+  admin?: boolean;
 }
 
 export type ChatAttachmentKind = "image" | "video" | "audio" | "file";
@@ -77,6 +79,7 @@ export type ChatMention =
   | { type: "user"; id: string; username: string }
   | { type: "everyone" }
   | { type: "here" }
+  | { type: "feedback" }
   | { type: string; id?: string; username?: string };
 
 export interface ChatPinEvent {
@@ -159,6 +162,8 @@ export interface ChatThreadHistory extends ChatHistory {
 export interface GeneralChatHistory extends ChatHistory {
   space: { id: string; name: string };
   channel: { id: string; name: string; direct?: boolean };
+  /** A feedback team member reading where they were asked to look, without having joined. */
+  visitor?: boolean;
 }
 
 export interface ChatSession {

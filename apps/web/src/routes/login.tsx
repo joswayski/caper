@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import { fieldClass, primaryButtonClass, Spinner } from "../account/controls";
 import Wordmark from "../components/Wordmark";
+import { signedInPath } from "../spaces/client";
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "Sign in - Caper" }] }),
@@ -59,7 +60,7 @@ function Login() {
   useEffect(() => {
     void getAccount()
       .then((account) => {
-        if (account) void navigate({ to: account.username ? "/spaces" : "/profile", replace: true });
+        if (account) void navigate({ href: signedInPath(account, window.location.search), replace: true });
       })
       .catch(() => undefined);
   }, [navigate]);
@@ -99,7 +100,7 @@ function Login() {
     setError(undefined);
     try {
       const account = await verifyEmailCode(challengeId, code);
-      await navigate({ to: account.username ? "/spaces" : "/profile" });
+      await navigate({ href: signedInPath(account, window.location.search) });
     } catch (verifyError) {
       if (verifyError instanceof AccountApiError) {
         setAttemptsRemaining(verifyError.attemptsRemaining);

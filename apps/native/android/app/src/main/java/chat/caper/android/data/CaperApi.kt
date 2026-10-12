@@ -72,6 +72,22 @@ class CaperApi(
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
     }
+    /**
+     * Feedback team only (404 for everyone else): `@feedback` reports, newest first, 50 per
+     * page; the inbox, or only archived threads with [archived].
+     */
+    suspend fun feedback(token: String, before: String? = null, archived: Boolean = false): FeedbackReports {
+        val cursor = before?.let { requireNotNull(validFeedbackCursor(it)) { "Invalid cursor." } }
+        val query = listOfNotNull("archived=true".takeIf { archived }, cursor?.let { "before=$it" }).joinToString("&")
+        return get("/api/feedback" + (if (query.isEmpty()) "" else "?$query"), token)
+    }
+    /** Archives or restores every report in a thread, for the whole team. */
+    suspend fun archiveFeedback(token: String, channel: String, threadRoot: String, archived: Boolean) {
+        require(messageId.matches(threadRoot)) { "Invalid message ID." }
+        request<Unit>("/api/feedback/archive", "PUT", token, buildJsonObject {
+            put("channelId", channel.pathId()); put("threadRootId", threadRoot); put("archived", archived)
+        }.toString())
+    }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
     /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */
     suspend fun registerPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "POST", token, pushDevice(deviceToken, appId)) }
@@ -347,6 +363,20 @@ class CaperApi(
     suspend fun declineSpaceInvitation(token: String, space: String) {
         request<Unit>("/api/spaces/${space.pathId()}/invitation", "DELETE", token)
     }
+    /** Works signed out too; [token] is sent when there is one. */
+    suspend fun invitePreview(code: String, token: String? = null): InvitePreview = get("/api/invites/${code.invitePathCode()}", token)
+    suspend fun joinInvite(token: String, code: String): InviteJoin = post("/api/invites/${code.invitePathCode()}/join", token = token)
+    suspend fun inviteLinks(token: String, space: String): InviteLinkList = get("/api/spaces/${space.pathId()}/invite-links", token)
+    /** Null [channelId] lands in the space's default channel; null [maxAge] (seconds) never expires; null [maxUses] has no limit. */
+    suspend fun createInviteLink(token: String, space: String, channelId: String?, maxAge: Int?, maxUses: Int?): InviteLink = post(
+        "/api/spaces/${space.pathId()}/invite-links",
+        buildJsonObject { put("channelId", channelId); put("maxAge", maxAge); put("maxUses", maxUses) }, token,
+    )
+    suspend fun revokeInviteLink(token: String, space: String, code: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invite-links/${code.invitePathCode()}", "DELETE", token)
+    }
+    /** The shareable URL on this API's origin (production `https://caper.chat/invite/<code>`). */
+    fun inviteUrl(code: String): String = inviteLinkUrl(baseUrl, code)
     suspend fun removeSpaceMember(token: String, space: String, member: String) {
         request<Unit>("/api/spaces/${space.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
@@ -444,6 +474,7 @@ private class StreamingUploadBody(
 }
 private val messageId = Regex("^[A-Za-z0-9]{15}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
+private fun String.invitePathCode(): String = also { require(isInviteCode(it)) { "Invalid invite code." } }
 
 // OkHttp invokes onResponse on its IO dispatcher. Keep body reads and JSON
 // decoding there: a slow body must not block the service's Main owner context.

@@ -1,9 +1,9 @@
 import Foundation
 
-/// A composer `@` suggestion: a person, or the `everyone`/`here` specials
-/// offered only in space channels.
+/// A composer `@` suggestion: a person, the `everyone`/`here` specials
+/// offered only in space channels, or `feedback`, offered in every conversation.
 struct MentionCandidate: Equatable, Identifiable, Sendable {
-    enum Kind: Equatable, Sendable { case member, everyone, here }
+    enum Kind: Equatable, Sendable { case member, everyone, here, feedback }
     let kind: Kind
     /// The user's external id, or the special's name.
     let id: String
@@ -17,39 +17,80 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
                                            displayName: "Everyone in this channel")
     static let here = MentionCandidate(kind: .here, id: "here", username: "here",
                                        displayName: "Everyone online in this channel")
+    /// One of the Caper team's names (`MentionAutocomplete.feedbackAliases`),
+    /// inserted as typed. At most one is offered, so its id is fixed.
+    static func team(_ name: String) -> MentionCandidate {
+        MentionCandidate(kind: .feedback, id: "feedback", username: name, displayName: "Notify the Caper team")
+    }
+    static let feedback = team("feedback")
 
     static func member(id: String, username: String, displayName: String, avatarId: Int? = nil) -> MentionCandidate {
         MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId)
     }
 }
 
+extension MentionCandidate {
+    init(_ person: Person) {
+        self = .member(id: person.id, username: person.username, displayName: person.displayName, avatarId: person.avatarId)
+    }
+    init(_ member: Member) {
+        self = .member(id: member.id, username: member.username, displayName: member.displayName, avatarId: member.avatarId)
+    }
+}
+
 /// Who the composer may suggest in the open conversation.
 struct MentionSource: Equatable, Sendable {
     var members: [MentionCandidate]
+    /// `everyone` and `here`: space channels only.
     var specials: Bool
+    /// `feedback`: every conversation (channels, threads, DMs, notes, visits).
+    var feedback: Bool = true
 
-    static let empty = MentionSource(members: [], specials: false)
+    /// Nothing to suggest at all.
+    static let empty = MentionSource(members: [], specials: false, feedback: false)
 
     /// A space channel: the members from `GET /api/spaces/{space}` (empty
     /// until loaded) except the signed-in account, then `everyone`/`here`.
     static func space(members: [Member], excluding accountID: String?) -> MentionSource {
-        MentionSource(members: members.filter { $0.id != accountID }.map {
-            MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
-        }, specials: true)
+        MentionSource(members: members.filter { $0.id != accountID }.map { MentionCandidate($0) }, specials: true)
     }
 
     /// Any DM, self-notes included: everyone from `GET /api/people` once it
     /// has loaded (plus the DM peer if that list predates the conversation);
-    /// until then only the other participant, so nobody in self-notes. Never
-    /// the specials.
+    /// until then only the other participant, so nobody in self-notes (only
+    /// `@feedback` once typed). Never `everyone`/`here`.
     static func direct(peer: DirectMessagePeer?, people: [Person]? = nil, accountID: String?) -> MentionSource {
-        var members = (people ?? []).filter { $0.id != accountID }.map {
-            MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId)
-        }
+        var members = (people ?? []).filter { $0.id != accountID }.map { MentionCandidate($0) }
         if let peer, peer.id != accountID, !members.contains(where: { $0.id == peer.id }) {
             members.append(.member(id: peer.id, username: peer.username, displayName: peer.displayName))
         }
-        return members.isEmpty ? .empty : MentionSource(members: members, specials: false)
+        return MentionSource(members: members, specials: false)
+    }
+
+    /// A feedback visit has no member list: the reporter, then people who
+    /// already appear in the loaded messages (authors `GET /api/people` can
+    /// name, and resolved `@` mentions), never yourself; plus `@feedback`.
+    static func visit(reporter: FeedbackReport.Reporter?, messages: [ChatMessage], people: [Person]?, accountID: String?) -> MentionSource {
+        var members: [MentionCandidate] = []
+        func add(_ candidate: MentionCandidate) {
+            guard candidate.id != accountID, !candidate.username.isEmpty, !members.contains(where: { $0.id == candidate.id }) else { return }
+            members.append(candidate)
+        }
+        let known = Dictionary((people ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func person(_ id: String) -> MentionCandidate? {
+            known[id].map { MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId) }
+        }
+        if let reporter {
+            add(.member(id: reporter.id, username: reporter.username, displayName: reporter.displayName, avatarId: reporter.avatarId))
+        }
+        for message in messages {
+            if !message.author.isGuest, let author = person(message.author.id) { add(author) }
+            for mention in message.content.mentions {
+                guard case let .user(id, username) = mention else { continue }
+                add(person(id) ?? .member(id: id, username: username, displayName: username))
+            }
+        }
+        return MentionSource(members: members, specials: false)
     }
 }
 
@@ -79,7 +120,7 @@ struct MentionSegment: Equatable {
     let text: String
     let highlighted: Bool
     /// A highlighted person (`user` entry), which opens the mention card;
-    /// nil for plain text and the `@everyone`/`@here` pills.
+    /// nil for plain text and the `@everyone`/`@here`/`@feedback` pills.
     var user: MentionPill? = nil
 }
 
@@ -97,6 +138,14 @@ struct MentionPill: Equatable, Hashable, Identifiable, Sendable {
 enum MentionAutocomplete {
     static let maximumNameLength = 32
     static let maximumChoices = 6
+    /// Every name that asks the Caper team (reserved usernames, the server's
+    /// list), in suggestion order.
+    static let feedbackAliases = [
+        "feedback", "caper", "capers", "caperchat", "caper_feedback", "caper_support", "support", "team", "staff",
+        "admin", "admins", "administrator", "administrators", "mod", "mods", "moderator", "moderators",
+    ]
+
+    static func isFeedbackAlias(_ name: String) -> Bool { feedbackAliases.contains(name.lowercased()) }
 
     static func isNameScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
@@ -138,27 +187,42 @@ enum MentionAutocomplete {
         return MentionQuery(range: NSRange(at..<caret, in: text), query: string(name).lowercased())
     }
 
-    /// Members ranked 0 (exact username), 1 (username prefix), 2 (display name
-    /// or one of its space-separated words starts with the query), 3 (username
-    /// contains it), ties by username; an empty query puts every member at 1.
-    /// Matching specials (`everyone`, then `here`) follow the members and keep
-    /// their slots within the cap of six.
+    /// A person's rank for a lowercased query: 0 (exact username), 1 (username
+    /// prefix), 2 (display name or one of its space-separated words starts with
+    /// the query), 3 (username contains it), nil otherwise. Shared by `@`
+    /// suggestions and the exact-username fields' people suggestions.
+    static func personRank(query: String, username: String, displayName: String) -> Int? {
+        let username = username.lowercased(), displayName = displayName.lowercased()
+        if username == query { return 0 }
+        if username.hasPrefix(query) { return 1 }
+        if displayName.hasPrefix(query) || displayName.split(separator: " ").contains(where: { $0.hasPrefix(query) }) { return 2 }
+        if username.contains(query) { return 3 }
+        return nil
+    }
+
+    /// The people that match `query`, best `personRank` first, ties by
+    /// lowercased username; an empty query puts everyone at 1. Uncapped.
+    static func rankPeople(query: String, _ people: [MentionCandidate]) -> [MentionCandidate] {
+        let query = query.lowercased()
+        return people.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
+            guard let rank = query.isEmpty ? 1 : personRank(query: query, username: candidate.username,
+                                                            displayName: candidate.displayName) else { return nil }
+            return (rank, candidate.username.lowercased(), candidate)
+        }.sorted { ($0.rank, $0.username) < ($1.rank, $1.username) }.map { $0.candidate }
+    }
+
+    /// Members ranked by `rankPeople`. Matching specials (`everyone`, `here`,
+    /// then the team) follow the members and keep their slots within the cap
+    /// of six. A bare `@` leads with `@feedback`, so the team is easy to find;
+    /// a typed query offers the first team name it starts after everyone else
+    /// (`@ad` offers `@admin`, but Enter still picks a person first).
     static func rank(query: String, source: MentionSource) -> [MentionCandidate] {
         let query = query.lowercased()
-        let specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
-        let members = source.members.compactMap { candidate -> (rank: Int, username: String, candidate: MentionCandidate)? in
-            let username = candidate.username.lowercased()
-            let displayName = candidate.displayName.lowercased()
-            let rank: Int
-            if query.isEmpty { rank = 1 }
-            else if username == query { rank = 0 }
-            else if username.hasPrefix(query) { rank = 1 }
-            else if displayName.hasPrefix(query) || displayName.split(separator: " ").contains(where: { $0.hasPrefix(query) }) { rank = 2 }
-            else if username.contains(query) { rank = 3 }
-            else { return nil }
-            return (rank, username, candidate)
-        }.sorted { ($0.rank, $0.username) < ($1.rank, $1.username) }.map { $0.candidate }
-        return Array(members.prefix(max(0, maximumChoices - specials.count))) + specials
+        var specials = source.specials ? [MentionCandidate.everyone, .here].filter { $0.username.hasPrefix(query) } : []
+        let leading: [MentionCandidate] = source.feedback && query.isEmpty ? [.feedback] : []
+        if source.feedback, !query.isEmpty, let name = feedbackAliases.first(where: { $0.hasPrefix(query) }) { specials.append(.team(name)) }
+        let members = rankPeople(query: query, source.members)
+        return leading + Array(members.prefix(max(0, maximumChoices - leading.count - specials.count))) + specials
     }
 
     static func match(text: String, selection: NSRange, markedText: Bool, source: MentionSource) -> MentionAutocompleteMatch? {
@@ -207,17 +271,24 @@ enum MentionAutocomplete {
     }
 
     /// A token is highlighted only when `content.mentions` resolves it:
-    /// `everyone`/`here` need their entry, other names a `user` entry with that
-    /// username. Unresolved names stay plain text.
+    /// `everyone`/`here` need their entry, every team name (`@feedback`,
+    /// `@caper`, `@admin`…) the `feedback` entry, other names a `user` entry with that username.
+    /// Unresolved names stay plain text.
     static func isHighlighted(name: String, mentions: [MessageMention]) -> Bool {
         let name = name.lowercased()
         return mentions.contains { mention in
             switch mention {
             case .everyone: return name == "everyone"
             case .here: return name == "here"
+            case .feedback: return isFeedbackAlias(name)
             case let .user(_, username): return username.lowercased() == name
             }
         }
+    }
+
+    /// The message asked the Caper team (shows "Caper team notified").
+    static func asksFeedback(_ message: ChatMessage) -> Bool {
+        message.content.mentions.contains(.feedback)
     }
 
     /// `text` split into plain and highlighted runs; concatenating them
@@ -231,8 +302,10 @@ enum MentionAutocomplete {
             if cursor < token.range.lowerBound {
                 segments.append(MentionSegment(text: string(scalars[cursor..<token.range.lowerBound]), highlighted: false))
             }
+            // Team-name pills open no profile card.
+            let feedback = isFeedbackAlias(token.name) && mentions.contains(.feedback)
             segments.append(MentionSegment(text: string(scalars[token.range]), highlighted: true,
-                                           user: user(named: token.name, in: mentions)))
+                                           user: feedback ? nil : user(named: token.name, in: mentions)))
             cursor = token.range.upperBound
         }
         if cursor < scalars.endIndex {
@@ -266,6 +339,7 @@ enum MentionAutocomplete {
             switch mention {
             case let .user(id, _): return id == currentUserID
             case .everyone, .here: return message.author.id != currentUserID
+            case .feedback: return false
             }
         }
     }

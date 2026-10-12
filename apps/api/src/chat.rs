@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
+    collections::HashSet,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -370,22 +371,32 @@ async fn signed_conversation_window(
             .map_err(database_error)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     }
-    let access: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
-         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
-           AND ((s.deleted_at IS NULL AND NOT s.demo
+    // Members read as usual. The feedback team may also read a conversation
+    // where someone asked for it, as a visitor who has not joined.
+    let access: Option<(i64, i64, Option<i64>, bool)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq,c.space_id,a.member FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         CROSS JOIN LATERAL (SELECT (s.deleted_at IS NULL AND NOT s.demo
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2 AND cm.deleted_at IS NULL)))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)) AS member) a
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND (a.member OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)))
          FOR SHARE OF c")
         .bind(channel).bind(user).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (channel_id, head, space_id) =
+    let (channel_id, head, space_id, member) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    // A visited DM is named after both people in it (one for personal notes).
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
         "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-         UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL",
+         UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL
+         UNION ALL SELECT '', 'Direct messages',CASE WHEN d.low_user_id=d.high_user_id THEN lo.display_name
+             WHEN lo.team_account THEN hi.display_name || ' → ' || lo.display_name
+             WHEN hi.team_account THEN lo.display_name || ' → ' || hi.display_name
+             ELSE lo.display_name || ' & ' || hi.display_name END
+           FROM public.direct_conversations d JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+           WHERE d.channel_id=$1 AND NOT $3 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL",
     )
     .bind(channel_id)
     .bind(space_id)
@@ -446,9 +457,11 @@ async fn signed_conversation_window(
         rows.append(&mut roots);
         deliver(pool, cdn, &mut rows).await?;
         let root = rows.pop().unwrap_or_default();
-        return Ok(
-            json!({"root":root,"messages":rows,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer}),
-        );
+        let mut window = json!({"root":root,"messages":rows,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer});
+        if !member {
+            window["visitor"] = json!(true);
+        }
+        return Ok(window);
     }
     // All pins are returned independently of the history page. The shared
     // channel lock also makes their revisions consistent with this cursor.
@@ -474,10 +487,12 @@ async fn signed_conversation_window(
     if space_id.is_none() {
         channel_identity["direct"] = json!(true);
     }
-    Ok(
-        json!({"messages":rows,"pinnedMessages":pins,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer,
-        "space":{"id":space,"name":space_name},"channel":channel_identity}),
-    )
+    let mut window = json!({"messages":rows,"pinnedMessages":pins,"cursor":head.to_string(),"hasMore":more,"hasNewer":newer,
+        "space":{"id":space,"name":space_name},"channel":channel_identity});
+    if !member {
+        window["visitor"] = json!(true);
+    }
+    Ok(window)
 }
 
 #[derive(Deserialize)]
@@ -941,7 +956,8 @@ pub(crate) async fn send_message(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
+                OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)))
          FOR UPDATE OF c",
     )
     .bind(channel)
@@ -1042,13 +1058,32 @@ pub(crate) async fn send_message(
         content["attachments"] =
             Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
     }
-    let content =
-        with_mentions(&mut tx, content, &mentions::parse(text, space_id.is_some())).await?;
+    let admin = crate::feedback::team_member(&mut tx, user_id).await?;
+    let mut found = mentions::parse(text, space_id.is_some());
+    // Only accounts can ask the team for help; a guest's @feedback is text.
+    // In the Caper DM, every new top-level message is feedback by itself.
+    let reported = user_id.is_some()
+        && (found.contains(&Mention::Feedback)
+            || (!admin
+                && root.is_none()
+                && space_id.is_none()
+                && crate::feedback::team_conversation(&mut tx, channel_id).await?));
+    if user_id.is_none() {
+        found.retain(|mention| *mention != Mention::Feedback);
+    } else if reported && !found.contains(&Mention::Feedback) {
+        // Every client then marks it "Caper team has been notified".
+        found.push(Mention::Feedback);
+    }
+    let content = with_mentions(&mut tx, content, &found).await?;
     let seq = head + 1;
     let id = random_id(15);
     let mut payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
     if let Some(reference) = reference {
         payload["replyTo"] = reference;
+    }
+    // Stamped when sent, so a look-alike display name can never claim it.
+    if admin {
+        payload["author"]["admin"] = json!(true);
     }
     if let Some((root_id, original)) = &thread_root {
         let mut participants = original["thread"]["participants"]
@@ -1082,6 +1117,10 @@ pub(crate) async fn send_message(
     let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload, thread_root_id, broadcast) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
         .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).bind(thread_root.as_ref().map(|row| row.0)).bind(broadcast).fetch_one(&mut *tx).await.map_err(database_error)?;
     assets::link(&mut tx, attachment_ids, message_id).await?;
+    if let (true, Some(reporter)) = (reported, user_id) {
+        let thread = thread_root.as_ref().map_or(message_id, |row| row.0);
+        crate::feedback::record(&mut tx, message_id, channel_id, thread, reporter).await?;
+    }
     // Notifications are decided later from this outbox row; edits never add one.
     if user_id.is_some() {
         crate::push::enqueue(&mut tx, message_id)
@@ -1120,7 +1159,7 @@ async fn with_mentions(
         .iter()
         .filter_map(|mention| match mention {
             Mention::User(name) => Some(name.as_str()),
-            Mention::Everyone | Mention::Here => None,
+            Mention::Everyone | Mention::Here | Mention::Feedback => None,
         })
         .collect();
     let accounts: Vec<(String, String)> = if names.is_empty() {
@@ -1139,6 +1178,7 @@ async fn with_mentions(
         .filter_map(|mention| match mention {
             Mention::Everyone => Some(json!({"type":"everyone"})),
             Mention::Here => Some(json!({"type":"here"})),
+            Mention::Feedback => Some(json!({"type":"feedback"})),
             Mention::User(name) => accounts
                 .iter()
                 .find(|(username, _)| username == name)
@@ -1188,7 +1228,8 @@ async fn persist_reaction(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
+                OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
@@ -1332,7 +1373,8 @@ async fn persist_pin(
                  AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2 AND cj.deleted_at IS NULL))
                 OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
                     JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
-                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
+                OR ((s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo)) AND public.feedback_access(c.id,$2)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =
@@ -1434,6 +1476,11 @@ pub(crate) fn spawn_publisher(chat: Chat) {
     });
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
+    // Claim a batch and project it into forward destinations, then commit
+    // before the broker round trip so destination channel locks are never held
+    // across the network. Projection is idempotent (unchanged snapshots are
+    // skipped): a crash or broker failure after this commit leaves the events
+    // unpublished, and the next claim re-projects them as a no-op.
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
     let rows: Vec<PendingEvent> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id,u.display_name FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
@@ -1443,6 +1490,31 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     forwarding::project_events(&mut tx, &rows)
         .await
         .map_err(|_| ())?;
+    tx.commit().await.map_err(|_| ())?;
+    // Reclaim exactly the projected rows that are still unpublished, so no
+    // event is published before its projection. Rows another replica claimed
+    // meanwhile are skipped; it projected them too.
+    let mut tx = chat.pool.begin().await.map_err(|_| ())?;
+    let (channels, seqs): (Vec<i64>, Vec<i64>) = rows.iter().map(|row| (row.0, row.1)).unzip();
+    let reclaimed: HashSet<(i64, i64)> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT e.channel_id,e.seq FROM public.channel_events e
+         JOIN unnest($1::bigint[], $2::bigint[]) AS p(channel_id, seq) ON e.channel_id=p.channel_id AND e.seq=p.seq
+         WHERE e.published_at IS NULL FOR UPDATE OF e SKIP LOCKED",
+    )
+    .bind(&channels)
+    .bind(&seqs)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ())?
+    .into_iter()
+    .collect();
+    let rows: Vec<PendingEvent> = rows
+        .into_iter()
+        .filter(|row| reclaimed.contains(&(row.0, row.1)))
+        .collect();
+    if rows.is_empty() {
+        return Ok(true);
+    }
     let count = rows.len();
     let mut publishes = redis::pipe();
     let (mut channels, mut seqs) = (Vec::with_capacity(count), Vec::with_capacity(count));

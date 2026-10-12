@@ -37,15 +37,20 @@ import {
 } from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
 import { playSound, preloadSoundEffects } from "../audio/effects";
-import { ChatHistoryError } from "../chat/client";
+import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
-import type { ChatAuthor, ChatMessage } from "../chat/types";
+import { excludePeople, type MentionCandidate } from "../chat/mentions";
+import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
+import type { FocusTarget } from "../chat/Chat";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
+import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import SpacesLoading from "./SpacesLoading";
+import FeedbackInbox from "./FeedbackInbox";
+import { InviteLinkManager, JoinInviteLinkForm } from "./InviteLinks";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
 import {
@@ -74,6 +79,8 @@ import {
   createDirectConversation,
   declineDirectRequest,
   listDirectConversations,
+  listFeedback,
+  archiveFeedback,
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
@@ -100,6 +107,7 @@ import {
   type BlockedAccount,
   type Channel,
   type DirectConversation,
+  type FeedbackReport,
   type Person,
   type ChannelInvitation,
   type Member,
@@ -135,15 +143,50 @@ function placeMenu(menu: HTMLDetailsElement) {
 
 const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
 
-function selectedFromUrl() {
+/** A conversation the feedback team visits without joining, at a report. */
+interface VisitTarget {
+  channelId: string;
+  messageId?: string;
+  /** Where replies to the report go; the message itself when it was top-level. */
+  threadRootId?: string;
+  reporter?: Person;
+}
+
+interface Selection {
+  spaceId?: string;
+  channelId?: string;
+  dmId?: string;
+  visit?: VisitTarget;
+}
+
+function selectedFromUrl(): Selection {
   if (typeof window === "undefined") return {};
   const query = new URLSearchParams(window.location.search);
+  const visit = query.get("feedback");
   return {
     spaceId: query.get("space") ?? undefined,
     channelId: query.get("channel") ?? undefined,
     dmId: query.get("dm") ?? undefined,
+    visit: visit
+      ? {
+          channelId: visit,
+          messageId: query.get("message") ?? undefined,
+          threadRootId: query.get("thread") ?? undefined,
+        }
+      : undefined,
   };
 }
+
+function visitQuery(query: URLSearchParams, visit: VisitTarget) {
+  query.delete("channel");
+  query.delete("dm");
+  query.set("feedback", visit.channelId);
+  if (visit.messageId) query.set("message", visit.messageId);
+  if (visit.threadRootId) query.set("thread", visit.threadRootId);
+}
+
+const sameVisit = (a?: VisitTarget, b?: VisitTarget) =>
+  a?.channelId === b?.channelId && a?.messageId === b?.messageId && a?.threadRootId === b?.threadRootId;
 
 function Dialog({
   title,
@@ -471,6 +514,7 @@ function CreateSpaceForm({
   return onCancel ? (
     <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
       {form}
+      <JoinInviteLinkForm disabled={pending} />
     </Dialog>
   ) : (
     form
@@ -650,6 +694,7 @@ function MemberManager({
   removalCopy,
   pending,
   loading = false,
+  suggestions,
 }: {
   members: Member[];
   invitations?: Member[];
@@ -662,6 +707,8 @@ function MemberManager({
   removalCopy: (member: Member) => { title: string; description: string };
   pending: boolean;
   loading?: boolean;
+  /** People the field suggests, already without members and pending invitations. */
+  suggestions?: MentionCandidate[];
 }) {
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const members = memberSnapshots.map((member) => withAccountProfile(member, account));
@@ -670,6 +717,15 @@ function MemberManager({
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [removing, setRemoving] = useState<Member>();
+  const matches = usePeopleSuggestions({
+    value: username,
+    people: suggestions,
+    onChoose: (value) => {
+      setUsername(value);
+      setError(undefined);
+      setSuccess(undefined);
+    },
+  });
   const submitting = useRef(false);
   const input = useRef<HTMLInputElement>(null);
   // The input is disabled while a request runs, so it loses focus. Return focus
@@ -731,6 +787,7 @@ function MemberManager({
           required
           disabled={pending}
           placeholder="Exact username"
+          {...matches.input}
           onChange={(event) => {
             setUsername(normalizeUsername(event.target.value));
             setError(undefined);
@@ -740,6 +797,7 @@ function MemberManager({
         <button type="submit" disabled={pending}>
           {invitations ? "Invite" : "Add"}
         </button>
+        {matches.list}
       </form>
       <p className="channel-name-guidance">
         3–32 lowercase letters, numbers, or underscores.{invitations && " Invitations expire after 7 days."}
@@ -826,11 +884,16 @@ function MemberManager({
 
 function ManageSpaceDialog({
   detail,
+  channelId,
+  people,
   onClose,
   onChanged,
   onDeleted,
 }: {
   detail: SpaceDetail;
+  channelId?: string;
+  /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
+  people?: Person[];
   onClose: () => void;
   onChanged: (detail: SpaceDetail) => void;
   onDeleted: () => void;
@@ -905,9 +968,11 @@ function ManageSpaceDialog({
           {error}
         </p>
       )}
+      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
       <MemberManager
         members={members}
         invitations={invitations}
+        suggestions={people && excludePeople(people, members, invitations)}
         pending={pending}
         onAdd={(username) =>
           run(async () => {
@@ -923,7 +988,7 @@ function ManageSpaceDialog({
         }
         removalCopy={(member) => ({
           title: `Remove ${member.displayName}?`,
-          description: `They’ll lose access to ${detail.space.name} and its channels. You can invite them again later.`,
+          description: `They’ll lose access to ${detail.space.name} and its channels and can’t rejoin with an invite link. You can invite them again by username later.`,
         })}
         onRemove={async (member) =>
           run(async () => {
@@ -1047,6 +1112,12 @@ function ManageChannelDialog({
           loading={!membersLoaded}
           members={members}
           invitations={invitations}
+          // Grants require space membership; the owner always has access.
+          suggestions={
+            membersLoaded
+              ? excludePeople(detail.members, members, invitations, [{ id: detail.space.ownerId }])
+              : undefined
+          }
           channel
           pending={pending}
           onAdd={async (username) =>
@@ -1116,15 +1187,26 @@ function ManageChannelDialog({
 }
 
 function StartDirectDialog({
+  people,
   onClose,
   onCreated,
 }: {
+  /** Known accounts (`GET /api/people`) the field suggests; undefined until loaded. */
+  people?: Person[];
   onClose: () => void;
   onCreated: (conversation: DirectConversation) => void;
 }) {
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const matches = usePeopleSuggestions({
+    value: username,
+    people,
+    onChoose: (value) => {
+      setUsername(value);
+      setError(undefined);
+    },
+  });
   return (
     <Dialog
       title="New direct message"
@@ -1157,12 +1239,14 @@ function StartDirectDialog({
             readOnly={pending}
             maxLength={33}
             placeholder="@username"
+            {...matches.input}
             onChange={(event) => {
               setUsername(event.target.value);
               setError(undefined);
             }}
           />
         </label>
+        {matches.list}
         <div className="start-direct-error" aria-live="polite" aria-atomic="true">
           {error && <p className="space-form-error">{error}</p>}
         </div>
@@ -1453,12 +1537,10 @@ function BrowseChannelsDialog({
 
 function ChannelInvitationDialog({
   invitation,
-  spaceName,
   onClose,
   onRespond,
 }: {
   invitation: ChannelInvitation;
-  spaceName: string;
   onClose: () => void;
   onRespond: (accept: boolean) => Promise<void>;
 }) {
@@ -1490,12 +1572,9 @@ function ChannelInvitationDialog({
         <LockKeyhole aria-hidden="true" />
         <h3>Join #{invitation.channel.name}?</h3>
         <p>
-          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private
-          channel in <strong>{spaceName}</strong>.
-        </p>
-        <p>
-          Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations
-          expire seven days after they’re sent.
+          <strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to private
+          channel
+          <strong> #{invitation.channel.name}</strong>.
         </p>
         {error && (
           <p className="space-form-error" role="alert">
@@ -1678,10 +1757,13 @@ export default function Spaces({
     const cache = directCache.current;
     return () => cache.clear();
   }, [account?.id]);
-  // DM `@` suggestions and mention profile cards; the previous list stays while
-  // a refresh is in flight. Loaded once signed in and again whenever a DM opens.
+  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
+  // DM `@` suggestions, mention profile cards, and the invite and new-DM
+  // username fields; the previous list stays while a refresh is in flight.
+  // Loaded once signed in and again whenever a DM or one of those dialogs opens.
   const [people, setPeople] = useState<Person[]>();
   const directId = directView?.conversation.id;
+  const peopleDialog = dialog === "manage-space" || dialog === "direct";
   useEffect(() => {
     if (!account?.id) return;
     let current = true;
@@ -1693,7 +1775,7 @@ export default function Spaces({
     return () => {
       current = false;
     };
-  }, [directId, account?.id]);
+  }, [directId, account?.id, peopleDialog]);
   const detailSnapshot =
     view?.detail ??
     (!spaces.length
@@ -1709,10 +1791,18 @@ export default function Spaces({
   useEffect(() => {
     shownDetail.current = detail;
   });
-  const [selected, setSelected] = useState<{ spaceId?: string; channelId?: string; dmId?: string }>(() =>
-    embedded ? {} : selectedFromUrl(),
-  );
-  const [focusMessage, setFocusMessage] = useState<ChatMessage>();
+  const [selected, setSelected] = useState<Selection>(() => (embedded ? {} : selectedFromUrl()));
+  const [focusMessage, setFocusMessage] = useState<FocusTarget>();
+  // The feedback team's inbox and the conversation being visited from it.
+  const feedbackTeam = !!account?.feedbackTeam;
+  const [feedback, setFeedback] = useState<{ reports: FeedbackReport[]; cursor: string | null }>();
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string>();
+  const [visitView, setVisitView] = useState<{
+    target: VisitTarget;
+    history?: GeneralChatHistory;
+    historyError?: string;
+  }>();
   const navigationRevision = useRef(0);
   const activeSpace = useRef(selected.spaceId);
   activeSpace.current = selected.spaceId;
@@ -1722,23 +1812,76 @@ export default function Spaces({
   const [membershipError, setMembershipError] = useState<string>();
   const [browseOpen, setBrowseOpen] = useState(false);
   const [channelInvitation, setChannelInvitation] = useState<ChannelInvitation>();
+  const notificationInvite = useRef(
+    embedded || typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("invite"),
+  );
+  useEffect(() => {
+    if (!view || view.detail.space.id !== selected.spaceId || !notificationInvite.current) return;
+    const invite = view.detail.channelInvitations?.find((item) => item.channel.id === notificationInvite.current);
+    notificationInvite.current = null;
+    if (invite) setChannelInvitation(invite);
+    else setNotice("This invitation is no longer available.");
+  }, [view, selected.spaceId]);
   const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const invitation = invitations.find((item) => item.id === selected.spaceId);
-  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
   const [manageChannel, setManageChannel] = useState<Channel>();
   const [navigationOpen, showNavigation] = useState(false);
   // Where Browse is headed: it changes inside a slide's view transition, after the request.
   const navigationTarget = useRef(false);
   const notificationConversation = useRef<string | undefined>(undefined);
-  notificationConversation.current = engaged && !navigationOpen ? (directId ?? view?.channelId) : undefined;
+  notificationConversation.current =
+    engaged && !navigationOpen ? (visitView?.target.channelId ?? directId ?? view?.channelId) : undefined;
+  const feedbackRevision = useRef(0);
+  const [feedbackArchived, setFeedbackArchived] = useState(false);
+  const refreshFeedback = useCallback(
+    async (before?: string) => {
+      if (!feedbackTeam) return;
+      const revision = ++feedbackRevision.current;
+      setFeedbackLoading(true);
+      try {
+        const page = await listFeedback(before, feedbackArchived);
+        if (revision !== feedbackRevision.current) return;
+        setFeedbackError(undefined);
+        // A refresh replaces the newest page; "Show more" appends an older one.
+        setFeedback((current) =>
+          before && current ? { reports: [...current.reports, ...page.reports], cursor: page.cursor } : page,
+        );
+      } catch (reason) {
+        if (revision === feedbackRevision.current) setFeedbackError(errorMessage(reason));
+      } finally {
+        if (revision === feedbackRevision.current) setFeedbackLoading(false);
+      }
+    },
+    [feedbackTeam, feedbackArchived],
+  );
+  useEffect(() => {
+    if (!feedbackTeam) return;
+    const refresh = () => {
+      if (!document.hidden) void refreshFeedback();
+    };
+    refresh();
+    const timer = setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [refreshFeedback, feedbackTeam]);
   useEffect(() => {
     if (account?.id)
-      return watchBrowserNotifications(account.id, () => notificationConversation.current, refreshUnread);
-  }, [account?.id, refreshUnread]);
+      return watchBrowserNotifications(
+        account.id,
+        () => notificationConversation.current,
+        () => {
+          void refreshUnread();
+          void refreshFeedback();
+        },
+      );
+  }, [account?.id, refreshUnread, refreshFeedback]);
   const changeNavigation = useCallback((open: boolean) => {
     navigationTarget.current = open;
     showNavigation(open);
@@ -1770,9 +1913,10 @@ export default function Spaces({
     return () => document.removeEventListener("pointerdown", dismiss);
   }, []);
 
-  const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string) => {
+  const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string, visit?: VisitTarget) => {
     navigationRevision.current++;
-    setFocusMessage(undefined);
+    // Settling the space under an open visit keeps its report in focus.
+    if (!visit || !sameVisit(visit, selected.visit)) setFocusMessage(undefined);
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
     channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => {
@@ -1784,7 +1928,12 @@ export default function Spaces({
     // duplicate clicks into one pending request. If another channel is pending,
     // clicking the still-visible channel differs from `selected` and therefore
     // intentionally cancels that navigation.
-    if (spaceId === selected.spaceId && channelId === selected.channelId && dmId === selected.dmId) {
+    if (
+      spaceId === selected.spaceId &&
+      channelId === selected.channelId &&
+      dmId === selected.dmId &&
+      sameVisit(visit, selected.visit)
+    ) {
       setNavigationOpen(false);
       // Previewing the channel already on screen from Browse still closes it.
       setBrowseOpen(false);
@@ -1799,9 +1948,20 @@ export default function Spaces({
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
     if (dmId) query.set("dm", dmId);
+    if (visit) visitQuery(query, visit);
     if (!embedded)
       window.history[replace ? "replaceState" : "pushState"]({}, "", `/spaces${query.size ? `?${query}` : ""}`);
-    setSelected({ spaceId, channelId, dmId });
+    setSelected({ spaceId, channelId, dmId, visit });
+  };
+
+  const openVisit = (report: FeedbackReport) => {
+    choose(detail?.space.id || undefined, undefined, false, undefined, {
+      channelId: report.channel.id,
+      messageId: report.messageId,
+      threadRootId: report.threadRootId,
+      reporter: report.reporter,
+    });
+    setNavigationOpen(false);
   };
 
   const openDirect = (conversation: DirectConversation) => {
@@ -1917,6 +2077,44 @@ export default function Spaces({
     return () => controller.abort();
   }, [selected.dmId, loading, directsLoading, directAccessible]);
 
+  // A visit loads the latest page, then focuses the report and opens its thread.
+  const visit = selected.visit;
+  useEffect(() => {
+    if (!visit) {
+      setVisitView(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    setDirectView(undefined);
+    // The previous conversation stays on screen until this one is ready.
+    setVisitView((shown) => (shown?.target.channelId === visit.channelId ? { ...shown, target: visit } : shown));
+    if (visit.messageId)
+      setFocusMessage({
+        id: visit.messageId,
+        channelId: visit.channelId,
+        threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
+      });
+    void loadChatHistory(visit.channelId, controller.signal)
+      .then((history) => {
+        if (controller.signal.aborted) return;
+        setVisitView((shown) =>
+          shown?.target.channelId === visit.channelId && shown.history ? shown : { target: visit, history },
+        );
+        setNavigationOpen(false);
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setVisitView({
+          target: visit,
+          historyError:
+            reason instanceof ChatHistoryError && reason.status === 404
+              ? "This conversation is no longer available."
+              : errorMessage(reason),
+        });
+      });
+    return () => controller.abort();
+  }, [visit?.channelId, visit?.messageId, visit?.threadRootId]);
+
   const readDirect = (seq: string) => {
     const conversation = directView?.conversation;
     if (!conversation) return;
@@ -2014,7 +2212,7 @@ export default function Spaces({
         // Opening the landing channel must not wait for the independent DM list.
         setLoading(false);
         if (![...result.spaces, ...(result.invitations ?? [])].some((space) => space.id === selected.spaceId))
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId);
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
         try {
           const conversations = (await listDirectConversations()).conversations;
           if (current) setDirects(conversations);
@@ -2047,7 +2245,7 @@ export default function Spaces({
     }
     // DMs are global conversations. Switching them inside the displayed space
     // must not reload its channels or flash the rail's busy highlight.
-    if (selected.dmId && selected.spaceId === view?.detail.space.id) {
+    if ((selected.dmId || selected.visit) && selected.spaceId === view?.detail.space.id) {
       setPending(false);
       return;
     }
@@ -2077,6 +2275,7 @@ export default function Spaces({
           query.delete("channel");
           query.set("dm", selected.dmId);
         }
+        if (selected.visit) visitQuery(query, selected.visit);
         if (!embedded) window.history.replaceState({}, "", `/spaces?${query}`);
       })
       .catch((reason) => {
@@ -2130,10 +2329,10 @@ export default function Spaces({
           setDialog(undefined);
           setManageChannel(undefined);
           setNotice("This space is no longer available.");
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId);
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
         }
         if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id))
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId);
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
           // Replacing forgets every visited channel's saved history in the
@@ -2201,9 +2400,17 @@ export default function Spaces({
         </button>
       </Tooltip>
     );
-  const channel = directView
-    ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true }
-    : detail?.channels.find((item) => item.id === view?.channelId);
+  const visitHistory = visitView?.history;
+  const channel = visitView
+    ? {
+        id: visitView.target.channelId,
+        name: visitHistory?.channel.name ?? "",
+        spaceId: "",
+        private: true,
+      }
+    : directView
+      ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true }
+      : detail?.channels.find((item) => item.id === view?.channelId);
   const owner = !!account && detail?.space.ownerId === account.id;
   const ownedCount = account ? spaces.filter((space) => space.ownerId === account.id).length : 0;
   const canCreateSpace =
@@ -2268,7 +2475,7 @@ export default function Spaces({
     setView(undefined);
     setSpaces(remaining);
     setDialog(undefined);
-    choose(remaining[0]?.id, undefined, true, selected.dmId);
+    choose(remaining[0]?.id, undefined, true, selected.dmId, selected.visit);
   };
 
   const incomingRequests = directs.filter((conversation) => directStatus(conversation) === "incoming");
@@ -2284,6 +2491,41 @@ export default function Spaces({
     }
     setDirects((current) => current.filter((conversation) => conversation.id !== request.id));
   };
+  const archiveFeedbackThread = (report: FeedbackReport, archived: boolean) => {
+    // Optimistic: the thread leaves this list at once; a failure reloads it.
+    feedbackRevision.current++;
+    setFeedbackLoading(false);
+    setFeedback(
+      (current) =>
+        current && {
+          ...current,
+          reports: current.reports.filter(
+            (item) => item.channel.id !== report.channel.id || item.threadRootId !== report.threadRootId,
+          ),
+        },
+    );
+    void archiveFeedback(report.channel.id, report.threadRootId, archived)
+      .catch((reason) => setFeedbackError(errorMessage(reason)))
+      .finally(() => void refreshFeedback());
+  };
+  const feedbackNavigation = feedbackTeam && (
+    <FeedbackInbox
+      reports={feedback?.reports ?? []}
+      more={!!feedback?.cursor}
+      loading={feedbackLoading}
+      error={feedbackError}
+      current={visitView && `${visitView.target.channelId}:${visitView.target.threadRootId}`}
+      archived={feedbackArchived}
+      onShowArchived={(archived) => {
+        setFeedback(undefined);
+        setFeedbackArchived(archived);
+      }}
+      onArchive={archiveFeedbackThread}
+      onOpen={openVisit}
+      onMore={() => void refreshFeedback(feedback?.cursor ?? undefined)}
+      onRetry={() => void refreshFeedback()}
+    />
+  );
   const directNavigation = (
     <section className="direct-section" aria-label="Direct messages">
       <div className="channel-section-heading">
@@ -2469,6 +2711,7 @@ export default function Spaces({
       )}
       {dialog === "direct" && (
         <StartDirectDialog
+          people={people}
           onClose={() => setDialog(undefined)}
           onCreated={(conversation) => {
             setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
@@ -2564,7 +2807,7 @@ export default function Spaces({
         </button>
       </main>
     );
-  if (!spaces.length && !selected.dmId)
+  if (!spaces.length && !selected.dmId && !selected.visit)
     return (
       <main className="spaces-empty">
         <Wordmark />
@@ -2586,6 +2829,7 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
+          <JoinInviteLinkForm />
         </section>
       </main>
     );
@@ -2626,7 +2870,6 @@ export default function Spaces({
         <ChannelInvitationDialog
           key={channelInvitation.channel.id}
           invitation={channelInvitation}
-          spaceName={detail.space.name}
           onClose={() => setChannelInvitation(undefined)}
           onRespond={(accept) =>
             changeChannelMembership(
@@ -2927,6 +3170,7 @@ export default function Spaces({
                   )}
                   {voice?.timer}
                 </button>
+                {voice?.join}
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"
@@ -3020,6 +3264,7 @@ export default function Spaces({
           ))}
         </div>
       )}
+      {feedbackNavigation}
       {directNavigation}
       {error && (
         <p className="space-sidebar-error" role="alert">
@@ -3080,7 +3325,12 @@ export default function Spaces({
   );
 
   const messagePerson = async (username: string) => {
-    const conversation = await createDirectConversation(username);
+    // Creating an existing incoming DM accepts it. Opening a profile's
+    // conversation should show the request, leaving acceptance explicit.
+    const existing = (await listDirectConversations()).conversations.find(
+      (item) => item.peer.username.toLowerCase() === username.toLowerCase(),
+    );
+    const conversation = existing ?? (await createDirectConversation(username));
     setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     openDirect(conversation);
   };
@@ -3105,23 +3355,33 @@ export default function Spaces({
         engaged={engaged}
         onChatOnlineChange={onChatOnlineChange}
         channel={
-          channel && {
-            id: channel.id,
-            name: channel.name,
-            spaceName: detail.space.name,
-            spaceId: detail.space.id,
-            demo: detail.space.demo,
-            direct: !!directView,
-            directPeerId: currentDirect?.peer.id,
-            // An open request or a blocked DM replaces the composer.
-            joined: currentDirect ? !directLocked : channel.joined,
-          }
+          visitView
+            ? {
+                id: visitView.target.channelId,
+                name: visitHistory?.channel.name ?? "",
+                spaceName: visitHistory?.space.name ?? "",
+                direct: !!visitHistory?.channel.direct,
+                joined: true,
+                visitor: true,
+              }
+            : channel && {
+                id: channel.id,
+                name: channel.name,
+                spaceName: detail.space.name,
+                spaceId: detail.space.id,
+                demo: detail.space.demo,
+                direct: !!directView,
+                directPeerId: currentDirect?.peer.id,
+                team: currentDirect?.peer.team,
+                // An open request or a blocked DM replaces the composer.
+                joined: currentDirect ? !directLocked : channel.joined,
+              }
         }
         stage={emptyStage || undefined}
         space={{ id: detail.space.id, name: detail.space.name, demo: detail.space.demo }}
         voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
         channelActions={
-          currentDirect ? (
+          visitView ? undefined : currentDirect ? (
             directActions
           ) : channel?.joined === false ? (
             <div className="channel-preview">
@@ -3148,7 +3408,7 @@ export default function Spaces({
           ) : undefined
         }
         composerBanner={
-          currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
+          visitView ? undefined : currentDirect && directStatus(currentDirect) === "outgoing" && !directLocked ? (
             <p className="direct-waiting" role="status">
               Waiting for @{currentDirect.peer.username} to accept. They’ll see your messages when they do.
             </p>
@@ -3157,25 +3417,39 @@ export default function Spaces({
         onBlockAuthor={blockAuthor}
         initialAccount={account}
         initialHistory={
-          directView
-            ? directView.history
-            : channel && view?.history?.channel.id === channel.id
-              ? view.history
-              : undefined
+          visitView
+            ? visitView.history
+            : directView
+              ? directView.history
+              : channel && view?.history?.channel.id === channel.id
+                ? view.history
+                : undefined
         }
         initialHistoryError={
-          directView
-            ? directView.historyError
-            : channel && view?.channelId === channel.id
-              ? view.historyError
-              : undefined
+          visitView
+            ? visitView.historyError
+            : directView
+              ? directView.historyError
+              : channel && view?.channelId === channel.id
+                ? view.historyError
+                : undefined
         }
-        onReadCursor={directView ? readDirect : readSpaceChannel}
+        // Visitors keep no read state in conversations they haven't joined.
+        onReadCursor={visitView ? undefined : directView ? readDirect : readSpaceChannel}
         mentionMembers={
-          directView ? (people ?? [directView.conversation.peer]) : view?.detail ? detail.members : undefined
+          visitView
+            ? visitView.target.reporter
+              ? [visitView.target.reporter]
+              : []
+            : directView
+              ? (people ?? [directView.conversation.peer])
+              : view?.detail
+                ? detail.members
+                : undefined
         }
         mentionDirectory={[
-          ...(directView ? [] : detail.members),
+          ...(visitView?.target.reporter ? [visitView.target.reporter] : []),
+          ...(directView || visitView ? [] : detail.members),
           ...(people ?? []),
           ...directs.map((conversation) => conversation.peer),
         ]}
@@ -3193,6 +3467,9 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
+        focusThread={!!visitView}
+        // A reply from the team answers the report in the inbox.
+        onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {
           navigation.current.rememberHistory(history);
           directCache.current.rememberHistory(history);
@@ -3200,7 +3477,7 @@ export default function Spaces({
         spaceRail={rail}
         channelNavigation={channelNavigation}
         membersPanel={
-          directView || !channel || channel.joined === false
+          directView || visitView || !channel || channel.joined === false
             ? undefined
             : (onClose) => (
                 <MemberPresence
@@ -3247,6 +3524,8 @@ export default function Spaces({
       {dialog === "manage-space" && (
         <ManageSpaceDialog
           detail={detail}
+          channelId={selected.channelId}
+          people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}
           onDeleted={forgetSpace}

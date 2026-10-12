@@ -101,7 +101,7 @@ const open = (id) => {
 };
 const reply = (text) => {
   browser("fill", "#chat-thread-reply", text);
-  browser("click", ".chat-thread-send-row button");
+  browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
   wait(
     '!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""',
   );
@@ -238,7 +238,7 @@ const checkReplyDelivery = async (root, other, layout) => {
     open(root.clientMessageId);
     browser("fill", "#chat-thread-reply", `TEST FIXTURE — ${layout} reply ${status}`);
     browser(layout === "desktop" ? "check" : "uncheck", ".chat-thread-send-row input");
-    browser("click", ".chat-thread-send-row button");
+    browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
     wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
     assert.equal(evaluate('document.querySelector(".chat-panel .chat-inline-error")'), null, "Normal sends are quiet");
     if (status === 503) screenshot(`threads-${layout}-sending`);
@@ -279,7 +279,7 @@ const checkReplyDelivery = async (root, other, layout) => {
         evaluate('document.querySelector("#chat-thread-reply").value'),
         `TEST FIXTURE — ${layout} reply ${status}`,
       );
-      browser("click", ".chat-thread-send-row button");
+      browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
       wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
       evaluate("window.releaseReply(422)");
       wait('!!document.querySelector(".chat-thread-panel [role=alert]")');

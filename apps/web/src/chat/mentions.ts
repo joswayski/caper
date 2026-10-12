@@ -8,7 +8,10 @@ export interface MentionCandidate {
   avatarId?: number | null;
 }
 
-export type MentionSuggestion = { kind: "member"; member: MentionCandidate } | { kind: "everyone" | "here" };
+export type MentionSuggestion =
+  | { kind: "member"; member: MentionCandidate }
+  | { kind: "everyone" | "here" }
+  | { kind: "feedback"; alias: string };
 
 export interface MentionToken {
   start: number;
@@ -35,17 +38,40 @@ export function mentionToken(text: string, start: number, end = start): MentionT
 export const specialMentionLabels = {
   everyone: "Everyone in this channel",
   here: "Everyone online in this channel",
+  feedback: "Notify the Caper team",
 } as const;
 
-export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
+/** Every name that asks the Caper team to look; all reserved usernames, never people. Mirrors the API. */
+export const feedbackAliases = [
+  "feedback",
+  "caper",
+  "capers",
+  "caperchat",
+  "caper_feedback",
+  "caper_support",
+  "support",
+  "team",
+  "staff",
+  "admin",
+  "admins",
+  "administrator",
+  "administrators",
+  "mod",
+  "mods",
+  "moderator",
+  "moderators",
+] as const;
+
+/**
+ * People matching `query`, best first: exact username, username prefix,
+ * display-name (or display-name word) prefix, then username substring.
+ */
+export function rankPeople<T extends MentionCandidate>(people: T[], query: string, limit = 6): T[] {
   const needle = query.toLowerCase();
-  const special = specials
-    ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
-    : [];
-  const ranked = members
-    .flatMap((member) => {
-      const username = member.username.toLowerCase();
-      const displayName = member.displayName.toLowerCase();
+  return people
+    .flatMap((person) => {
+      const username = person.username.toLowerCase();
+      const displayName = person.displayName.toLowerCase();
       const rank =
         username === needle
           ? 0
@@ -56,17 +82,42 @@ export function mentionSuggestions(members: MentionCandidate[], query: string, s
               : username.includes(needle)
                 ? 3
                 : 4;
-      return rank < 4 ? [{ member, rank, username }] : [];
+      return rank < 4 ? [{ person, rank, username }] : [];
     })
-    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
-  return [
-    ...ranked.slice(0, 6 - special.length).map(({ member }) => ({ kind: "member" as const, member })),
-    ...special,
-  ];
+    .sort((a, b) => a.rank - b.rank || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0))
+    .slice(0, limit)
+    .map(({ person }) => person);
+}
+
+/** `people` without anyone listed in `exclude` (members, pending invitations, you). */
+export function excludePeople<T extends { id: string }>(people: T[], ...exclude: { id: string }[][]): T[] {
+  const ids = new Set(exclude.flat().map((person) => person.id));
+  return people.filter((person) => !ids.has(person.id));
+}
+
+export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
+  const needle = query.toLowerCase();
+  const special: MentionSuggestion[] = specials
+    ? (["everyone", "here"] as const).filter((name) => name.startsWith(needle)).map((kind) => ({ kind }))
+    : [];
+  // A bare `@` leads with `@feedback`, so people find the Caper team. Once
+  // something is typed people come first, so `@a` + Enter still picks Alex;
+  // the team row then completes the name being typed (`@ad` → `@admin`).
+  const alias = needle ? feedbackAliases.find((name) => name.startsWith(needle)) : "feedback";
+  const team: MentionSuggestion[] = alias ? [{ kind: "feedback", alias }] : [];
+  const people = rankPeople(members, query, 6 - special.length - team.length).map((member) => ({
+    kind: "member" as const,
+    member,
+  }));
+  return needle ? [...people, ...special, ...team] : [...team, ...people, ...special];
 }
 
 export function mentionName(suggestion: MentionSuggestion) {
-  return suggestion.kind === "member" ? suggestion.member.username : suggestion.kind;
+  return suggestion.kind === "member"
+    ? suggestion.member.username
+    : suggestion.kind === "feedback"
+      ? suggestion.alias
+      : suggestion.kind;
 }
 
 export function insertMention(text: string, token: MentionToken, name: string) {
@@ -105,6 +156,7 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
     if (mention.type === "user" && typeof mention.username === "string" && typeof mention.id === "string") {
       resolved.set(mention.username.toLowerCase(), { id: mention.id, username: mention.username });
     } else if (mention.type === "everyone" || mention.type === "here") resolved.set(mention.type, undefined);
+    else if (mention.type === "feedback") for (const alias of feedbackAliases) resolved.set(alias, undefined);
   }
   if (!resolved.size) return [{ text, mention: false }];
   const segments: MentionSegment[] = [];
@@ -130,6 +182,11 @@ export function mentionSegments(text: string, mentions: ChatMention[] | undefine
   }
   if (plainStart < text.length) segments.push({ text: text.slice(plainStart), mention: false });
   return segments;
+}
+
+/** The author asked the Caper team to look at this message (the server recorded a report). */
+export function reportsFeedback(message: ChatMessage) {
+  return mentionList(message.content.mentions).some((mention) => mention.type === "feedback");
 }
 
 /** Highlights a message that names the reader, or `@everyone`/`@here` from someone else. */

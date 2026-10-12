@@ -223,6 +223,7 @@ mod tests {
                 id: format!("c{id}"),
                 name: format!("C{id}"),
             },
+            visitor: false,
         }
     }
 

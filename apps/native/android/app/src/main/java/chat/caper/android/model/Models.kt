@@ -16,7 +16,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
 @Serializable data class MediaStatus(val enabled: Boolean = false)
-@Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null)
+/** [feedbackTeam]: a Caper feedback team member, who gets the Feedback inbox; absent (false) for everyone else. */
+@Serializable data class Account(
+    val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null,
+    val feedbackTeam: Boolean = false,
+)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
 @Serializable data class Inviter(val username: String, val displayName: String)
@@ -34,7 +38,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val direct: Boolean = false,
     val joined: Boolean = true,
 )
-@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+/** [team]: the server's "Caper" account; every top-level message to it reaches the Caper team. */
+@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false)
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means
@@ -81,6 +86,32 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val mutedUntil: String? = null,
 )
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
+/** An invite link's inviter or creator: public identity only. */
+@Serializable data class InvitePerson(val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class InviteNamed(val name: String)
+/** `GET /api/invites/{code}`: what a live link shares before joining. [channel] is its public landing channel. */
+@Serializable data class InvitePreview(
+    val code: String,
+    val space: InviteNamed,
+    val channel: InviteNamed? = null,
+    val inviter: InvitePerson,
+    val memberCount: Int = 0,
+    val expiresAt: String? = null,
+)
+/** `POST /api/invites/{code}/join`: [joined] is false when you already belonged. */
+@Serializable data class InviteJoin(val space: Space, val channelId: String? = null, val joined: Boolean = true)
+@Serializable data class InviteLinkChannel(val id: String, val name: String)
+/** An owner's live invite link. Null [maxUses] has no limit; null [expiresAt] never expires. */
+@Serializable data class InviteLink(
+    val code: String,
+    val channel: InviteLinkChannel? = null,
+    val createdBy: InvitePerson,
+    val uses: Int = 0,
+    val maxUses: Int? = null,
+    val expiresAt: String? = null,
+    val createdAt: String,
+)
+@Serializable data class InviteLinkList(val links: List<InviteLink>)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
     val space: Space,
@@ -88,9 +119,11 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val members: List<Member>,
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
-@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
+/** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
+@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null, val admin: Boolean = false)
 /**
- * One `content.mentions` entry: `user` (with `id` and `username`), `everyone` or `here`.
+ * One `content.mentions` entry: `user` (with `id` and `username`), `everyone`, `here` or
+ * `feedback` (the message asked the Caper team to look: `@feedback`/`@caper`).
  * Other types decode too and are ignored where mentions are used.
  */
 @Serializable data class MessageMention(val type: String, val id: String? = null, val username: String? = null)
@@ -172,13 +205,18 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
     val imageMaxEdge: Int = 4096,
     val paletteColors: Int = 256,
     val previewEdge: Int = 640,
-    val videoMaxHeight: Int = 1080,
-    val videoBitrateKbps: Int = 6000,
+    val videoMaxHeight: Int = 1440,
+    /** Video target at 1080p30, scaled by pixel count and frame rate. */
+    val videoBitrateKbps: Int = 8000,
     val audioBitrateKbps: Int = 128,
     /** Photo format: only exactly `avif` selects AVIF; older servers omit it and keep WebP. */
     val imageFormat: String = "webp",
     /** AVIF photo quality on libavif's `quality` scale. */
     val avifQuality: Int = 85,
+    /** A re-encode never exceeds this percentage of a non-H.264 source's own bitrate (H.264: 100%); 0 removes the cap. */
+    val videoSourceBitratePercent: Int = 200,
+    /** Above 30 fps the target grows with the frame rate, up to this percentage; 100 turns it off. */
+    val videoHighFpsBoostPercent: Int = 150,
 )
 /** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
@@ -200,6 +238,34 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
+/** `GET /api/feedback` (feedback team only): who wrote `@feedback`. */
+@Serializable data class FeedbackReporter(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null) {
+    val name: String get() = displayName ?: username ?: "Someone"
+}
+/** Where a report was written: a space channel, or a DM named after its people ([direct]). */
+@Serializable data class FeedbackChannel(val id: String, val name: String, val direct: Boolean = false)
+@Serializable data class FeedbackSpace(val id: String, val name: String)
+/**
+ * One `@feedback` report. [threadRootId] is where replies go: the message itself when it
+ * was top-level, else its thread root. [answered]: the newest message in that thread is the
+ * team's. [archived]: the team archived the thread (shared by the whole team).
+ */
+@Serializable data class FeedbackReport(
+    val id: String,
+    val messageId: String,
+    val threadRootId: String,
+    val createdAt: String,
+    val text: String = "",
+    val attachments: Int = 0,
+    val reporter: FeedbackReporter,
+    val channel: FeedbackChannel,
+    val space: FeedbackSpace? = null,
+    val replyCount: Int = 0,
+    val answered: Boolean = false,
+    val archived: Boolean = false,
+)
+/** A page of reports, newest first; pass [cursor] as `?before=` for the next one (null at the end). */
+@Serializable data class FeedbackReports(val reports: List<FeedbackReport>, val cursor: String? = null)
 @Serializable data class MessageVersion(val revision: Int, val content: ChatContent, val createdAt: String)
 @Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
@@ -272,7 +338,8 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 )
 @Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null, val fullText: String? = null)
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
-@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false)
+/** [visitor]: read by a feedback team member who is not in the conversation (see [ChatHistory.visitor]). */
+@Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false, val visitor: Boolean = false)
 data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,
     val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null)
 @Serializable data class ChatHistory(
@@ -283,6 +350,8 @@ data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore
     val space: ChatRoom? = null,
     val channel: ChatRoom? = null,
     val hasNewer: Boolean = false,
+    /** A feedback team member reading a reported conversation they are not in; absent for members. */
+    val visitor: Boolean = false,
 )
 @Serializable data class ChatRoom(val id: String, val name: String, val direct: Boolean = false)
 @Serializable data class ChatSession(val token: String, val author: ChatAuthor)
@@ -383,11 +452,13 @@ data class AppUiState(
     val spaces: List<Space> = emptyList(),
     val unreadSpaces: List<UnreadSpace> = emptyList(),
     val invitations: List<Space> = emptyList(),
+    val notificationInvitation: Space? = null,
+    val notificationBrowseSpace: String? = null,
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
     val directConversations: List<DirectConversation> = emptyList(),
-    /** DM mention candidates from `GET /api/people`; null until the first load succeeds. */
+    /** DM mention and space-invite/new-DM username candidates from `GET /api/people`; null until the first load succeeds. */
     val people: List<Person>? = null,
     /** Accounts you blocked, newest first; their messages collapse everywhere. */
     val blocks: List<BlockedAccount> = emptyList(),
@@ -440,6 +511,8 @@ data class AppUiState(
     val channelGrants: List<Member> = emptyList(),
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
+    /** The open space's live invite links (owner only), newest first. */
+    val inviteLinks: List<InviteLink> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val replyTargets: Map<String, MessageReply> = emptyMap(),
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
@@ -461,6 +534,12 @@ data class AppUiState(
     val attachmentProgress: Map<String, Int> = emptyMap(),
     /** This device's picked content for files it sent, shown while the server processes them. */
     val localAttachmentPreviews: Map<String, String> = emptyMap(),
+    /** Feedback team: the inbox's reports (kept while you visit one). */
+    val feedback: FeedbackInboxUi = FeedbackInboxUi(),
+    /** Feedback team: the inbox is the open destination, in place of a conversation. */
+    val feedbackShown: Boolean = false,
+    /** Feedback team: the open conversation is visited, not joined (see [VisitUi]). */
+    val visit: VisitUi? = null,
     /** Ask Android 13+ for notification permission now; set once per account by app open. */
     val pushPrompt: Boolean = false,
     val busy: Boolean = false,
@@ -517,7 +596,7 @@ data class AppUiState(
 
     /** Each channel's media root decides its own stable sidebar Join action. */
     fun voiceAvailable(channel: Channel): Boolean? =
-        voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
+        voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true && visit?.channelId != channel.id, channel.id)]
 
     val voiceAvailable: Boolean? get() = selectedChannel?.let(::voiceAvailable)
 
@@ -539,6 +618,35 @@ data class AppUiState(
     /** The open DM, when one is selected. */
     val selectedDirect: DirectConversation? get() = selectedDirectId?.let { id -> directConversations.firstOrNull { it.id == id } }
 }
+
+/** The Feedback inbox (feedback team only): loaded reports, newest first, and the next page's cursor. */
+data class FeedbackInboxUi(
+    val reports: List<FeedbackReport> = emptyList(),
+    val cursor: String? = null,
+    val loaded: Boolean = false,
+    val loading: Boolean = false,
+    val loadingMore: Boolean = false,
+    val error: String? = null,
+    /** Shows archived threads (`?archived=true`) instead of the inbox. */
+    val archived: Boolean = false,
+)
+
+/**
+ * The open conversation is a feedback visit: a team member reading a reported channel or DM
+ * that is not in their lists. [spaceId] and [spaceName] are null for a DM, whose
+ * [channelName] names both people ("Alice & Bob"). [visitor] is the server's flag (false
+ * when the team member turns out to be in the conversation after all). [reporter] is known
+ * when it was opened from the inbox, for mention suggestions.
+ */
+data class VisitUi(
+    val channelId: String,
+    val spaceId: String?,
+    val spaceName: String?,
+    val channelName: String,
+    val direct: Boolean,
+    val visitor: Boolean = true,
+    val reporter: FeedbackReporter? = null,
+)
 
 data class PendingMessageUi(
     val clientMessageId: String,

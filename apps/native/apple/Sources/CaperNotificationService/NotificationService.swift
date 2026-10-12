@@ -50,6 +50,7 @@ final class NotificationService: UNNotificationServiceExtension {
 
     static func intent(for content: UNNotificationContent) -> INSendMessageIntent? {
         let data = content.userInfo
+        if let kind = data["kind"] as? String, kind == "space.invitation" || kind == "channel.invitation" || kind == "direct.request" { return nil }
         guard let senderID = data["senderId"] as? String, !senderID.isEmpty,
               let name = data["sender"] as? String, !name.isEmpty,
               let index = data["senderAvatarId"] as? Int, (0..<800).contains(index),
@@ -73,7 +74,8 @@ final class NotificationService: UNNotificationServiceExtension {
             // Caper has no separate group artwork: show the actual sender.
             intent.setImage(avatar, forParameterNamed: \.speakableGroupName)
         }
-        metadata.mentionsCurrentUser = data["kind"] as? String == "mention.user"
+        // `@feedback` reaches the team like a direct mention.
+        metadata.mentionsCurrentUser = ["mention.user", "feedback"].contains(data["kind"] as? String ?? "")
         intent.donationMetadata = metadata
         return intent
     }

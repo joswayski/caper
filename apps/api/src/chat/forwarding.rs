@@ -167,12 +167,10 @@ async fn persist_forward(
     }
     // Mentions in the note are highlighted and open profile cards like any
     // message's. The forward notifies as a message; its note's mentions don't.
-    let content = with_mentions(
-        &mut tx,
-        content,
-        &mentions::parse(&input.text, destination.space_id.is_some()),
-    )
-    .await?;
+    let mut found = mentions::parse(&input.text, destination.space_id.is_some());
+    // A note can't report anything, so its @feedback stays plain text.
+    found.retain(|mention| *mention != Mention::Feedback);
+    let content = with_mentions(&mut tx, content, &found).await?;
     let head: i64 = sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id=$1")
         .bind(destination.id)
         .fetch_one(&mut *tx)
@@ -349,8 +347,9 @@ async fn thread(
 }
 
 /// Project source edits, reactions and replies into destination replay logs.
-/// This runs inside the publisher's transaction, so a crash cannot permanently
-/// lose an update. Forward events never recurse: every reference is flattened.
+/// The publisher commits this before publishing the source events, which stay
+/// pending until then, so a crash cannot permanently lose an update; repeating
+/// it is a no-op. Forward events never recurse: every reference is flattened.
 pub(super) async fn project_events(
     tx: &mut Transaction<'_, Postgres>,
     events: &[super::PendingEvent],

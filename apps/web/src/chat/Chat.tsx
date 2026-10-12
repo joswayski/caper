@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, MoreHorizontal, Pin, Reply, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, Reply, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -20,6 +20,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
+import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
 import { groupsWithPrevious } from "./grouping.ts";
 import { replyReference, ReplyContext, ReplyDraft } from "./Replies.tsx";
@@ -42,8 +43,17 @@ import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
-import { mentionCardPerson, mentionSegments, mentionsAccount, type MentionCandidate } from "./mentions.ts";
+import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
+import {
+  feedbackAliases,
+  mentionCardPerson,
+  mentionSegments,
+  mentionsAccount,
+  reportsFeedback,
+  type MentionCandidate,
+} from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
+import AdminBadge from "./AdminBadge.tsx";
 import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import type { Space } from "../spaces/client.ts";
@@ -56,6 +66,9 @@ function timeLabel(value: string, formatter: Intl.DateTimeFormat) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? "" : formatter.format(date);
 }
+
+/** Where to open a conversation: a loaded message or just its identity (a notification, a feedback report). */
+export type FocusTarget = Pick<GeneralChatHistory["messages"][number], "id" | "channelId" | "threadRootId">;
 
 interface HistoryContext {
   hasMore: boolean;
@@ -168,13 +181,17 @@ export default function Chat({
   channelName: expectedChannelName,
   direct = false,
   directPeerId,
+  team = false,
   onReadCursor,
   readActive = true,
   initialHistory,
   initialHistoryError,
   showTitle = false,
   headerLeading,
+  headerVoice,
   headerActions,
+  headerMenu,
+  headerSubtitle,
   readOnly = false,
   composerNotice,
   composerBanner,
@@ -190,6 +207,9 @@ export default function Chat({
   profileSpaces,
   onOpenForward,
   focusMessage,
+  focusThread = false,
+  visitor = false,
+  onSent,
 }: {
   name: string;
   signedIn: boolean;
@@ -200,13 +220,21 @@ export default function Chat({
   channelName?: string;
   direct?: boolean;
   directPeerId?: string;
+  /** A DM with the Caper account, which the feedback team answers. */
+  team?: boolean;
   onReadCursor?: (seq: string) => void;
   readActive?: boolean;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
+  /** The open channel's voice, right after its name. */
+  headerVoice?: ReactNode;
   headerActions?: ReactNode;
+  /** Phones fold Pins and these items into the menu their channel name opens. */
+  headerMenu?: ReactNode;
+  /** A line under the name on phones, such as member and voice counts. */
+  headerSubtitle?: ReactNode;
   readOnly?: boolean;
   composerNotice?: ReactNode;
   /** Shown above an active composer. */ composerBanner?: ReactNode;
@@ -221,7 +249,13 @@ export default function Chat({
   onMessagePerson?: (username: string) => Promise<void>;
   profileSpaces?: (personId: string) => Space[];
   onOpenForward?: (message: GeneralChatHistory["messages"][number]) => Promise<boolean>;
-  focusMessage?: GeneralChatHistory["messages"][number];
+  focusMessage?: FocusTarget;
+  /** Also open a focused channel message's own thread, where replies to it belong. */
+  focusThread?: boolean;
+  /** The Caper team, taking part without having joined: the header also names the space. */
+  visitor?: boolean;
+  /** After one of the viewer's messages (or thread replies) is accepted. */
+  onSent?: () => void;
 }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   useEffect(() => {
@@ -474,14 +508,16 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  const arrivals = useRef<Arrivals>(null);
+  arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
   // old first row also changes as an older page lands above it: it can join
   // that page's last group (losing its name and time) and loses its date
   // divider. Remember the top visible message so it can be held in place.
   const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined);
-  const goToMessage = async (message: Pick<ChatMessage, "id" | "channelId" | "threadRootId">) => {
+  const goToMessage = async (message: FocusTarget) => {
     const client = clientRef.current;
-    if (!client || jumping) return;
+    if (!client || jumping) return false;
     setJumping(message.id);
     setJumpError(undefined);
     setActionTarget(undefined);
@@ -495,6 +531,7 @@ export default function Chat({
           setListWindow((window) => window + 1);
           setScrollTarget(message.id);
         }
+        return true;
       } else if (clientRef.current === client) setJumpError("Message could not be loaded. Try again.");
     } catch (error) {
       if (clientRef.current === client)
@@ -502,6 +539,7 @@ export default function Chat({
     } finally {
       if (clientRef.current === client) setJumping(undefined);
     }
+    return false;
   };
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
@@ -577,7 +615,9 @@ export default function Chat({
     const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
     if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
   }, []);
-  const setTyping = useCallback((active: boolean) => clientRef.current?.setTyping(active), []);
+  const setTyping = useCallback((active: boolean) => {
+    clientRef.current?.setTyping(active);
+  }, []);
 
   useEffect(() => {
     let firstMessageId: string | undefined;
@@ -634,9 +674,7 @@ export default function Chat({
     };
   }, [channelId]);
 
-  const handledFocus = useRef<{ client: ChatClient; message: GeneralChatHistory["messages"][number] } | undefined>(
-    undefined,
-  );
+  const handledFocus = useRef<{ client: ChatClient; message: FocusTarget } | undefined>(undefined);
   useEffect(() => {
     if (!focusMessage) {
       handledFocus.current = undefined;
@@ -652,8 +690,19 @@ export default function Chat({
     )
       return;
     handledFocus.current = { client, message: focusMessage };
-    void goToMessage(focusMessage);
+    void goToMessage(focusMessage).then((found) => {
+      if (found && focusThread && !focusMessage.threadRootId && clientRef.current === client)
+        openThread(focusMessage.id);
+    });
   }, [focusMessage, state.phase, state.channelId, jumping]);
+
+  const sentCallback = useRef(onSent);
+  sentCallback.current = onSent;
+  const lastPending = useRef(state.pendingSend);
+  useEffect(() => {
+    if (lastPending.current && !state.pendingSend) sentCallback.current?.();
+    lastPending.current = state.pendingSend;
+  }, [state.pendingSend]);
 
   const blockedIdsRef = useRef(blockedIds);
   useEffect(() => {
@@ -694,24 +743,45 @@ export default function Chat({
     };
   }, [signedIn]);
 
-  // Uploads belong to one channel; abandon them when it changes or unmounts.
-  useEffect(
-    () => () => {
-      for (const key of uploads.current.keys()) abandonUpload(key);
-      setDrafts([]);
-    },
-    [channelId, abandonUpload],
-  );
-  useEffect(
-    () => () => {
-      for (const url of objectUrls.current) URL.revokeObjectURL(url);
-    },
-    [],
-  );
-
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+  useEffect(() => {
+    showStagedFiles(updateDraft);
+    return () => showStagedFiles(undefined);
+  }, [updateDraft]);
+
+  // Staged files belong to their conversation, like its text: switching away
+  // keeps them (uploads carry on) and coming back restores them. Only Remove
+  // or Send gives them up. Without an account key there is nowhere to keep them.
+  const draftKey = accountId && channelId ? `${accountId}:${channelId}` : undefined;
+  const latestDrafts = useRef(drafts);
+  latestDrafts.current = drafts;
+  useEffect(() => {
+    const saved = draftKey ? takeStagedFiles(draftKey) : undefined;
+    if (saved) {
+      uploads.current = saved.uploads;
+      // Also the ref: a cleanup before the next render must stash these again.
+      latestDrafts.current = saved.drafts;
+      setDrafts(saved.drafts);
+      // Renew anything that expired or failed while the conversation was closed.
+      for (const upload of saved.uploads.values())
+        if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
+    }
+    return () => {
+      if (draftKey) stashStagedFiles(draftKey, { drafts: latestDrafts.current, uploads: uploads.current });
+      else for (const key of uploads.current.keys()) abandonUpload(key);
+      uploads.current = new Map();
+      setDrafts([]);
+    };
+  }, [draftKey, abandonUpload]);
+  useEffect(
+    () => () => {
+      const kept = stagedUrls();
+      for (const url of objectUrls.current) if (!kept.has(url)) URL.revokeObjectURL(url);
+    },
+    [],
+  );
 
   const retryUpload = (key: string) => {
     void uploads.current
@@ -762,7 +832,7 @@ export default function Chat({
       const localUrl = URL.createObjectURL(previewable ? file : new Blob([file], { type: "application/octet-stream" }));
       objectUrls.current.add(localUrl);
       const upload = new AttachmentUpload(channel, file, settings, (next) => {
-        updateDraft(key, next);
+        stagedFileChanged(key, next);
         if (next.attachment && localKind)
           setLocalPreviews((current) => ({
             ...current,
@@ -919,6 +989,12 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  arrivals.current.observe(
+    "channel",
+    state.channelId ?? "",
+    messages.map((message) => message.clientMessageId),
+    state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
+  );
   const scrollIndex =
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
@@ -1149,7 +1225,7 @@ export default function Chat({
             </div>
           )}
           <article
-            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
             onPointerDown={(event) => {
@@ -1212,6 +1288,7 @@ export default function Chat({
             <div>
               <header className={grouped ? "sr-only" : undefined}>
                 {grouped ? <strong>{author?.name ?? name}</strong> : authorName(author)}
+                {author?.admin && <AdminBadge />}
                 {author?.isGuest && <span>Guest</span>}
                 <time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt, timeFormatter) : ""}</time>
                 {!grouped && edited}
@@ -1235,7 +1312,15 @@ export default function Chat({
                         const user = segment.user;
                         if (!user)
                           return (
-                            <span key={part} className="chat-mention">
+                            <span
+                              key={part}
+                              className="chat-mention"
+                              title={
+                                feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
+                                  ? "Asks the Caper team to look at this conversation"
+                                  : undefined
+                              }
+                            >
                               {segment.text}
                             </span>
                           );
@@ -1273,6 +1358,9 @@ export default function Chat({
                 onExpired={pending ? undefined : refreshUrls}
                 onView={"content" in message ? viewFile(message.id) : undefined}
               />
+              {"content" in message && reportsFeedback(message) && (
+                <p className="chat-feedback-note">Caper team has been notified 🫡</p>
+              )}
               {"content" in message && (
                 <>
                   <ForwardCard
@@ -1534,9 +1622,48 @@ export default function Chat({
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
             {direct ? "" : "# "}
             {channelName}
+            {visitor && !direct && <span className="chat-channel-space"> · {state.spaceName}</span>}
           </h2>
+          {/* Phones: the name opens the channel's menu, as in Slack; Pins and Members move there. */}
+          {showTitle && state.phase === "ready" && (
+            <details
+              className="chat-title-menu"
+              onClick={(event) => {
+                // Choosing an item closes the menu.
+                if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && event.currentTarget.open) {
+                  event.preventDefault();
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+              }}
+            >
+              <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
+                <span className="chat-title-name">
+                  {direct ? "" : "# "}
+                  {channelName}
+                  <ChevronDown size={16} aria-hidden="true" />
+                </span>
+                {headerSubtitle && <small className="chat-title-subtitle">{headerSubtitle}</small>}
+              </summary>
+              <div className="chat-header-menu">
+                <button type="button" aria-haspopup="dialog" onClick={() => setShowPins(true)}>
+                  <Pin size={16} aria-hidden="true" />
+                  Pins
+                </button>
+                {headerMenu}
+              </div>
+            </details>
+          )}
+          {headerVoice}
           {pinsToggle}
           {headerActions}
+
           {!state.online && showConnectionStatus && (
             <span className="chat-offline" role="status">
               {state.phase === "error" ? "Offline" : "Connecting…"}
@@ -1716,9 +1843,11 @@ export default function Chat({
                   <>
                     <p>No messages yet.</p>
                     <small>
-                      {direct
-                        ? `Only you and ${channelName} can read this conversation.`
-                        : `Start the conversation in #${channelName}.`}
+                      {team
+                        ? "Messages here go to the Caper team."
+                        : direct
+                          ? `Only you and ${channelName} can read this conversation.`
+                          : `Start the conversation in #${channelName}.`}
                     </small>
                   </>
                 )}
@@ -1942,22 +2071,6 @@ export default function Chat({
             onClose={closeConversation}
           />
         )}
-
-        <p className="chat-typing" role="status" aria-atomic="true">
-          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
-            {displayedTypingLabel && (
-              <>
-                <span className="chat-typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{displayedTypingLabel}</span>
-              </>
-            )}
-          </span>
-        </p>
-
         {readOnly ? (
           <div className="chat-composer channel-preview">{composerNotice}</div>
         ) : (
@@ -1991,7 +2104,7 @@ export default function Chat({
             <Composer
               ref={composerRef}
               channelName={channelName}
-              draftKey={accountId && channelId ? `${accountId}:${channelId}` : undefined}
+              draftKey={draftKey}
               direct={direct}
               disabled={state.phase !== "ready"}
               identityReady={identityReady}
@@ -2024,6 +2137,21 @@ export default function Chat({
             />
           </div>
         )}
+        {/* Typing belongs below the input so it cannot clip scrolling messages above it. */}
+        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
+          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
+            {displayedTypingLabel && (
+              <>
+                <span className="chat-typing-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>{displayedTypingLabel}</span>
+              </>
+            )}
+          </span>
+        </p>
       </section>
       <ThreadPanel
         state={state}
@@ -2039,6 +2167,7 @@ export default function Chat({
         }}
         blockedIds={blockedIds}
         renderMessage={renderMessage}
+        arrivals={arrivals.current}
         onClose={closeThread}
       />
       {state.phase === "ready" && !readOnly && editMessage && clientRef.current && (

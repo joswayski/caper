@@ -35,6 +35,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- Invite links: owners create links in Manage space (expiry, use limit and an
+  optional public landing channel; the new link is copied at once), then copy or
+  revoke live ones. Anyone signed in can paste a link or bare code into **Join with
+  invite link** (the rail's link tile or the first-space screen), preview the
+  space and join it. Opening `caper.chat/invite/...` links from the browser in the
+  app (a registered URL handler) is not implemented yet.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
@@ -86,13 +92,27 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and no Caper credentials, confirms (retrying while storage has not seen it
   yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
   errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. Pasting images from the clipboard is not supported (egui
-  does not deliver image pastes).
+  message keeps. The conversation composer does not paste images. Profile
+  composers' Attach menu has **Paste from clipboard** for native copied files
+  and images on Windows and X11/XWayland, and on Wayland compositors with the
+  data-control clipboard protocol: egui delivers no event for an image-only
+  Ctrl+V. Channel, thread and profile composers have an Emoji button beside
+  the `:name:` shortcut.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. An independent account gateway feed presents local OS notifications
   with sender avatars and click navigation while the app runs, including minimized.
+  Space/private-channel invitation taps refresh pending invitations and open
+  Accept/Decline review, never automatic acceptance, private history or voice.
+  New DM requests alert once without message content and open the existing
+  read-only request review; pending messages stay quiet until acceptance.
   Quitting exits the app; there is no keep-running-in-tray behavior.
+- The space invite, private-channel grant and New direct message username
+  fields suggest people the app already has (known people minus members and
+  invitations, space members minus grantees, known people), ranked like `@`
+  suggestions. Rows, like `@` popup rows, show the avatar and display name with
+  `@username` beneath it. Clicking or Enter fills the exact username without
+  submitting; Up/Down move and Escape closes the list, not the dialog.
 - The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
   popup; the thread reply box and message editor do not yet. Space channels
   offer the open space's loaded members except you, then `@everyone`/`@here`.
@@ -103,9 +123,15 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   rather than 4px rounded ones, including in thread replies and edited messages.
   Messages that mention you get a terracotta tint with a 2px leading edge.
   Clicking a person's pill, or Enter/Space on a focused pill, opens a card with
-  their avatar, name and `@username` from loaded data, and a **Message** button
-  that opens or creates the DM (your own card says "You"). Mentions do not
-  notify anyone.
+  their avatar, name and `@username` from loaded data, Open conversation and
+  Close icons, and an inline DM composer in the channel composer's shell
+  (Attach, Emoji, Send; staged files with image thumbnails above it). Enter
+  sends (your own card says "You"). Close retains the per-person draft; populated cards resist
+  outside clicks, and sending prevents dismissal. Drafts survive dialogs until
+  logout. Only Send resolves the DM, prepares/uploads files and sends; success opens it,
+  while errors retain the draft and uncertain retries reuse the exact payload
+  and message UUID. Incoming requests require **Open conversation** and Accept
+  first. Mentions do not notify anyone.
 - Message requests: a DM from someone you share no space with waits under
   "Message requests" (with a count, never unread dots or sounds) and opens
   read-only with Accept, Decline or Block; your own pending requests say
@@ -116,6 +142,30 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
   one new), saved on change and reverted if saving fails. Pinned-message lists
   still show blocked authors' pins.
+- `@feedback` in place. The team names (`feedback`, `caper`, `admin`, `mod`
+  and the API's other reserved names) work everywhere. In every composer
+  (channels, threads, DMs, notes) a bare `@` lists `@feedback` ("Notify the
+  Caper team") first; a typed query lists people first and then the first
+  team name it starts. With a server
+  `feedback` entry, each such token renders as a pill without a profile card,
+  and "Caper team has been notified 🫡" sits under the message. Messages with
+  `author.admin` show a gold ADMIN badge. Accounts with `feedbackTeam` get a
+  **Feedback** row by the DMs that opens the inbox (`GET /api/feedback`,
+  refreshed on open, by Refresh and after a reply; older pages on demand):
+  reporter, "#channel · Space" or "DM · …", preview or "Sent N files", age,
+  and "Answered" (the team wrote last in the thread) or "Waiting". A hover
+  Archive button archives the report's whole thread for the team
+  (`PUT /api/feedback/archive`; it leaves the list at once, then the list
+  reloads, keeping any error). "Show archived" at the bottom lists archived
+  threads (`?archived=true`) under "Archived feedback", without a status and
+  with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
+  opens the conversation by channel id at the message and in its thread.
+  Without membership (`visitor: true`) the team takes part like a member
+  (replies, files, reactions, typing, pins, forwarding, and a visited space
+  channel's voice from its header, as for any channel), but there is no member list,
+  read marker, join/leave, settings or notification menu. Back returns to
+  the inbox (or the conversation a notification interrupted). Conversations
+  the team member already belongs to open normally.
 - Notification controls govern phone push and local desktop notifications.
   The space menu and each channel's options menu set
   **Notifications** (Default, All messages, Only @mentions, Nothing) and

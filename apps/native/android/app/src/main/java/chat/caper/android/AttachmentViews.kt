@@ -5,6 +5,10 @@ import android.content.Intent
 import android.os.Build
 import android.widget.Toast
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -316,9 +320,13 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** Composer chips: thumbnail, name, size or upload progress, and remove (web `DraftAttachments`). */
-@Composable internal fun DraftAttachmentStrip(drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: (String) -> Unit) {
+@Composable internal fun DraftAttachmentStrip(
+    drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
+    enabled: Boolean = true, uploadOnSend: Boolean = false,
+) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
+    val still = reducedMotion()
     val open: (String) -> Unit = { url ->
         runCatching {
             val uri = url.toUri()
@@ -332,8 +340,9 @@ internal fun durationLabel(durationMs: Long?): String? {
         }
     }
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        drafts.forEach { draft ->
-            Surface(Modifier.width(232.dp), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
+        // Keyed, so each chip pops in once when attached and keeps its own progress animation.
+        drafts.forEach { draft -> key(draft.key) {
+            Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).width(232.dp), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                 Row(Modifier.padding(start = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     val url = draft.pickedUri ?: draft.attachment?.url
                     Row(Modifier.weight(1f).clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview ${draft.name}") {
@@ -351,23 +360,27 @@ internal fun durationLabel(durationMs: Long?): String? {
                             val status = draft.error ?: when {
                                 draft.attachment != null -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
                                 draft.compressing -> if (draft.progress > 0f) "Compressing… ${(draft.progress * 100).toInt()}%" else "Preparing…"
+                                uploadOnSend -> AttachmentPolicy.sizeLabel(draft.sourceSize, draft.storedSize)
                                 else -> "Uploading… ${(draft.progress * 100).toInt()}%"
                             }
                             Text(status, color = if (draft.error != null) ErrorText else TextMuted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            if (draft.attachment == null && draft.error == null) LinearProgressIndicator(
-                                progress = { draft.progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                            // Progress glides between updates instead of jumping.
+                            val progress by animateFloatAsState(draft.progress.coerceIn(0f, 1f),
+                                if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "upload")
+                            if (draft.attachment == null && draft.error == null && (!uploadOnSend || draft.compressing)) LinearProgressIndicator(
+                                progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
                                 color = Terracotta, trackColor = Border,
                             )
                         }
                     }
-                    if (draft.error != null) TextButton({ retry(draft.key) }, Modifier.semantics { contentDescription = "Retry uploading ${draft.name}" }) {
+                    if (draft.error != null && retry != null) TextButton({ retry(draft.key) }, Modifier.semantics { contentDescription = "Retry uploading ${draft.name}" }) {
                         Text("Retry", fontSize = 11.sp)
                     }
-                    IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }) {
+                    IconButton({ remove(draft.key) }, Modifier.size(40.dp).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {
                         Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted)
                     }
                 }
             }
-        }
+        } }
     }
 }

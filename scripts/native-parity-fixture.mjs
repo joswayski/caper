@@ -18,6 +18,7 @@ export const fixtureIDs = {
   direct: "dm0000000001",
   selfDirect: "dm0000000002",
   request: "dm0000000003",
+  memberDirect: "dm0000000004",
   stranger: "stranger0001",
 };
 const ids = fixtureIDs;
@@ -132,6 +133,8 @@ function initialState() {
     account,
     chatSessions: new Map(),
     sendKeys: new Map(),
+    uploadsEnabled: false,
+    assets: new Map(),
     typingRevision: 0,
     media: new Map([
       [
@@ -440,8 +443,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (bytes > 256 * 1024) return reject(response, 413, "Fixture request too large.");
         chunks.push(chunk);
       }
-      const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
       const method = request.method;
+      const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
+      const body = chunks.length && !assetPut ? JSON.parse(Buffer.concat(chunks)) : {};
       if (path === "/health") return json(response, 200, { fixture: true });
       if (path === "/__fixture/push-devices" && method === "GET")
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
@@ -460,6 +464,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.pushPlatforms = [...new Set(body.pushPlatforms)];
         }
         if (body.noSpaces) state.spaces = [];
+        if (typeof body.uploadsEnabled === "boolean") state.uploadsEnabled = body.uploadsEnabled;
         if (body.clearFailures) state.failures = [];
         if (body.failure) state.failures.push(body.failure);
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
@@ -634,6 +639,48 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return reject(response, failure.status, failure.error ?? "TEST FIXTURE: requested failure.");
       }
       const user = identity(request);
+      if (path === "/api/assets/usage")
+        return user && state.uploadsEnabled
+          ? json(response, 200, { compression: {} })
+          : reject(response, 503, "TEST FIXTURE: uploads disabled.");
+      if (path === "/api/assets" && method === "POST") {
+        if (!user || !state.uploadsEnabled) return reject(response, 503, "Uploads unavailable.");
+        const channel = channelFor(body.channelId);
+        if (!channel || !canParticipate(channel, user)) return reject(response, 404, "resource not found");
+        const id = randomUUID().replaceAll("-", "").slice(0, 15);
+        state.assets.set(id, {
+          channelId: body.channelId,
+          name: body.filename,
+          contentType: body.contentType,
+          size: body.byteSize,
+        });
+        return json(response, 200, {
+          id,
+          upload: { url: `/api/assets/${id}/fixture-upload`, headers: {} },
+          ...(body.preview ? { previewUpload: { url: `/api/assets/${id}/fixture-preview`, headers: {} } } : {}),
+        });
+      }
+      if (assetPut && method === "PUT") {
+        const asset = state.assets.get(assetPut[1]);
+        if (!asset) return reject(response, 404, "Asset not found.");
+        if (assetPut[2] === "upload") asset.bytes = bytes;
+        return json(response, 204);
+      }
+      const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
+      if (assetComplete && method === "POST") {
+        const asset = state.assets.get(assetComplete[1]);
+        if (!user || !asset) return reject(response, 404, "Asset not found.");
+        if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
+        asset.attachment = {
+          id: assetComplete[1],
+          name: asset.name,
+          contentType: asset.contentType,
+          size: asset.size,
+          kind: "file",
+          status: "ready",
+        };
+        return json(response, 200, asset.attachment);
+      }
       if (path === "/api/push/config")
         return user
           ? json(response, 200, { platforms: [...state.pushPlatforms] })
@@ -754,9 +801,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const username = String(body.username).trim().replace(/^@/, "").toLowerCase();
           const self = username === state.account.username;
           const jordan = username === stranger.username;
-          if (!self && !jordan && !["fixture_alex", "alex"].includes(username))
+          const maya = username === "maya";
+          if (!self && !jordan && !maya && !["fixture_alex", "alex"].includes(username))
             return reject(response, 404, "Account not found.");
-          const id = self ? ids.selfDirect : jordan ? ids.request : ids.direct;
+          const id = self ? ids.selfDirect : jordan ? ids.request : maya ? ids.memberDirect : ids.direct;
           const existing = state.directs.find((conversation) => conversation.id === id);
           if (existing) {
             // Choosing to message someone who sent you a request accepts it.
@@ -772,7 +820,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               }
             : jordan
               ? clone(stranger)
-              : { id: ids.other, username: "fixture_alex", displayName: "TEST FIXTURE Alex", avatarId: 799 };
+              : maya
+                ? clone(members[1])
+                : { id: ids.other, username: "fixture_alex", displayName: "TEST FIXTURE Alex", avatarId: 799 };
           if (state.blocks.includes(peer.id))
             return json(response, 403, { error: "Unblock this person to message them.", code: "dm_blocked" });
           state.directs.push({ id, peer, lastSeq: "0", readSeq: "0", status: jordan ? "outgoing" : "accepted" });
@@ -1153,11 +1203,21 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (conversation && state.blocks.includes(conversation.peer.id))
             return json(response, 403, { error: "Unblock this person to message them.", code: "dm_blocked" });
           if (conversation?.status === "incoming") Object.assign(conversation, { status: "accepted", declined: false });
+          const attachmentIds = body.attachmentIds ?? [];
+          if (
+            !Array.isArray(attachmentIds) ||
+            attachmentIds.length > 10 ||
+            attachmentIds.some((id) => {
+              const asset = state.assets.get(id);
+              return asset?.channelId !== channel.id || !asset.attachment;
+            })
+          )
+            return reject(response, 400, "Invalid attachments.");
           if (
             typeof body.clientMessageId !== "string" ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId) ||
             typeof body.text !== "string" ||
-            !body.text.trim() ||
+            (!body.text.trim() && !attachmentIds.length) ||
             [...body.text].length > 4000 ||
             /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text)
           )
@@ -1169,6 +1229,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (previous)
             return previous.token === request.headers["x-caper-chat-token"] &&
               previous.text === body.text &&
+              JSON.stringify(previous.message.content.attachments?.map((attachment) => attachment.id) ?? []) ===
+                JSON.stringify(attachmentIds) &&
               previous.message.threadRootId === body.threadRootId &&
               previous.message.replyTo?.id === body.replyToId &&
               (previous.message.broadcast ?? false) === (body.broadcast ?? false)
@@ -1196,7 +1258,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             channelId: channel.id,
             seq: String(BigInt(channelHead(channel.id)) + 1n),
             author: who,
-            content: { version: 1, type: "text", text: body.text, ...(mentions.length ? { mentions } : {}) },
+            content: {
+              version: 1,
+              type: "text",
+              text: body.text,
+              ...(mentions.length ? { mentions } : {}),
+              ...(attachmentIds.length
+                ? { attachments: attachmentIds.map((id) => state.assets.get(id).attachment) }
+                : {}),
+            },
             createdAt: new Date().toISOString(),
             clientMessageId,
           };

@@ -1,5 +1,10 @@
 import Foundation
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// A picked file copied into the app's temporary staging area, before
 /// `AttachmentPreparer` compresses it.
@@ -60,6 +65,59 @@ public enum AttachmentStaging {
         let cleaned = name.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "file" : String(cleaned.prefix(200))
+    }
+}
+
+/// Called only by an explicit native Paste action. File URLs and image bytes
+/// become private staging copies; ordinary text/links stay with the text view.
+@MainActor enum NativeAttachmentPaste {
+    static func stage() throws -> [LocalAttachmentFile] {
+        var files: [LocalAttachmentFile] = []
+        do {
+            #if os(iOS)
+            for item in UIPasteboard.general.items.prefix(AttachmentPolicy.maxAttachments) {
+                if let value = item[UTType.fileURL.identifier], let url = fileURL(value) {
+                    files.append(try AttachmentStaging.stage(copying: url))
+                    continue
+                }
+                if let identifier = item.keys.sorted().first(where: { UTType($0)?.conforms(to: .image) == true }),
+                   let data = item[identifier] as? Data {
+                    files.append(try stageImage(data, identifier: identifier))
+                } else if let image = item.values.compactMap({ $0 as? UIImage }).first, let data = image.pngData() {
+                    files.append(try stageImage(data, identifier: UTType.png.identifier))
+                }
+            }
+            #elseif os(macOS)
+            for item in (NSPasteboard.general.pasteboardItems ?? []).prefix(AttachmentPolicy.maxAttachments) {
+                if let value = item.string(forType: .fileURL), let url = fileURL(value) {
+                    files.append(try AttachmentStaging.stage(copying: url))
+                    continue
+                }
+                if let type = item.types.first(where: { UTType($0.rawValue)?.conforms(to: .image) == true }),
+                   let data = item.data(forType: type) {
+                    files.append(try stageImage(data, identifier: type.rawValue))
+                }
+            }
+            #endif
+            return files
+        } catch {
+            files.forEach { AttachmentStaging.remove($0.url) }
+            throw error
+        }
+    }
+
+    private static func fileURL(_ value: Any) -> URL? {
+        let url: URL?
+        if let value = value as? URL { url = value }
+        else if let value = value as? String { url = URL(string: value) }
+        else if let value = value as? Data, let string = String(data: value, encoding: .utf8) { url = URL(string: string) }
+        else { url = nil }
+        return url?.isFileURL == true ? url : nil
+    }
+
+    private static func stageImage(_ data: Data, identifier: String) throws -> LocalAttachmentFile {
+        let ext = UTType(identifier)?.preferredFilenameExtension ?? "png"
+        return try AttachmentStaging.stage(data: data, filename: "pasted-image.\(ext)")
     }
 }
 

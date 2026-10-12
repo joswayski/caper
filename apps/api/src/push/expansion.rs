@@ -17,6 +17,10 @@ pub(super) enum Kind {
     ChannelMessage,
     MentionUser,
     MentionEveryone,
+    /// `@feedback`, for every feedback team member.
+    Feedback,
+    Invitation,
+    DirectRequest,
 }
 
 impl Kind {
@@ -26,6 +30,9 @@ impl Kind {
             Self::ChannelMessage => "channel.message",
             Self::MentionUser => "mention.user",
             Self::MentionEveryone => "mention.everyone",
+            Self::Feedback => "feedback",
+            Self::Invitation => "invitation",
+            Self::DirectRequest => "direct.request",
         }
     }
 }
@@ -43,12 +50,19 @@ pub(super) struct Preferences {
 }
 
 /// Resolution steps 1–4: account off or paused, then mutes (which a direct
-/// @mention ignores), then the first set level of channel, space and account.
+/// @mention or @feedback ignores), then the first set level of channel, space
+/// and account.
 pub(super) fn notifies(kind: Kind, preferences: &Preferences) -> bool {
     if preferences.account == Some(Level::Nothing) || preferences.paused {
         return false;
     }
-    if (preferences.channel_muted || preferences.space_muted) && kind != Kind::MentionUser {
+    // Conversation levels/mutes govern messages, not new consent requests.
+    if matches!(kind, Kind::Invitation | Kind::DirectRequest) {
+        return true;
+    }
+    if (preferences.channel_muted || preferences.space_muted)
+        && !matches!(kind, Kind::MentionUser | Kind::Feedback)
+    {
         return false;
     }
     if kind == Kind::DirectMessage {
@@ -73,6 +87,8 @@ struct Source {
     thread_reply: bool,
     mentions: Option<Value>,
     sendable: bool,
+    /// `@feedback`, or a new message in the Caper DM.
+    reported: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -82,6 +98,11 @@ struct Candidate {
     /// Joined the channel (always true for DMs). Joining is consent to
     /// receive, so only joined readers hear about ordinary messages.
     joined: bool,
+    /// On the feedback team. Visitors (team members who only have feedback
+    /// access) hear about @feedback and their own @mentions, both as
+    /// `feedback`, and nothing else.
+    team: bool,
+    visitor: bool,
     account_level: Option<String>,
     paused: bool,
     mobile: String,
@@ -194,7 +215,8 @@ pub(super) async fn expand(
                 -- A forward's note shows its mentions but never notifies them.
                 CASE WHEN m.forward_source_id IS NULL THEN m.payload->'content'->'mentions' END AS mentions,
                 (c.deleted_at IS NULL AND (c.space_id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
-                 AND m.created_at > now() - interval '24 hours') AS sendable
+                 AND m.created_at > now() - interval '24 hours') AS sendable,
+                EXISTS(SELECT 1 FROM public.feedback_reports r WHERE r.message_id=m.id) AS reported
          FROM public.messages m
          JOIN public.chat_sessions cs ON cs.id=m.session_id
          JOIN public.channels c ON c.id=m.channel_id
@@ -285,17 +307,26 @@ async fn resolve(
     presence_required: bool,
 ) -> Result<Vec<Recipient>, ()> {
     // DMs: the other participant of an accepted conversation (not personal
-    // notes) unless either blocked the other. Channels: every reader except
+    // notes) unless either blocked the other. Feedback team members visit
+    // conversations that asked for them; they are also candidates there. Channels: every reader except
     // the author and anyone who blocked them; readers who haven't joined
     // hear only about messages that @mention them by name.
     let candidates: Vec<Candidate> = sqlx::query_as(
-        "WITH candidates AS (
+        "WITH members AS (
              SELECT u.id, true AS joined FROM public.direct_conversations d
              JOIN public.users u ON u.id = CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END
              WHERE $2::bigint IS NULL AND d.channel_id=$1 AND d.low_user_id<>d.high_user_id
                AND $3 IN (d.low_user_id,d.high_user_id) AND d.accepted_at IS NOT NULL AND u.deleted_at IS NULL
+               AND NOT u.team_account
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                    AND ((b.blocker_id=u.id AND b.blocked_id=$3) OR (b.blocker_id=$3 AND b.blocked_id=u.id)))
+             UNION ALL
+             -- The team answering in a DM it visits (the Caper DM, personal
+             -- notes, or two people's DM): everyone in it hears, as from a peer.
+             SELECT u.id, true AS joined FROM public.direct_conversations d
+             JOIN public.users u ON u.id IN (d.low_user_id,d.high_user_id)
+             WHERE $2::bigint IS NULL AND d.channel_id=$1 AND NOT $3 IN (d.low_user_id,d.high_user_id)
+               AND d.accepted_at IS NOT NULL AND u.deleted_at IS NULL AND NOT u.team_account
              UNION ALL
              SELECT u.id, EXISTS(SELECT 1 FROM public.channel_joins cj
                  WHERE cj.channel_id=c.id AND cj.user_id=u.id AND cj.deleted_at IS NULL) AS joined
@@ -307,8 +338,20 @@ async fn resolve(
                AND (NOT c.private OR s.owner_id=u.id OR EXISTS(SELECT 1 FROM public.channel_members cm
                    WHERE cm.channel_id=c.id AND cm.user_id=u.id AND cm.deleted_at IS NULL))
                AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
-                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL))
-         SELECT u.id, u.external_id, candidates.joined, ns.default_level AS account_level,
+                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL)),
+         visitors AS (
+             SELECT t.user_id AS id, false AS joined FROM public.feedback_team t
+             JOIN public.users u ON u.id=t.user_id
+             WHERE t.deleted_at IS NULL AND u.deleted_at IS NULL AND t.user_id<>$3
+               AND t.user_id NOT IN (SELECT id FROM members) AND public.feedback_access($1, t.user_id)
+               AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
+                   WHERE b.blocker_id=u.id AND b.blocked_id=$3 AND b.deleted_at IS NULL)),
+         candidates AS (
+             SELECT id, joined, false AS visitor FROM members
+             UNION ALL SELECT id, joined, true AS visitor FROM visitors)
+         SELECT u.id, u.external_id, candidates.joined, candidates.visitor,
+                EXISTS(SELECT 1 FROM public.feedback_team t WHERE t.user_id=u.id AND t.deleted_at IS NULL) AS team,
+                ns.default_level AS account_level,
                 COALESCE(ns.paused_until > now(), false) AS paused,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile,
                 co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
@@ -330,7 +373,15 @@ async fn resolve(
     let mut here = Vec::new();
     for candidate in candidates {
         let preferences = candidate.preferences();
-        let kind = if source.space_id.is_none() {
+        let kind = if source.reported && candidate.team {
+            Kind::Feedback
+        } else if candidate.visitor {
+            // Named where they only visit: still feedback, so it opens there.
+            if !mentions.users.contains(&candidate.external_id) {
+                continue;
+            }
+            Kind::Feedback
+        } else if source.space_id.is_none() {
             Kind::DirectMessage
         } else if mentions.users.contains(&candidate.external_id) {
             Kind::MentionUser

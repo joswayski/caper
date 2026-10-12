@@ -5,17 +5,27 @@ import chat.caper.android.model.caperAvatarIndex
 internal const val DIRECT_MESSAGES_CHANNEL = "direct_messages"
 internal const val CHANNEL_MESSAGES_CHANNEL = "channel_messages"
 internal const val MENTIONS_CHANNEL = "mentions"
+internal const val INVITATIONS_CHANNEL = "invitations"
+internal const val MESSAGE_REQUESTS_CHANNEL = "message_requests"
 
 /** Android notification channels, in the order Settings lists them. */
 internal val pushChannels = listOf(
     DIRECT_MESSAGES_CHANNEL to "Direct messages",
     CHANNEL_MESSAGES_CHANNEL to "Channel messages",
     MENTIONS_CHANNEL to "Mentions",
+    INVITATIONS_CHANNEL to "Invitations",
+    MESSAGE_REQUESTS_CHANNEL to "Message requests",
 )
 
-/** Mentions use their own channel; every other kind, known or not, is a plain DM or channel message. */
+/**
+ * Mentions use their own channel, and so does `feedback` (a report for the Caper team, which is
+ * treated like a direct mention); invitations and message requests have theirs; every other
+ * kind, known or not, is a plain DM or channel message.
+ */
 internal fun notificationChannelFor(kind: String, direct: Boolean): String = when (kind) {
-    "mention.user", "mention.everyone" -> MENTIONS_CHANNEL
+    "mention.user", "mention.everyone", "feedback" -> MENTIONS_CHANNEL
+    "space.invitation", "channel.invitation" -> INVITATIONS_CHANNEL
+    "direct.request" -> MESSAGE_REQUESTS_CHANNEL
     else -> if (direct) DIRECT_MESSAGES_CHANNEL else CHANNEL_MESSAGES_CHANNEL
 }
 
@@ -37,11 +47,16 @@ internal data class PushPayload(
     /** `#channel (Space)` for a channel; null for a DM. */
     val conversationTitle: String?,
     val attachment: PushAttachment? = null,
+    val notificationId: String? = null,
+    /** The thread the message replies in, when it is a thread reply (any message kind). */
+    val threadRootId: String? = null,
 ) {
     val direct: Boolean get() = conversationId != null
+    val invitation: Boolean get() = kind == "space.invitation" || kind == "channel.invitation"
+    val consent: Boolean get() = invitation || kind == "direct.request"
 
     /** One notification per DM or channel, tagged with its ID. */
-    val tag: String get() = conversationId ?: checkNotNull(channelId)
+    val tag: String get() = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else conversationId ?: checkNotNull(channelId)
 
     val channel: String get() = notificationChannelFor(kind, direct)
 
@@ -55,21 +70,31 @@ internal data class PushPayload(
         /** Null for anything that is not a well-formed DM or channel message. */
         fun parse(data: Map<String, String>): PushPayload? {
             fun value(key: String) = data[key]?.trim()?.takeIf { it.isNotEmpty() }
-            val messageId = value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
+            val kind = value("kind").orEmpty()
+            val invitation = kind == "space.invitation" || kind == "channel.invitation"
+            val request = kind == "direct.request"
+            val consent = invitation || request
+            val notificationId = if (consent) value("notificationId")?.takeIf { Regex("^[1-9][0-9]*$").matches(it) } ?: return null else null
+            val messageId = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
             val conversationId = value("conversationId")
             val spaceId = value("spaceId")
             val channelId = value("channelId")
-            if (conversationId != null) {
+            if (invitation) {
+                if (conversationId != null || spaceId == null || !externalId.matches(spaceId)) return null
+                if (kind == "space.invitation" && channelId != null) return null
+                if (kind == "channel.invitation" && (channelId == null || !externalId.matches(channelId))) return null
+            } else if (conversationId != null) {
                 if (!externalId.matches(conversationId) || spaceId != null || channelId != null) return null
-            } else if (spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
+            } else if (request || spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
             val direct = conversationId != null
             val conversationTitle = if (direct) null else value("conversationTitle")?.limit(MAX_NAME)
             val sender = value("sender")?.limit(MAX_NAME)
             val title = value("title")?.limit(MAX_TITLE)
                 ?: if (direct) sender else listOfNotNull(sender, conversationTitle).joinToString(" · ").ifEmpty { null }
             return PushPayload(
-                kind = value("kind").orEmpty(),
+                kind = kind,
                 messageId = messageId,
+                notificationId = notificationId,
                 conversationId = conversationId,
                 spaceId = spaceId,
                 channelId = channelId,
@@ -79,7 +104,8 @@ internal data class PushPayload(
                 senderId = value("senderId"),
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
-                attachment = PushAttachment.parse(data),
+                attachment = if (consent) null else PushAttachment.parse(data),
+                threadRootId = if (consent) null else value("threadRootId")?.takeIf(messageIdPattern::matches),
             )
         }
 

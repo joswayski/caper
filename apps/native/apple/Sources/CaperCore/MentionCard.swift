@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What the mention card shows for a person's pill, resolved locally.
 struct MentionCardPerson: Equatable, Sendable {
@@ -17,7 +18,7 @@ struct MentionCardPerson: Equatable, Sendable {
     var avatarName: String { displayName ?? username ?? title }
 }
 
-/// Clicking a person's `@mention` pill opens a small card with **Message**.
+/// Clicking a person's `@mention` pill opens a profile with an inline composer.
 /// Pills are `Text` links in this private scheme, handled by the message's
 /// `openURL` action; nothing outside the app ever sees them.
 enum MentionCard {
@@ -40,8 +41,7 @@ enum MentionCard {
 
     /// Card data without a network call: the loaded space members, then the
     /// `GET /api/people` list, then DM peers, all matched by id, then your own
-    /// account; otherwise the unknown fallback (DM creation is by username, so
-    /// **Message** still works).
+    /// account; otherwise the unknown fallback (DM creation is by username).
     static func resolve(_ pill: MentionPill, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                         account: Account?, viewerID: String?) -> MentionCardPerson {
         resolve(id: pill.id, username: pill.username, members: members, people: people, peers: peers, account: account, viewerID: viewerID)
@@ -76,5 +76,94 @@ enum MentionCard {
             return person(account.username, account.displayName, account.avatarId)
         }
         return MentionCardPerson(id: id, username: username, displayName: nil, avatarId: nil, isSelf: isSelf)
+    }
+}
+
+/// Account-scoped, per-person profile drafts. Picking only stages local files;
+/// Send resolves a destination before using the normal preparation/upload pipeline.
+@MainActor @Observable
+final class ProfileMessageDraft {
+    struct File: Identifiable {
+        let id = UUID().uuidString
+        let local: LocalAttachmentFile
+        var prepared: PreparedAttachment?
+        var attachment: ChatAttachment?
+    }
+
+    var text = ""
+    private(set) var files: [File] = []
+    var error: String?
+    var sending = false
+    var presentingDialog = false
+    var progress: String?
+    var conversation: DirectMessageConversation?
+    /// Once a POST may have reached the server, freeze its entire payload,
+    /// including asset ids, until a retry confirms it or it is definitively refused.
+    var pending: PendingMessage?
+    private(set) var discarded = false
+    var editable: Bool { !discarded && !sending && pending == nil }
+    var preventsImplicitDismissal: Bool { sending || presentingDialog || !text.isEmpty || !files.isEmpty }
+    var canSend: Bool {
+        !discarded && !sending && (pending != nil || MessageValidation.error(for: text, attachmentCount: files.count) == nil)
+    }
+
+    func add(_ incoming: [LocalAttachmentFile]) {
+        guard editable else { incoming.forEach { AttachmentStaging.remove($0.url) }; return }
+        let room = max(0, AttachmentPolicy.maxAttachments - files.count)
+        files.append(contentsOf: incoming.prefix(room).map { File(local: $0) })
+        incoming.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
+        error = incoming.count > room ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
+    }
+
+    func remove(id: String) {
+        guard editable, let file = files.first(where: { $0.id == id }) else { return }
+        AttachmentStaging.remove(file.local.url)
+        if let prepared = file.prepared { AttachmentStaging.remove(prepared.fileURL) }
+        files.removeAll { $0.id == id }
+        error = nil
+    }
+
+    func checkActive() throws {
+        try Task.checkCancellation()
+        if discarded { throw CancellationError() }
+    }
+
+    func upload(channelID: String, api: APIClient) async throws -> [ChatAttachment] {
+        guard !files.isEmpty else { return [] }
+        if files.allSatisfy({ $0.attachment != nil }) { return files.compactMap(\.attachment) }
+        let usage = try await api.assetUsage()
+        try checkActive()
+        for index in files.indices {
+            if files[index].attachment != nil { continue }
+            let file = files[index].local
+            if files[index].prepared == nil {
+                progress = "Preparing \(file.name)…"
+                let prepared = await AttachmentPreparer.prepare(file, settings: usage.compression)
+                if discarded || Task.isCancelled {
+                    AttachmentStaging.remove(prepared.fileURL)
+                    try checkActive()
+                }
+                files[index].prepared = prepared
+            }
+            progress = "Uploading \(file.name)…"
+            let attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { _ in }
+            try checkActive()
+            files[index].attachment = attachment
+        }
+        return files.compactMap(\.attachment)
+    }
+
+    func clear() {
+        for file in files {
+            AttachmentStaging.remove(file.local.url)
+            if let prepared = file.prepared { AttachmentStaging.remove(prepared.fileURL) }
+        }
+        text = ""; files = []; pending = nil; conversation = nil; error = nil; progress = nil
+    }
+
+    func discard() {
+        discarded = true
+        presentingDialog = false
+        clear()
     }
 }

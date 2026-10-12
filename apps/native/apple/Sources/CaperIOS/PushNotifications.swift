@@ -129,7 +129,8 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         }
     }
 
-    /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`).
+    /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`);
+    /// kind `feedback` opens a feedback visit at `messageId`, in its thread.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
         guard let model else { pendingRoute = route; return }
@@ -140,6 +141,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let model, model.account != nil, model.pushEnabled else { return [] }
         model.scheduleUnreadRefresh()
+        if case .feedback? = NotificationRoute(userInfo: notification.request.content.userInfo) { model.feedbackNotificationArrived() }
         if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
         return [.banner, .list, .sound]
     }

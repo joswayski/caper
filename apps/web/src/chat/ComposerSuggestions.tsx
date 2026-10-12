@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, type KeyboardEvent, type RefObject } from "react";
-import Avatar from "../components/Avatar";
+import { PersonSuggestion } from "../components/PeopleSuggestions";
 import { emojiAsset } from "./emoji.ts";
 import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
 import {
@@ -181,20 +181,16 @@ export function useComposerSuggestions({
               onClick={() => chooseMention(option)}
             >
               {option.kind === "member" ? (
-                <>
-                  <i className="chat-mention-avatar">
-                    <Avatar avatarId={option.member.avatarId} name={option.member.displayName} />
-                  </i>
-                  <span>{option.member.displayName}</span>
-                  <small>@{name}</small>
-                </>
+                <PersonSuggestion person={option.member} />
               ) : (
                 <>
                   <i className="chat-mention-avatar chat-mention-special" aria-hidden="true">
                     @
                   </i>
-                  <span>@{name}</span>
-                  <small>{specialMentionLabels[option.kind]}</small>
+                  <span className="person-suggestion-names">
+                    <span>@{name}</span>
+                    <small>{specialMentionLabels[option.kind]}</small>
+                  </span>
                 </>
               )}
             </button>

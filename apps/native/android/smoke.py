@@ -113,6 +113,18 @@ def find(
     return None
 
 
+def bounds(node: ET.Element) -> tuple[int, int, int, int]:
+    left, top, right, bottom = map(int, re.findall(r"-?\d+", node.get("bounds", "")))
+    return left, top, right, bottom
+
+
+def within(inner: ET.Element, outer: ET.Element) -> bool:
+    """Whether `inner` lies inside `outer` on screen."""
+    il, it, ir, ib = bounds(inner)
+    ol, ot, orr, ob = bounds(outer)
+    return ol <= il and ot <= it and ir <= orr and ib <= ob
+
+
 def dismiss_system_not_responding(root: ET.Element) -> bool:
     """Answer Android's own "System UI isn't responding" dialog with Wait.
 
@@ -167,6 +179,28 @@ def wait_for(
 def center(node: ET.Element) -> tuple[int, int]:
     left, top, right, bottom = map(int, re.findall(r"\d+", node.attrib["bounds"]))
     return (left + right) // 2, (top + bottom) // 2
+
+
+def drag(x1: int, x2: int, y: int, steps: int = 8) -> None:
+    """A finger drag sent as separate motion events. One `input swipe` reaches a stalled emulator
+    frame as a single batch (its frames take over a second), and the app sees no drag; here every
+    move arrives on its own, and the drag travels far enough to commit without a fling."""
+    adb("shell", "input", "motionevent", "DOWN", str(x1), str(y))
+    for step in range(1, steps + 1):
+        adb("shell", "input", "motionevent", "MOVE", str(x1 + (x2 - x1) * step // steps), str(y))
+    adb("shell", "input", "motionevent", "UP", str(x2), str(y))
+
+
+def drag_until(x1: int, x2: int, y: int, *, description: str | None = None, text: str | None = None) -> None:
+    """Drags, then waits for the result; retries twice, as a stalled frame can still swallow a drag."""
+    for attempt in range(3):
+        drag(x1, x2, y)
+        try:
+            wait_for(description=description, text=text, seconds=8)
+            return
+        except AssertionError:
+            if attempt == 2:
+                raise
 
 
 def tap(*, text: str | None = None, description: str | None = None, resource_id: str | None = None) -> None:
@@ -387,14 +421,22 @@ def main() -> None:
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")
-    join = find(desktop, description="Join voice in #general")
-    assert general is not None and menu is not None and join is not None, (
-        "General must expose its channel menu and Join voice action"
-    )
+    assert general is not None and menu is not None, "General must expose its channel menu"
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
-    general_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
+    # Web: voice joins from the open channel's header, so empty channels stay a single line.
+    assert find(desktop, contains="Join voice in #") is None, "Channel rows must not repeat a Join voice action"
+    # The fixture can show people in #design's voice; #general's row is the empty one.
+    assert find(desktop, contains="in voice in general") is None, "Empty channels must not show a voice row"
+    header = wait_for(description="Join voice")
+    join = find(header, description="Join voice")
+    pins = find(header, description="Pins")
+    show_members = find(header, description="Show member list")
+    assert pins is not None and show_members is not None, "The chat header must keep Pins and Members"
+    # Web: voice follows the channel name, then a thin rule, then Pins and Members.
+    assert center(join)[0] < center(pins)[0] < center(show_members)[0], "Join voice sits before Pins and Members"
+    assert find(header, description="More channel options") is None, "Wide layouts keep Pins and Members as buttons"
+    assert abs(center(join)[1] - center(pins)[1]) <= 4, "Join voice belongs to the chat header row"
     left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
-    assert top >= general_bottom, "Join voice must be on a separate row below the channel name"
     # viewport() sets density 320: 48dp is 96 physical pixels.
     assert right - left >= 96 and bottom - top >= 96, "Join voice must have a 48dp touch target"
 
@@ -553,33 +595,44 @@ def main() -> None:
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
     back = find(narrow, description="Back to Browse")
-    channel = find(narrow, text="# general")
+    # Phones: the channel name opens the channel's menu, as in Slack.
+    channel = find(narrow, description="#general options")
     assert back is not None and channel is not None, "Narrow navigation shows a back arrow and the channel name"
     assert center(back)[0] < center(channel)[0], "The back arrow must precede the channel name, as on the web"
-    assert find(narrow, description="# general channel menu") is None, "A phone channel title has no dropdown"
+    left, top, right, bottom = map(int, re.findall(r"\d+", channel.attrib["bounds"]))
+    assert bottom - top >= 96, "The channel title must have a 48dp touch target"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    # Phones show Pins and Members as header buttons, Members right of Pins.
-    pins = find(narrow, description="Pins")
-    members_button = find(narrow, description="Show member list")
-    assert pins is not None and members_button is not None, "Phone header shows Pins and Members"
-    assert center(pins)[0] < center(members_button)[0], "Members sits right of Pins"
-    # Navigation starts inside the content, not at a screen edge. Swipes travel past half the
-    # width: a shorter one opens or closes only as a fling, which a busy emulator can report too
-    # slowly (its frames take over a second).
+    # Phones fold Pins and Members into the title's menu, leaving room for voice; there is no separate More button.
+    assert find(narrow, description="Pins") is None, "Phone header has no separate Pins button"
+    assert find(narrow, description="Show member list") is None, "Phone header has no separate Members button"
+    assert find(narrow, description="More channel options") is None, "The channel name is the phone menu trigger"
+    # Below the header, phones show only the conversation; the account bar stays in Browse.
+    for browse_only in ("User Settings", "Mute microphone", "Deafen audio"):
+        assert find(narrow, description=browse_only) is None, f"{browse_only!r} belongs in Browse on phones"
+    tap(description="#general options")
+    menu = wait_for(text="Members")
+    assert find(menu, text="Pins") is not None, "The title menu opens Pins"
+    tap(text="Pins")
+    wait_for(text="Close")
+    tap(text="Close")
+    wait_for(description="#general options")
+    # Navigation starts inside the content, not at a screen edge. Drags travel past half the
+    # width, so they commit without depending on fling speed.
     width, middle = 780, "844"
     adb("shell", "input", "swipe", str(width // 2), middle, str(width // 2), "600", "150")
     assert find(hierarchy(), description="Back to Browse") is not None, "Vertical scrolling stays in chat"
-    adb("shell", "input", "swipe", str(width // 4), middle, str(width - 10), middle, "150")
-    wait_for(description="Close navigation")
-    adb("shell", "input", "swipe", str(width * 3 // 4), middle, "10", middle, "150")
-    wait_for(description="Back to Browse")
-    tap(description="Show member list")
+    time.sleep(1)  # Let the list's overscroll settle before the next touch.
+    drag_until(width // 4, width - 10, int(middle), description="Close navigation")
+    drag_until(width * 3 // 4, 10, int(middle), description="Back to Browse")
+    tap(description="#general options")
+    tap(text="Members")
+    wait_for(description="Close member list")
     members_open = capture("caper-android-narrow-members", "Members")
-    members_title = find(members_open, text="Members")
-    hide = find(members_open, description="Hide member list")
-    assert hide is not None and members_title is not None
-    assert center(hide)[1] < center(members_title)[1], "Member overlay must leave the header exposed"
+    title = find(members_open, description="#general options")
+    close_members = find(members_open, description="Close member list")
+    assert title is not None and close_members is not None
+    assert center(title)[1] < center(close_members)[1], "Member overlay must leave the header exposed"
 
     def members_closed(message: str) -> None:
         deadline = time.monotonic() + 10
@@ -587,20 +640,19 @@ def main() -> None:
             assert time.monotonic() < deadline, message
             time.sleep(0.5)
 
-    tap(description="Hide member list")
-    members_closed("Hide member list must close the member overlay")
+    tap(description="#general options")
+    tap(text="Hide members")
+    members_closed("Hide members must close the member overlay")
     # Like Browse, the member list follows a finger: left on the timeline opens it, right on the panel closes it.
     # The 390x844 viewport at DPR 2; mid-height is in the timeline and on the panel.
-    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
-    wait_for(text="Members")
+    drag_until(width // 2, 10, int(middle), text="Members")
     assert find(hierarchy(), description="Back to Browse") is not None, "A left swipe opens Members, not Browse"
     # The panel spans 103-383dp. Swipe past half its travel (280dp plus a 32dp margin): a shorter
     # swipe closes it only as a fling, which a busy emulator can report too slowly.
-    adb("shell", "input", "swipe", str(width * 2 // 5), middle, str(width - 10), middle, "150")
+    drag(width * 2 // 5, width - 10, int(middle))
     members_closed("A right swipe on the member panel must close it")
-    adb("shell", "input", "swipe", str(width // 2), middle, "10", middle, "150")
-    wait_for(text="Members")
-    adb("shell", "input", "swipe", "40", middle, str(width - 10), middle, "150")
+    drag_until(width // 2, 10, int(middle), text="Members")
+    drag(40, width - 10, int(middle))
     members_closed("A right swipe on the backdrop must close Members without opening Browse")
     assert find(hierarchy(), description="Back to Browse") is not None
     tap(description="Back to Browse")
@@ -643,7 +695,9 @@ def main() -> None:
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
     initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
     assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
-    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join voice"
+    assert find(initial_roster, text="4 in voice") is not None, "Occupied channels show their occupancy"
+    assert find(initial_roster, contains="in voice in general") is None, "Empty channels must not show a voice row"
+    assert find(initial_roster, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
     tap(description="4 in voice in design. Show who is in voice")
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
@@ -659,6 +713,22 @@ def main() -> None:
     tap(description="4 in voice in design. Hide who is in voice")
     collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")
     assert find(collapsed, text="Fixture Voice 1") is None, "Collapsed roster still exposed occupants"
+    # Phones count who is in voice under the channel name; the header's voice group has no faces.
+    tap(text="design")
+    wait_for(contains="Message #design")
+    wait_for(description="Join voice")
+    occupied = capture("caper-android-voice-header-occupied", "#design options")
+    title = find(occupied, description="#design options")
+    subtitle = find(occupied, contains="4 in voice")
+    # The subtitle is its own node inside the title's bounds, not the title's text.
+    assert title is not None and subtitle is not None and within(subtitle, title), (
+        "The phone title's subtitle counts who is in voice"
+    )
+    assert find(occupied, contains="are in voice") is None, "Phone header voice shows no faces"
+    tap(description="Back to Browse")
+    tap(text="general")
+    wait_for(contains="Message #general")
+    tap(description="Back to Browse")
     tap(description="4 in voice in design. Show who is in voice")
     wait_for(text="Fixture Voice 1")
     fixture({"mediaAccessDenied": {"channelId": "chan00000002"}})
@@ -720,18 +790,23 @@ def main() -> None:
     # Exercise the actual default voice entry and Android permission controller.
     # Only notifications are pre-granted; microphone denial and approval happen
     # through the system UI. The loopback fixture rejects join, never fakes audio.
-    # Web joins voice from the channel list only; the chat header has no Join voice.
-    assert find(delivered, contains="Join voice") is None, "Chat header must not duplicate the channel-list Join voice"
+    # Web joins voice from the open channel's header; channel rows carry no Join.
+    join = "Join voice"
+    voice_ready = wait_for(description=join)
+    capture("caper-android-voice-ready", "Message #general")
+    action = find(voice_ready, description=join)
+    left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
+    # viewport() sets density 320: 48dp is 96 physical pixels.
+    assert right - left >= 96 and bottom - top >= 96, "The header voice action must have a 48dp touch target"
+    title = find(voice_ready, description="#general options")
+    assert title is not None and center(title)[0] < center(action)[0], "Join voice follows the channel name"
+    # Phones show the voice action as an icon; its label stays as the accessible name.
+    assert find(voice_ready, text="Join voice") is None, "Phone header voice has no text label"
+    assert find(voice_ready, description="Pins") is None and find(voice_ready, description="Show member list") is None
+    assert find(voice_ready, description="Mute microphone") is None, "Phones show header mute only during a call"
     tap(description="Back to Browse")
-    join = "Join voice in #general"
-    voice_ready = capture("caper-android-voice-ready", join)
-    assert find(voice_ready, description=join) is not None
-    for channel in ("general", "design", "planning"):
-        action = find(voice_ready, description=f"Join voice in #{channel}")
-        assert action is not None, f"Accessible #{channel} must expose a stable Join voice action"
-        left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
-        # viewport() sets density 320: 48dp is 96 physical pixels.
-        assert right - left >= 96 and bottom - top >= 96, f"#{channel} voice action must have a 48dp touch target"
+    browse_voice = wait_for(description="Mute microphone")
+    assert find(browse_voice, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
@@ -743,6 +818,8 @@ def main() -> None:
     assert find(restored, description="Unmute microphone") is not None, "Undeafen keeps an explicit mute"
     tap(description="Unmute microphone")
     wait_for(description="Mute microphone")
+    tap(description="Close navigation")
+    wait_for(description=join)
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"
@@ -756,17 +833,30 @@ def main() -> None:
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    assert find(failed, description="Dismiss voice error") is not None, "Web shows voice errors in the dock"
+    # Phones show the dock's voice error in the conversation, above the composer, with its own dismiss.
+    assert find(failed, contains="Message #general") is not None, "The voice error must not leave the conversation"
+    inline_error = find(failed, contains="TEST FIXTURE: no real media engine or SFU is connected.")
+    composer = next((node for node in nodes(failed) if node.get("class") == "android.widget.EditText"), None)
+    assert inline_error is not None and composer is not None
+    assert center(inline_error)[1] < center(composer)[1], "The voice error sits above the composer"
+    assert find(failed, description="Dismiss voice error") is not None, "Phones can dismiss the voice error in place"
     tap(description="Dismiss voice error")
     assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    wait_for(description=join)
     tap(description=join)
     retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
-    tap(description="Close navigation")
-    chat = wait_for(contains="Message #general")
-    assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
-        "Phones keep the voice error visible outside Browse"
+    assert find(retried, contains="Message #general") is not None, "Phones keep the voice error visible outside Browse"
+    # Browse still carries it in the dock.
+    tap(description="Back to Browse")
+    dock = wait_for(description="Dismiss voice error")
+    assert find(dock, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
+        "Web shows voice errors in the dock"
     )
+    tap(description="Dismiss voice error")
+    assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    tap(description="Close navigation")
+    wait_for(description=join)
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

@@ -245,9 +245,11 @@ try {
     "All font weights must paint fallback text while Satoshi downloads",
   );
   assert.equal(
-    evaluate('return document.querySelector(".sim-chat > header").textContent'),
-    "# general",
-    "No simulated-demo badge inside the room",
+    evaluate(
+      'const header = document.querySelector(".sim-chat > header"); return header.querySelector("h2").textContent + "|" + header.querySelector(".header-voice").textContent',
+    ),
+    `# general|${evaluate('return document.querySelectorAll(".sim-sidebar .voice-stack-avatar").length')}${evaluate('return document.querySelector(".sim-chat .voice-leave") ? "Leave" : "Join voice"')}`,
+    "No simulated-demo badge inside the room; its header shows only who is in voice and the action",
   );
   assert.equal(
     evaluate('return document.querySelector(".live-caption")'),
@@ -352,7 +354,7 @@ try {
     ".sim-channel-list > li:last-child .channel-line",
     ".sim-channel-list > li:last-child .channel-select",
     ".channel-manage",
-    ".channel-join",
+    ".header-voice",
     ".direct-select",
     ".direct-action",
     ".browse-channels",
@@ -671,6 +673,18 @@ try {
   for (const width of [320, 390]) {
     browser("set", "viewport", String(width), "844", "2");
     evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
+    browser("scrollintoview", ".live-invite");
+    assert.ok(
+      evaluate(`
+        const pill = document.querySelector('.live-invite').getBoundingClientRect();
+        const stage = document.querySelector('.live-stage').getBoundingClientRect();
+        const x = pill.left + pill.width / 2, y = pill.top + pill.height / 2;
+        return Math.abs(x - (stage.left + stage.width / 2)) < 1
+          && Math.abs(y - (stage.top + stage.height / 2)) < 1
+          && document.elementFromPoint(x, y)?.closest('a')?.getAttribute('href') === '/spaces';
+      `),
+      `The join pill stays centered and tappable above the tilted demo at ${width}px`,
+    );
     checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
     assert.equal(
       evaluate('return getComputedStyle(document.querySelector(".sim-message > .chat-avatar + div")).paddingRight'),

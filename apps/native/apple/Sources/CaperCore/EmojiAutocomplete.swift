@@ -73,10 +73,16 @@ enum EmojiAutocomplete {
 
     static func inserting(_ entry: EmojiCatalogEntry, in text: String, match: EmojiAutocompleteMatch,
                           scalarLimit: Int = 4_000) -> (text: String, selection: NSRange)? {
-        guard let range = Range(match.replacementRange, in: text) else { return nil }
-        let result = text.replacingCharacters(in: range, with: entry.emoji)
+        inserting(entry.emoji, in: text, selection: match.replacementRange, scalarLimit: scalarLimit)
+    }
+
+    /// Picker selection replaces the editor's saved UTF-16 range, not the end of the draft.
+    static func inserting(_ emoji: String, in text: String, selection: NSRange,
+                          scalarLimit: Int = 4_000) -> (text: String, selection: NSRange)? {
+        guard let range = Range(selection, in: text) else { return nil }
+        let result = text.replacingCharacters(in: range, with: emoji)
         guard result.unicodeScalars.count <= scalarLimit else { return nil }
-        let cursor = match.replacementRange.location + (entry.emoji as NSString).length
+        let cursor = selection.location + (emoji as NSString).length
         return (result, NSRange(location: cursor, length: 0))
     }
 
@@ -140,10 +146,13 @@ enum ComposerAutocomplete {
     @Published var match: ComposerAutocompleteMatch?
     @Published var selected = 0
     var acceptAction: ((Int) -> Void)?
+    var insertAction: ((String) -> Void)?
+    var restoreFocusAction: (() -> Void)?
     func update(_ match: ComposerAutocompleteMatch?) {
         if self.match != match { self.match = match; selected = 0 }
     }
     func accept(_ index: Int) { acceptAction?(index) }
+    func restoreFocus() { restoreFocusAction?() }
     func move(down: Bool) {
         guard let count = match?.count, count > 0 else { return }
         selected = (selected + (down ? 1 : count - 1)) % count
@@ -174,24 +183,8 @@ struct ComposerSuggestionsView: View {
                 case let .mention(mention):
                     ForEach(Array(mention.choices.enumerated()), id: \.element.id) { index, candidate in
                         Button { controller.accept(index) } label: {
-                            let member = candidate.kind == .member
-                            HStack(spacing: 12) {
-                                if member {
-                                    Avatar(name: candidate.displayName, size: 24, avatarID: candidate.avatarId)
-                                } else {
-                                    Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
-                                        .frame(width: 24, height: 24)
-                                }
-                                // Member: display name, then a muted @username.
-                                // Special: @everyone/@here, then its muted description.
-                                HStack(spacing: 6) {
-                                    Text(member ? candidate.displayName : "@\(candidate.username)")
-                                        .font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
-                                    Text(member ? "@\(candidate.username)" : candidate.displayName)
-                                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                                }
-                                Spacer(minLength: 0)
-                            }.modifier(SuggestionRow(selected: index == controller.selected))
+                            MentionSuggestionLabel(candidate: candidate)
+                                .modifier(SuggestionRow(selected: index == controller.selected))
                         }.buttonStyle(.plain)
                             .accessibilityLabel(Self.mentionLabel(candidate))
                             .accessibilityIdentifier("mention-suggestion-\(candidate.username.lowercased())")
@@ -218,8 +211,34 @@ extension ComposerSuggestionsView {
     }
 }
 
+/// A suggestion's avatar beside two lines: a person's display name over a
+/// small muted `@username`, or `@everyone`/`@here` over its description.
+/// Shared by the composer's `@` popup and the exact-username fields.
+struct MentionSuggestionLabel: View {
+    let candidate: MentionCandidate
+    var body: some View {
+        // Specials (`@everyone`, `@here`, a team name) stack the name over its description.
+        let member = candidate.kind == .member
+        HStack(spacing: 10) {
+            if member {
+                Avatar(name: candidate.displayName, size: 28, avatarID: candidate.avatarId)
+            } else {
+                Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                    .frame(width: 28, height: 28)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(member ? candidate.displayName : "@\(candidate.username)")
+                    .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                Text(member ? "@\(candidate.username)" : candidate.displayName)
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 /// Flat, borderless 44pt rows; the selected row gets the terracotta tint.
-private struct SuggestionRow: ViewModifier {
+struct SuggestionRow: ViewModifier {
     let selected: Bool
     func body(content: Content) -> some View {
         content.padding(.horizontal, 10).frame(minHeight: 44)
@@ -232,6 +251,15 @@ private struct SuggestionRow: ViewModifier {
 final class ComposerTextView: UITextView {
     var autocompleteActive: (() -> Bool)?
     var handleKey: ((String) -> Void)?
+    var pasteAttachments: (() -> Bool)?
+    override func paste(_ sender: Any?) {
+        if pasteAttachments?() != true { super.paste(sender) }
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
+           UIPasteboard.general.hasImages || UIPasteboard.general.hasURLs { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
     /// Once Browse has covered the conversation, UIKit gave the composer its
     /// earlier focus back as the conversation returned, reopening the keyboard
     /// over it. Focus waits for a touch (or VoiceOver) until a moment after.
@@ -275,6 +303,10 @@ struct NativeMessageComposer: UIViewRepresentable {
     /// Who `@` may suggest in this conversation.
     let mentions: MentionSource
     let submit: () -> Void
+    var submitOnReturn = true
+    var editable = true
+    var accessibilityID = "message-composer"
+    var pasteAttachments: (() -> Bool)? = nil
     @Environment(\.composerCovered) private var covered
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
@@ -293,6 +325,9 @@ struct NativeMessageComposer: UIViewRepresentable {
     }
     func updateUIView(_ view: UITextView, context: Context) {
         (view as? ComposerTextView)?.setCovered(covered)
+        (view as? ComposerTextView)?.pasteAttachments = pasteAttachments
+        view.isEditable = editable
+        view.accessibilityIdentifier = accessibilityID
         let mentionsChanged = context.coordinator.parent.mentions != mentions
         context.coordinator.parent = self
         if view.text != text { view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
@@ -316,6 +351,18 @@ struct NativeMessageComposer: UIViewRepresentable {
             let match = dismissed || !textView.isFirstResponder ? nil : ComposerAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil, mentions: parent.mentions)
             parent.controller.update(match)
             parent.controller.acceptAction = { [weak self] index in self?.accept(index) }
+            parent.controller.insertAction = { [weak self, selection = textView.selectedRange] emoji in self?.insert(emoji, selection: selection) }
+            parent.controller.restoreFocusAction = { [weak self] in
+                guard let self, self.parent.editable else { return }
+                (self.view as? ComposerTextView)?.touched()
+                self.view?.becomeFirstResponder()
+            }
+        }
+        func insert(_ emoji: String, selection: NSRange) {
+            guard parent.editable, let view,
+                  let result = EmojiAutocomplete.inserting(emoji, in: view.text, selection: selection) else { return }
+            view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
+            parent.controller.update(nil)
         }
         func handle(_ key: String) {
             guard parent.controller.match != nil, view?.markedTextRange == nil else { return }
@@ -348,6 +395,10 @@ final class ComposerTextView: NSTextView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
+    var pasteAttachments: (() -> Bool)?
+    override func paste(_ sender: Any?) {
+        if pasteAttachments?() != true { super.paste(sender) }
+    }
     override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
     override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
     override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
@@ -360,6 +411,10 @@ struct NativeMessageComposer: NSViewRepresentable {
     /// Who `@` may suggest in this conversation.
     let mentions: MentionSource
     let submit: () -> Void
+    var submitOnReturn = true
+    var editable = true
+    var accessibilityID = "message-composer"
+    var pasteAttachments: (() -> Bool)? = nil
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
@@ -387,6 +442,10 @@ struct NativeMessageComposer: NSViewRepresentable {
         let mentionsChanged = context.coordinator.parent.mentions != mentions
         context.coordinator.parent = self
         guard let view = scroll.documentView as? ComposerTextView else { return }
+        view.pasteAttachments = pasteAttachments
+        view.isEditable = editable
+        view.setAccessibilityIdentifier(accessibilityID)
+        view.setAccessibilityHelp(submitOnReturn ? "Return sends. Shift-Return adds a new line." : "Use the Send button. Return adds a new line.")
         // The text view reports its own text as its accessibility value; setting
         // it would replace the text on every update.
         if view.string != text { view.string = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
@@ -423,6 +482,17 @@ struct NativeMessageComposer: NSViewRepresentable {
         @MainActor func refresh(_ view: ComposerTextView) {
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
+            parent.controller.insertAction = { [weak self, selection = view.selectedRange()] in self?.insert($0, selection: selection) }
+            parent.controller.restoreFocusAction = { [weak self] in
+                guard let self, self.parent.editable, let view = self.view else { return }
+                view.window?.makeFirstResponder(view)
+            }
+        }
+        @MainActor func insert(_ emoji: String, selection: NSRange) {
+            guard parent.editable, let view,
+                  let result = EmojiAutocomplete.inserting(emoji, in: view.string, selection: selection) else { return }
+            view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
+            parent.controller.update(nil)
         }
         @MainActor func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }
@@ -432,7 +502,7 @@ struct NativeMessageComposer: NSViewRepresentable {
                 if (key == 36 || key == 48) && !event.modifierFlags.contains(.shift) { accept(parent.controller.selected); return true }
                 if key == 53 { dismissed = true; parent.controller.update(nil); return true }
             }
-            if key == 36 && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
+            if key == 36 && parent.submitOnReturn && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
             return false
         }
         @MainActor func accept(_ index: Int) {

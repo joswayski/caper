@@ -33,7 +33,14 @@ export interface CompressionSettings {
   paletteColors: number;
   previewEdge: number;
   videoMaxHeight: number;
+  /** Video target at 1080p30, scaled by pixel count and frame rate. */
   videoBitrateKbps: number;
+  /** A re-encode never exceeds this percentage of a non-H.264 source's own
+   * bitrate (H.264 sources: 100%). H.264 needs about twice HEVC's bitrate for
+   * the same quality. 0 removes the cap. */
+  videoSourceBitratePercent: number;
+  /** Above 30 fps the target grows with the frame rate, up to this percentage. 100 turns it off. */
+  videoHighFpsBoostPercent: number;
   audioBitrateKbps: number;
 }
 
@@ -45,8 +52,10 @@ export const DEFAULT_COMPRESSION: CompressionSettings = {
   imageMaxEdge: 4096,
   paletteColors: 256,
   previewEdge: 640,
-  videoMaxHeight: 1080,
-  videoBitrateKbps: 6000,
+  videoMaxHeight: 1440,
+  videoBitrateKbps: 8000,
+  videoSourceBitratePercent: 200,
+  videoHighFpsBoostPercent: 150,
   audioBitrateKbps: 128,
 };
 
@@ -68,6 +77,8 @@ export function compressionSettings(value: unknown): CompressionSettings {
     previewEdge: pick("previewEdge", 64, 2048),
     videoMaxHeight: pick("videoMaxHeight", 0, 4320),
     videoBitrateKbps: pick("videoBitrateKbps", 250, 50_000),
+    videoSourceBitratePercent: pick("videoSourceBitratePercent", 0, 1000),
+    videoHighFpsBoostPercent: pick("videoHighFpsBoostPercent", 100, 400),
     audioBitrateKbps: pick("audioBitrateKbps", 32, 320),
   };
 }
@@ -455,10 +466,15 @@ export function videoTargetSize(
   return width < height ? { width: even } : { height: even };
 }
 
-/** Target video bitrate: `videoBitrateKbps` at 1080p, scaled by pixel count,
- * with a floor so small videos are not starved. */
-export function videoTargetKbps(width: number, height: number, settings: CompressionSettings) {
-  return Math.max(MIN_VIDEO_KBPS, Math.round((settings.videoBitrateKbps * (width * height)) / FULL_HD_PIXELS));
+/** Target video bitrate: `videoBitrateKbps` at 1080p30, scaled by pixel
+ * count and (above 30 fps, up to `videoHighFpsBoostPercent`) frame rate, with
+ * a floor so small videos are not starved. */
+export function videoTargetKbps(width: number, height: number, settings: CompressionSettings, fps?: number) {
+  const boost = fps && fps > 30 ? Math.min(fps / 30, settings.videoHighFpsBoostPercent / 100) : 1;
+  return Math.max(
+    MIN_VIDEO_KBPS,
+    Math.round((settings.videoBitrateKbps * (width * height) * Math.max(1, boost)) / FULL_HD_PIXELS),
+  );
 }
 
 export interface VideoProbe {
@@ -469,6 +485,8 @@ export interface VideoProbe {
   codec: string | null;
   /** Video-only bitrate, when it could be estimated. */
   bitrateKbps?: number;
+  /** Frames per second, when known. */
+  fps?: number;
   hdr: boolean;
   /** The container is one the API serves inline (MP4, WebM, QuickTime). */
   inlineContainer: boolean;
@@ -489,7 +507,7 @@ export function videoPlan(probe: VideoProbe, settings: CompressionSettings): Vid
   if (scaled) reasons.push("resolution");
   if (probe.codec !== "avc") reasons.push("codec");
   if (!probe.inlineContainer) reasons.push("container");
-  const sourceTarget = videoTargetKbps(probe.width, probe.height, settings);
+  const sourceTarget = videoTargetKbps(probe.width, probe.height, settings, probe.fps);
   if (probe.bitrateKbps !== undefined && probe.bitrateKbps > sourceTarget * BITRATE_SLACK) reasons.push("bitrate");
   if (!reasons.length) return { action: "keep", reason: "efficient" };
   const output = !scaled
@@ -501,15 +519,28 @@ export function videoPlan(probe: VideoProbe, settings: CompressionSettings): Vid
     action: "transcode",
     reasons,
     ...output,
-    bitrateKbps: outputKbps(videoTargetKbps(output.width, output.height, settings), probe.bitrateKbps),
+    bitrateKbps: outputKbps(
+      videoTargetKbps(output.width, output.height, settings, probe.fps),
+      probe.bitrateKbps,
+      probe.codec === "avc",
+      settings,
+    ),
   };
 }
 
-/** The target, but never above the source's own bitrate: a compatibility
- * transcode of a lean HEVC clip must not grow it. The floor still applies. */
-export function outputKbps(targetKbps: number, sourceKbps: number | undefined) {
-  if (sourceKbps === undefined || !(sourceKbps > 0)) return targetKbps;
-  return Math.max(MIN_VIDEO_KBPS, Math.min(targetKbps, Math.round(sourceKbps)));
+/** The target, but never above `videoSourceBitratePercent` of the source's
+ * own bitrate (100% for H.264, which more bits cannot improve): converting a
+ * lean HEVC clip keeps its quality without growing it more than needed. The
+ * floor still applies. */
+export function outputKbps(
+  targetKbps: number,
+  sourceKbps: number | undefined,
+  sourceIsAvc: boolean,
+  settings: CompressionSettings,
+) {
+  const percent = sourceIsAvc ? 100 : settings.videoSourceBitratePercent;
+  if (sourceKbps === undefined || !(sourceKbps > 0) || percent <= 0) return targetKbps;
+  return Math.max(MIN_VIDEO_KBPS, Math.min(targetKbps, Math.round((sourceKbps * percent) / 100)));
 }
 
 /** A transcode for playability (codec or container) is always kept; one for
@@ -550,13 +581,14 @@ async function transcodeVideo(
     const track = await input.getPrimaryVideoTrack();
     if (!track || !(await track.canDecode())) return;
     const audio = await input.getPrimaryAudioTrack();
-    const [width, height, codec, hdr, colorSpace, duration] = await Promise.all([
+    const [width, height, codec, hdr, colorSpace, duration, stats] = await Promise.all([
       track.getDisplayWidth(),
       track.getDisplayHeight(),
       track.getCodec(),
       track.hasHighDynamicRange().catch(() => false),
       track.getColorSpace().catch(() => undefined),
       input.computeDuration().catch(() => 0),
+      track.computePacketStats(120).catch(() => undefined),
     ]);
     // Video bitrate from the whole file minus a sampled audio bitrate.
     let bitrateKbps: number | undefined;
@@ -570,6 +602,7 @@ async function transcodeVideo(
         height,
         codec,
         bitrateKbps,
+        fps: stats && stats.averagePacketRate > 0 ? stats.averagePacketRate : undefined,
         hdr: hdr || isHdrColorSpace(colorSpace),
         inlineContainer: attachmentKind(contentType) === "video",
       },

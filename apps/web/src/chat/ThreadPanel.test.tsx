@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import ThreadPanel from "./ThreadPanel.tsx";
+import { Arrivals } from "./arrivals.ts";
 import { initialChatView, type ThreadViewState } from "./client.ts";
 import type { ChatMessage } from "./types.ts";
 
@@ -34,6 +35,7 @@ function render(
       onReplyChange={() => {}}
       blockedIds={new Set()}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
+      arrivals={new Arrivals()}
       onClose={() => {}}
     />,
   );

@@ -439,7 +439,7 @@ try {
   browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
   wait('!!document.querySelector("#chat-thread-reply")');
   browser("fill", "#chat-thread-reply", "TEST FIXTURE — Replying only in the destination.");
-  browser("click", ".chat-thread-send-row button");
+  browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
   wait('document.querySelector(".chat-thread-summary strong")?.textContent === "1 reply"');
   const destinationThread = (
     await request(`/api/chat/channels/chan00000001/messages/${wrapper.id}/thread`, undefined, "other")
