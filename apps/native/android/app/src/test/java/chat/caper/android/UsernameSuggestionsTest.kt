@@ -37,19 +37,27 @@ class UsernameSuggestionsTest {
         assertEquals(listOf("amy", "lee", "Zoe"), rankPeople(listOf(person("Zoe"), person("lee"), person("amy")), "").map { it.username })
     }
 
-    @Test fun `space invites suggest known people outside the space and its pending invitations, by id`() {
+    @Test fun `space invites suggest known people outside the space, then pending invitees marked invited, by id`() {
         val known = listOf(Person("id_alex", "alex", "Alex Doe", 3), Person("id_bob", "bob", "Bob"), Person("id_cy", "cy", "Cy"), Person("id_dee", "dee", "Dee"))
         // Matched by id: a member whose username changed is still excluded.
         val members = listOf(member("me", owner = true), Member("id_bob", "bobby", "Bob", false))
         val candidates = spaceInviteCandidates(known, members, listOf(member("cy")))
-        assertEquals(listOf(MentionCandidate("alex", "Alex Doe", avatarId = 3), MentionCandidate("dee", "Dee")), candidates)
+        assertEquals(
+            listOf(MentionCandidate("alex", "Alex Doe", avatarId = 3), MentionCandidate("dee", "Dee"), MentionCandidate("cy", "cy", invited = true)),
+            candidates,
+        )
         assertTrue(spaceInviteCandidates(null, members, emptyList()).isEmpty())
+        // Invitees show even before `/api/people` loads, so "already invited" is never hidden.
+        assertEquals(listOf(MentionCandidate("cy", "cy", invited = true)), spaceInviteCandidates(null, members, listOf(member("cy"))))
     }
 
-    @Test fun `private channels suggest space members without you, current access or pending invitations`() {
+    @Test fun `private channels suggest space members without you or current access, then pending invitees marked invited`() {
         val members = listOf(member("me", owner = true), Member("id_ann", "ann", "Ann", false, 9), member("bob"), member("cy"), member("dee"))
         val candidates = channelGrantCandidates(members, "id_me", grants = listOf(member("bob")), invitations = listOf(Member("id_cy", "renamed", "Cy", false)))
-        assertEquals(listOf(MentionCandidate("ann", "Ann", avatarId = 9), MentionCandidate("dee", "dee")), candidates)
+        assertEquals(
+            listOf(MentionCandidate("ann", "Ann", avatarId = 9), MentionCandidate("dee", "dee"), MentionCandidate("renamed", "Cy", invited = true)),
+            candidates,
+        )
         assertEquals(listOf("ann", "bob", "cy", "dee"), channelGrantCandidates(members, "id_me", emptyList(), emptyList()).map { it.username })
         assertTrue(channelGrantCandidates(emptyList(), "id_me", emptyList(), emptyList()).isEmpty())
     }

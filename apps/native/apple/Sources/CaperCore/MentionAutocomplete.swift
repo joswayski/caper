@@ -12,6 +12,9 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
     /// A member's display name, or the special's muted description.
     let displayName: String
     var avatarId: Int? = nil
+    /// Already has a pending invitation to the space or channel being
+    /// managed; the username field's row says so.
+    var invited = false
 
     static let everyone = MentionCandidate(kind: .everyone, id: "everyone", username: "everyone",
                                            displayName: "Everyone in this channel")
@@ -33,8 +36,9 @@ extension MentionCandidate {
     init(_ person: Person) {
         self = .member(id: person.id, username: person.username, displayName: person.displayName, avatarId: person.avatarId)
     }
-    init(_ member: Member) {
+    init(_ member: Member, invited: Bool = false) {
         self = .member(id: member.id, username: member.username, displayName: member.displayName, avatarId: member.avatarId)
+        self.invited = invited
     }
 }
 

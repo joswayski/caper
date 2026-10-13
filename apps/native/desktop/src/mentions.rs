@@ -66,6 +66,9 @@ pub struct Person {
     pub username: String,
     pub display_name: String,
     pub avatar_id: Option<i32>,
+    /// Already has a pending invitation to the space or channel being
+    /// managed; the username field's row says so.
+    pub invited: bool,
 }
 
 impl From<&Member> for Person {
@@ -74,6 +77,7 @@ impl From<&Member> for Person {
             username: member.username.clone(),
             display_name: member.display_name.clone(),
             avatar_id: member.avatar_id,
+            invited: false,
         }
     }
 }
@@ -84,6 +88,7 @@ impl From<&KnownPerson> for Person {
             username: person.username.clone(),
             display_name: person.display_name.clone(),
             avatar_id: person.avatar_id,
+            invited: false,
         }
     }
 }
@@ -237,8 +242,17 @@ pub fn field_suggestions<'a>(people: &'a [Person], text: &str) -> Vec<&'a Person
     rank(people, query, MAX_SUGGESTIONS)
 }
 
+/// Pending invitees stay suggestible so the owner sees they're already
+/// invited.
+fn already_invited(member: &Member) -> Person {
+    Person {
+        invited: true,
+        ..Person::from(member)
+    }
+}
+
 /// Whom a space invitation can suggest: known people (`GET /api/people`)
-/// neither in the space nor invited to it, by account id.
+/// not in the space, by account id, then pending invitees marked invited.
 pub fn invitees(people: &[KnownPerson], members: &[Member], invited: &[Member]) -> Vec<Person> {
     people
         .iter()
@@ -249,12 +263,14 @@ pub fn invitees(people: &[KnownPerson], members: &[Member], invited: &[Member]) 
                 .any(|other| other.id == person.id)
         })
         .map(Person::from)
+        .chain(invited.iter().map(already_invited))
         .collect()
 }
 
 /// Whom a private channel can be granted to: space members, never `me`,
-/// without access to it or an invitation to it, by account id. The server
-/// only grants space members, so known people outside it never apply.
+/// without access to it, by account id, then pending invitees marked
+/// invited. The server only grants space members, so known people outside
+/// it never apply.
 pub fn grantees(
     space: &[Member],
     me: Option<&str>,
@@ -271,6 +287,7 @@ pub fn grantees(
                     .any(|other| other.id == member.id)
         })
         .map(Person::from)
+        .chain(invited.iter().map(already_invited))
         .collect()
 }
 
@@ -479,6 +496,7 @@ mod tests {
             username: username.into(),
             display_name: display_name.into(),
             avatar_id: None,
+            invited: false,
         }
     }
 
@@ -850,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn invitees_skip_space_members_and_pending_invitations_by_account_id() {
+    fn invitees_skip_space_members_by_account_id_and_mark_pending_invitations() {
         let people = [
             known("u1", "alex"),
             known("u2", "maya"),
@@ -862,21 +880,27 @@ mod tests {
         let members = [member("u1", "alex_renamed"), member("u9", "sam")];
         let invited = [member("u2", "maya")];
         let rows = invitees(&people, &members, &invited);
-        assert_eq!(usernames(&rows), ["sam", "zed"]);
+        assert_eq!(usernames(&rows), ["sam", "zed", "maya"]);
         assert_eq!(
             rows[0],
             Person {
                 username: "sam".into(),
                 display_name: "SAM".into(),
                 avatar_id: Some(4),
+                invited: false,
             }
         );
+        assert!(rows[2].invited, "pending invitees are marked, not hidden");
         assert_eq!(invitees(&people, &[], &[]).len(), 4);
-        assert!(invitees(&[], &members, &invited).is_empty());
+        assert_eq!(
+            usernames(&invitees(&[], &members, &invited)),
+            ["maya"],
+            "invitees show before people load"
+        );
     }
 
     #[test]
-    fn grantees_are_space_members_without_me_access_or_invitations() {
+    fn grantees_are_space_members_without_me_or_access_then_marked_invitees() {
         let space = [
             member("me", "fixture_owner"),
             member("u1", "alex"),
@@ -891,7 +915,11 @@ mod tests {
         ];
         let invited = [member("u2", "maya")];
         let rows = grantees(&space, Some("me"), &access, &invited);
-        assert_eq!(usernames(&rows), ["sam", "zed"]);
+        assert_eq!(usernames(&rows), ["sam", "zed", "maya"]);
+        assert_eq!(
+            rows.iter().map(|row| row.invited).collect::<Vec<_>>(),
+            [false, false, true]
+        );
         assert_eq!(rows[0].avatar_id, Some(5), "members keep their avatar");
         assert_eq!(
             usernames(&grantees(&space, Some("me"), &[], &[])),
@@ -899,7 +927,10 @@ mod tests {
             "never yourself, even before access loads"
         );
         assert_eq!(grantees(&space, None, &[], &[]).len(), 5);
-        assert!(grantees(&[], Some("me"), &access, &invited).is_empty());
+        assert_eq!(
+            usernames(&grantees(&[], Some("me"), &access, &invited)),
+            ["maya"]
+        );
     }
 
     #[test]

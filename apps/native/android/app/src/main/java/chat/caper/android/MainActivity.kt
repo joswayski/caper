@@ -2066,7 +2066,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 /** A person (avatar, display name over a muted `@username`) or a special (`@everyone` over its muted description). */
 @Composable private fun MentionSuggestionRow(candidate: MentionCandidate, selected: Boolean, action: String = "Mention", choose: () -> Unit) {
     val primary = if (candidate.special) "@${candidate.username}" else candidate.label
-    val secondary = if (candidate.special) candidate.label else "@${candidate.username}"
+    val secondary = if (candidate.special) candidate.label else "@${candidate.username}" + if (candidate.invited) " · Already invited" else ""
     SuggestionRow(selected, "$action $primary, $secondary", choose) {
         if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)

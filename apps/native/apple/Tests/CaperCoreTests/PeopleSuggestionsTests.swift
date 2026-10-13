@@ -65,23 +65,26 @@ final class PeopleSuggestionsTests: XCTestCase {
 
     // MARK: Candidates
 
-    func testSpaceInviteExcludesMembersAndPendingInvitationsByID() {
+    func testSpaceInviteExcludesMembersByIDAndMarksPendingInvitees() {
         let known = people + [Person(id: "Sam000000001", username: "sam", displayName: "Sam Lee")]
         // Matched by id: a member renamed since the people list loaded is still excluded.
         let members = [member(selfID, "fixture_self", owner: true), member("Alice0000001", "alice_renamed")]
         let invited = [member("Bob000000001", "bob")]
         let candidates = PeopleSuggestions.spaceInvite(people: known, members: members, invited: invited, accountID: selfID)
-        XCTAssertEqual(candidates.map(\.username), ["alicia", "malice", "zed", "sam"])
+        XCTAssertEqual(candidates.map(\.username), ["alicia", "malice", "zed", "sam", "bob"])
+        XCTAssertEqual(candidates.filter(\.invited).map(\.username), ["bob"], "pending invitees are marked, not hidden")
         XCTAssertEqual(names("al", candidates), ["alicia", "zed", "malice"])
         XCTAssertEqual(PeopleSuggestions.spaceInvite(people: nil, members: [], invited: [], accountID: selfID), [],
                        "nothing to suggest until people load")
+        XCTAssertEqual(PeopleSuggestions.spaceInvite(people: nil, members: [], invited: invited, accountID: selfID).map(\.invited),
+                       [true], "invitees show before people load")
         let withSelf = [Person(id: selfID, username: "fixture_self", displayName: "Me")]
         XCTAssertEqual(PeopleSuggestions.spaceInvite(people: withSelf, members: [], invited: [], accountID: selfID), [],
                        "never yourself")
         XCTAssertEqual(PeopleSuggestions.spaceInvite(people: people, members: [], invited: [], accountID: nil).first?.avatarId, 3)
     }
 
-    func testChannelGrantOffersSpaceMembersWithoutAccessOrInvitation() {
+    func testChannelGrantOffersSpaceMembersWithoutAccessAndMarksPendingInvitees() {
         let space = [
             member(selfID, "fixture_self", owner: true), member("Maya00000001", "maya"),
             member("Alex00000001", "alex"), member("Bob000000001", "bob"), member("Sam000000001", "sam"),
@@ -89,7 +92,8 @@ final class PeopleSuggestionsTests: XCTestCase {
         let access = [member("Maya00000001", "maya")]
         let invited = [member("Bob000000001", "bob")]
         let candidates = PeopleSuggestions.channelGrant(spaceMembers: space, channelMembers: access, invited: invited, accountID: selfID)
-        XCTAssertEqual(candidates.map(\.username), ["alex", "sam"], "never yourself, even without channel access")
+        XCTAssertEqual(candidates.map(\.username), ["alex", "sam", "bob"], "never yourself, even without channel access")
+        XCTAssertEqual(candidates.filter(\.invited).map(\.username), ["bob"], "pending invitees are marked, not hidden")
         XCTAssertEqual(names("ma", candidates), [], "someone with access is not suggested")
         XCTAssertEqual(names("a", candidates), ["alex", "sam"])
         XCTAssertEqual(PeopleSuggestions.channelGrant(spaceMembers: [], channelMembers: [], invited: [], accountID: selfID), [])

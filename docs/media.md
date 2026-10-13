@@ -894,10 +894,12 @@ ownership transfers or public space discovery yet.
 
 Username fields suggest people the client already has, on web, Android, Apple and
 Rust desktop. The space invite field offers `GET /api/people` (people you share an
-active space or visible DM with) minus current members and pending invitations.
-The private-channel grant field offers the space's members minus the owner,
-current grantees and pending channel invitations. **New direct message** offers
-`GET /api/people`. Each list is fetched or refreshed when its dialog opens and uses
+active space or visible DM with) minus current members. The private-channel
+grant field offers the space's members minus the owner and current grantees.
+Both also list people with a pending invitation, their `@username` line ending
+"· Already invited", so an owner can tell them to check their invitations instead
+of wondering why they're missing; inviting them again is still refused as a
+duplicate. **New direct message** offers `GET /api/people`. Each list is fetched or refreshed when its dialog opens and uses
 the `@` ranking (exact username, username prefix, display-name word prefix, then
 username substring; at most six, nothing until you type). Rows match `@`
 suggestions: avatar, display name, and `@username` in small type beneath it, shown

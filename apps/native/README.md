@@ -68,9 +68,10 @@ desktop, a bottom sheet on Android and iPhone). Mentions do not notify anyone ye
 
 The space invite, private-channel grant and **New direct message** username
 fields suggest people the app already has while you type: known people
-(`GET /api/people`) minus members and pending invitations for spaces, the space's
-members minus existing grantees for private channels, and known people for DMs.
-Rows match `@` suggestions (avatar, display name, `@username` beneath it).
+(`GET /api/people`) minus members for spaces, the space's members minus existing
+grantees for private channels, and known people for DMs. People with a pending
+invitation stay listed as "Already invited". Rows match `@` suggestions (avatar,
+display name, `@username` beneath it).
 Choosing one fills in the exact username without submitting; lookups stay
 exact-username and there is no account directory. See
 [docs/media.md](../../docs/media.md#spaces-and-channel-access) for the shared rules.

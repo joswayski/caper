@@ -18,21 +18,27 @@ internal fun usernameSuggestions(people: List<MentionCandidate>, text: String, l
 }
 
 private fun Person.candidate() = MentionCandidate(username, displayName, avatarId = avatarId)
-private fun Member.candidate() = MentionCandidate(username, displayName, avatarId = avatarId)
+private fun Member.candidate(invited: Boolean = false) = MentionCandidate(username, displayName, avatarId = avatarId, invited = invited)
 
-/** Space invites: `/api/people` without the space's members or pending invitations (by id). */
+/** Pending invitees stay suggestible so the owner sees they're already invited. */
+private fun List<Member>.invitedCandidates() = map { it.candidate(invited = true) }
+
+/**
+ * Space invites: `/api/people` without the space's members (by id), then pending invitees
+ * marked as already invited.
+ */
 internal fun spaceInviteCandidates(people: List<Person>?, members: List<Member>, invitations: List<Member>): List<MentionCandidate> {
     val excluded = (members + invitations).mapTo(HashSet()) { it.id }
-    return people.orEmpty().filter { it.id !in excluded }.map { it.candidate() }
+    return people.orEmpty().filter { it.id !in excluded }.map { it.candidate() } + invitations.invitedCandidates()
 }
 
 /**
  * Private-channel access: the space's [members] (the server only grants those) without
- * you, people who already have access or a pending invitation (by id).
+ * you or people who already have access (by id), then pending invitees marked as already invited.
  */
 internal fun channelGrantCandidates(members: List<Member>, self: String?, grants: List<Member>, invitations: List<Member>): List<MentionCandidate> {
     val excluded = (grants + invitations).mapTo(HashSet()) { it.id }
-    return members.filter { it.id != self && it.id !in excluded }.map { it.candidate() }
+    return members.filter { it.id != self && it.id !in excluded }.map { it.candidate() } + invitations.invitedCandidates()
 }
 
 /** New DMs: everyone from `/api/people`, never you. */

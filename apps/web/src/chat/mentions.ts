@@ -6,6 +6,8 @@ export interface MentionCandidate {
   username: string;
   displayName: string;
   avatarId?: number | null;
+  /** Already has a pending invitation to the space or channel being managed; the row says so. */
+  invited?: boolean;
 }
 
 export type MentionSuggestion =
@@ -93,6 +95,20 @@ export function rankPeople<T extends MentionCandidate>(people: T[], query: strin
 export function excludePeople<T extends { id: string }>(people: T[], ...exclude: { id: string }[][]): T[] {
   const ids = new Set(exclude.flat().map((person) => person.id));
   return people.filter((person) => !ids.has(person.id));
+}
+
+/** Field candidates plus pending invitees, marked so their rows say they're already invited. */
+export function withInvited(people: MentionCandidate[], invitations: MentionCandidate[]): MentionCandidate[] {
+  return [
+    ...people,
+    ...invitations.map(({ id, username, displayName, avatarId }) => ({
+      id,
+      username,
+      displayName,
+      avatarId,
+      invited: true,
+    })),
+  ];
 }
 
 export function mentionSuggestions(members: MentionCandidate[], query: string, specials: boolean): MentionSuggestion[] {
