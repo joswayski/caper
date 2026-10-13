@@ -15,6 +15,7 @@ import Foundation
         let changelog: [ChangelogEntry]
         let historyComplete: Bool
         let canApply: Bool
+        var lastError: String? = nil
     }
 
     struct ChangelogEntry: Decodable, Equatable {
@@ -161,9 +162,11 @@ import Foundation
         let detail = update.canApply
             ? "Caper restarts to install it and leaves any voice call."
             : "Caper can't update this copy in place. Download the installer and drag Caper into a writable Applications folder."
-        alert.informativeText = detail
+        alert.informativeText = update.lastError == nil ? detail
+            : "The last update didn’t finish. Try again or download the installer.\n\n\(detail)"
         alert.addButton(withTitle: update.canApply ? "Restart to Update" : "Download")
         alert.addButton(withTitle: "Later")
+        if update.canApply { alert.addButton(withTitle: "Download Installer") }
         // Measure the warning/buttons first. Only the accessory notes scroll.
         alert.layout()
         let screen = NSApp.mainWindow?.screen ?? NSScreen.main
@@ -172,7 +175,13 @@ import Foundation
             screen: visibleSize, chromeHeight: alert.window.frame.height
         ))
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn {
+            declined.insert(update.version)
+            NSWorkspace.shared.open(Self.downloadURL)
+            return
+        }
+        guard response == .alertFirstButtonReturn else {
             declined.insert(update.version)
             return
         }
@@ -211,6 +220,10 @@ import Foundation
                 .font: heading ? NSFont.boldSystemFont(ofSize: 13) : NSFont.systemFont(ofSize: 13),
                 .foregroundColor: heading ? NSColor.labelColor : NSColor.secondaryLabelColor,
             ]))
+        }
+        if let error = update.lastError {
+            append("Update details\n", heading: true)
+            append("\(error)\n\n")
         }
         append("WHAT’S NEW\n\n", heading: true)
         append(update.historyComplete
@@ -262,11 +275,12 @@ import Foundation
             let changelog: [ChangelogEntry]?
             let history_complete: Bool?
             let can_apply: Bool?
+            let last_error: String?
         }
         guard let output = try? JSONDecoder().decode(Output.self, from: data), output.update else { return nil }
         return Update(version: output.version ?? "", notes: output.notes ?? "",
                       changelog: output.changelog ?? [], historyComplete: output.history_complete ?? false,
-                      canApply: output.can_apply ?? false)
+                      canApply: output.can_apply ?? false, lastError: output.last_error)
     }
 
     private nonisolated static func run(_ executable: URL, _ arguments: [String]) -> Result<Data, Error> {

@@ -86,7 +86,9 @@ Check manually with **Caper → Check for Updates…** on Mac or
 **User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
 Installing requires confirmation and a restart; protected installs offer a download
 instead. Update prompts keep installation controls visible while version-grouped
-release notes scroll separately. Signed releases retain user-facing changes since
+release notes scroll separately (expand **What’s new** on Windows/Linux).
+Failed attempts show their error and a manual-installer alternative after restart.
+Signed releases retain user-facing changes since
 earlier builds, excluding test-only, CI, infrastructure, tooling, documentation,
 and dependency-maintenance changes; the prompt says when older notes were never
 recorded or are no longer retained.

@@ -28,6 +28,7 @@ pub struct Available {
     pub notes: String,
     pub changelog: Vec<ChangelogEntry>,
     pub history_complete: bool,
+    pub last_error: Option<String>,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
 }
@@ -49,6 +50,8 @@ struct CheckOutput {
     changelog: Vec<ChangelogEntry>,
     #[serde(default)]
     history_complete: bool,
+    #[serde(default)]
+    last_error: Option<String>,
     #[serde(default)]
     can_apply: bool,
 }
@@ -289,6 +292,7 @@ fn parse(stdout: &[u8]) -> Result<Option<Available>, String> {
         notes: output.notes,
         changelog: output.changelog,
         history_complete: output.history_complete,
+        last_error: output.last_error,
         can_apply: output.can_apply,
     }))
 }
@@ -313,6 +317,7 @@ mod tests {
             notes: "Release notes".into(),
             changelog: Vec::new(),
             history_complete: false,
+            last_error: None,
             can_apply: true,
         }
     }
@@ -522,6 +527,7 @@ mod tests {
                 notes: "Screen sharing".into(),
                 changelog: Vec::new(),
                 history_complete: false,
+                last_error: None,
                 can_apply: true,
             })
         );
@@ -533,6 +539,10 @@ mod tests {
                 .can_apply
         );
         assert!(parse(b"not json").is_err());
+        let failed = parse(br#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.last_error.as_deref(), Some("Access denied"));
     }
 
     #[test]

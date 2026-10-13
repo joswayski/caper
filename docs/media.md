@@ -5102,6 +5102,34 @@ signed-release update or a macOS/Windows GUI launch. Those platform checks remai
 release acceptance. Install the fixed native release manually once if the old
 updater still closes without reopening; no server/configuration rollout is needed.
 
+**Windows repeated update prompt:** relocation is now unconditional on the first
+`apply` process. Comparing `current_exe()` against a canonical install path was
+unsafe: Windows can return `C:\...` for the executable and `\\?\C:\...` for
+the install, skipping relocation and leaving the updater inside the directory it
+must replace. The regression now enters through `apply` from a canonical launch
+path and an install-directory working directory, not just the relocation helper.
+The old condition fails this Windows executable test under Wine; the fix passes.
+Wine used a local compatibility shim for its missing `ProcessPrng` API; it is not
+a shipped dependency or a substitute for Windows 11 acceptance.
+
+Interrupted/failed attempts leave bounded, build-scoped feedback beside the app
+(`.app.update-error` for a Windows Setup install). A successful update removes it;
+an independently installed different build ignores it. Both desktop clients read
+the optional `last_error` from the existing updater check response and offer the
+installer as an alternative. Windows/Linux now use Caper's original wordmark and
+collapsed, expandable release notes; only notes/error details scroll, not actions.
+Web, Android and iOS do not use this updater. macOS keeps its native AppKit alert.
+
+After merging, publish a new native release as above, then **close Caper and run
+the new Windows Setup once over the existing installation** (do not uninstall or
+delete user data). An old updater cannot reliably bootstrap its own fix. Check
+the next higher-build release from the installed copy: one restart, updated build,
+no repeated offer. Read `Get-Content "$env:TEMP\caper-updater.log" -Tail 40` if it
+fails. No infrastructure, secrets, migrations, API/gateway/web changes or AI-summary
+configuration are needed. Roll back through a corrected higher-build native
+release; never reuse an old build number. Native Windows 11 and Mac update/relaunch
+and AppKit rendering remain platform acceptance gaps in this Linux orb.
+
 ### Native distribution and acceptance
 
 The [native clients](../apps/native/README.md) are separately implemented,

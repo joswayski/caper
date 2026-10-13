@@ -56,6 +56,9 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertTrue(legacy.changelog.isEmpty)
         XCTAssertFalse(legacy.historyComplete)
         XCTAssertFalse(legacy.canApply)
+        XCTAssertNil(legacy.lastError)
+        let failed = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#.utf8)))
+        XCTAssertEqual(failed.lastError, "Access denied")
         XCTAssertNil(AppUpdater.parse(Data(#"{"update":false}"#.utf8)))
     }
 
