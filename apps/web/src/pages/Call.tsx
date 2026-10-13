@@ -48,6 +48,7 @@ import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
+import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
@@ -252,6 +253,8 @@ function AudioMenu({
         // Let native device pickers handle Escape without also removing their panel.
         if (event.target instanceof HTMLSelectElement) return;
         if (event.key === "Escape" && open && !event.defaultPrevented) {
+          // Handled: an open thread beneath must not also close on this Escape.
+          event.preventDefault();
           onOpenChange(false);
           event.currentTarget.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus();
         }
@@ -527,7 +530,7 @@ export default function Call({
   const audioReturnFocus = useRef<HTMLElement | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialog = useRef<HTMLDialogElement>(null);
-  const profileBackdropPress = useRef(false);
+  const profileBackdrop = useBackdropDismiss(() => setProfileOpen(false));
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
@@ -539,11 +542,16 @@ export default function Call({
     [],
   );
   const [membersVisible, setMembersVisible] = useState(true);
+  const wideMembersVisible = useRef(true);
   const [narrow, setNarrow] = useState(false);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
-    if (media.matches) setMembersVisible(false);
-    const update = () => setNarrow(media.matches);
+    // Phone layouts start, and narrowing windows return, with the conversation instead of
+    // the wide member column reappearing as a drawer over it; widening restores the column.
+    const update = () => {
+      setNarrow(media.matches);
+      setMembersVisible(media.matches ? false : wideMembersVisible.current);
+    };
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -553,12 +561,10 @@ export default function Call({
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
   useBrowseLayout(roomRef, navigationOpen);
-  const members = useMembersDrawer(
-    roomRef,
-    narrow && !navigationOpen && !!membersPanel,
-    membersVisible,
-    setMembersVisible,
-  );
+  const members = useMembersDrawer(roomRef, narrow && !navigationOpen && !!membersPanel, membersVisible, (open) => {
+    if (!narrow) wideMembersVisible.current = open;
+    setMembersVisible(open);
+  });
   // The drawer owns touches until it has fully slid away.
   const navigationSwipe = useBrowseSwipe(
     narrow && !membersVisible && !members.closing,
@@ -569,6 +575,7 @@ export default function Call({
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [loggingOut, setLoggingOut] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
@@ -1725,8 +1732,23 @@ export default function Call({
                 )}
                 {identityReady &&
                   (account ? (
-                    <button type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>
-                      Log out
+                    <button
+                      type="button"
+                      disabled={loggingOut}
+                      onClick={() => {
+                        setLoggingOut(true);
+                        setActionError(undefined);
+                        logout().then(
+                          () => window.location.assign("/"),
+                          () => {
+                            // Stay signed in and say so, instead of a click that silently did nothing.
+                            setLoggingOut(false);
+                            setActionError("Couldn’t log out. Check your connection and try again.");
+                          },
+                        );
+                      }}
+                    >
+                      {loggingOut ? "Logging out…" : "Log out"}
                     </button>
                   ) : (
                     <a href="/login">Sign in</a>
@@ -1870,28 +1892,7 @@ export default function Call({
         className="audio-dialog profile-dialog"
         aria-labelledby="profile-dialog-title"
         onKeyDown={dialogKeyDown}
-        onPointerDown={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          profileBackdropPress.current =
-            event.target === event.currentTarget &&
-            (event.clientX < rect.left ||
-              event.clientX > rect.right ||
-              event.clientY < rect.top ||
-              event.clientY > rect.bottom);
-        }}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          if (
-            profileBackdropPress.current &&
-            event.target === event.currentTarget &&
-            (event.clientX < rect.left ||
-              event.clientX > rect.right ||
-              event.clientY < rect.top ||
-              event.clientY > rect.bottom)
-          )
-            setProfileOpen(false);
-          profileBackdropPress.current = false;
-        }}
+        {...profileBackdrop}
         onCancel={(event) => {
           event.preventDefault();
           setProfileOpen(false);

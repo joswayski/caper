@@ -194,6 +194,9 @@
 }
 .chat-heading {
   position: relative;
+  /* A grid item: without this, a long channel name widens the whole header
+     past the panel and pushes the header's buttons off-screen. */
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1930,7 +1933,7 @@
   opacity: 1;
 }
 .chat-mention-card-message:focus-visible {
-  outline: 2px solid var(--text);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 .chat-message-mentioned,
@@ -3278,7 +3281,7 @@ a.chat-draft-preview:focus-visible strong {
   cursor: pointer;
 }
 .chat-thread-send-row button[type="submit"]:disabled {
-  opacity: 0.5;
+  /* The shared neutral disabled primary above, not dimmed a second time. */
   cursor: not-allowed;
 }
 .chat-thread-composer > .chat-thread-readonly {
@@ -3902,6 +3905,12 @@ a.chat-draft-preview:focus-visible strong {
 .chat-title-name > svg {
   flex: none;
   color: var(--text-muted);
+}
+/* A long channel name ends in an ellipsis and keeps the menu chevron in view. */
+.chat-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .chat-title-subtitle {
   overflow: hidden;

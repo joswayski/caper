@@ -120,6 +120,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Repeat the animating selectors exactly: a media query adds no specificity,
+     so plain class names would lose to the :not()/[open] rules above. */
   .space-dialog[open],
   .space-dialog[open]::backdrop,
   .chat-edit-dialog[open],
@@ -128,13 +130,18 @@
   .chat-forward-overlay,
   .chat-actions-overlay,
   .chat-message-actions,
+  .chat-message-actions:not(.chat-message-actions-drawer),
   .chat-reaction-picker,
+  .chat-reaction-picker:not(.chat-reaction-picker-drawer),
   .chat-mention-card,
+  .chat-mention-card:not(.chat-mention-card-drawer),
   .chat-reactors,
+  .chat-reactors:not(.chat-reactors-drawer),
   .chat-reaction-tooltip,
   .chat-emoji-tooltip,
-  .top-layer-tooltip,
-  .space-actions,
+  .top-layer-tooltip:popover-open,
+  :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions,
+  .channel-menu[data-placement="above"][open] > .space-actions,
   .chat-thread-panel,
   .chat-message-arrive,
   .chat-empty-caper,

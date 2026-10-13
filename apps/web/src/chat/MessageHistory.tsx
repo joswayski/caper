@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import { loadMessageVersions } from "./client.ts";
 import { focusReturn } from "./focus-return.ts";
@@ -88,6 +89,7 @@ function Comparison({
 
 export default function MessageHistory({ message, onClose }: { message: ChatMessage; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const backdrop = useBackdropDismiss(onClose);
   const controller = useRef(new AbortController());
   const [versions, setVersions] = useState<MessageVersion[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -147,6 +149,8 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
         event.preventDefault();
         onClose();
       }}
+      // History is read-only, so an outside click closes it like the other panels.
+      {...backdrop}
     >
       <header>
         <h2 id="chat-version-heading">Message history</h2>

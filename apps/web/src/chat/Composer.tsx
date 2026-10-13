@@ -285,7 +285,7 @@ export default function Composer({
           }}
         />
         <div className="chat-composer-tools">
-          <EmojiButton disabled={disabled} onSelect={chooseEmoji} />
+          <EmojiButton disabled={disabled} onSelect={chooseEmoji} returnFocus={composerRef} />
         </div>
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes

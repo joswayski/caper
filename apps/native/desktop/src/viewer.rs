@@ -386,17 +386,16 @@ impl Viewer {
         if !start {
             return;
         }
-        if matches!(self.full.get(&current.id), Some(Full::Failed { .. })) || self.full.is_empty() {
-            // Only this and its neighbours stay decoded.
-            let keep: Vec<String> = self
-                .items
-                .iter()
-                .skip(self.index.saturating_sub(1))
-                .take(3)
-                .map(|item| item.id.clone())
-                .collect();
-            self.full.retain(|id, _| keep.contains(id));
-        }
+        // Only this and its neighbours stay decoded: paging through a
+        // message's full-size images must not keep every texture alive.
+        let keep: Vec<String> = self
+            .items
+            .iter()
+            .skip(self.index.saturating_sub(1))
+            .take(3)
+            .map(|item| item.id.clone())
+            .collect();
+        self.full.retain(|id, _| keep.contains(id));
         let Some(api) = media.api().cloned() else {
             return;
         };

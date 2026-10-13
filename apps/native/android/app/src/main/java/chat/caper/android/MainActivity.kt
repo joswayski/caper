@@ -648,7 +648,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
         state.invitations.forEach { invitation ->
             Surface(
-                Modifier.size(40.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.Invitation(invitation)) }.semantics {
+                // The same 48dp tile (and touch target) as the spaces above it.
+                Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.Invitation(invitation)) }.semantics {
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
@@ -1134,7 +1135,7 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
                     Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
                 }
             }
-            IconButton(leave, Modifier.size(40.dp)) {
+            IconButton(leave, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_phone_off), if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
             }
         }
@@ -1604,9 +1605,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             HorizontalDivider(color = Border)
             thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
             if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-            val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-                (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-                (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+            // Remembered: every keystroke in the reply draft recomposes this panel.
+            val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
+                state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                    (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                    (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+            }
             MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
                 pending?.error?.let { error ->
                     Text(error, color = ErrorText)
@@ -1639,7 +1643,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
                     Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
-                    TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()), shape = MaterialTheme.shapes.small) { Text("Send reply") }
+                    // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
+                    FilledIconButton(
+                        ::send, modifier = Modifier.size(48.dp).semantics { contentDescription = "Send reply" },
+                        enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
+                        shape = MaterialTheme.shapes.small,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Action, contentColor = OnAction,
+                            disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+                        ),
+                    ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
                 }
                 DraftCounter(draft.text)
                 if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
@@ -1923,7 +1936,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                         EmojiTextField(
                             draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
-                            placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
+                            // One line: a long channel or DM name would otherwise wrap and grow the empty field.
+                            placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
                             visualTransformation = MentionVisualTransformation(mentionSource(state)),
                             // Reserve the icon inside the field while uploads/session become ready.
                             // Read-only previews and locked DMs have no composer.
@@ -1949,7 +1963,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 containerColor = Action, contentColor = OnAction,
                                 disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
                             ),
-                        ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+                        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
                     }
                 }
                 DraftCounter(draft.text)
@@ -2350,6 +2364,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
+            onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
             blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
@@ -2640,6 +2655,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     forward: () -> Unit = {},
     onEdit: (() -> Unit)? = null,
     onHistory: (() -> Unit)? = null,
+    /** Opens who reacted, shown while the message has reactions. */
+    onViewReactions: (() -> Unit)? = null,
     blockLabel: String? = null,
     onBlock: () -> Unit = {},
 ) {
@@ -2663,7 +2680,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                             enabled = canReact,
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small).semantics {
                                 this.selected = selected
-                                contentDescription = "$emoji quick reaction"
+                                contentDescription = "React with $emoji"
                             },
                         ) { EmojiImage(emoji, null, Modifier.size(24.dp)) }
                     }
@@ -2674,19 +2691,22 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             }
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
+                    // Web's order: replies, forward, edit, history, reactions, pin, then copy and block.
+                    onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
+                    onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
                     if (state.account != null && (message.forward == null || message.forward.message != null)) {
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
                     }
-                    if (canReact) {
-                        val saving = state.pinSaves[message.id]?.saving == true
-                        SheetAction(if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
-                        HorizontalDivider(color = Border)
-                    }
-                    onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
-                    onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
                     onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
                     if (message.forward == null && message.revision > 1) onHistory?.let { SheetAction("View edit history", onClick = it); HorizontalDivider(color = Border) }
+                    // Web, Apple and desktop: who reacted, from the first reaction's tab.
+                    if (message.reactions.isNotEmpty()) onViewReactions?.let { SheetAction("View reactions", onClick = it); HorizontalDivider(color = Border) }
+                    if (canReact) {
+                        val saving = state.pinSaves[message.id]?.saving == true
+                        SheetAction(if (saving) "Saving…" else if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
+                        HorizontalDivider(color = Border)
+                    }
                     SheetAction("Copy text") { copy("Message text", message.content.text) }
                     HorizontalDivider(color = Border)
                     SheetAction("Copy message ID") { copy("Message ID", message.id) }
@@ -2776,7 +2796,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             onReplyMessage = { actionTarget = null; close(); viewModel.replyTo(current) },
             forward = { actionTarget = null; forwardTarget = current },
             onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,
-            onHistory = { actionTarget = null; historyTarget = current })
+            onHistory = { actionTarget = null; historyTarget = current },
+            onViewReactions = { current.reactions.firstOrNull()?.let { reactorsTarget = current.id to it.emoji }; actionTarget = null })
     }
     pickerTarget?.let { target -> EmojiPicker({ pickerTarget = null }) { emoji -> pickerTarget = null; viewModel.setReaction(target.id, emoji, true) } }
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
@@ -3550,7 +3571,7 @@ internal fun counterTone(count: Int): Color = when {
     LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
     CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        OutlinedTextField(name, { name = it.codePointTake(80); if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(name, { name = it.codePointTake(80); if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
         InviteLinkSection(state, detail, viewModel)
@@ -3627,7 +3648,7 @@ internal fun counterTone(count: Int): Color = when {
         }
     }) {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        OutlinedTextField(name, { name = normalizeChannel(it); if (state.error != null) viewModel.clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(name, { name = normalizeChannel(it); if (state.error != null) viewModel.clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)

@@ -510,8 +510,11 @@
   align-items: center;
   gap: 4px;
   flex-basis: 100%;
+  min-width: 0;
   color: var(--terracotta-bright);
   font-size: 0.65rem;
+  /* Long display names wrap inside the roster instead of widening it. */
+  overflow-wrap: anywhere;
 }
 .participant-local-muted svg {
   width: 13px;
@@ -611,7 +614,11 @@
    stretched across the stage above the conversation. */
 .stage > .audio-unblock {
   align-self: center;
+  max-width: calc(100% - 36px);
   margin: 12px 18px 0;
+  /* "Play {name} audio" wraps a long name instead of overflowing the stage. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .sr-only {
   position: absolute;

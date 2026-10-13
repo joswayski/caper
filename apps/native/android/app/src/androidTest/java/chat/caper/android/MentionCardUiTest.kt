@@ -106,7 +106,7 @@ class MentionCardUiTest {
                 }
             }
         }
-        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Send to @Maya").assertIsNotEnabled()
         compose.onNodeWithText("Message @Maya").performTextInput("Keep this draft")
         compose.onNodeWithContentDescription("Insert emoji").performClick()
         compose.onNodeWithText("Insert emoji").assertIsDisplayed()
@@ -119,7 +119,7 @@ class MentionCardUiTest {
         compose.runOnIdle { visible.value = true }
         compose.onNodeWithText("Keep this draft😀").assertIsDisplayed()
         compose.onNodeWithContentDescription("Attach files").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Send").performClick()
+        compose.onNodeWithContentDescription("Send to @Maya").performClick()
         compose.runOnIdle { assertEquals(1, sends) }
     }
 

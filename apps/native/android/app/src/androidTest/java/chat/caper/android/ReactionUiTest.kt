@@ -73,7 +73,7 @@ class ReactionUiTest {
         capture("reaction-chips-test-fixture.png", compose.onRoot())
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithText("Message actions").assertIsDisplayed()
-        compose.onNodeWithContentDescription("👍 quick reaction").assertIsSelected().performClick()
+        compose.onNodeWithContentDescription("React with 👍").assertIsSelected().performClick()
         compose.runOnIdle { assertEquals(Triple(message.id, "👍", false), submitted) }
 
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
@@ -99,7 +99,7 @@ class ReactionUiTest {
         compose.runOnIdle { state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true))) }
         compose.onNodeWithContentDescription("👍 reaction, 2").assertIsEnabled()
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
-        compose.onNodeWithContentDescription("👍 quick reaction").assertIsEnabled()
+        compose.onNodeWithContentDescription("React with 👍").assertIsEnabled()
         compose.onNodeWithContentDescription("Add reaction").assertIsEnabled()
         compose.onNodeWithText("Copy text").assertIsEnabled()
         // The sheet holds window focus; Espresso.pressBack targets the unfocused activity root.
@@ -123,7 +123,7 @@ class ReactionUiTest {
 
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithContentDescription("Add reaction").assertDoesNotExist()
-        compose.onNodeWithContentDescription("👍 quick reaction").assertDoesNotExist()
+        compose.onNodeWithContentDescription("React with 👍").assertDoesNotExist()
         compose.onNodeWithText("Copy text").performClick()
         assertClipboard(message.content.text)
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }

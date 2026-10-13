@@ -802,10 +802,13 @@ export default function Chat({
       for (const upload of uploads.current.values())
         if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
       if (state.sendUploadFailed && state.pendingSend)
-        void clientRef.current?.send(state.pendingSend.text, {
-          threadRootId: state.pendingSend.threadRootId,
-          broadcast: state.pendingSend.broadcast,
-        });
+        void clientRef.current
+          ?.send(state.pendingSend.text, {
+            threadRootId: state.pendingSend.threadRootId,
+            broadcast: state.pendingSend.broadcast,
+          })
+          // The pending message keeps its own retry state; this is only a background nudge.
+          .catch(() => {});
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -1671,8 +1674,10 @@ export default function Chat({
             >
               <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
                 <span className="chat-title-name">
-                  {direct ? "" : "# "}
-                  {channelName}
+                  <span className="chat-title-text">
+                    {direct ? "" : "# "}
+                    {channelName}
+                  </span>
                   <ChevronDown size={16} aria-hidden="true" />
                 </span>
                 {headerSubtitle && <small className="chat-title-subtitle">{headerSubtitle}</small>}

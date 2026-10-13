@@ -161,6 +161,9 @@ pub struct Forwarding {
     busy: bool,
     resolving: bool,
     error: Option<String>,
+    /// The frame the current view first showed in: the click that opened it
+    /// is not a click outside it.
+    shown_since: Option<u64>,
 }
 
 impl Forwarding {
@@ -171,6 +174,7 @@ impl Forwarding {
 
     pub fn close(&mut self) {
         self.view = None;
+        self.shown_since = None;
         self.request += 1;
         self.busy = false;
         self.resolving = false;
@@ -196,6 +200,7 @@ impl Forwarding {
     }
     pub fn picker(&mut self, worker: &Worker, generation: u64, token: String, source: Message) {
         self.resolving = false;
+        self.shown_since = None;
         self.view = Some(View::Picker {
             source: Box::new(source),
             destinations: vec![],
@@ -219,6 +224,7 @@ impl Forwarding {
             return;
         }
         self.resolving = true;
+        self.shown_since = None;
         let revision = wrapper
             .forward
             .as_ref()
@@ -368,13 +374,15 @@ impl Forwarding {
         let Some(view) = &mut self.view else {
             return;
         };
+        let frame = context.cumulative_frame_nr();
+        let fresh = *self.shown_since.get_or_insert(frame) == frame;
         let mut operation = None;
         let mut open = true;
         let title = match view {
             View::Picker { .. } => "Forward message",
             View::Conversation { .. } => "Forwarded conversation",
         };
-        egui::Window::new(title).id(egui::Id::new("live-forward")).open(&mut open).collapsible(false).resizable(true).default_width(460.0).max_height(context.content_rect().height() - 48.0).show(context, |ui| {
+        let shown = egui::Window::new(title).id(egui::Id::new("live-forward")).open(&mut open).collapsible(false).resizable(true).default_width(460.0).max_height(context.content_rect().height() - 48.0).show(context, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match view {
                     View::Picker { source, destinations, selected, search, text, pending, session, .. } => {
@@ -404,7 +412,8 @@ impl Forwarding {
                         }
                         ui.add_enabled(pending.is_none(), egui::TextEdit::multiline(text).hint_text("Add a note (optional)").desired_rows(2));
                         if !self.busy && destinations.is_empty() { ui.label("Join a channel or start a DM to forward here."); }
-                        let send = ui.add_enabled(!self.busy && !selected.is_empty() && session.is_some() && text.chars().count() <= 4000, egui::Button::new(format!("{} ({})", if pending.is_some() { "Retry forwards" } else { "Forward" }, selected.len()))).clicked();
+                        // Web's eggshell primary, neutral while disabled.
+                        let send = crate::toned(ui, crate::PRIMARY_TONE, !self.busy && !selected.is_empty() && session.is_some() && text.chars().count() <= 4000, egui::Button::new(format!("{} ({})", if pending.is_some() { "Retry forwards" } else { "Forward" }, selected.len()))).clicked();
                         if send { pending.get_or_insert_with(|| selected.iter().map(|id| (id.clone(), uuid::Uuid::new_v4().to_string())).collect()); }
                         if !self.busy && (send || self.error.is_none()) && let Some((destination, key)) = pending.as_ref().and_then(|items| items.first()) {
                             operation = Some(Operation::Send { token: token.into(), session: session.clone().unwrap(), source: source.clone(), destination: destination.clone(), key: key.clone(), text: text.trim().into() });
@@ -428,7 +437,13 @@ impl Forwarding {
                 if let Some(error) = &self.error { ui.colored_label(crate::ERROR, error); }
             });
         });
-        if !open || context.input(|input| input.key_pressed(egui::Key::Escape)) {
+        // As on web, Escape or a click outside the dialog closes it.
+        let outside = !fresh && shown.is_some_and(|shown| shown.response.clicked_elsewhere());
+        if !open
+            || outside
+            || context
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             self.close();
         } else if let Some(operation) = operation {
             self.dispatch(worker, generation, operation);
@@ -490,6 +505,7 @@ mod tests {
             busy: true,
             resolving: false,
             error: None,
+            shown_since: None,
         };
         state.receive(
             7,
@@ -578,6 +594,7 @@ mod tests {
             busy: true,
             resolving: false,
             error: None,
+            shown_since: None,
         };
         assert!(
             state

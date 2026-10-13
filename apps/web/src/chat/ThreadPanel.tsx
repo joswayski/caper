@@ -669,7 +669,11 @@ export default function ThreadPanel({
                   />
                   {direct ? "Also send to conversation" : `Also send to #${channelName}`}
                 </label>
-                <EmojiButton disabled={state.phase !== "ready" || state.thread.loading} onSelect={chooseEmoji} />
+                <EmojiButton
+                  disabled={state.phase !== "ready" || state.thread.loading}
+                  onSelect={chooseEmoji}
+                  returnFocus={composer}
+                />
                 <button
                   type="submit"
                   disabled={
