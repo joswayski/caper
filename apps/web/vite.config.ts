@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig, searchForWorkspaceRoot } from "vite";
+import { execFileSync } from "node:child_process";
 
 const repository = "joswayski/caper";
 const changeCount = 10;
@@ -95,6 +96,18 @@ async function latestChanges(): Promise<LatestChange[]> {
 }
 
 export default defineConfig(async () => {
+  let revision = process.env.CAPER_RELEASE_SHA?.trim() ?? "";
+  if (revision && !/^[0-9a-f]{40}$/u.test(revision)) throw new Error("CAPER_RELEASE_SHA must be a full source SHA.");
+  if (!revision) {
+    try {
+      revision = execFileSync("git", ["-C", import.meta.dirname, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      /* Source archives without a revision have no release highlights. */
+    }
+  }
   let changes: LatestChange[] = [];
   try {
     changes = await latestChanges();
@@ -106,6 +119,7 @@ export default defineConfig(async () => {
   return {
     define: {
       __LATEST_CHANGES__: JSON.stringify(changes),
+      __SOURCE_REVISION__: JSON.stringify(revision),
     },
     // Preserve Vite 7's browser floor instead of silently raising it with Vite 8.
     build: { target: ["chrome107", "edge107", "firefox104", "safari16"] },

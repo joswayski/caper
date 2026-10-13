@@ -61,6 +61,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     logout: () -> Unit,
     signIn: () -> Unit,
     notifications: @Composable () -> Unit = {},
+    openWhatsNew: () -> Unit = {},
     openPrivacy: () -> Unit = {},
 ) = CaperDialog("Audio settings", close) {
     var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
@@ -79,6 +80,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     }
     // Who can start a DM with you, and the accounts you blocked.
     if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
+    MenuButton("What’s new") { openWhatsNew() }
     if (state.account != null) MenuButton("Log out") { close(); logout() }
     else MenuButton("Sign in") { close(); signIn() }
 }

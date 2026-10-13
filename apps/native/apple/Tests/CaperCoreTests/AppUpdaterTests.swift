@@ -68,7 +68,7 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(size, NSSize(width: 420, height: 260))
         XCTAssertEqual(AppUpdater.notesSize(screen: NSSize(width: 1920, height: 1080), chromeHeight: 260).height, 340)
         let update = AppUpdater.Update(version: "0.1.42", notes: "Fallback",
-            changelog: [AppUpdater.ChangelogEntry(version: "0.1.42", notes: String(repeating: "• A long wrapped change\n", count: 100)),
+            changelog: [AppUpdater.ChangelogEntry(version: "0.1.42", notes: String(repeating: "• A long change that must wrap across multiple lines at the alert width without changing the scroll range as you read it.\n", count: 100)),
                         AppUpdater.ChangelogEntry(version: "0.1.39", notes: "Skipped change")],
             historyComplete: false, canApply: true, lastError: "Access denied")
         let scroll = AppUpdater.notesView(update, size: size)
@@ -80,5 +80,32 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertTrue(text.string.contains("Earlier release notes aren’t available"))
         XCTAssertTrue(text.string.contains("Access denied"))
         XCTAssertFalse(text.string.contains("Fallback"))
+        XCTAssertTrue(text.isSelectable)
+        XCTAssertFalse(text.isEditable)
+        XCTAssertFalse(scroll.hasHorizontalScroller)
+        XCTAssertEqual(text.frame.width, scroll.contentSize.width, accuracy: 0.5)
+
+        let documentSize = text.frame.size
+        let end = (text.string as NSString).range(of: "Skipped change")
+        XCTAssertNotEqual(end.location, NSNotFound)
+        text.scrollRangeToVisible(end)
+        let layout = try XCTUnwrap(text.layoutManager)
+        let container = try XCTUnwrap(text.textContainer)
+        let glyphs = layout.glyphRange(forCharacterRange: end, actualCharacterRange: nil)
+        let endRect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+            .offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+        let visible = scroll.contentView.documentVisibleRect
+        XCTAssertGreaterThanOrEqual(visible.maxY, endRect.maxY - 1, "The last release must be reachable")
+        XCTAssertLessThanOrEqual(visible.minY, endRect.minY)
+
+        let lastOffset = documentSize.height - scroll.contentSize.height
+        for offset in [CGFloat.zero, lastOffset / 2, lastOffset, CGFloat.zero] {
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: offset))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            scroll.layoutSubtreeIfNeeded()
+            XCTAssertEqual(text.frame.width, documentSize.width, accuracy: 0.5, "Scrolling must not rewrap the document")
+            XCTAssertEqual(text.frame.height, documentSize.height, accuracy: 0.5, "Scrolling must not change the document height")
+            XCTAssertEqual(scroll.frame.size, size, "Update controls keep their reserved space")
+        }
     }
 }

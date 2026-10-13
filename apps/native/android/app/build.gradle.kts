@@ -17,6 +17,16 @@ val releaseSigningInputs = listOf(releaseStore, releaseStorePassword, releaseKey
 val releaseSigningAvailable = releaseSigningInputs.all { it.isPresent }
 val apiBaseUrl = providers.gradleProperty("caperApiBaseUrl").orElse("https://caper.chat")
 val fixtureMode = providers.gradleProperty("caperFixtureMode").orElse("false")
+val sourceRevision = providers.environmentVariable("CAPER_RELEASE_SHA").orElse(
+    providers.exec {
+        workingDir(rootProject.projectDir)
+        commandLine("git", "rev-parse", "HEAD")
+        isIgnoreExitValue = true
+    }.standardOutput.asText.map { it.trim() }
+).map {
+    require(Regex("^[0-9a-f]{40}$").matches(it)) { "CAPER_RELEASE_SHA must be a full lowercase source SHA." }
+    it
+}
 // Native release run number (release.yml). Google Play and APK updates need a
 // versionCode higher than the installed one; local builds stay at 1.
 val buildNumber = providers.environmentVariable("CAPER_BUILD_NUMBER").map { it.toInt() }.orElse(1)
@@ -64,11 +74,13 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            buildConfigField("String", "SOURCE_REVISION", "\"\"")
             buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
             buildConfigField("boolean", "FIXTURE_MODE", fixtureMode.get())
             manifestPlaceholders["usesCleartextTraffic"] = fixtureMode.get()
         }
         release {
+            buildConfigField("String", "SOURCE_REVISION", "\"${sourceRevision.get()}\"")
             buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
             buildConfigField("boolean", "FIXTURE_MODE", "false")
             manifestPlaceholders["usesCleartextTraffic"] = "false"

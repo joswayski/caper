@@ -69,6 +69,7 @@ public enum CaperTheme {
         .tint(CaperTheme.terracottaBright)
         .buttonStyle(CaperSecondaryButton())
         .background(CaperTheme.blackout.ignoresSafeArea())
+        .modifier(WhatsNewPresentation(model: model))
         .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
             CaperFontLoader.register()
@@ -925,7 +926,11 @@ private struct WorkspaceView: View {
         .modifier(LoginPresentation(sheet: $sheet, model: model))
         // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
         .modifier(MediaViewerHost())
-        .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
+        .onChange(of: sheet?.id, initial: true) { _, new in
+            modalDismissDisabled = false
+            model.whatsNew.workspaceModalOpen = new != nil
+        }
+        .onDisappear { model.whatsNew.workspaceModalOpen = false }
         // A link opened from another app replaces any open dialog.
         .onChange(of: model.deliverableInviteLink?.id, initial: true) { _, _ in
             if let link = model.takeInviteLink() { sheet = .joinInvite(link) }
@@ -942,6 +947,7 @@ private struct WorkspaceView: View {
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
             else if parityFixture == "new-direct-message" { sheet = .newDirectMessage }
             else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
+            else if parityFixture == "whats-new" { CaperRuntime.showWhatsNewPreview(model) }
         }
         #if os(iOS)
         .overlay(alignment: .topLeading) { if parityMode { ParityPasteboardProbe() } }
@@ -2413,6 +2419,8 @@ private struct AccountBar: View {
                 if model.account?.debugEnabled == true {
                     Button("Audio diagnostics") { sheet = .diagnostics }
                 }
+                Button("What’s new") { model.whatsNew.open() }
+                    .accessibilityIdentifier("open-whats-new")
                 if model.account != nil {
                     Button("Notifications") { sheet = .notifications }
                         .accessibilityIdentifier("open-notifications")
@@ -5909,7 +5917,8 @@ private struct ProfileView: View {
 @MainActor public struct CaperSettingsView: View {
     @State private var loginItem = CaperLoginItem.shared
     @Bindable private var effects = CaperEffects.shared
-    public init() {}
+    @Bindable private var notes: WhatsNewModel
+    public init(whatsNew: WhatsNewModel) { notes = whatsNew }
 
     public var body: some View {
         ScrollView {
@@ -5946,6 +5955,8 @@ private struct ProfileView: View {
                         }
                     }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
                 }
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                Button("What’s new") { notes.open() }.accessibilityIdentifier("open-whats-new")
             }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(width: 500, height: 380)
@@ -5955,7 +5966,11 @@ private struct ProfileView: View {
         .tint(CaperTheme.terracotta)
         .buttonStyle(CaperSecondaryButton())
         .accessibilityIdentifier("desktop-settings")
-        .onAppear { CaperFontLoader.register(); loginItem.refresh() }
+        .onAppear { CaperFontLoader.register(); loginItem.refresh(); notes.settingsOpen = true }
+        .onDisappear { notes.settingsOpen = false }
+        .sheet(item: Binding(get: { notes.settingsOpen ? notes.presentation : nil }, set: { notes.presentation = $0 })) { display in
+            WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
     }
 }

@@ -150,6 +150,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.ui.platform.LocalView
+import chat.caper.android.data.WhatsNewSnapshot
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
@@ -282,6 +287,7 @@ private sealed interface Overlay {
     data object Profile : Overlay
     data object Audio : Overlay
     data object Privacy : Overlay
+    data class WhatsNew(val snapshot: WhatsNewSnapshot? = null, val automatic: Boolean = false) : Overlay
     data class AudioPanelOverlay(val panel: AudioPanel) : Overlay
 }
 
@@ -310,7 +316,42 @@ internal data class VoiceJoinIntent(
 @Composable private fun CaperApp(viewModel: CaperViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
+    val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val view = LocalView.current
+    val workspaceReady = state.account != null && state.limits != null && !state.restoring &&
+        (state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces)
+    LaunchedEffect(workspaceReady, lifecycle) {
+        if (!workspaceReady) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            // A missing immutable snapshot may be generated after this client ships.
+            do {
+                viewModel.whatsNew.refresh()
+                if (viewModel.whatsNew.state.value.snapshot != null) break
+                delay(60_000)
+            } while (isActive)
+        }
+    }
+    LaunchedEffect(workspaceReady, lifecycle) {
+        if (!workspaceReady) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                delay(500)
+                val notes = viewModel.whatsNew.state.value
+                // Native dialogs, sheets, permission prompts and focusable menus take
+                // window focus, including ones owned by nested message views.
+                val idle = VoiceCallService.state.value.phase.let { it == VoiceState.Phase.IDLE || it == VoiceState.Phase.FAILED }
+                if (overlay == null && idle && view.hasWindowFocus() && notes.unread.isNotEmpty()) {
+                    overlay = Overlay.WhatsNew(notes.snapshot?.copy(releases = notes.unread.asReversed()), automatic = true)
+                }
+            }
+        }
+    }
+    LaunchedEffect(whatsNew.snapshot, overlay) {
+        val shown = overlay as? Overlay.WhatsNew ?: return@LaunchedEffect
+        if (shown.snapshot == null && whatsNew.snapshot != null) overlay = shown.copy(snapshot = whatsNew.snapshot)
+    }
     // Web: a space removed elsewhere closes its dialogs; an invitation answered elsewhere closes its prompt.
     LaunchedEffect(state.selectedSpace?.space?.id) {
         if (overlay.let { it == Overlay.ManageSpace || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
@@ -332,7 +373,7 @@ internal data class VoiceJoinIntent(
     var settingsShown by remember { mutableStateOf(false) }
     LaunchedEffect(overlay) {
         if (settingsShown && overlay == null) runCatching { settingsFocus.requestFocus() }
-        settingsShown = overlay.let { it == Overlay.Audio || it == Overlay.Privacy || it is Overlay.AudioPanelOverlay }
+        settingsShown = overlay.let { it == Overlay.Audio || it == Overlay.Privacy || it is Overlay.AudioPanelOverlay || it is Overlay.WhatsNew }
     }
 
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
@@ -409,7 +450,15 @@ internal data class VoiceJoinIntent(
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
-            notifications = { NotificationSettingsSection(state, viewModel) }) { overlay = Overlay.Privacy }
+            notifications = { NotificationSettingsSection(state, viewModel) },
+            openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() }) { overlay = Overlay.Privacy }
+        is Overlay.WhatsNew -> {
+            DisposableEffect(shown.snapshot) { onDispose { viewModel.whatsNew.dismiss(shown.snapshot?.sequence) } }
+            WhatsNewDialog(whatsNew, shown.snapshot, shown.automatic, viewModel::refreshWhatsNew) {
+                viewModel.whatsNew.dismiss(shown.snapshot?.sequence)
+                overlay = null
+            }
+        }
         Overlay.Privacy -> PrivacySettingsDialog(state, viewModel) { overlay = null }
         is Overlay.AudioPanelOverlay -> when (shown.panel) {
             AudioPanel.Test -> AudioTestDialog(voice) { overlay = null }

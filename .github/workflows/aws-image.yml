@@ -48,6 +48,7 @@ jobs:
           platforms: linux/arm64
           load: true
           tags: caper-web:arm64
+          build-args: CAPER_RELEASE_SHA=${{ github.sha }}
           cache-from: ${{ runner.environment == 'github-hosted' && 'type=gha' || '' }}
           cache-to: ${{ runner.environment == 'github-hosted' && 'type=gha,mode=max' || '' }}
       - name: Assert linux/arm64 image and runtime

@@ -184,6 +184,17 @@ final class CaperParityUITests: XCTestCase {
         add(attachment)
     }
 
+    func testWhatsNewFixtureShowsHighlightsAndDismisses() {
+        let app = launch(fixture: "whats-new")
+        assertStaticText("TEST FIXTURE — Message editing", in: app, timeout: 15)
+        capture("whats-new-fixture", app: app)
+        let close = app.buttons["Close What’s new"]
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        close.tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
+    }
+
     private func assertElement(_ identifier: String, label: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         let element = app.descendants(matching: .any)[identifier]
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing accessibility identifier \(identifier)")

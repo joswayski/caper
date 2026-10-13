@@ -48,6 +48,8 @@ env:
   RELEASE_TAG: native-latest
   # Monotonic, compared by the self-updater. Re-runs rebuild the same number.
   CAPER_BUILD_NUMBER: ${{ github.run_number }}
+  # Resolve validates this exact source before any client is built.
+  CAPER_RELEASE_SHA: ${{ inputs.git_sha || github.sha }}
 
 jobs:
   resolve:
@@ -626,6 +628,17 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
+
+  whats-new:
+    name: Publish release highlights
+    needs: [resolve, macos, testflight, android, desktop, publish]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/whats-new.yml
+    with:
+      audience: native
+      git_sha: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit
 
   notify-discord:
     name: Update Discord status
