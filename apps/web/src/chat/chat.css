@@ -3055,6 +3055,13 @@ a.chat-draft-preview:focus-visible strong {
   background: rgb(182 77 50 / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
+/* Immediate touch feedback, layered over mention/thread/reply tints without
+   replacing their meaning. Cancelling or releasing the press clears it. */
+.chat-message[data-pressing="true"],
+.chat-message[data-pressing="true"]:hover,
+.chat-message[data-pressing="true"]:focus-within {
+  background-image: linear-gradient(rgb(243 244 245 / 8%), rgb(243 244 245 / 8%));
+}
 .chat-thread-summary {
   display: flex;
   align-items: center;

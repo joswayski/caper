@@ -329,10 +329,12 @@ export default function Chat({
     x: number;
     y: number;
     pointerId: number;
+    row?: HTMLElement;
   }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
+    press.current?.row?.removeAttribute("data-pressing");
     press.current = undefined;
   };
   useEffect(() => {
@@ -357,6 +359,7 @@ export default function Chat({
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => {
+      cancelPress();
       suppressClick.current = false;
     };
     const suppressReleaseClick = (event: MouseEvent) => {
@@ -1264,7 +1267,11 @@ export default function Chat({
               )
                 return;
               const anchor = event.currentTarget;
+              // Keep transient feedback on this exact row, without rerendering
+              // the virtualized timeline (or highlighting its channel/thread copy).
+              anchor.dataset.pressing = "true";
               press.current = {
+                row: anchor,
                 x: event.clientX,
                 y: event.clientY,
                 pointerId: event.pointerId,

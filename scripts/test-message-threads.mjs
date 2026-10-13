@@ -195,6 +195,12 @@ async function checkReactionFollow(root, layout) {
 }
 
 const checkThreadResize = (rootID) => {
+  // This scenario needs room for a 600px thread plus the channel. Don't depend
+  // on the default/remembered Members visibility to provide that space.
+  if (evaluate('!!document.querySelector("#space-member-list")')) {
+    browser("find", "role", "button", "click", "--name", "Hide member list", "--exact");
+    wait('!document.querySelector("#space-member-list")');
+  }
   const handle = ".chat-thread-resize";
   const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
   const drag = (delta) => {
@@ -357,6 +363,12 @@ const checkReplyDelivery = async (root, other, layout) => {
 };
 
 const checkLongQuotePreview = async (layout) => {
+  // Reloads restore Members; dismiss its mobile overlay before testing quotes.
+  if (evaluate('!!document.querySelector("#space-member-list")')) {
+    if (layout === "mobile") browser("click", "#space-member-list .member-list-close");
+    else browser("find", "role", "button", "click", "--name", "Hide member list", "--exact");
+    wait('!document.querySelector("#space-member-list")');
+  }
   const session = async (token) => {
     const auth = { authorization: `Bearer ${token}`, "content-type": "application/json", connection: "close" };
     const response = await fetch(`${api}/api/chat/session`, { method: "POST", headers: auth, body: "{}" });
@@ -851,9 +863,7 @@ try {
   browser("find", "role", "button", "click", "--name", "Show member list", "--exact");
   wait('!!document.querySelector("#space-member-list")');
   browser("set", "viewport", "390", "844", "2");
-  // Explicitly open it above: members now start closed on desktop too.
-  // The open desktop member list becomes a mobile overlay on resize.
-  browser("click", ".member-list-close");
+  // Narrowing dismisses the desktop member column instead of covering chat.
   wait('!document.querySelector("#space-member-list")');
   socket = new WebSocket(browser("get", "cdp-url").cdpUrl);
   await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
@@ -997,6 +1007,24 @@ try {
     `(() => { const rect = document.querySelector('${thread(broadcast.clientMessageId)} p').getBoundingClientRect(); return { x: rect.x + 10, y: rect.y + 10 }; })()`,
   );
   await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
+  const held = await cdp(
+    "Runtime.evaluate",
+    {
+      expression: `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+      thread: document.querySelector('${thread(broadcast.clientMessageId)}').dataset.pressing,
+      channel: document.querySelector('${channel(broadcast.clientMessageId)}')?.dataset.pressing ?? null,
+      wash: getComputedStyle(document.querySelector('${thread(broadcast.clientMessageId)}')).backgroundImage,
+      menuOpen: !!document.querySelector('.chat-message-actions'),
+    }))))`,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  assert.equal(held.result.value.thread, "true", "The held reply must highlight before its menu opens");
+  assert.equal(held.result.value.channel, null, "The broadcast copy in the channel must not highlight");
+  assert.notEqual(held.result.value.wash, "none");
+  assert.equal(held.result.value.menuOpen, false);
   await new Promise((resolve) => setTimeout(resolve, 650));
   await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
   assertReplyAction(false);

@@ -428,6 +428,7 @@ enum NavIcon {
     SmilePlus,
     Send,
     MessageCircle,
+    MessageSquare,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14364,7 +14365,7 @@ impl CaperApp {
                         paint_icon(
                             ui.painter(),
                             reply.rect.shrink(5.0),
-                            NavIcon::Speech,
+                            NavIcon::MessageSquare,
                             icon(reply, false),
                         );
                     }
@@ -19953,6 +19954,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::SmilePlus => egui::include_image!("../resources/icons/smile-plus.svg"),
         NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
         NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
+        NavIcon::MessageSquare => egui::include_image!("../resources/icons/message-square.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
