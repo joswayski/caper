@@ -16818,6 +16818,7 @@ impl CaperApp {
         let dismiss_on_backdrop = matches!(
             dialog,
             Dialog::Settings
+                | Dialog::Profile
                 | Dialog::ManageSpace
                 | Dialog::ManageChannel(_)
                 | Dialog::StartDirect
@@ -24199,7 +24200,7 @@ mod tests {
 
     #[test]
     fn settings_backdrops_dismiss_without_inside_clicks_dismissing() {
-        for fixture in ["parity-admin", "parity-channel"] {
+        for fixture in ["parity-admin", "parity-channel", "parity-profile"] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,

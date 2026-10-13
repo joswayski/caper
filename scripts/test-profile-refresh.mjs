@@ -27,13 +27,17 @@ function fixture() {
     private: true,
     joined: true,
   }));
-  const control = (window.profileFixture = { saves: 0, fail: false, histories: 0 });
+  const control = (window.profileFixture = { saves: 0, fail: false, hold: false, histories: 0 });
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
     if (!path.startsWith("/api/")) return realFetch(input, options);
     if (path === "/api/account/me") return Response.json(account);
     if (path === "/api/account/profile") {
+      if (control.hold)
+        await new Promise((resolve) => {
+          control.release = resolve;
+        });
       if (control.fail) return Response.json({ error: "username unavailable" }, { status: 409 });
       account = { ...account, ...JSON.parse(options.body) };
       control.saves++;
@@ -103,8 +107,63 @@ const browser = (...command) => {
 const evaluate = (source) => browser("eval", source).result;
 const wait = (source) => browser("wait", "--fn", source);
 const click = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
+const profileSaveSize = () =>
+  evaluate(`(() => {
+  const r = document.querySelector('.profile-dialog form button[type=submit]').getBoundingClientRect();
+  return [r.width, r.height];
+})()`);
 try {
   browser("open", "about:blank");
+  browser("set", "viewport", "1280", "900", "2");
+  browser("open", url);
+  for (const [width, height] of [
+    [1280, 900],
+    [390, 844],
+    [390, 500],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("open", url);
+    wait('!!document.querySelector(".space-menu summary") && !!document.querySelector(".chat-author-name")');
+    if (width < 760) click("Back to Browse");
+    wait('!!document.querySelector(".spaces-room.navigation-open") || innerWidth >= 760');
+    wait("!document.documentElement.dataset.browseTransition");
+    click("Edit profile for TEST FIXTURE Old Name");
+    wait('!!document.querySelector(".profile-dialog[open] form")');
+    evaluate('document.querySelector(".profile-dialog form button[type=submit]").scrollIntoView({block:"nearest"})');
+    const size = profileSaveSize();
+    assert.ok(size[0] <= 160 && size[1] <= 48, "Profile save must be compact");
+    assert.ok(size[1] >= 44, "Profile save must retain a touch-sized target");
+    if (artifacts) browser("screenshot", `${artifacts}/profile-dialog-${width}-${height}.png`);
+    evaluate("profileFixture.fail = true; profileFixture.hold = true");
+    browser("click", ".profile-dialog form button[type=submit]");
+    wait('document.querySelector(".profile-dialog form button[type=submit]").disabled && !!profileFixture.release');
+    assert.deepEqual(profileSaveSize(), size, "Pending must not resize the profile action");
+    if (artifacts) browser("screenshot", `${artifacts}/profile-dialog-saving-${width}-${height}.png`);
+    evaluate("profileFixture.release(); profileFixture.hold = false");
+    wait('document.querySelector(".profile-dialog [role=alert]")?.textContent.includes("already taken")');
+    assert.deepEqual(profileSaveSize(), size, "Error must not resize the profile action");
+    if (artifacts) browser("screenshot", `${artifacts}/profile-dialog-error-${width}-${height}.png`);
+    browser("click", "#display-name");
+    assert.ok(evaluate('!!document.querySelector(".profile-dialog[open]")'), "Inside clicks must not dismiss");
+    // Releasing a drag that began inside must not discard the form.
+    browser("mouse", "down", "left");
+    browser("mouse", "move", "1", "1");
+    browser("mouse", "up", "left");
+    assert.ok(
+      evaluate('!!document.querySelector(".profile-dialog[open]")'),
+      "An inside-to-outside drag must not dismiss",
+    );
+    browser("mouse", "down", "left");
+    browser("mouse", "up", "left");
+    wait('!document.querySelector(".profile-dialog[open]")');
+    assert.equal(evaluate("profileFixture.saves"), 0, "Backdrop dismissal must not save edits");
+    click("Edit profile for TEST FIXTURE Old Name");
+    browser("press", "Escape");
+    wait('!document.querySelector(".profile-dialog[open]")');
+  }
+  console.log(
+    "PASS: compact profile save, pending/error states, inside clicks, inside-to-outside drags, backdrop dismissal without saving, and Escape at 1280x900, 390x844 and 390x500.",
+  );
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url);
   wait('!!document.querySelector(".space-menu summary") && !!document.querySelector(".chat-author-name")');
