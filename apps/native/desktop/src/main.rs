@@ -12503,7 +12503,7 @@ impl CaperApp {
                     .layouter(&mut layouter)
                     .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner;
                 let text = draft.0.clone();
-                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, &mut output) {
+                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, output.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
@@ -12965,7 +12965,7 @@ impl CaperApp {
                         self.open_composer_emoji(EmojiTarget::Channel, &output, &draft);
                     }
                     let draft = self.draft.clone();
-                    if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, &mut output) {
+                    if let Some(value) = self.suggestion_popup(ui, &suggestions, &draft, editor.response.rect, &mut output) {
                         self.draft = value;
                     }
                     let response = &output.response;
@@ -15851,6 +15851,7 @@ impl CaperApp {
         ui: &egui::Ui,
         pass: &SuggestionPass,
         text: &str,
+        composer: egui::Rect,
         output: &mut egui::text_edit::TextEditOutput,
     ) -> Option<String> {
         emoji::editor_tooltip(output, text);
@@ -15870,10 +15871,12 @@ impl CaperApp {
             .unwrap_or_default();
         let mut chosen = pass.chosen.clone();
         if !choices.is_empty() && chosen.is_none() {
+            let mention = matches!(active, Some(ComposerToken::Mention(_)));
+            let anchor = if mention { composer } else { response.rect };
             egui::Area::new(id.with("suggestions"))
                 .order(egui::Order::Foreground)
                 .pivot(egui::Align2::LEFT_BOTTOM)
-                .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 6.0))
+                .fixed_pos(anchor.left_top() - egui::vec2(0.0, 6.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::new()
                         .fill(COMPOSER)
@@ -15881,7 +15884,12 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(4)
                         .show(ui, |ui| {
-                            let width = response.rect.width().min(260.0) - 8.0;
+                            let width = if mention {
+                                // Keep both outer edges aligned: 4px padding + 1px stroke per side.
+                                anchor.width() - 10.0
+                            } else {
+                                anchor.width().min(260.0) - 8.0
+                            };
                             ui.set_width(width);
                             ui.spacing_mut().icon_spacing = 12.0;
                             ui.spacing_mut().item_spacing.y = 0.0;
@@ -16736,7 +16744,13 @@ impl CaperApp {
             output.response.request_focus();
         }
         if editable
-            && let Some(value) = self.suggestion_popup(ui, &suggestions, &draft.text, &mut output)
+            && let Some(value) = self.suggestion_popup(
+                ui,
+                &suggestions,
+                &draft.text,
+                shell.response.rect,
+                &mut output,
+            )
         {
             draft.text = value;
         }
@@ -28596,6 +28610,25 @@ mod tests {
         render(&mut app, &context, vec![egui::Event::Text("@".into())]);
         let output = render(&mut app, &context, vec![]);
         let popup = id.with("suggestions");
+        let bounds = context.memory(|memory| memory.area_rect(popup).unwrap());
+        let editor = context.read_response(id).unwrap().rect;
+        let composer = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::COMPOSER && rect.rect.contains_rect(editor) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("visible composer surface");
+        assert!(
+            (bounds.left() - composer.left()).abs() < 1.0
+                && (bounds.right() - composer.right()).abs() < 1.0,
+            "mention suggestions span the composer, including Attach and Emoji: {bounds:?}, {composer:?}"
+        );
         assert_eq!(
             suggestion_rows(&context, &output, popup),
             [

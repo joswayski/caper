@@ -62,6 +62,8 @@ a DM opens; until it loads the DM peer is offered. Rows show the avatar and disp
 name with `@username` in small type beneath it (`@everyone`/`@here` put their
 description there). Selecting inserts `@username `
 without sending; keys and limits match emoji. Anyone who can post may use `@everyone`/`@here`; permissions are deferred.
+Mention suggestions span the available composer width on every client, including
+channel and thread replies; `:` emoji suggestion sizing is unchanged.
 
 On send, `chat::persist` resolves names inside the message transaction (shared
 grammar in `apps/api/src/mentions.rs`) to any non-deleted account with that

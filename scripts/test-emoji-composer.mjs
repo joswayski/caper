@@ -57,6 +57,26 @@ try {
     }
     evaluate('document.querySelector("#chat-message").scrollIntoView({block:"nearest"});');
     const before = messages();
+    browser("fill", "#chat-message", "@");
+    wait('!!document.querySelector(".chat-mention-suggestions")');
+    evaluate(
+      "return document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));",
+    );
+    const mentionBounds = evaluate(
+      'const popup=document.querySelector(".chat-mention-suggestions").getBoundingClientRect(); const composer=document.querySelector(".chat-composer form").getBoundingClientRect(); return {left:popup.left-composer.left,right:popup.right-composer.right,width:popup.width};',
+    );
+    assert.ok(
+      Math.abs(mentionBounds.left) < 1 && Math.abs(mentionBounds.right) < 1,
+      `Mention suggestions must span the composer at ${width}px: ${JSON.stringify(mentionBounds)}`,
+    );
+    if (artifacts) browser("screenshot", `${artifacts}/mentions-full-width-${layout}.png`);
+    browser("press", "Escape");
+    browser("fill", "#chat-message", "@ma");
+    wait('!!document.querySelector("#chat-mention-maya")');
+    browser("press", "Tab");
+    assert.equal(value(), "@maya ");
+    assert.equal(messages(), before, "Accepting a mention must not send");
+
     browser("fill", "#chat-message", ":");
     wait('document.querySelectorAll("#chat-emoji-options [role=option]").length === 6');
     const popupStyle = evaluate(
