@@ -9,14 +9,16 @@ import kotlin.math.roundToInt
 // kept free of Android and Compose so JVM tests cover them. Values match web `releaseTiming`
 // (`apps/web/src/spaces/browseTransition.ts`) and Apple's `DrawerRelease`.
 
-/** Web `SETTLE`: a button, Back or channel choice slides a whole drawer in this long. */
+/** Web `SETTLE`: the longest a released swipe's slide takes. */
 internal const val DRAWER_SETTLE_MILLIS = 320
+/** Web `TAP`: a button, Back or channel choice slides a whole drawer in this long. */
+internal const val DRAWER_TAP_MILLIS = 300
 /** The shortest slide, so a nearly finished one still reads as motion. */
 internal const val DRAWER_MIN_MILLIS = 160
 
-/** How long a button's slide takes for the [remaining] share of the drawer's travel (web members drawer). */
-internal fun drawerSettleMillis(remaining: Float): Int =
-    max(DRAWER_MIN_MILLIS, (DRAWER_SETTLE_MILLIS * abs(remaining).coerceAtMost(1f)).roundToInt())
+/** How long a button's slide takes for the [remaining] share of the drawer's travel (web `TAP`). */
+internal fun drawerTapMillis(remaining: Float): Int =
+    max(DRAWER_MIN_MILLIS, (DRAWER_TAP_MILLIS * abs(remaining).coerceAtMost(1f)).roundToInt())
 
 /**
  * A release curve that carries on from a finger: [durationMillis] long, starting at [slope] times

@@ -126,7 +126,7 @@ try {
     wait('!!document.querySelector(".space-menu summary") && !!document.querySelector(".chat-author-name")');
     if (width < 760) click("Back to Browse");
     wait('!!document.querySelector(".spaces-room.navigation-open") || innerWidth >= 760');
-    wait("!document.documentElement.dataset.browseTransition");
+    wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
     click("Edit profile for TEST FIXTURE Old Name");
     wait('!!document.querySelector(".profile-dialog[open] form")');
     evaluate('document.querySelector(".profile-dialog form button[type=submit]").scrollIntoView({block:"nearest"})');

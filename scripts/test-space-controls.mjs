@@ -308,12 +308,14 @@ function testSettingRows(width, height) {
 function openBrowse() {
   browser("click", ".navigation-toggle");
   wait(
-    '!!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition',
+    '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
   );
 }
 function closeBrowse() {
   browser("click", '.channel-select[aria-current="page"]');
-  wait('!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition');
+  wait(
+    '!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
+  );
 }
 function testModalKeyboard() {
   for (const width of [1280, 390]) {

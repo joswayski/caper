@@ -13,13 +13,15 @@ class SlideMotionTest {
     private fun release(open: Boolean, position: Float, velocity: Float, distance: Float) =
         drawerRelease(open, position, velocity, distance, travel, fling, flingDistance)
 
-    @Test fun buttonSlidesTakeWebSettleForTheWholeTravelAndShortenWithDistance() {
-        assertEquals(320, drawerSettleMillis(1f))
-        assertEquals(320, drawerSettleMillis(-1f))
-        assertEquals(240, drawerSettleMillis(0.75f))
+    @Test fun buttonSlidesTakeWebTapForTheWholeTravelAndShortenWithDistance() {
+        assertEquals(300, drawerTapMillis(1f))
+        assertEquals(300, drawerTapMillis(-1f))
+        assertEquals(300, drawerTapMillis(1.5f))
+        assertEquals(225, drawerTapMillis(0.75f))
         // A nearly finished slide still reads as motion.
-        assertEquals(160, drawerSettleMillis(0.1f))
-        assertEquals(160, drawerSettleMillis(0f))
+        assertEquals(160, drawerTapMillis(0.5f))
+        assertEquals(160, drawerTapMillis(0.1f))
+        assertEquals(160, drawerTapMillis(0f))
     }
 
     @Test fun aHeldReleaseGetsTheFullFinishFromRest() {

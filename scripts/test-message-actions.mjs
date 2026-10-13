@@ -568,7 +568,7 @@ try {
   wait('!!document.querySelector(".chat-message") && !document.querySelector(".chat-initial-messages")');
   browser("click", ".navigation-toggle");
   // Browse swallows clicks during its phone slide; wait before opening its menu.
-  wait("!document.documentElement.dataset.browseTransition");
+  wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
   browser("click", ".space-menu summary");
   action("Browse channels");
   wait('!!document.querySelector(".channel-directory")');

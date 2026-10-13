@@ -238,7 +238,7 @@ try {
   wait('document.querySelector(".chat-reaction").getAttribute("aria-disabled") === "false"');
   browser("click", ".navigation-toggle");
   // Phone Browse slides swallow clicks until they settle.
-  wait("!document.documentElement.dataset.browseTransition");
+  wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
   browser("click", '.space-rail button[title="TEST FIXTURE Studio"]');
   reused("channel12340");
   assert.equal(

@@ -9,7 +9,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { clampProgress, movesOf, settlesForward, SLOP, Velocity } from "../components/swipe";
-import { BLOCKING, browseSliding, OWN_GESTURES, releaseTiming, SETTLE } from "./browseTransition";
+import { BLOCKING, browseSliding, OWN_GESTURES, releaseTiming, TAP } from "./browseTransition";
 
 // On phones the member list is a drawer over the conversation. Like Browse, it
 // slides in and out with the same timing and follows a finger: left on the
@@ -113,7 +113,7 @@ export function useMembersDrawer(
     // Browse's timing: a release carries on at the finger's speed.
     const timing = interactive
       ? releaseTiming(distance, velocity)
-      : { ...SETTLE, duration: Math.max(160, SETTLE.duration * distance) };
+      : { ...TAP, duration: Math.max(160, TAP.duration * distance) };
     const length = travel(room, panel);
     const place = (progress: number) => ({ transform: `translateX(${(1 - progress) * length}px)` });
     const current = [panel.animate([place(from), place(to)], { ...timing, fill: "both" })];

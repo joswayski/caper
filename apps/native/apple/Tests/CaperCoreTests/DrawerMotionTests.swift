@@ -72,6 +72,21 @@ final class DrawerMotionTests: XCTestCase {
         XCTAssertTrue(settle.finished(at: start.addingTimeInterval(0.33)))
     }
 
+    func testTapSlideLeavesAtOnceAndSlowsSteadily() {
+        // Web `TAP`: 300 ms, cubic-bezier(0.33, 1, 0.68, 1).
+        let start = Date(timeIntervalSinceReferenceDate: 1500)
+        let slide = DrawerSettle(from: 0, to: 1, start: start, timing: .tap)
+        XCTAssertEqual(slide.timing.duration, 0.30, accuracy: 0.0001)
+        // Moving in the first frame, but not most of the way after two of them.
+        let first = slide.value(at: start.addingTimeInterval(1.0 / 60))
+        let second = slide.value(at: start.addingTimeInterval(2.0 / 60))
+        XCTAssertGreaterThan(first, 0.1)
+        XCTAssertLessThan(second, 0.35)
+        XCTAssertFalse(slide.finished(at: start.addingTimeInterval(0.29)))
+        XCTAssertTrue(slide.finished(at: start.addingTimeInterval(0.31)))
+        XCTAssertEqual(slide.value(at: start.addingTimeInterval(0.3)), 1, accuracy: 0.0001)
+    }
+
     private final class TestDrawer: SlideDrawer {
         var drag: CGFloat?
         var travel: CGFloat = 400

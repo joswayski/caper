@@ -7853,3 +7853,30 @@ scrolling dismisses names, and closing/covering a composer leaves no tooltip.
 No API/gateway, infrastructure, secret or database change is required. Web and
 native releases can deploy independently; reverting a client removes only these
 tooltips and needs no data rollback.
+
+## Conversation slides over all of Browse (October 13, 2026)
+
+On phones the conversation is now one full-height layer above the whole of Browse,
+including the account and voice bar, as in Discord. Browse (space rail, channel
+list and account bar) stays still beneath it; the bar no longer rises over the
+conversation from the bottom edge. The conversation slides past the screen's edge
+(width + 48 px/dp/pt, so its shadow leaves too) and follows a finger 1:1.
+
+Buttons, Back and channel choices slide over 300 ms × the distance left (at least
+160 ms) with `cubic-bezier(0.33, 1, 0.68, 1)`: it leaves at once and slows
+steadily. The previous 220 ms `cubic-bezier(0.32, 0.72, 0, 1)` covered about half
+the way in two frames, then crawled for six. The member list's button slides use
+the same timing. Released swipes keep their speed-matched curve.
+
+| Client | Change and validation boundary |
+| --- | --- |
+| Web ≤760px | The slide no longer uses View Transitions. Browse is always laid out in the room (hidden under the conversation, keeping its scroll); the `.stage` is an absolutely positioned card above it, moved by WAAPI on the element itself, while `data-browse-slide` on the room shows both. The room no longer clips horizontally, so the conversation leaves the screen rather than being cut at the room's inset edge, and nothing is snapshotted, measured or re-laid out mid-slide (`useBrowseLayout`, `--browse-stage-top`, `--browse-bar` and the voice panel's band are removed). Settled conversation and Browse look as before. `npm run check` and `npm test` pass. Chromium at 390px with CDP touch input against `native-parity-fixture.mjs`: button slides recorded frame by frame both ways; drags follow the finger 1:1; slow past-half, held-short cancel, short flicks both ways, vertical scroll, and catching a tapped slide mid-flight all behave; the member drawer, channel choice from Browse and the 1280px layout were inspected. Browser scripts that waited on `data-browse-transition` now wait on the room's `data-browse-slide`. Not Safari or physical-device acceptance. |
+| Android narrow | The account bar is part of Browse's column beneath the rail and channels; `browseBarLayer` is removed. Browse's semantics are cleared while it is covered. `conversationLayer` and `browseDrag` share `browseTravel` (width + 48dp). `drawerTapMillis`/`TapEasing` replace the settle timing for button slides; `SlideMotionTest` covers it. |
+| Apple narrow | The account bar is the last item in Browse's VStack; its rise offset, height state and `hidesCovered` are removed. `DrawerSettle.Timing.tap` is 0.30 s on the new curve; the member list's button slides use it. `DrawerMotionTests` adds a tap-curve test. No Swift toolchain in this orb: no build, XCTest, simulator or device run. |
+| Rust desktop narrow | Browse, account bar included (a bottom panel), is drawn first and the conversation after it, with a backdrop so presses on the conversation never reach Browse. `browse_travel` (width + 48) is shared by pose and touch. `NavigationSettle::toggle` uses the tap timing scaled by distance. |
+| Containers/services | No API, gateway, infrastructure, secret/configuration or database change. |
+
+Before native distribution, check on a real iPhone and Android phone: slow,
+halfway and flick slides both ways; that the account bar never shows over the
+conversation mid-slide; Back and channel-choice slides; and the account bar's
+controls once Browse settles.

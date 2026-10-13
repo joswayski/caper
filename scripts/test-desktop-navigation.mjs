@@ -296,7 +296,7 @@ try {
   const browsing = () => evaluate('document.querySelector(".spaces-room").classList.contains("navigation-open")');
   const settled = () =>
     wait(
-      '!document.documentElement.dataset.browseTransition && !document.getAnimations().some(a => a.effect?.pseudoElement?.includes("browse-room"))',
+      '!document.querySelector(".spaces-room").hasAttribute("data-browse-slide") && !document.querySelector(".spaces-room > .stage").getAnimations().length',
     );
   const point = (selector) =>
     evaluate(
@@ -328,15 +328,17 @@ try {
   );
 
   // The conversation follows the finger over a still, live Browse. It travels
-  // past the room's width, so its edge shadow leaves too.
-  const travel = evaluate('document.querySelector(".spaces-room").getBoundingClientRect().width') + 48;
+  // past the screen's edge, so its shadow leaves too.
+  const travel = evaluate(
+    'document.documentElement.clientWidth - document.querySelector(".spaces-room").getBoundingClientRect().left + 48',
+  );
   await touch("touchStart", p.x - 100, p.y);
   for (let step = 1; step <= 10; step++) await touch("touchMove", p.x - 100 + step * 10, p.y);
-  wait('document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).length === 1');
-  assert.equal(evaluate("document.documentElement.dataset.browseTransition"), "open");
+  wait('document.querySelector(".spaces-room > .stage").getAnimations().length === 1');
+  assert.equal(evaluate('document.querySelector(".spaces-room").hasAttribute("data-browse-slide")'), true);
   assert.equal(browsing(), true, "Browse renders live beneath the sliding conversation");
   const scrubbed = evaluate(
-    'document.getAnimations().filter(a => a.effect?.pseudoElement?.includes("browse-room")).map(a => [a.playState, Math.round(a.currentTime)])',
+    'document.querySelector(".spaces-room > .stage").getAnimations().map(a => [a.playState, Math.round(a.currentTime)])',
   );
   for (const [state, time] of scrubbed) {
     assert.equal(state, "paused");
@@ -490,23 +492,23 @@ try {
   // Check the moving frames, not just the destination: a snap also opens Browse.
   const buttonSlide = (selector, opening) => {
     const result = evaluate(`(async () => {
-      const pseudo = "::view-transition-${opening ? "old" : "new"}(browse-room)";
-      const travel = document.querySelector(".spaces-room").getBoundingClientRect().width + 48;
+      const room = document.querySelector(".spaces-room"), stage = room.querySelector(":scope > .stage");
+      const travel = document.documentElement.clientWidth - room.getBoundingClientRect().left + 48;
       const positions = [];
       let duration;
       document.querySelector(${JSON.stringify(selector)}).click();
       for (let frame = 0; frame < 120; frame++) {
         await new Promise(requestAnimationFrame);
-        const animation = document.getAnimations().find(a => a.effect?.pseudoElement === pseudo);
+        const animation = stage.getAnimations()[0];
         if (animation) {
           duration = animation.effect.getTiming().duration;
-          positions.push(new DOMMatrixReadOnly(getComputedStyle(document.documentElement, pseudo).transform).m41);
+          positions.push(new DOMMatrixReadOnly(getComputedStyle(stage).transform).m41);
         }
-        if (!document.documentElement.dataset.browseTransition) break;
+        if (!room.hasAttribute("data-browse-slide")) break;
       }
       return { duration, positions, travel };
     })()`);
-    assert.equal(result.duration, 220, "Button slides are quicker than the 320ms swipe settle");
+    assert.equal(result.duration, 300, "Button slides take the steady 300ms ease-out");
     assert.ok(
       result.positions.some((x) => x > 1 && x < result.travel - 1),
       "Button navigation must show intermediate positions",
@@ -529,8 +531,8 @@ try {
   );
   await swipe(p.x - 60, p.y, 68);
   assert.equal(
-    evaluate("document.documentElement.dataset.browseTransition ?? null"),
-    null,
+    evaluate('document.querySelector(".spaces-room").hasAttribute("data-browse-slide")'),
+    false,
     "No slide with reduced motion",
   );
   assert.equal(browsing(), true, "Reduced motion: a quick swipe still reveals Browse");
