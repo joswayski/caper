@@ -2445,7 +2445,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
     }
 
-    func testNarrowConversationAndBrowse() {
+    func testNarrowConversationAndBrowse() throws {
         let app = launch()
         let navigation = app.buttons["Back to Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
@@ -2480,8 +2480,12 @@ final class CaperParityUITests: XCTestCase {
         let accountMicrophone = app.buttons["microphone-toggle"]
         XCTAssertFalse(accountMicrophone.exists && accountMicrophone.isHittable, "Account audio controls stay in Browse")
         let composer = app.descendants(matching: .any)["message-composer"]
-        composer.tap(); composer.typeText("Draft survives Browse")
         let timeline = app.descendants(matching: .any)["chat-timeline"]
+        let send = app.buttons["send-message-button"]
+        let restingBottom = send.frame.maxY
+        let restingTimeline = timeline.frame
+        var draft = "Draft survives Browse"
+        composer.tap(); composer.typeText(draft)
         // Screen positions inside the timeline, above the keyboard: with the
         // software keyboard up, hosted simulators re-resolve the timeline's frame
         // during a drag, which moved these drags' end points.
@@ -2489,8 +2493,27 @@ final class CaperParityUITests: XCTestCase {
         start.press(forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.16)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.isHittable, "A vertical scroll must stay in chat")
         XCTAssertEqual(staticTexts("Members", in: app).count, 0, "A vertical scroll must not open the member list")
+        // The vertical scroll dismisses editing. Refocus explicitly so it cannot
+        // mask a stale keyboard inset when the next horizontal swipe opens Browse.
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        // A short, held header drag snaps back without scrolling the timeline.
+        // It must neither dismiss editing nor disturb the keyboard-sized layout.
+        let header = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.width * 0.3, dy: title.frame.midY))
+        header.press(forDuration: 0.01, thenDragTo: header.withOffset(CGVector(dx: 32, dy: 0)),
+                     withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(navigation.isHittable, "A cancelled swipe stays in the conversation")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A cancelled header swipe keeps the keyboard")
+        // Type without retapping to check retained focus through the public UI.
+        app.typeText("!")
+        draft += "!"
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         start.press(forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.3)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swipe right from the timeline center opens Browse")
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Committed Browse navigation dismisses the keyboard")
         // Browse fills the phone. Its list's "channel-browser" identifier is
         // intermittently missing from hosted simulators' snapshots, so swipe on the screen.
         func swipeBrowseLeft(at height: CGFloat) {
@@ -2499,7 +2522,17 @@ final class CaperParityUITests: XCTestCase {
         }
         swipeBrowseLeft(at: 0.5)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
-        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        // Observe past the delayed focus-release window as well as the slide.
+        XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1.5), "Returning must not reopen the keyboard")
+        XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Returning must restore the bottom edge without a keyboard-sized gap")
+        XCTAssertEqual(timeline.frame.minY, restingTimeline.minY, accuracy: 2)
+        XCTAssertEqual(timeline.frame.height, restingTimeline.height, accuracy: 2, "The timeline must recover its full height")
+        XCTAssertEqual(composer.value as? String, draft)
+        capture("narrow-chat-after-keyboard-swipe", app: app)
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2, "Tapping the returned composer must still dock above the keyboard")
+        capture("narrow-chat-keyboard-reopened", app: app)
         // A swipe along a full-width Browse row lifts inside that row: it must
         // navigate without also tapping it (which opened New message / Invite people).
         navigation.tap()
@@ -2522,7 +2555,7 @@ final class CaperParityUITests: XCTestCase {
         // Below the search field, above the account bar.
         swipeBrowseLeft(at: 0.6)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
-        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        XCTAssertEqual(composer.value as? String, draft)
         capture("narrow-conversation", app: app)
         chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)

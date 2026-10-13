@@ -843,7 +843,15 @@ private struct WorkspaceView: View {
                 // `DrawerPose` records it, so a finger can catch the conversation mid-slide.
                 .onChange(of: showsBrowse) { endEditing() }
             }
+            #if os(iOS)
+            // The reader already measures the keyboard-avoiding viewport. Keep
+            // keyboard resizing at that boundary, not in each transformed layer.
+            .frame(width: narrow ? geometry.size.width : nil, height: narrow ? geometry.size.height : nil, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: narrow ? .topLeading : .center)
+            .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
+            #else
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #endif
             .background(CaperTheme.blackout)
             .environment(browseDrawer)
             .environment(membersDrawer)
