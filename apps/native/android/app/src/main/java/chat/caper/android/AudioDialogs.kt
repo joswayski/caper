@@ -103,7 +103,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     }
                     var gain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
                     VolumeRow("Input volume", gain)
-                    Slider(gain.toFloat(), { gain = it.toInt(); VoiceCallService.setInputGain(context, gain) },
+                    Slider(gain.toFloat(), { gain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, gain) },
                         Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
                 } else {
                     Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -115,7 +115,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     } else Text("Choose audio output in system settings.", color = TextMuted, fontSize = 11.sp)
                     var volume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
                     VolumeRow("Output volume", volume)
-                    Slider(volume.toFloat(), { volume = it.toInt(); VoiceCallService.setOutputVolume(context, volume) },
+                    Slider(volume.toFloat(), { volume = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setOutputVolume(context, volume) },
                         Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
                 }
             }

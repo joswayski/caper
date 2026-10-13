@@ -1694,23 +1694,31 @@
     background: var(--surface);
   }
 }
-/* People are talking here: Join glows softly until you are in. */
+/* People are talking here: Join glows softly until you are in. Only the glow
+   layer's opacity animates, so the pulse never repaints the shadow. */
 .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+  position: relative;
+}
+.header-voice-join[data-occupied]:not([aria-disabled="true"])::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 14px 2px rgb(219 104 73 / 0.45);
+  opacity: 0;
+  pointer-events: none;
   animation: voice-join-glow 2.4s ease-in-out infinite;
 }
 @keyframes voice-join-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgb(219 104 73 / 0);
-  }
   50% {
-    box-shadow: 0 0 14px 2px rgb(219 104 73 / 0.45);
+    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
+  .header-voice-join[data-occupied]:not([aria-disabled="true"])::after {
     animation: none;
     box-shadow: 0 0 10px 1px rgb(219 104 73 / 0.35);
+    opacity: 1;
   }
 }
 /* Phones: one bordered group of icons beside the name, as in Slack. Who is in

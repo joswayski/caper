@@ -11,6 +11,9 @@
   min-width: 0;
   min-height: 360px;
   display: grid;
+  /* Without a column track, an 80-character channel name widens the whole
+     panel and pushes the header actions, messages and composer out of view. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(140px, 1fr) auto auto;
   position: relative;
   overflow: hidden;
@@ -669,9 +672,13 @@
   text-decoration-color: var(--border);
   text-underline-offset: 3px;
 }
-.chat-reply-source:hover,
 .chat-reply-source:focus-visible {
   color: var(--text);
+}
+@media (hover: hover) {
+  .chat-reply-source:hover {
+    color: var(--text);
+  }
 }
 .chat-reply-source:focus-visible,
 .chat-reply-expand:focus-visible,
@@ -1889,8 +1896,13 @@
   text-align: left;
   cursor: pointer;
 }
-.chat-profile-menu button:is(:hover, :focus-visible) {
+.chat-profile-menu button:focus-visible {
   background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .chat-profile-menu button:hover {
+    background: var(--surface-raised);
+  }
 }
 .chat-profile-menu button:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -2223,6 +2235,13 @@
   position: relative;
   display: block;
   background: transparent;
+}
+/* A long channel or person name stays on one line instead of growing the
+   empty composer to four. */
+.chat-mention-input > textarea::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-mention-input-mirror {
   position: absolute;

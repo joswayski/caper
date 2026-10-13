@@ -52,6 +52,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var gateway: GatewayClient? = null
     private var gatewayStatus: Job? = null
     private var typingExpiry: Job? = null
+    // Your own typing (web's setTyping): the wanted state, what the gateway last heard and when, and the idle stop.
+    private var typingActive = false
+    private var typingSent = false
+    private var typingSentAt = 0L
+    private var typingIdle: Job? = null
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
     private var historyAnchorRequest = 0L
@@ -1519,7 +1524,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reportActivity() { gateway?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
-    fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
+    /** Web: a start goes out at most every [TYPING_INTERVAL_MS], and that long without typing sends the stop. */
+    fun setTyping(active: Boolean) {
+        typingIdle?.cancel(); typingIdle = null
+        typingActive = active
+        if (active) typingIdle = viewModelScope.launch { delay(TYPING_INTERVAL_MS); typingIdle = null; setTyping(false) }
+        flushTyping()
+    }
+
+    private fun flushTyping() {
+        val token = chatToken ?: return
+        val connection = gateway ?: return
+        val active = typingActive
+        if (!active && !typingSent) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (active && typingSent && now - typingSentAt < TYPING_INTERVAL_MS) return
+        typingSent = active; typingSentAt = now
+        connection.sendTyping(token, active)
+    }
 
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
@@ -2864,6 +2886,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
+        // A new conversation starts quiet; the old stream's typing expires on its own.
+        typingIdle?.cancel(); typingIdle = null; typingActive = false; typingSent = false
         unloadedReactions.clear()
         unloadedAttachments.clear()
         if (clearPending) {
@@ -2951,6 +2975,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val PRESENCE_PAGE_SIZE = 25
+        const val TYPING_INTERVAL_MS = 500L
     }
 }
 

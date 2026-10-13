@@ -12,6 +12,13 @@ export interface EmojiToken {
 }
 const queryCharacter = /^[a-z0-9_+-]$/i;
 const normalize = (value: string) => value.toLowerCase().replace(/[_-]/g, " ");
+// Normalized once per catalog entry, not for all ~1,900 on every keystroke.
+const searchKeys = new WeakMap<EmojiChoice, { name: string; keywords: string }>();
+function keysFor(entry: EmojiChoice) {
+  let keys = searchKeys.get(entry);
+  if (!keys) searchKeys.set(entry, (keys = { name: normalize(entry.name), keywords: normalize(entry.keywords) }));
+  return keys;
+}
 
 export function emojiToken(text: string, start: number, end = start): EmojiToken | undefined {
   if (start !== end || start < 0 || start > text.length) return;
@@ -34,8 +41,7 @@ export function emojiSuggestions(catalog: EmojiChoice[], query: string): EmojiCh
   return (
     catalog
       .map((entry) => {
-        const name = normalize(entry.name),
-          keywords = normalize(entry.keywords);
+        const { name, keywords } = keysFor(entry);
         const rank =
           name === needle
             ? 0

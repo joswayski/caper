@@ -3,6 +3,7 @@ package chat.caper.android
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +19,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -231,6 +233,7 @@ import kotlinx.coroutines.launch
                     if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
                 }
             },
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
             enabled = editable, colors = composerFieldColors(),
         )
         FilledIconButton(

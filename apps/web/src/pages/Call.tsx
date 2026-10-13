@@ -443,6 +443,8 @@ interface CallProps {
   space?: { id: string; name: string; demo?: boolean };
   onReadCursor?: (seq: string) => void;
   channelActions?: ReactNode;
+  /** Extra items for the phone header menu, where wide-header actions move. */
+  headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
@@ -490,6 +492,7 @@ export default function Call({
   space,
   onReadCursor,
   channelActions,
+  headerMenuItems,
   voiceChannels,
   spaceRail,
   channelNavigation,
@@ -567,6 +570,25 @@ export default function Call({
     if (!narrow) wideMembersVisible.current = open;
     setMembersVisible(open);
   });
+  // Like desktop: Members sit beside the conversation while it keeps 320px,
+  // otherwise they float over its right edge below the header.
+  const [membersBeside, setMembersBeside] = useState<boolean>();
+  const membersShown = (membersVisible || members.closing) && !!membersPanel;
+  useLayoutEffect(() => {
+    const room = roomRef.current;
+    if (!room || !membersShown || narrow) return setMembersBeside(undefined);
+    const measure = () => {
+      const stage = room.querySelector(":scope > .stage");
+      // From the stage's left edge, so the members column never changes the answer.
+      if (stage) setMembersBeside(room.getBoundingClientRect().right - stage.getBoundingClientRect().left >= 540);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(room);
+    const sidebar = room.querySelector(":scope > .people-panel");
+    if (sidebar) observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, [membersShown, narrow]);
   // The drawer owns touches until it has fully slid away.
   const navigationSwipe = useBrowseSwipe(
     narrow && !membersVisible && !members.closing,
@@ -614,6 +636,14 @@ export default function Call({
   };
   if (!clientRef.current && typeof window !== "undefined") createClient();
   const connected = state.phase === "connected";
+  // Live transport rates re-render the call each second only while shown.
+  const diagnosticsShown = audioPanel === "connection";
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!diagnosticsShown || !client) return;
+    client.watchDiagnostics(true);
+    return () => client.watchDiagnostics(false);
+  }, [diagnosticsShown, connected]);
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const joinUnavailable = available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
@@ -1515,7 +1545,9 @@ export default function Call({
       )}
       <section
         ref={roomRef}
-        className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
+        className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}${
+          membersBeside === undefined ? "" : membersBeside ? " members-beside" : " members-float"
+        }`}
         data-direct={channel?.direct ? "" : undefined}
         {...navigationSwipe}
         onPointerDownCapture={(event) => {
@@ -1848,17 +1880,22 @@ export default function Call({
               headerVoice={headerVoice}
               headerSubtitle={headerSubtitle}
               headerMenu={
-                membersPanel && (
-                  <button
-                    type="button"
-                    aria-expanded={membersVisible}
-                    aria-controls={membersVisible ? "space-member-list" : undefined}
-                    onClick={() => members.change(!membersVisible)}
-                  >
-                    <Users aria-hidden="true" />
-                    {membersVisible ? "Hide members" : "Members"}
-                    {memberCount != null && <small>{memberCount}</small>}
-                  </button>
+                (membersPanel || headerMenuItems) && (
+                  <>
+                    {membersPanel && (
+                      <button
+                        type="button"
+                        aria-expanded={membersVisible}
+                        aria-controls={membersVisible ? "space-member-list" : undefined}
+                        onClick={() => members.change(!membersVisible)}
+                      >
+                        <Users aria-hidden="true" />
+                        {membersVisible ? "Hide members" : "Members"}
+                        {memberCount != null && <small>{memberCount}</small>}
+                      </button>
+                    )}
+                    {headerMenuItems}
+                  </>
                 )
               }
               headerActions={

@@ -144,6 +144,28 @@ function placeMenu(menu: HTMLDetailsElement) {
   if (panel.offsetHeight + 8 > below && above > below) menu.dataset.placement = "above";
 }
 
+const menuObservers = new WeakMap<HTMLDetailsElement, ResizeObserver>();
+/** Places a row menu as it opens and again whenever Notifications or Mute expand inside it. */
+function trackMenu(menu: HTMLDetailsElement) {
+  menuObservers.get(menu)?.disconnect();
+  menuObservers.delete(menu);
+  placeMenu(menu);
+  const panel = menu.querySelector<HTMLElement>(".space-actions");
+  if (!menu.open || !panel) return;
+  let opened = false;
+  const observer = new ResizeObserver(() => {
+    // The first callback reports the size it opened with.
+    if (!opened) {
+      opened = true;
+      return;
+    }
+    placeMenu(menu);
+    panel.scrollIntoView({ block: "nearest" });
+  });
+  observer.observe(panel);
+  menuObservers.set(menu, observer);
+}
+
 const INACCESSIBLE_DIRECT = "This conversation is not accessible.";
 
 /** A conversation the feedback team visits without joining, at a report. */
@@ -915,7 +937,8 @@ function ManageSpaceDialog({
       description="Only the owner can change this space and its membership."
       onClose={onClose}
       width="wide"
-      dismissOnBackdrop
+      // A stray click outside must not throw away an unsaved name.
+      dismissOnBackdrop={!pending && name === detail.space.name}
     >
       <form
         onSubmit={(event) => {
@@ -1055,7 +1078,7 @@ function ManageChannelDialog({
     };
   }, [channel.id, channel.private, detail.space.id]);
   return (
-    <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop>
+    <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop={!dirty && !pending}>
       <form
         id="channel-overview"
         onSubmit={(event) => {
@@ -2366,6 +2389,17 @@ export default function Spaces({
     leaveRequest(request);
   };
   const directPeer = (conversation: DirectConversation): BlockedAccount => ({ ...conversation.peer });
+  // Phones hide the header's Block button, so it moves into the name menu like Members.
+  const directMenuItems =
+    currentDirect &&
+    currentDirect.peer.id !== account?.id &&
+    !directBlocked &&
+    directStatus(currentDirect) !== "incoming" ? (
+      <button type="button" aria-haspopup="dialog" onClick={() => setBlockTarget(directPeer(currentDirect))}>
+        <Ban aria-hidden="true" />
+        Block @{currentDirect.peer.username}
+      </button>
+    ) : undefined;
   const directActions =
     !currentDirect || currentDirect.peer.id === account?.id ? undefined : directBlocked ? (
       <BlockedBar conversation={currentDirect} />
@@ -2643,7 +2677,7 @@ export default function Spaces({
                   </button>
                   <details
                     className="channel-menu direct-menu"
-                    onToggle={(event) => placeMenu(event.currentTarget)}
+                    onToggle={(event) => trackMenu(event.currentTarget)}
                     onKeyDown={(event) => {
                       if (event.key === "Escape" && event.currentTarget.open) {
                         // Handled here, so an open thread does not also close.
@@ -2698,6 +2732,12 @@ export default function Spaces({
           </button>
         </p>
       )}
+    </section>
+  );
+  // Opened from messages, profiles and Members too, so they must not live in
+  // the sidebar: phones hide it, which left a modal no one could see or close.
+  const directDialogs = (
+    <>
       {dialog === "direct" && (
         <StartDirectDialog
           people={people}
@@ -2723,7 +2763,7 @@ export default function Spaces({
           }}
         />
       )}
-    </section>
+    </>
   );
   const invitationButtons = invitations.map((space) => (
     <button
@@ -3164,7 +3204,7 @@ export default function Spaces({
                 {!detail.space.demo && (
                   <details
                     className="channel-menu"
-                    onToggle={(event) => placeMenu(event.currentTarget)}
+                    onToggle={(event) => trackMenu(event.currentTarget)}
                     onKeyDown={(event) => {
                       if (event.key === "Escape" && event.currentTarget.open) {
                         // Handled here, so an open thread does not also close.
@@ -3370,6 +3410,7 @@ export default function Spaces({
         stage={emptyStage || undefined}
         space={{ id: detail.space.id, name: detail.space.name, demo: detail.space.demo }}
         voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
+        headerMenuItems={visitView ? undefined : directMenuItems}
         channelActions={
           visitView ? undefined : currentDirect ? (
             directActions
@@ -3552,6 +3593,7 @@ export default function Spaces({
         />
       )}
       {channelDialogs}
+      {directDialogs}
       {accessNotice}
       {railInvitation && (
         <InvitationDialog

@@ -108,7 +108,7 @@ struct ForwardPickerView: View {
                     else if destinations != nil && visible.isEmpty { Text("No matching destinations.") }
                     TextField("Add a note (optional)", text: $note, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).disabled(pending != nil)
                     if let error {
-                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         if destinations == nil { Button("Retry loading") { attempt += 1 } }
                     }
                     Button(sending ? "Forwarding…" : pending == nil ? "Forward (\(selected.count))" : "Retry forwards (\(selected.count))") {
@@ -176,7 +176,7 @@ struct ForwardConversationView: View {
                         if conversation?.messages.isEmpty == true { Text("No replies yet.") }
                     } else if !loading && error == nil { Text("Original conversation unavailable.") }
                     if let error {
-                        Text(error).foregroundStyle(CaperTheme.terracottaBright)
+                        Text(error).foregroundStyle(CaperTheme.error)
                         Button("Retry") { attempt += 1 }
                     }
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
