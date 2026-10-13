@@ -4902,8 +4902,10 @@ default linker can exceed orb memory. Linux rendering is not Windows or macOS ac
 `android.sh install` installs the CI's SDK components, the API 36 Google APIs
 image and a Pixel 7 Pro AVD named `caper`. `start` boots it headless and
 disables animations (`CAPER_ANDROID_WINDOW=1` shows the window). `app` builds
-the fixture APK, reverses port 3001 and opens the app; `shot` saves a host-side
-screenshot; `smoke` runs `smoke.py`. The `main` Native CI Android job runs the
+the fixture APK, reverses port 3001, opens the app and waits for its first frame;
+`shot` saves a host-side screenshot; `smoke` runs `smoke.py`. All commands
+target `emulator-5554` (`CAPER_ANDROID_PORT`); run one emulator at a time, since
+stopping one has crashed a concurrent one. The `main` Native CI Android job runs the
 same emulator flow on a KVM-enabled GitHub runner.
 
 Orbs have no `/dev/kvm` (and no binder, so container Android such as Redroid is
@@ -4927,7 +4929,10 @@ disabled app drawing (`debug.hwui.drawing_enabled`) and hides "isn't
 responding" dialogs. `shot` uses `adb emu screenrecord screenshot` (0.2 s,
 instead of 25–60 s for the guest's `screencap`). ATD has no on-screen keyboard:
 type with `adb shell input text` in chunks of a few characters, and `BACK` leaves
-the app. This is good enough for manual checks and screenshots. The full
+the app. Running the script there on October 13, 2026: `start` booted in 400 s,
+`app` (warm Gradle) took 159 s, and `shot` took 0.21 s; signing in by chunked
+`input text` reached #general in 94 s. This is good enough for manual checks
+and screenshots. The full
 `smoke.py` failed after 442 s even with raised timeouts (`uiautomator dump`
 returned a null root node), so leave instrumentation and smoke runs to KVM hosts.
 

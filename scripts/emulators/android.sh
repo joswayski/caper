@@ -15,6 +15,7 @@
 # 4 GB orb it exhausted memory). It boots in about 6 minutes and takes 3-4 s per
 # tap: fine for manual checks and screenshots, too slow for smoke.py. ATD has no
 # on-screen keyboard: type with `adb shell input text` in short chunks.
+# Run one emulator at a time: stopping one has crashed a concurrent one.
 # Set CAPER_ANDROID_WINDOW=1 to show the emulator window on your display.
 # Emulator runs are not physical-device acceptance.
 set -euo pipefail
@@ -43,6 +44,9 @@ else
   image="${CAPER_ANDROID_IMAGE:-system-images;android-34;aosp_atd;$abi}"
   avd="${CAPER_ANDROID_AVD:-caper-software}"
 fi
+# Every adb call targets this script's emulator, even with other devices attached.
+port="${CAPER_ANDROID_PORT:-5554}"
+export ANDROID_SERIAL="emulator-$port"
 package=chat.caper.android.debug
 activity="$package/chat.caper.android.MainActivity"
 apk="$android/dist/Caper-android-fixture-debug.apk"
@@ -91,7 +95,7 @@ start() {
     accel="off -cores 4" timeout="${CAPER_ANDROID_BOOT_TIMEOUT:-2400}"
   fi
   [[ -d "$HOME/.android/avd/$avd.avd" && -x "$ANDROID_HOME/emulator/emulator" ]] || install
-  command="$ANDROID_HOME/emulator/emulator -avd $avd -accel $accel -no-audio -no-snapshot -no-boot-anim -no-metrics -gpu swiftshader_indirect"
+  command="$ANDROID_HOME/emulator/emulator -avd $avd -accel $accel -no-audio -no-snapshot -no-boot-anim -no-metrics -gpu swiftshader_indirect -port $port"
   [[ "${CAPER_ANDROID_WINDOW:-}" == 1 ]] || command+=" -no-window"
   if in_orb; then
     amp orb service start caper-android-emulator --command "$command" >/dev/null
@@ -124,6 +128,15 @@ app() {
   adb reverse tcp:3001 tcp:3001
   adb install -r "$apk"
   adb shell am start -n "$activity"
+  # The first frame takes ~50 s under software emulation; until then screenshots
+  # show a blank starting window. Wait for the app to draw.
+  local started=$SECONDS frames
+  until frames="$(adb shell dumpsys gfxinfo "$package" 2>/dev/null | awk '/Total frames rendered/ { print $4 }' | tr -d '\r')" &&
+    [[ "${frames:-0}" -gt 0 ]]; do
+    ((SECONDS - started < 300)) || { echo "warning: the app has not drawn a frame after 300s." >&2; return 0; }
+    sleep 3
+  done
+  echo "App drew its first frame after $((SECONDS - started))s."
 }
 
 shot() {
