@@ -10,6 +10,8 @@ RUN npm ci
 COPY apps/web apps/web
 COPY shared shared
 COPY vitest.config.ts ./
+ARG CAPER_RELEASE_SHA=""
+ENV CAPER_RELEASE_SHA=$CAPER_RELEASE_SHA
 RUN npm run build:web
 
 FROM node:24-alpine

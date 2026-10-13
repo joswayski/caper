@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$ROOT/../../.." && pwd)"
 
+# Release and TestFlight builds share this generated configuration. Debug builds
+# deliberately keep an empty revision and never fetch production release notes.
+revision="${CAPER_RELEASE_SHA:-$(git -C "$REPO" rev-parse HEAD)}"
+[[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "CAPER_RELEASE_SHA must be a full lowercase source SHA." >&2; exit 2; }
+mkdir -p "$ROOT/.build"
+printf 'CAPER_SOURCE_REVISION = %s\n' "$revision" > "$ROOT/.build/SourceRevision.xcconfig"
+
 python3 "$REPO/scripts/native_fonts.py"
 FONT_CACHE="$REPO/shared/fonts/cache"
 FONT_RESOURCES="$ROOT/Resources/Fonts"

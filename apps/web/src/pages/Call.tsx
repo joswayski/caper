@@ -29,6 +29,7 @@ import {
 import ProfileForm from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
+import WhatsNew from "../updates/WhatsNew";
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
 import { rosterChanges } from "../audio/roster";
@@ -442,6 +443,8 @@ interface CallProps {
   space?: { id: string; name: string; demo?: boolean };
   onReadCursor?: (seq: string) => void;
   channelActions?: ReactNode;
+  /** Extra items for the phone header menu, where wide-header actions move. */
+  headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
@@ -489,6 +492,7 @@ export default function Call({
   space,
   onReadCursor,
   channelActions,
+  headerMenuItems,
   voiceChannels,
   spaceRail,
   channelNavigation,
@@ -525,6 +529,7 @@ export default function Call({
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection" | "debug">();
   const [audioMenu, setAudioMenu] = useState<"input" | "output" | "settings">();
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const audioMenuRef = useRef<HTMLDivElement>(null);
   const audioDialog = useRef<HTMLDialogElement>(null);
   const audioReturnFocus = useRef<HTMLElement | null>(null);
@@ -564,6 +569,42 @@ export default function Call({
     if (!narrow) wideMembersVisible.current = open;
     setMembersVisible(open);
   });
+  // Like desktop: Members sit beside the conversation while it keeps 320px,
+  // otherwise they float over its right edge below the header.
+  const [membersBeside, setMembersBeside] = useState<boolean>();
+  const membersShown = (membersVisible || members.closing) && !!membersPanel;
+  useLayoutEffect(() => {
+    const room = roomRef.current;
+    if (!room || !membersShown || narrow) return setMembersBeside(undefined);
+    const measure = () => {
+      const stage = room.querySelector(":scope > .stage");
+      // From the stage's left edge, so the members column never changes the answer.
+      if (stage) setMembersBeside(room.getBoundingClientRect().right - stage.getBoundingClientRect().left >= 540);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(room);
+    const sidebar = room.querySelector(":scope > .people-panel");
+    if (sidebar) observer.observe(sidebar);
+    return () => observer.disconnect();
+  }, [membersShown, narrow]);
+  // Like the other overlays, Escape closes the phone member drawer and returns
+  // focus to the conversation title that opens it.
+  const closeMembers = useRef(members.change);
+  closeMembers.current = members.change;
+  useEffect(() => {
+    if (!narrow || !membersVisible) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // A profile card or dialog opened from the list closes first.
+      if (event.target instanceof Element && event.target.closest('dialog, [role="dialog"]')) return;
+      event.preventDefault();
+      closeMembers.current(false);
+      roomRef.current?.querySelector<HTMLElement>(".chat-title-menu > summary")?.focus();
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [narrow, membersVisible]);
   // The drawer owns touches until it has fully slid away.
   const navigationSwipe = useBrowseSwipe(
     narrow && !membersVisible && !members.closing,
@@ -611,6 +652,14 @@ export default function Call({
   };
   if (!clientRef.current && typeof window !== "undefined") createClient();
   const connected = state.phase === "connected";
+  // Live transport rates re-render the call each second only while shown.
+  const diagnosticsShown = audioPanel === "connection";
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!diagnosticsShown || !client) return;
+    client.watchDiagnostics(true);
+    return () => client.watchDiagnostics(false);
+  }, [diagnosticsShown, connected]);
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const joinUnavailable = available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
@@ -912,11 +961,21 @@ export default function Call({
     const dismiss = (event: PointerEvent | FocusEvent) => {
       if (!audioMenuRef.current?.contains(event.target as Node)) setAudioMenu(undefined);
     };
+    // A mouse-opened menu may not hold focus (Safari, Firefox on macOS), so its
+    // own Escape handler never runs; close it from anywhere instead.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.target instanceof HTMLSelectElement) return;
+      event.preventDefault();
+      setAudioMenu(undefined);
+      audioMenuRef.current?.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus();
+    };
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("focusin", dismiss);
+    document.addEventListener("keydown", escape);
     return () => {
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("focusin", dismiss);
+      document.removeEventListener("keydown", escape);
     };
   }, [audioMenu]);
 
@@ -1512,7 +1571,9 @@ export default function Call({
       )}
       <section
         ref={roomRef}
-        className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}
+        className={`call-room${channel || space ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}${
+          membersBeside === undefined ? "" : membersBeside ? " members-beside" : " members-float"
+        }`}
         data-direct={channel?.direct ? "" : undefined}
         {...navigationSwipe}
         onPointerDownCapture={(event) => {
@@ -1694,6 +1755,17 @@ export default function Call({
                 onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)}
                 menuRef={audioMenu === "settings" ? audioMenuRef : undefined}
               >
+                {!embedded && signedIn && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioMenu(undefined);
+                      setWhatsNewOpen(true);
+                    }}
+                  >
+                    What’s new
+                  </button>
+                )}
                 <strong>Audio settings</strong>
                 <fieldset className="device-options">
                   <label>
@@ -1834,17 +1906,22 @@ export default function Call({
               headerVoice={headerVoice}
               headerSubtitle={headerSubtitle}
               headerMenu={
-                membersPanel && (
-                  <button
-                    type="button"
-                    aria-expanded={membersVisible}
-                    aria-controls={membersVisible ? "space-member-list" : undefined}
-                    onClick={() => members.change(!membersVisible)}
-                  >
-                    <Users aria-hidden="true" />
-                    {membersVisible ? "Hide members" : "Members"}
-                    {memberCount != null && <small>{memberCount}</small>}
-                  </button>
+                (membersPanel || headerMenuItems) && (
+                  <>
+                    {membersPanel && (
+                      <button
+                        type="button"
+                        aria-expanded={membersVisible}
+                        aria-controls={membersVisible ? "space-member-list" : undefined}
+                        onClick={() => members.change(!membersVisible)}
+                      >
+                        <Users aria-hidden="true" />
+                        {membersVisible ? "Hide members" : "Members"}
+                        {memberCount != null && <small>{memberCount}</small>}
+                      </button>
+                    )}
+                    {headerMenuItems}
+                  </>
                 )
               }
               headerActions={
@@ -1928,6 +2005,14 @@ export default function Call({
           {profileOpen && account?.username && <PrivacySettings />}
         </div>
       </dialog>
+      {!embedded && (
+        <WhatsNew
+          ready={signedIn && identityReady}
+          blocked={(state.phase !== "idle" && state.phase !== "failed") || !!audioPanel || !!audioMenu || profileOpen}
+          manualOpen={whatsNewOpen}
+          onManualClose={() => setWhatsNewOpen(false)}
+        />
+      )}
       <dialog
         ref={audioDialog}
         className="audio-dialog"

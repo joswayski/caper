@@ -195,6 +195,9 @@ export class PublicCallClient {
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private diagnostics?: ConnectionDiagnostics;
+  // Stats keep sampling (rates need the previous sample) but re-render the
+  // call each second only while Connection details shows them.
+  private diagnosticsWatched = false;
   private previousStats?: { received: number; sent: number; sampledAt: number };
   private mediaDetail?: object;
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
@@ -1463,6 +1466,12 @@ export class PublicCallClient {
     this.statsTimer = window.setInterval(() => void this.readStats(), 1_000);
   }
 
+  /** While true, every stats sample (once a second) updates the view. */
+  watchDiagnostics(watched: boolean) {
+    this.diagnosticsWatched = watched;
+    if (watched && this.diagnostics) this.emit();
+  }
+
   private async readStats() {
     const pc = this.pc;
     if (!pc || this.phase !== "connected") return;
@@ -1526,6 +1535,7 @@ export class PublicCallClient {
       this.previousStats = { received, sent, sampledAt };
       this.mediaDetail = { outbound, sources, inbound };
       if (!this.joinTiming) return;
+      const first = !this.diagnostics;
       this.diagnostics = {
         ...this.joinTiming,
         receivedBytes: received,
@@ -1537,7 +1547,7 @@ export class PublicCallClient {
         roundTripMs: rtt * 1_000,
         route: relay ? "relay" : rtt > 0 ? "direct" : "unknown",
       };
-      this.emit();
+      if (first || this.diagnosticsWatched) this.emit();
     } catch {
       /* Stats support varies; diagnostics must never interrupt media. */
     }

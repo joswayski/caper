@@ -107,7 +107,14 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
   useLayoutEffect(() => {
     if (Array.isArray(children) && children.length && props.style?.visibility !== "hidden") context?.onListReady?.();
   }, [children, props.style?.visibility, context?.onListReady]);
-  return <div {...props}>{children}</div>;
+  // Bottom-aligned short histories keep the history header directly above the
+  // first message (see .chat-scroller in chat.css), not at the top of the pane.
+  const style = props.style?.marginTop === "auto" ? { ...props.style, marginTop: 0 } : props.style;
+  return (
+    <div {...props} style={style}>
+      {children}
+    </div>
+  );
 }
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
@@ -263,7 +270,11 @@ export default function Chat({
   useEffect(() => {
     // Start code/data and opening-grid artwork together, without waiting for a
     // sending session or a pointer hover (which touch clients never provide).
-    if (signedIn && !readOnly) preloadReactionPicker();
+    // Idle time, so ~130 image decodes don't compete with the first chat paint.
+    if (!signedIn || readOnly) return;
+    if (typeof requestIdleCallback !== "function") return preloadReactionPicker();
+    const idle = requestIdleCallback(preloadReactionPicker, { timeout: 2_000 });
+    return () => cancelIdleCallback(idle);
   }, [signedIn, readOnly]);
   const viewerId = accountId ?? state.author?.id;
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
@@ -329,10 +340,12 @@ export default function Chat({
     x: number;
     y: number;
     pointerId: number;
+    row?: HTMLElement;
   }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
+    press.current?.row?.removeAttribute("data-pressing");
     press.current = undefined;
   };
   useEffect(() => {
@@ -357,6 +370,7 @@ export default function Chat({
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => {
+      cancelPress();
       suppressClick.current = false;
     };
     const suppressReleaseClick = (event: MouseEvent) => {
@@ -442,7 +456,10 @@ export default function Chat({
     }
   };
   const findMessage = (id?: string) =>
-    state.messages.find((message) => message.id === id) ?? state.pinnedMessages.find((message) => message.id === id);
+    id === undefined
+      ? undefined
+      : (state.messages.find((message) => message.id === id) ??
+        state.pinnedMessages.find((message) => message.id === id));
   const actionMessage = findMessage(actionTarget?.messageId);
   const reactorsMessage = findMessage(reactorsTarget?.messageId);
   const forwardMessage = findMessage(forwardTarget?.messageId);
@@ -511,6 +528,7 @@ export default function Chat({
   };
   const listRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement>(null);
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const arrivals = useRef<Arrivals>(null);
   arrivals.current ??= new Arrivals();
   // Virtuoso shifts the list by the prepended rows' estimated heights, but the
@@ -622,6 +640,39 @@ export default function Chat({
     const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;
     if (resize() && atBottom && allowFollow.current) scroller.scrollTop = scroller.scrollHeight;
   }, []);
+  // A window resize, or a panel taking room from the list, keeps the newest
+  // message in view when the reader was already there. The browser clamps
+  // scrollTop while the viewport shrinks, so use the position from before it.
+  useEffect(() => {
+    if (!scroller) return;
+    const gap = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    let width = scroller.clientWidth;
+    let height = scroller.clientHeight;
+    let atBottom = gap() <= 80;
+    let frame = 0;
+    const scrolled = () => {
+      if (scroller.clientWidth === width && scroller.clientHeight === height) atBottom = gap() <= 80;
+    };
+    const observer = new ResizeObserver(() => {
+      if (scroller.clientWidth === width && scroller.clientHeight === height) return;
+      width = scroller.clientWidth;
+      height = scroller.clientHeight;
+      if (!atBottom || !allowFollow.current) return;
+      scroller.scrollTop = scroller.scrollHeight;
+      // Rewrapped rows are re-measured after this callback.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (atBottom) scroller.scrollTop = scroller.scrollHeight;
+      });
+    });
+    scroller.addEventListener("scroll", scrolled, { passive: true });
+    observer.observe(scroller);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      scroller.removeEventListener("scroll", scrolled);
+    };
+  }, [scroller]);
   const setTyping = useCallback((active: boolean) => {
     clientRef.current?.setTyping(active);
   }, []);
@@ -1264,7 +1315,11 @@ export default function Chat({
               )
                 return;
               const anchor = event.currentTarget;
+              // Keep transient feedback on this exact row, without rerendering
+              // the virtualized timeline (or highlighting its channel/thread copy).
+              anchor.dataset.pressing = "true";
               press.current = {
+                row: anchor,
                 x: event.clientX,
                 y: event.clientY,
                 pointerId: event.pointerId,
@@ -1616,6 +1671,12 @@ export default function Chat({
     />
   );
 
+  const headingAlerts = (state.phase === "ready" && !!state.error) || !!pinError;
+  const offlineStatus = (
+    <span className="chat-offline" role="status">
+      {state.phase === "error" ? "Offline" : "Connecting…"}
+    </span>
+  );
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
       <section
@@ -1658,8 +1719,12 @@ export default function Chat({
             <details
               className="chat-title-menu"
               onClick={(event) => {
-                // Choosing an item closes the menu.
-                if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
+                // Choosing an item closes the menu. Focus its visible summary first, so a
+                // dialog opened from the item (Pins) returns focus there, not to the hidden item.
+                if ((event.target as HTMLElement).closest(".chat-header-menu button")) {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape" && event.currentTarget.open) {
@@ -1695,13 +1760,11 @@ export default function Chat({
           {pinsToggle}
           {headerActions}
 
-          {!state.online && showConnectionStatus && (
-            <span className="chat-offline" role="status">
-              {state.phase === "error" ? "Offline" : "Connecting…"}
-            </span>
-          )}
-          {((state.phase === "ready" && state.error) || pinError) && (
+          {!state.online && showConnectionStatus && !headingAlerts && offlineStatus}
+          {headingAlerts && (
             <div className="chat-heading-alerts">
+              {/* Stacked with the alerts rather than drawn underneath them. */}
+              {!state.online && showConnectionStatus && offlineStatus}
               {state.phase === "ready" && state.error && (
                 <div className="chat-refresh-error" role="alert">
                   {state.error}{" "}
@@ -1844,9 +1907,14 @@ export default function Chat({
                         type="button"
                         className="chat-message-actions-trigger"
                         aria-label={`Message actions for ${message.author.name}`}
+                        title="More actions"
                         aria-haspopup="dialog"
-                        aria-expanded={actionTarget?.messageId === message.id}
-                        onClick={(event) => openActions(message.id, event.currentTarget, false)}
+                        aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
+                        onClick={(event) =>
+                          actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                            ? setActionTarget(undefined)
+                            : openActions(message.id, event.currentTarget, false)
+                        }
                       >
                         <MoreHorizontal size={14} aria-hidden="true" />
                       </button>
@@ -1892,6 +1960,7 @@ export default function Chat({
                 ref={listRef}
                 scrollerRef={(element) => {
                   scrollerRef.current = element instanceof HTMLElement ? element : null;
+                  setScroller(scrollerRef.current);
                 }}
                 data={messages}
                 firstItemIndex={firstItemIndex}

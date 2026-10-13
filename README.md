@@ -96,6 +96,12 @@ Existing apps keep their previous update UI and schedule until updated once.
 Phones install public betas from the homepage: iPhone through a TestFlight public
 link and Android through a Google Play closed test. Both update automatically.
 
+Published builds also implement **What’s new** after an update, with retained
+history in User Settings. Release-time Claude summaries group user-facing changes
+and keep maintenance releases quiet. First installs establish a quiet baseline.
+This needs separate workflow-secret configuration and API/client rollout; merging
+does not activate it. See [release highlights](docs/media.md#release-highlights-whats-new).
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

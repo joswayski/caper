@@ -7854,6 +7854,227 @@ No API/gateway, infrastructure, secret or database change is required. Web and
 native releases can deploy independently; reverting a client removes only these
 tooltips and needs no data rollback.
 
+## Release highlights (What’s new)
+
+Web, Android, iOS, macOS and Rust desktop implement an after-update highlights
+view and a User Settings entry for retained history. The first successful fetch
+on a new installation quietly records its baseline. Later builds show unread
+highlighted releases newest-first in one view; maintenance-only releases advance
+the baseline without opening anything. Every dismissal acknowledges the displayed
+snapshot. Failed fetches do not acknowledge it, and rollbacks never lower the
+saved sequence. Preferences are installation/API-origin/platform-local, not
+account-synced. Automatic presentation waits for the signed-in workspace and
+defers during calls or another modal. Missing publication retries at most once
+per minute while foregrounded; Settings offers immediate retry.
+
+The existing Mac/Windows/Linux **before-install** prompt remains. New clients pass
+their source revision to the bundled updater, which reads current/target exact
+snapshots and shows the same user-facing highlights for skipped releases. Missing
+editorial metadata never blocks installing the signed update. Older clients keep
+their signed commit-title changelog until updated once. Mac notes use an explicitly
+laid-out, read-only AppKit text view with a reserved scroller width; physical Mac
+scrolling/timing acceptance is still required.
+
+### Generation and storage
+
+Infrastructure's successful Caper web rollout dispatches `whats-new.yml` on Caper
+`main` with the exact confirmed image SHA. It holds the web deployment queue until
+generation finishes so successive shipped versions cannot overwrite pending
+dispatches. The native release calls the same workflow only after all distribution
+jobs succeed. The existing Godis Discord buttons need no code or deployment change.
+Committing, building an image, or a failed deployment does not generate notes.
+
+`scripts/whats_new.py` reads the previous per-platform revision, first-parent commit
+messages, relevant runtime diffs, and recent highlights. One bounded Claude Messages
+API request selects/groups at most five highlights. Tests, infrastructure, tooling,
+dependency maintenance and server-only changes cannot independently announce a
+client feature. Output must cite commits in each platform's release range, have
+changed client/shared runtime evidence, and pass local schema/text/claim checks.
+An empty list is valid. These checks constrain errors, but do not prove the model's
+prose is factually correct; review generated assets when checking a release.
+No model call occurs on a user's device or app open, and no user/account/message
+data is sent to Claude. Repository source evidence is sent to the configured API.
+
+Public GitHub prereleases `whats-new-web`, `whats-new-android`, `whats-new-ios`,
+`whats-new-macos`, `whats-new-windows` and `whats-new-linux` hold immutable
+`<source-sha>.json` snapshots and rolling `latest.json` heads. No database, bucket,
+Terraform, API secret or new service is needed. All platform snapshots validate
+before publication; immutable assets precede rolling heads. Exact reruns reuse
+published bytes without calling Claude. Partial uploads reserve their sequence
+and recover on a retry or newer release. Known rollback revisions reuse their
+old snapshots without lowering rolling heads; an unrecorded historical rebuild
+gets a quiet, new sequence. Do not overwrite/delete immutable assets.
+
+The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
+only reads the requested immutable asset from the fixed Caper repository. Clients
+never read rolling `latest.json`, so an old build cannot announce future features.
+The API has bounded GitHub fetches, coalescing and 60-second success/failure cache.
+Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
+and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,
+at most 100/500 Unicode code points. Missing metadata fails closed.
+
+### Deployment order
+
+1. Merge the Caper change, then the infrastructure dispatch change. No Godis
+   release, infrastructure apply, database migration, gateway rollout or runtime
+   secret change is needed. Merging does not deploy apps or activate generation.
+2. Claim the plan's Claude Platform credits by linking the Console organization
+   in Claude billing. Subscription sign-in credentials are not API credentials.
+   From either repository root, with authenticated `gh`, save the Console API key
+   and a fine-grained token restricted to Caper **Actions: read/write**. These
+   commands prompt privately; do not paste keys into scripts or commit them:
+
+   ```bash
+   gh auth status
+   gh secret set ANTHROPIC_API_KEY --repo joswayski/caper
+   gh secret set CAPER_RELEASE_NOTES_TOKEN --repo joswayski/infrastructure
+   gh secret list --repo joswayski/caper
+   gh secret list --repo joswayski/infrastructure
+   ```
+
+   `CAPER_RELEASE_NOTES_MODEL` is an optional Caper Actions variable; the default
+   is `claude-haiku-5-5`. The native workflow uses its own `contents:write` token.
+   No AWS/Cloudflare secret, OpenTofu initialization/plan/apply or new capacity
+   is required. No shared credentials were configured during development.
+3. Choose the merged Caper SHA and wait for its immutable web/API images to exist.
+   Deploy the API first, preserving the normal one-replica/shared-state policy:
+
+   ```bash
+   CAPER_SHA="$(gh api repos/joswayski/caper/commits/main --jq .sha)"
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$CAPER_SHA"
+   ```
+
+   Wait for that exact rollout to succeed. Web and native clients can then deploy
+   independently through their existing Discord buttons, or from the repo root:
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$CAPER_SHA"
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$CAPER_SHA"
+   ```
+
+4. Verify a first release quietly establishes each feed; a later user-facing
+   release creates the exact SHA asset and presents once on an already-baselined
+   installation. Check skipped releases, maintenance-only updates, Settings,
+   offline/error/retry, other modals, calls and restart. Inspect generated text
+   and native scrolling on supported devices. Repair a generation failure by
+   rerunning only for a revision that actually shipped:
+
+   ```bash
+   gh workflow run whats-new.yml --repo joswayski/caper --ref main -f audience=web -f git_sha="$CAPER_SHA"
+   gh run list --repo joswayski/caper --workflow whats-new.yml --limit 5
+   gh release download whats-new-web --repo joswayski/caper --pattern "$CAPER_SHA.json" --dir /tmp/caper-highlights-review
+   curl --fail --silent --show-error "https://caper.chat/api/whats-new?platform=web&revision=$CAPER_SHA" | jq .
+   ```
+
+   Use `audience=native` and the corresponding platform tag for native repair.
+   Never generate notes for a PR branch or an unshipped revision. No workflow
+   dispatch, production publication or live Claude request was executed here.
+5. Roll back clients using the existing exact-image or higher-build-number native
+   release process. Do not delete history or lower acknowledgements. Removing the
+   infrastructure token stops future web generation without affecting deployment;
+   existing immutable notes remain available. Prefer a forward API fix; missing
+   notes do not affect conversations or signed update verification.
+
+### Validation boundary
+
+| Component | Executed checks and limitations |
+| --- | --- |
+| Web | `npm run check` and `npm test`: 609 tests pass after rebasing. Inspected final wide/narrow, retained-history, loading, error and empty Chromium renders with eggshell primary actions; exercised quiet baseline, dismissal, visible desktop/narrow focus return, scrolling to the final paragraph above the fixed footer, enabled retry/recovery and no-repeat after reload. Loopback-only native parity fixture, not live Claude output or a physical phone. |
+| API | Workspace fmt, tests and Clippy pass: 162 tests pass, 67 existing database/network tests ignored. Public HTTP regression covers pinned revisions, cache/backoff and bounded arbitrary-SHA traffic. The final run used one build job with browser/dev services stopped after a concurrent-build OOM. |
+| Rust desktop | 500 tests pass on the integrated base, 12 existing device/audio tests ignored; fmt and application-package Clippy pass. The final test/app binaries use `cargo rustc --tests -- -Clink-arg=-fuse-ld=lld` and `cargo rustc --bin caper-desktop -- -Clink-arg=-fuse-ld=lld` after a default-linker OOM. Inspected final 2x real Linux/Xvfb wide/narrow, loading, error, empty and Settings fixtures. Windows build/runtime remains unverified. |
+| Bundled updater | 18 tests, fmt and Clippy pass; real local HTTP regression checks current/target snapshots, skipped/silent releases, retained-history limits and mismatched revisions. Signed production updates were not executed. |
+| Android | Isolated native implementation: 305 JVM tests, lint, instrumentation compilation and release revision configuration pass. No device/emulator UI execution or full native-media APK packaging; the integrated latest-main native app was not rebuilt in the parent orb. |
+| Apple | Isolated implementation: four actual Foundation contract tests pass under Swift 6 on Linux and changed Swift parses for macOS/iOS targets. Plists/shell scripts and revision override/fallback/rejection checks pass. Final rebased window/Settings and button-style changes were not compiled or run on Apple; no Xcode/SDK typecheck, SwiftUI/AppKit execution, Apple API/updater tests or physical device checks. |
+| Generator/release tooling | Ruff, 53 Python tests (one existing macOS-only skip), four font tests and Actionlint pass. TestFlight regression rejects mismatched source metadata before upload. No live provider/GitHub calls. |
+| Infrastructure | Fake-GitHub highlights dispatch, disposable-Git deployment and cluster-verification regressions pass, as does Actionlint. No shared state was changed. |
+
+Live Claude schema acceptance, GitHub publication, production dispatch, physical
+phone/Mac testing and Mac scroll frame timing remain separate rollout checks.
+No Docker daemon was available; web/API build stages were checked directly.
+
+## Cross-client UI consistency pass (October 13, 2026)
+
+A second audit of every client for dismissal, focus, hover, clipping, parity and
+performance problems, on top of #616. Behaviour changes ship on every client they
+apply to; the rest are one-client defects.
+
+- **Layout and clipping:**
+  - Web: between 761 and 1099px, Members no longer stack under the composer. They
+    sit beside the conversation while it keeps 320px, as on desktop, and otherwise
+    float over its right edge below the header, as on desktop and Android.
+  - Web: resizing the window or a panel keeps the newest message in view when you
+    were already reading it.
+  - Web: the conversation grid has a column track, so no long header content can
+    widen it; an empty composer keeps a long placeholder on one line.
+  - Desktop: long (up to 80-character) channel and DM names truncate in the wide
+    header instead of running under Join voice, Pins and Members. The member list
+    scrolls (a full page and its pager stay reachable in short windows) and long
+    names truncate. The sidebar space name truncates with a tooltip. Channel
+    settings scrolls to its bottom edge instead of clipping above an empty band.
+- **Dismissal and focus:**
+  - Web: Block and New direct message opened inside the hidden phone sidebar,
+    leaving an invisible modal that swallowed every tap. They now open at the top
+    level. Phones also get Block in a DM's name menu, where the header button is hidden.
+  - Web and desktop: a backdrop click no longer discards unsaved Channel settings
+    or a renamed space. Escape and the close button still close them.
+  - Web: Forward can't be closed while forwarding; row menus re-place themselves
+    when Notifications or Mute expand inside them; the pinned message ⋯ toggles.
+  - Desktop: changing channels or closing a thread closes its composer emoji
+    picker, which could otherwise insert into the next conversation's draft. A
+    dialog opened over a profile card gets Escape first. Files dropped over a
+    dialog or modal no longer go to the hidden composer. Browse channels closes on
+    a space switch. Choosing System default closes the device menu; long device
+    lists scroll.
+  - Android: opening Browse or Members on a phone hides the keyboard. Back is only
+    caught when Members actually shows. The message actions sheet opens fully and
+    scrolls. The thread's "Also send to" label toggles its checkbox.
+  - Apple: a dialog's disabled composer stops taking keystrokes. The timeline only
+    follows new messages when you are at the bottom (or sent them). A pending
+    private-channel invitation can't be dismissed, and finishing it no longer
+    closes another dialog. Browse closes on a space switch and ignores a leading
+    `#`. Reaction and pin errors can be dismissed. A failed join no longer carries
+    over to the next channel.
+- **Labels and actions:** every client hides **Copy text** for attachment-only
+  messages and says **Message history**. Desktop's menu adds **Reply in thread**
+  and says **Pin message**/**Unpin message** (**Saving…** while pending), the hover
+  bar's ⋯ says **More actions**, **New direct message** replaces "Start direct
+  message", and **Leave channel** is neutral. Android says **New direct message**;
+  its DM rows say **Blocked** or **Request sent** like web. The macOS menu adds
+  **Reply in thread** and **Add reaction…**. Apple's thread composer shows its
+  placeholder.
+- **Hover, touch and tokens:**
+  - Desktop: hover fills use the shared 6% white `--surface-hover` wash instead of
+    RAISED, which matched the sidebar and conversation backgrounds. Channel rows
+    brighten on hover and keep the selection wash while focused. Menus and windows
+    use BORDER and 8px corners.
+  - Web: three hover styles no longer stick after a tap.
+  - Android: file-card ripples keep their corners; account-bar volume sliders tick
+    like the Audio test's; composers capitalize sentences.
+  - Apple: muted/deafened account controls use web's red (#ED5265); iOS sidebar
+    icon buttons show press feedback; macOS DM rows get one hover highlight
+    instead of two; a few more error labels use `CaperTheme.error`.
+- **Performance:**
+  - Web: call statistics re-render the call each second only while Connection
+    details shows them; the Join glow animates opacity instead of repainting a
+    shadow; emoji search normalizes the catalog once; emoji preloading waits for idle time.
+  - Android: typing indicators are throttled like web (at most one start per
+    500ms, a stop after 500ms idle) instead of one gateway command per keystroke.
+
+No API, database, gateway, infrastructure or configuration changes. Web and native
+clients deploy independently; merging alone deploys nothing.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` (610 tests) pass. Chromium against the disposable native parity fixture at 1440, 1300, 1024, 900, 820 and 390px (DPR 2, fine pointer): the medium Members layout beside and floating, latest message kept in view through resizes, phone Block dialog visible and closable, an 80-character channel name in desktop and phone headers and a one-line phone placeholder. Not Safari, Firefox or a physical phone. |
+| Rust desktop | `cargo fmt --check`, `cargo test -p caper-desktop` (501 passed, 12 ignored device tests) and `cargo clippy --all-targets --no-deps -D warnings` pass on Linux with clang 21. Linux Xvfb fixture renders inspected: Channel settings scrolling to its bottom edge, row and member hover washes. Windows built only by CI. |
+| Android | Edited without an Android SDK: not compiled or run here. Imports and API signatures were checked against the compose-bom 2025.09.01 APIs already used. CI must compile it. |
+| Apple iOS/macOS | Edited without Xcode or a Swift toolchain: not compiled, tested or run here. CI must build it. |
+
+Before native distribution, verify on devices: Android Browse/Members hiding the
+keyboard and Back with a hidden member list; the full-height actions sheet; Apple
+typing with a dialog open, timeline follow while scrolled up and at the bottom,
+and the invitation dialog while pending.
+
 ## Conversation slides over all of Browse (October 13, 2026)
 
 On phones the conversation is now one full-height layer above the whole of Browse,

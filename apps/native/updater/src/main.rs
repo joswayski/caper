@@ -78,6 +78,7 @@ fn usage() -> Box<dyn std::error::Error> {
 #[derive(Default)]
 struct Options {
     current_build: Option<u64>,
+    current_revision: Option<String>,
     install: Option<PathBuf>,
     wait_pid: Option<u32>,
     key: Option<PathBuf>,
@@ -100,6 +101,13 @@ impl Options {
             match flag {
                 "--current-build" => {
                     options.current_build = Some(value.to_str().ok_or("bad build")?.parse()?);
+                }
+                "--current-revision" => {
+                    let revision = value.to_str().ok_or("bad revision")?;
+                    if !revision_valid(revision) {
+                        return Err("current revision must be a full lowercase source SHA".into());
+                    }
+                    options.current_revision = Some(revision.to_owned());
                 }
                 "--install" => options.install = Some(PathBuf::from(value)),
                 "--wait-pid" => options.wait_pid = Some(value.to_str().ok_or("bad pid")?.parse()?),
@@ -155,6 +163,35 @@ fn check(options: &Options) -> Result<()> {
     let can_apply = options.install.as_deref().map(|install| {
         Layout::for_platform(platform).is_some_and(|layout| install::can_replace(layout, install))
     });
+    // Editorial metadata never controls update eligibility or artifact trust.
+    // Older clients omit the revision and keep their existing signed changelog.
+    let highlights = if manifest.update_for(platform, current).is_some() {
+        options.current_revision.as_deref().map(|revision| {
+            let result = (|| {
+                let client = reqwest::blocking::Client::builder()
+                    .https_only(true)
+                    .timeout(Duration::from_secs(5))
+                    .user_agent("caper-updater-highlights")
+                    .build()?;
+                release_highlights_from(
+                    &client,
+                    "https://caper.chat/api/whats-new",
+                    platform.split('-').next().unwrap_or(platform),
+                    revision,
+                    &manifest.commit,
+                )
+            })();
+            result.unwrap_or_else(|_: Box<dyn std::error::Error>| {
+                (
+                    "Release highlights aren’t available yet. You can still install this update."
+                        .into(),
+                    false,
+                )
+            })
+        })
+    } else {
+        None
+    };
     match manifest.update_for(platform, current) {
         Some(_) => print_json(&CheckResult {
             update: true,
@@ -164,9 +201,23 @@ fn check(options: &Options) -> Result<()> {
                 .and_then(|path| last_failure(path, current)),
             build: Some(manifest.build),
             version: Some(&manifest.version),
-            notes: Some(&manifest.notes),
-            changelog: manifest.changes_since(current),
-            history_complete: Some(manifest.history_complete(current)),
+            notes: Some(
+                highlights
+                    .as_ref()
+                    .map(|(notes, _)| notes.as_str())
+                    .unwrap_or(&manifest.notes),
+            ),
+            changelog: if highlights.is_some() {
+                Vec::new()
+            } else {
+                manifest.changes_since(current)
+            },
+            history_complete: Some(
+                highlights
+                    .as_ref()
+                    .map(|(_, complete)| *complete)
+                    .unwrap_or_else(|| manifest.history_complete(current)),
+            ),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -391,6 +442,127 @@ struct CachedManifest {
     signature: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Highlights {
+    schema: u8,
+    platform: String,
+    revision: String,
+    sequence: u64,
+    releases: Vec<HighlightedRelease>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HighlightedRelease {
+    sequence: u64,
+    revision: String,
+    published_at: String,
+    highlights: Vec<Highlight>,
+}
+
+#[derive(Deserialize)]
+struct Highlight {
+    title: String,
+    body: String,
+}
+
+fn revision_valid(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn release_highlights_from(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    platform: &str,
+    current_revision: &str,
+    target_revision: &str,
+) -> Result<(String, bool)> {
+    if !matches!(platform, "macos" | "windows" | "linux")
+        || !revision_valid(current_revision)
+        || !revision_valid(target_revision)
+    {
+        return Err("invalid highlights revision or platform".into());
+    }
+    let fetch = |revision: &str| -> Result<Highlights> {
+        let bytes = fetch_limited(
+            client,
+            &format!("{url}?platform={platform}&revision={revision}"),
+            64 * 1024,
+        )?;
+        let feed: Highlights = serde_json::from_slice(&bytes)?;
+        let text_valid = |value: &str, max: usize| {
+            !value.trim().is_empty()
+                && value.chars().count() <= max
+                && !value
+                    .chars()
+                    .any(|char| char.is_control() || matches!(char, '<' | '>'))
+        };
+        let mut previous = 0;
+        if feed.schema != 1
+            || feed.platform != platform
+            || feed.revision != revision
+            || feed.sequence == 0
+            || feed.sequence > 9_007_199_254_740_991
+            || feed.releases.is_empty()
+            || feed.releases.len() > 30
+            || feed.releases.iter().any(|release| {
+                let valid = release.sequence > previous
+                    && release.sequence <= feed.sequence
+                    && revision_valid(&release.revision)
+                    && release.published_at.len() >= 20
+                    && release.published_at.is_ascii()
+                    && release.published_at.as_bytes().get(10) == Some(&b'T')
+                    && release.highlights.len() <= 5
+                    && release
+                        .highlights
+                        .iter()
+                        .all(|item| text_valid(&item.title, 100) && text_valid(&item.body, 500));
+                previous = release.sequence;
+                !valid
+            })
+            || !feed.releases.last().is_some_and(|release| {
+                release.sequence == feed.sequence && release.revision == revision
+            })
+        {
+            return Err("invalid release highlights".into());
+        }
+        Ok(feed)
+    };
+    let current = fetch(current_revision)?;
+    let target = fetch(target_revision)?;
+    let notes: Vec<_> = target
+        .releases
+        .iter()
+        .rev()
+        .filter(|release| release.sequence > current.sequence && !release.highlights.is_empty())
+        .map(|release| {
+            format!(
+                "{}\n{}",
+                &release.published_at[..10],
+                release
+                    .highlights
+                    .iter()
+                    .map(|item| format!("{}\n{}", item.title, item.body))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            )
+        })
+        .collect();
+    let complete = target.releases[0].sequence <= current.sequence + 1;
+    Ok((
+        if notes.is_empty() {
+            "No user-facing changes in this build.".into()
+        } else {
+            notes.join("\n\n")
+        },
+        complete,
+    ))
+}
+
 fn fetch_manifest_from(
     client: &reqwest::blocking::Client,
     key: &ed25519_dalek::VerifyingKey,
@@ -573,6 +745,90 @@ mod tests {
             }
         });
         (url, server)
+    }
+
+    #[test]
+    fn preinstall_highlights_use_exact_platform_revisions_and_skip_old_and_silent_entries() {
+        use serde_json::json;
+        let current_revision = "a".repeat(40);
+        let target_revision = "d".repeat(40);
+        let entry = |sequence, revision: &str, title: Option<&str>| {
+            json!({
+                "sequence": sequence, "revision": revision, "publishedAt": "2026-10-11T12:00:00Z",
+                "highlights": title.map(|title| vec![json!({"title": title, "body": "A useful change."})]).unwrap_or_default()
+            })
+        };
+        let current = json!({"schema":1,"platform":"macos","revision":current_revision,"sequence":1,
+            "releases":[entry(1,&current_revision,Some("Already installed"))]});
+        let target = json!({"schema":1,"platform":"macos","revision":target_revision,"sequence":4,
+            "releases":[entry(1,&current_revision,Some("Already installed")),entry(2,&"b".repeat(40),Some("Skipped update")),
+                entry(3,&"c".repeat(40),None),entry(4,&target_revision,Some("Newest update"))]});
+        let client = reqwest::blocking::Client::new();
+        for (invalid, body) in [
+            (false, target.clone()),
+            (true, {
+                let mut value = target.clone();
+                value["platform"] = json!("windows");
+                value
+            }),
+            (true, {
+                let mut value = target.clone();
+                value["revision"] = json!("e".repeat(40));
+                value
+            }),
+        ] {
+            let (url, server) = serve_metadata(vec![
+                (
+                    "/notes?platform=macos&revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    200,
+                    serde_json::to_vec(&current).unwrap(),
+                ),
+                (
+                    "/notes?platform=macos&revision=dddddddddddddddddddddddddddddddddddddddd",
+                    200,
+                    serde_json::to_vec(&body).unwrap(),
+                ),
+            ]);
+            let result = release_highlights_from(
+                &client,
+                &format!("{url}/notes"),
+                "macos",
+                &current_revision,
+                &target_revision,
+            );
+            if invalid {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), ("2026-10-11\nNewest update\nA useful change.\n\n2026-10-11\nSkipped update\nA useful change.".into(), true));
+            }
+            server.join().unwrap();
+        }
+        let silent = json!({"schema":1,"platform":"macos","revision":target_revision,"sequence":4,
+            "releases":[entry(4,&target_revision,None)]});
+        let (url, server) = serve_metadata(vec![
+            (
+                "/notes?platform=macos&revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                200,
+                serde_json::to_vec(&current).unwrap(),
+            ),
+            (
+                "/notes?platform=macos&revision=dddddddddddddddddddddddddddddddddddddddd",
+                200,
+                serde_json::to_vec(&silent).unwrap(),
+            ),
+        ]);
+        assert_eq!(
+            release_highlights_from(
+                &client,
+                &format!("{url}/notes"),
+                "macos",
+                &current_revision,
+                &target_revision
+            )
+            .unwrap(),
+            ("No user-facing changes in this build.".into(), false)
+        );
+        server.join().unwrap();
     }
 
     #[test]

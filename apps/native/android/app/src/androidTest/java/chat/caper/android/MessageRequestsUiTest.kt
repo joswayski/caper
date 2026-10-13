@@ -43,7 +43,7 @@ class MessageRequestsUiTest {
         compose.onNodeWithText("Jordan").performClick()
         compose.runOnIdle { assertEquals(request, selected) }
 
-        compose.onNodeWithText("⊘ 2 blocked messages").assertIsDisplayed()
+        compose.onNodeWithText("2 blocked messages").assertIsDisplayed()
         compose.onNodeWithContentDescription("Show 2 blocked messages").performClick()
         compose.onNodeWithContentDescription("Hide 2 blocked messages").assertIsDisplayed()
     }

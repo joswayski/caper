@@ -3,6 +3,7 @@ package chat.caper.android
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -59,7 +61,8 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                 Text("Edit message", style = MaterialTheme.typography.titleLarge)
                 Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
                 // Read-only, not disabled, while saving: focus and the caret survive a failed save.
-                OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp).focusRequester(field), label = { Text("Message") }, readOnly = saving)
+                OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp).focusRequester(field), label = { Text("Message") }, readOnly = saving,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                 Text("${draft.text.codePointCount(0, draft.text.length)} / 4,000", color = TextMuted, fontSize = 12.sp, style = TabularNumbers)
                 error?.let { Text(it, color = ErrorText); TextButton(enabled = !saving, onClick = {
                     saving = true; error = null
@@ -75,7 +78,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                     }
                 }, shape = MaterialTheme.shapes.small) { Text("Discard draft and load latest") } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(close, enabled = !saving, shape = MaterialTheme.shapes.small) { Text("Cancel") }
+                    TextButton(close, enabled = !saving, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
                     Button(::save, enabled = !saving && validEditText(draft.text), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", saving) }
                 }
@@ -113,7 +116,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
             // The heading stays above its own scrolling body, as in the app's other dialogs.
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Message history", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                TextButton(close, shape = MaterialTheme.shapes.small) { Text("Close") }
+                TextButton(close, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Close") }
             }
             HorizontalDivider(color = Border)
             Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

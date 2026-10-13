@@ -24,6 +24,10 @@ class AppleReleaseSigningTests(unittest.TestCase):
         prepare = self.app / "prepare.sh"
         prepare.write_text('#!/usr/bin/env bash\ntouch "$(dirname "$0")/prepared"\n')
         prepare.chmod(0o755)
+        self.revision = "a" * 40
+        config = self.app / ".build/SourceRevision.xcconfig"
+        config.parent.mkdir()
+        config.write_text(f"CAPER_SOURCE_REVISION = {self.revision}\n")
         binary = self.root / "bin"
         binary.mkdir()
         xcodebuild = binary / "xcodebuild"
@@ -48,6 +52,7 @@ if os.environ.get("FAIL_STAGE") == stage:
 if stage == "archive":
     bundle = Path(args[args.index("-archivePath") + 1]) / "Products/Applications/Caper.app"
     app = {"CFBundleVersion": os.environ["BUILD_NUMBER"], "CFBundleShortVersionString": "0.1.0"}
+    app["CaperSourceRevision"] = os.environ.get("TEST_APP_REVISION", os.environ["TEST_SOURCE_REVISION"])
     extension = {
         "CFBundleVersion": os.environ.get("TEST_EXTENSION_BUILD", app["CFBundleVersion"]),
         "CFBundleShortVersionString": os.environ.get("TEST_EXTENSION_VERSION", app["CFBundleShortVersionString"]),
@@ -64,6 +69,7 @@ if stage == "archive":
             "PATH": f"{binary}:{os.environ['PATH']}",
             "TEST_APP_ROOT": str(self.app),
             "TEST_LOG": str(self.log),
+            "TEST_SOURCE_REVISION": self.revision,
             "APPLE_TEAM_ID": "FIXTURETEAM",
             "NOTARY_KEY_PATH": str(self.root / "key with spaces.p8"),
             "NOTARY_KEY_ID": "fixture-key-id",
@@ -96,6 +102,7 @@ if stage == "archive":
         self.assertIn("DEVELOPMENT_TEAM=FIXTURETEAM", args)
         self.assertIn("CAPER_IOS_BUNDLE_ID=chat.fixture.custom", args)
         self.assertIn("CURRENT_PROJECT_VERSION=37.2", args)
+        self.assertIn(f"CAPER_SOURCE_REVISION={self.revision}", args)
         self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
         self.assertNotIn("CODE_SIGN_ENTITLEMENTS=", args)
         for flag in (
@@ -125,11 +132,12 @@ if stage == "archive":
         )
         self.assertIn("Uploaded chat.fixture.custom build 37.2", result.stdout)
 
-    def test_mismatched_extension_versions_stop_before_upload(self):
+    def test_mismatched_release_metadata_stops_before_upload(self):
         for overrides, key in (
             ({"TEST_EXTENSION_BUILD": "1"}, "CFBundleVersion"),
             ({"TEST_EXTENSION_VERSION": "1.0"}, "CFBundleShortVersionString"),
             ({"TEST_EXTENSION_BUILD": "1", "TEST_EXTENSION_VERSION": "1.0"}, "CFBundleVersion"),
+            ({"TEST_APP_REVISION": "b" * 40}, "CaperSourceRevision"),
         ):
             with self.subTest(overrides=overrides):
                 self.log.unlink(missing_ok=True)

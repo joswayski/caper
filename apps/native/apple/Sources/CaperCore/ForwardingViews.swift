@@ -42,7 +42,7 @@ struct ForwardCardView: View {
     var body: some View {
         if let forward = message.forward {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Forwarded", systemImage: "arrowshape.turn.up.right").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                CaperLabel("Forwarded", icon: "forward", size: 12).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 if let original = forward.message {
                     SharedOriginalView(message: original)
                     Button("\(original.thread.flatMap { $0.replyCount > 0 ? "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " : nil } ?? "")View conversation", action: open)
@@ -108,7 +108,7 @@ struct ForwardPickerView: View {
                     else if destinations != nil && visible.isEmpty { Text("No matching destinations.") }
                     TextField("Add a note (optional)", text: $note, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).disabled(pending != nil)
                     if let error {
-                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         if destinations == nil { Button("Retry loading") { attempt += 1 } }
                     }
                     Button(sending ? "Forwarding…" : pending == nil ? "Forward (\(selected.count))" : "Retry forwards (\(selected.count))") {
@@ -176,7 +176,7 @@ struct ForwardConversationView: View {
                         if conversation?.messages.isEmpty == true { Text("No replies yet.") }
                     } else if !loading && error == nil { Text("Original conversation unavailable.") }
                     if let error {
-                        Text(error).foregroundStyle(CaperTheme.terracottaBright)
+                        Text(error).foregroundStyle(CaperTheme.error)
                         Button("Retry") { attempt += 1 }
                     }
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)

@@ -84,6 +84,31 @@ impl Api {
         &self.base
     }
 
+    /// Public, bounded metadata for the client that is actually running; no
+    /// account or chat capability is attached to this request.
+    pub fn whats_new(&self) -> Result<crate::whats_new::Snapshot, String> {
+        use crate::whats_new::{MAX_BYTES, PLATFORM, REVISION, Snapshot};
+        use std::io::Read;
+        let response = self
+            .raw(
+                Method::GET,
+                &format!("api/whats-new?platform={PLATFORM}&revision={REVISION}"),
+                None,
+                None,
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err("Release highlights aren’t available yet. Please try again.".into());
+        }
+        let mut bytes = Vec::new();
+        response
+            .take((MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not read release highlights. Please try again.".to_owned())?;
+        Snapshot::decode(&bytes, PLATFORM, REVISION)
+    }
+
     pub fn me(&self, token: &str) -> Result<Account, ApiError> {
         self.request(Method::GET, "api/account/me", Some(token), None, None)
     }
@@ -1429,6 +1454,56 @@ fn invalid(message: &str) -> ApiError {
 mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn whats_new_requests_exact_public_snapshot_and_rejects_mismatch_and_oversize() {
+        use crate::whats_new::{MAX_BYTES, PLATFORM, REVISION};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let valid = serde_json::json!({
+            "schema": 1, "platform": PLATFORM, "revision": REVISION, "sequence": 3,
+            "releases": [{"sequence": 3, "revision": REVISION, "publishedAt": "2026-10-11T19:00:00Z", "highlights": []}]
+        });
+        let mut mismatch = valid.clone();
+        mismatch["revision"] = serde_json::json!("0".repeat(40));
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                (200, valid.to_string()),
+                (200, mismatch.to_string()),
+                (200, " ".repeat(MAX_BYTES + 1)),
+                (404, String::new()),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(
+                    line,
+                    format!(
+                        "GET /api/whats-new?platform={PLATFORM}&revision={REVISION} HTTP/1.1\r\n"
+                    )
+                );
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.to_ascii_lowercase().starts_with("authorization:"));
+                    assert!(!line.to_ascii_lowercase().starts_with("x-caper-chat-token:"));
+                }
+                write!(reader.get_mut(), "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        assert!(api.whats_new().is_ok());
+        for _ in 0..3 {
+            assert!(api.whats_new().is_err());
+        }
+        worker.join().unwrap();
+    }
 
     #[test]
     fn server_errors_read_as_web_sentences() {

@@ -1,6 +1,17 @@
 import Foundation
 
 @MainActor public enum CaperRuntime {
+    static func showWhatsNewPreview(_ model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        guard environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_UI_FIXTURE"] == "whats-new",
+              let rawURL = environment["CAPER_API_BASE_URL"], let url = URL(string: rawURL),
+              ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "") else { return }
+        model.whatsNew.presentation = WhatsNewDisplay(sequence: nil, releases: [
+            PlatformRelease(sequence: 3, revision: String(repeating: "a", count: 40), publishedAt: "2026-10-11T19:00:00Z", highlights: [
+                ReleaseHighlight(title: "TEST FIXTURE — Message editing", body: "This local preview shows curated release highlights. It does not claim a shipped update."),
+            ]),
+        ], automatic: false)
+    }
+
     static func isChatPreview(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard ["chat-rejected", "reaction-chips"].contains(name), environment["CAPER_TEST_MODE"] == "parity",
               environment["CAPER_UI_FIXTURE"] == name,

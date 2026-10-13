@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
-import { Paperclip } from "lucide-react";
+import { Paperclip, Send } from "lucide-react";
 import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
@@ -286,6 +286,25 @@ export default function Composer({
         />
         <div className="chat-composer-tools">
           <EmojiButton disabled={disabled} onSelect={chooseEmoji} returnFocus={composerRef} />
+          {/* Touch layouts get a visible send button, as in the native apps; a
+              keyboard's Enter still sends everywhere. */}
+          <button
+            type="submit"
+            className="chat-composer-send chat-composer-send-touch"
+            aria-label="Send message"
+            title="Send"
+            disabled={
+              disabled ||
+              !identityReady ||
+              sending ||
+              sendRejected ||
+              (!draft.trim() && !attachments?.drafts.length && !(pendingSend && !pendingSend.threadRootId))
+            }
+            // Keep the keyboard open: tapping send must not blur the textarea.
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <Send size={16} aria-hidden="true" />
+          </button>
         </div>
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes

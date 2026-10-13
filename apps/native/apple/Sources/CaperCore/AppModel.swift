@@ -174,6 +174,7 @@ public final class AppModel {
     public private(set) var pendingVoiceStartedAt: Int64 = 0
     public var navigationError: String?
     public let api: APIClient
+    public let whatsNew: WhatsNewModel
     public let chat: ChatModel
     public let voice: VoiceClient
     public let presence: PresenceModel
@@ -218,6 +219,7 @@ public final class AppModel {
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
+        whatsNew = WhatsNewModel(api: api)
         self.preferredInitialSpaceID = preferredInitialSpaceID
         let chatModel = ChatModel(api: api)
         let voiceClient = VoiceClient(api: api)

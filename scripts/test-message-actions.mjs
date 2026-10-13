@@ -374,6 +374,23 @@ try {
     evaluate(
       `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
     );
+  // Read during the hold, before the 500ms action threshold, not after opening
+  // the drawer. CDP avoids a CLI round-trip taking longer than the gesture.
+  const pressing = async () => {
+    const { result } = await cdp(
+      "Runtime.evaluate",
+      {
+        expression: `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const rows = [...document.querySelectorAll('.chat-message[data-pressing="true"]')];
+        resolve(rows.map(row => ({ id: row.dataset.messageId, wash: getComputedStyle(row).backgroundImage })));
+      })))`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    return result.value;
+  };
   const hold = async (selector = ".chat-message p", duration = 650) => {
     browser("scrollintoview", selector);
     await delay(150);
@@ -394,14 +411,33 @@ try {
   await hold(".chat-message p", 100);
   await delay(550);
   assert.equal(evaluate('!!document.querySelector(".chat-message-actions")'), false);
+  assert.deepEqual(await pressing(), [], "A released tap must clear its highlight");
   const first = point(".chat-message p");
+  const firstId = evaluate('document.querySelector(".chat-message").dataset.messageId');
   await touch("touchStart", first.x, first.y);
+  const held = await pressing();
+  assert.deepEqual(
+    held.map((row) => row.id),
+    [firstId],
+    "Only the held message must highlight before the menu opens",
+  );
+  assert.notEqual(held[0].wash, "none", "The held message needs a visible wash, not just a state attribute");
+  if (artifacts) {
+    const { data } = await cdp(
+      "Page.captureScreenshot",
+      { format: "png", clip: { x: 0, y: 0, width: 390, height: 844, scale: 2 } },
+      sessionId,
+    );
+    writeFileSync(`${artifacts}/message-actions-mobile-pressing.png`, Buffer.from(data, "base64"));
+  }
   await touch("touchMove", first.x, first.y + 40);
+  assert.deepEqual(await pressing(), [], "Moving to scroll must immediately clear the highlight");
   await delay(650);
   await touch("touchEnd");
   assert.equal(evaluate('!!document.querySelector(".chat-message-actions")'), false);
   await touch("touchStart", first.x, first.y);
   await touch("touchCancel");
+  assert.deepEqual(await pressing(), [], "A cancelled touch must clear the highlight");
   await delay(650);
   assert.equal(evaluate('!!document.querySelector(".chat-message-actions")'), false);
 
@@ -426,6 +462,7 @@ try {
   );
   screenshot("message-actions-mobile-conversation");
   await openTarget();
+  assert.deepEqual(await pressing(), [], "Releasing a recognized long press must clear the held highlight");
   assert.deepEqual(
     (await history()).messages.at(-1).reactions ?? [],
     [],

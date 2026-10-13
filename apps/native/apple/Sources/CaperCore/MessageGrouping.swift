@@ -27,8 +27,8 @@ enum MessageGrouping {
     static func isGrouped(_ message: ChatMessage, after previous: ChatMessage?, inThread: Bool,
                           calendar: Calendar = .current) -> Bool {
         guard let previous, message.replyTo == nil, inThread || message.threadRootId == nil else { return false }
-        return follows(authorID: message.author.id, at: ChatDateDivider.date(message.createdAt),
-                       previousAuthorID: previous.author.id, previousDate: ChatDateDivider.date(previous.createdAt),
+        return follows(authorID: message.author.id, at: ChatTimestamp.date(message.createdAt),
+                       previousAuthorID: previous.author.id, previousDate: ChatTimestamp.date(previous.createdAt),
                        calendar: calendar)
     }
 
@@ -41,7 +41,7 @@ enum MessageGrouping {
         var result = Layout()
         var previous: (id: String, authorID: String, date: Date?)?
         func visit(_ message: ChatMessage) {
-            let date = ChatDateDivider.date(message.createdAt)
+            let date = ChatTimestamp.date(message.createdAt)
             if let previous, message.replyTo == nil, inThread || message.threadRootId == nil,
                follows(authorID: message.author.id, at: date, previousAuthorID: previous.authorID,
                        previousDate: previous.date, calendar: calendar) {
@@ -60,7 +60,7 @@ enum MessageGrouping {
             }
         }
         if let pending, pending.replyTo == nil, let previous,
-           follows(authorID: author?.id, at: ChatDateDivider.date(pending.createdAt), previousAuthorID: previous.authorID,
+           follows(authorID: author?.id, at: ChatTimestamp.date(pending.createdAt), previousAuthorID: previous.authorID,
                    previousDate: previous.date, calendar: calendar) {
             result.pendingGrouped = true
             result.continued.insert(previous.id)

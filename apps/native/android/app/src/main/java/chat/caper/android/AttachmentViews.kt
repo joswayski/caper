@@ -39,6 +39,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -223,10 +224,14 @@ internal fun durationLabel(durationMs: Long?): String? {
                 }
             })
             prepare()
-            playWhenReady = true
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
+    // Like the viewer's video: plays only while the app is visible, and pauses when it is stopped.
+    LifecycleStartEffect(player) {
+        player.playWhenReady = true
+        onStopOrDispose { player.pause() }
+    }
     if (failed) return
     AndroidView(
         factory = {
@@ -287,7 +292,8 @@ internal fun durationLabel(durationMs: Long?): String? {
         else -> AttachmentPolicy.formatBytes(attachment.size)
     }
     Surface(
-        Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp)
+        // Clipped first, so the press ripple keeps the card's corners.
+        Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${attachment.name}", onClick = onClick) else Modifier),
         shape = MaterialTheme.shapes.small, color = if (muted) Color.Transparent else Surface,
         border = BorderStroke(1.dp, if (error) ErrorText.copy(alpha = 0.6f) else Border),

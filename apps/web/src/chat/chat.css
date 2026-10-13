@@ -11,6 +11,9 @@
   min-width: 0;
   min-height: 360px;
   display: grid;
+  /* Without a column track, an 80-character channel name widens the whole
+     panel and pushes the header actions, messages and composer out of view. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(140px, 1fr) auto auto;
   position: relative;
   overflow: hidden;
@@ -231,7 +234,7 @@
 @media (hover: hover) {
   .chat-pins-toggle:hover {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-hover);
   }
 }
 .chat-pins-toggle:focus-visible {
@@ -280,8 +283,11 @@
   display: grid;
   gap: 6px;
 }
-.chat-heading-alerts > .chat-refresh-error {
+.chat-heading-alerts > :is(.chat-refresh-error, .chat-offline) {
   position: static;
+}
+.chat-heading-alerts > .chat-offline {
+  justify-self: end;
 }
 .chat-refresh-error button {
   border: 0;
@@ -353,8 +359,8 @@
 }
 /* Before the scrolling list mounts: anchored to the bottom and at least full
    height, so a long history shows its newest messages (like the list will)
-   and a short one stays beside the composer. Match Virtuoso's alignToBottom:
-   the history header stays at the top, with spare space above the rows. */
+   and a short one stays beside the composer. Match the list below: spare
+   space goes above the history header, which stays on the first message. */
 .chat-initial-messages {
   position: absolute;
   inset: auto 0 0;
@@ -363,7 +369,12 @@
   flex-direction: column;
   background: var(--surface-conversation);
 }
-.chat-initial-rows {
+/* A short history sits at the bottom with its header directly above the first
+   message, the same as the native clients, rather than leaving the header
+   stranded at the top of the pane. Virtuoso lays out its viewport as a column
+   when aligned to the bottom; MessageList drops the list's own auto margin. */
+.chat-initial-messages > .chat-history,
+.chat-scroller [data-viewport-type] > :has(> .chat-history) {
   margin-top: auto;
 }
 .chat-scroller {
@@ -669,9 +680,13 @@
   text-decoration-color: var(--border);
   text-underline-offset: 3px;
 }
-.chat-reply-source:hover,
 .chat-reply-source:focus-visible {
   color: var(--text);
+}
+@media (hover: hover) {
+  .chat-reply-source:hover {
+    color: var(--text);
+  }
 }
 .chat-reply-source:focus-visible,
 .chat-reply-expand:focus-visible,
@@ -735,6 +750,10 @@
   }
 }
 @media (hover: hover) {
+  .chat-reply-draft button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
   .chat-message:hover {
     background: rgb(255 255 255 / 2%);
   }
@@ -1268,9 +1287,19 @@
   place-items: center;
   padding: 0;
   border: 0;
+  border-radius: 6px;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
+}
+@media (hover: hover) {
+  .chat-emoji-search button:hover {
+    color: var(--text);
+  }
+}
+.chat-emoji-search button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-emoji-category-label {
   padding: 0 12px 8px;
@@ -1889,8 +1918,13 @@
   text-align: left;
   cursor: pointer;
 }
-.chat-profile-menu button:is(:hover, :focus-visible) {
+.chat-profile-menu button:focus-visible {
   background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .chat-profile-menu button:hover {
+    background: var(--surface-raised);
+  }
 }
 .chat-profile-menu button:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -2211,6 +2245,22 @@
   max-height: 160px;
   padding-right: 84px;
 }
+.chat-composer-send-touch {
+  display: none;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-composer-send-touch {
+    display: grid;
+  }
+  .chat-composer form textarea {
+    padding-right: 84px;
+  }
+}
+@media (pointer: coarse) {
+  .chat-composer form textarea {
+    padding-right: 92px;
+  }
+}
 .chat-mention-input {
   position: relative;
   grid-column: 1;
@@ -2223,6 +2273,13 @@
   position: relative;
   display: block;
   background: transparent;
+}
+/* A long channel or person name stays on one line instead of growing the
+   empty composer to four. */
+.chat-mention-input > textarea::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-mention-input-mirror {
   position: absolute;
@@ -3054,6 +3111,13 @@ a.chat-draft-preview:focus-visible strong {
 .chat-message-thread-active:focus-within {
   background: rgb(182 77 50 / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
+}
+/* Immediate touch feedback, layered over mention/thread/reply tints without
+   replacing their meaning. Cancelling or releasing the press clears it. */
+.chat-message[data-pressing="true"],
+.chat-message[data-pressing="true"]:hover,
+.chat-message[data-pressing="true"]:focus-within {
+  background-image: linear-gradient(rgb(243 244 245 / 8%), rgb(243 244 245 / 8%));
 }
 .chat-thread-summary {
   display: flex;
@@ -3970,6 +4034,19 @@ a.chat-draft-preview:focus-visible strong {
   color: var(--text-muted);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+}
+/* The same pressed and focused feedback as the other menus. */
+.chat-header-menu button:active {
+  background: var(--surface-hover);
+}
+@media (hover: hover) {
+  .chat-header-menu button:hover {
+    background: var(--surface-hover);
+  }
+}
+.chat-header-menu button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 @media (max-width: 760px) {
   .chat-title-menu {

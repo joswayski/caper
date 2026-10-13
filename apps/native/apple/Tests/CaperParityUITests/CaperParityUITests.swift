@@ -184,6 +184,17 @@ final class CaperParityUITests: XCTestCase {
         add(attachment)
     }
 
+    func testWhatsNewFixtureShowsHighlightsAndDismisses() {
+        let app = launch(fixture: "whats-new")
+        assertStaticText("TEST FIXTURE — Message editing", in: app, timeout: 15)
+        capture("whats-new-fixture", app: app)
+        let close = app.buttons["Close What’s new"]
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        close.tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
+    }
+
     private func assertElement(_ identifier: String, label: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         let element = app.descendants(matching: .any)[identifier]
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing accessibility identifier \(identifier)")
@@ -337,6 +348,9 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                                "Missing fixture thread root")
+        // Beside Members the thread is 232 pt and "Before :tomato" wraps, growing
+        // the composer for reasons unrelated to suggestions.
+        try hideMembers(in: app)
         for inThread in [false, true] {
             if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
             let timeline = try require(app.scrollViews[inThread ? "thread-timeline" : "chat-timeline"], timeout: 5,
@@ -2592,7 +2606,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
         assertStaticText("No pinned messages", in: app, timeout: 2)
         capture("narrow-empty-pins", app: app)
-        app.buttons["Messages"].tap()
+        app.buttons["Close pins"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
         XCTAssertTrue(title.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")

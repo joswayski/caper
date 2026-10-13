@@ -159,6 +159,8 @@ function initialState() {
     notificationSettings: new Map(),
     notificationOverrides: new Map(),
     notificationEvents: [],
+    releaseHighlights: null,
+    releaseHighlightsDelay: 0,
   };
 }
 
@@ -463,6 +465,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             return reject(response, 400, "Invalid fixture push platforms.");
           state.pushPlatforms = [...new Set(body.pushPlatforms)];
         }
+        if (body.releaseHighlights !== undefined) state.releaseHighlights = body.releaseHighlights;
+        if (Number.isInteger(body.releaseHighlightsDelay))
+          state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
         if (typeof body.uploadsEnabled === "boolean") state.uploadsEnabled = body.uploadsEnabled;
         if (body.clearFailures) state.failures = [];
@@ -895,6 +900,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       if (path === "/api/account/me")
         return user ? json(response, 200, user) : reject(response, 401, "Sign in required.");
+      if (path === "/api/whats-new" && method === "GET") {
+        if (state.releaseHighlightsDelay)
+          await new Promise((resolve) => setTimeout(resolve, state.releaseHighlightsDelay));
+        return state.releaseHighlights
+          ? json(response, 200, state.releaseHighlights)
+          : reject(response, 502, "TEST FIXTURE: release highlights unavailable.");
+      }
       if (path === "/api/auth/email/request" && method === "POST") {
         if (!String(body.email ?? "").includes("@")) return reject(response, 400, "Enter a valid email address.");
         const challengeId = randomUUID();

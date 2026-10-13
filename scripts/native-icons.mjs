@@ -7,46 +7,69 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as icons from "lucide-react";
 
 const names = {
-  "chevron-down": "ChevronDown",
-  "chevron-right": "ChevronRight",
+  archive: "Archive",
+  "archive-restore": "ArchiveRestore",
   "arrow-left": "ArrowLeft",
   "arrow-right": "ArrowRight",
-  pin: "Pin",
-  x: "X",
-  plus: "Plus",
-  paperclip: "Paperclip",
+  "audio-lines": "AudioLines",
+  ban: "Ban",
+  bell: "Bell",
+  "bell-minus": "BellMinus",
+  "bell-off": "BellOff",
+  "bell-ring": "BellRing",
+  check: "Check",
+  "chevron-down": "ChevronDown",
+  "chevron-left": "ChevronLeft",
+  "chevron-right": "ChevronRight",
+  "chevrons-down-up": "ChevronsDownUp",
+  "chevrons-up-down": "ChevronsUpDown",
+  copy: "Copy",
+  "corner-up-right": "CornerUpRight",
+  download: "Download",
   ellipsis: "Ellipsis",
-  settings: "Settings",
+  "external-link": "ExternalLink",
+  "file-text": "FileText",
+  "file-warning": "FileWarning",
+  forward: "Forward",
   hash: "Hash",
-  lock: "Lock",
-  users: "Users",
-  speech: "Speech",
+  "headphone-off": "HeadphoneOff",
+  headphones: "Headphones",
+  history: "History",
+  inbox: "Inbox",
+  link: "Link",
+  // Private channels use the keyhole lock on every client; the file keeps its name.
+  lock: "LockKeyhole",
+  "log-out": "LogOut",
+  menu: "Menu",
+  "message-circle": "MessageCircle",
+  "message-square": "MessageSquare",
   mic: "Mic",
   "mic-off": "MicOff",
-  headphones: "Headphones",
+  paperclip: "Paperclip",
+  pause: "Pause",
+  pencil: "Pencil",
+  "phone-off": "PhoneOff",
+  pin: "Pin",
+  "pin-off": "PinOff",
+  play: "Play",
+  plus: "Plus",
+  reply: "Reply",
+  search: "Search",
+  send: "Send",
+  settings: "Settings",
+  smile: "Smile",
+  "smile-plus": "SmilePlus",
+  speech: "Speech",
+  users: "Users",
+  "volume-2": "Volume2",
   "volume-x": "VolumeX",
-  menu: "Menu",
+  x: "X",
 };
 const output = resolve("apps/native/desktop/resources/icons");
 const apple = resolve("apps/native/apple/Resources/CaperIcons.xcassets");
 const info = { author: "xcode", version: 1 };
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const files = [[`${apple}/Contents.json`, json({ info })]];
-const desktopActions = {
-  forward: "Forward",
-  pencil: "Pencil",
-  history: "History",
-  copy: "Copy",
-  ban: "Ban",
-  "pin-off": "PinOff",
-  "smile-plus": "SmilePlus",
-};
-for (const [file, name] of Object.entries(desktopActions)) {
-  files.push([
-    `${output}/${file}.svg`,
-    `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 }))}\n`,
-  ]);
-}
 for (const [file, name] of Object.entries(names)) {
   const svg = `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 }))}\n`;
   const image = `${apple}/caper-${file}.imageset`;
@@ -74,5 +97,5 @@ for (const [file, content] of files) {
   }
 }
 console.log(
-  `${process.argv.includes("--check") ? "Verified" : "Exported"} ${Object.keys(names).length} shared web Lucide icons and ${Object.keys(desktopActions).length} Rust desktop action icons.`,
+  `${process.argv.includes("--check") ? "Verified" : "Exported"} ${Object.keys(names).length} web Lucide icons for Rust and Apple native clients.`,
 );

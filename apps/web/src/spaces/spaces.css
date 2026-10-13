@@ -983,7 +983,7 @@
 @media (hover: hover) {
   .member-list-toggle:hover:not([aria-expanded="true"]) {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-hover);
   }
 }
 .member-list-toggle:focus-visible {
@@ -1033,22 +1033,30 @@
   padding: 0;
   list-style: none;
 }
+/* Call.tsx measures whether the conversation keeps 320px beside Members. */
 @media (min-width: 1100px) {
-  .call-room.spaces-room:has(> .space-member-presence) {
+  .call-room.spaces-room:has(> .space-member-presence):not(.members-float) {
     grid-template-columns: 60px auto minmax(0, 1fr) 220px;
   }
 }
-@media (min-width: 761px) and (max-width: 1099px) {
-  .call-room.spaces-room:has(> .space-member-presence) {
-    grid-template-rows: minmax(0, 1fr) auto;
+@media (min-width: 761px) {
+  .call-room.spaces-room.members-beside:has(> .space-member-presence) {
+    grid-template-columns: 60px auto minmax(0, 1fr) 220px;
   }
-  .spaces-room:has(> .space-member-presence) > :is(.space-rail, .people-panel) {
-    grid-row: 1 / 3;
+  /* Too narrow for a fourth column: like desktop and Android, Members float
+     over the conversation's right edge below its header, never as a row under
+     the composer. */
+  .call-room.spaces-room.members-float {
+    position: relative;
   }
-  .space-member-presence {
-    grid-column: 3;
-    max-height: 240px;
-    border-top: 1px solid var(--border);
+  .spaces-room.members-float > .space-member-presence {
+    position: absolute;
+    z-index: 8;
+    top: 54px;
+    right: 0;
+    bottom: 0;
+    width: 220px;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.35);
   }
 }
 .member-presence-connecting {
@@ -2726,10 +2734,15 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.feedback-archive:hover,
 .feedback-archive:focus-visible {
   background: var(--surface-hover);
   color: var(--text);
+}
+@media (hover: hover) {
+  .feedback-archive:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
 }
 .feedback-archive svg {
   width: 15px;

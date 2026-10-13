@@ -70,6 +70,30 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testReleaseNotesArePublicBoundedAndPinnedToSourceRevision() async throws {
+        let revision = String(repeating: "a", count: 40)
+        func body(_ sha: String) -> Data {
+            Data("""
+            {"schema":1,"platform":"macos","revision":"\(sha)","sequence":3,"releases":[{"sequence":3,"revision":"\(sha)","publishedAt":"2026-10-11T19:00:00Z","highlights":[]}]}
+            """.utf8)
+        }
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/whats-new")
+            XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: true)?.queryItems,
+                           [URLQueryItem(name: "platform", value: "macos"), URLQueryItem(name: "revision", value: revision)])
+            XCTAssertNil(request.value(forHTTPHeaderField: "authorization"))
+            return (200, body(revision))
+        }
+        let api = client()
+        let snapshot = try await api.whatsNew(platform: "macos", revision: revision)
+        XCTAssertEqual(snapshot.sequence, 3)
+        MockURLProtocol.handler = { _ in (200, body(String(repeating: "b", count: 40))) }
+        do { _ = try await api.whatsNew(platform: "macos", revision: revision); XCTFail("Wrong revision must fail") } catch { }
+        MockURLProtocol.handler = { _ in (200, Data(repeating: 32, count: WhatsNewSnapshot.maximumBytes + 1)) }
+        do { _ = try await api.whatsNew(platform: "macos", revision: revision); XCTFail("Oversized response must fail") } catch { }
+    }
+
     @MainActor
     func testSwitchingConversationsKeepsEachUnsentDraftUntilSignOut() async throws {
         MockURLProtocol.handler = { request in

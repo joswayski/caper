@@ -1,0 +1,83 @@
+.audio-dialog.whats-new-dialog {
+  width: min(560px, calc(100vw - 24px));
+  height: auto;
+  max-height: min(680px, calc(100dvh - 32px));
+}
+.whats-new-intro {
+  margin-bottom: 28px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.whats-new-release + .whats-new-release {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.whats-new-release time {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.whats-new-release article {
+  margin-top: 18px;
+}
+.whats-new-release h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.whats-new-release p,
+.whats-new-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.whats-new-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+.whats-new-footer .primary,
+.whats-new-dialog .secondary {
+  min-height: 40px;
+  padding: 8px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface-raised);
+  font-weight: 700;
+  cursor: pointer;
+}
+.whats-new-footer .primary {
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
+}
+@media (hover: hover) {
+  .whats-new-footer .primary:hover {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
+  .whats-new-dialog .secondary:hover:not(:disabled) {
+    background: var(--border);
+  }
+}
+.whats-new-footer .primary:active {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+.whats-new-history {
+  margin-right: auto;
+  padding: 8px 0;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 0.8rem;
+  cursor: pointer;
+}

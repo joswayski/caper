@@ -61,6 +61,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     logout: () -> Unit,
     signIn: () -> Unit,
     notifications: @Composable () -> Unit = {},
+    openWhatsNew: () -> Unit = {},
     openPrivacy: () -> Unit = {},
 ) = CaperDialog("Audio settings", close) {
     var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
@@ -79,6 +80,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     }
     // Who can start a DM with you, and the accounts you blocked.
     if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
+    MenuButton("What’s new") { openWhatsNew() }
     if (state.account != null) MenuButton("Log out") { close(); logout() }
     else MenuButton("Sign in") { close(); signIn() }
 }
@@ -101,7 +103,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     }
                     var gain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
                     VolumeRow("Input volume", gain)
-                    Slider(gain.toFloat(), { gain = it.toInt(); VoiceCallService.setInputGain(context, gain) },
+                    Slider(gain.toFloat(), { gain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, gain) },
                         Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
                 } else {
                     Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -113,7 +115,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     } else Text("Choose audio output in system settings.", color = TextMuted, fontSize = 11.sp)
                     var volume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
                     VolumeRow("Output volume", volume)
-                    Slider(volume.toFloat(), { volume = it.toInt(); VoiceCallService.setOutputVolume(context, volume) },
+                    Slider(volume.toFloat(), { volume = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setOutputVolume(context, volume) },
                         Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
                 }
             }
@@ -320,7 +322,7 @@ private const val MAX_RECORDING_SECONDS = 30
         VolumeRow("Speaker volume", outputVolume)
         Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) },
             modifier = Modifier.semantics { contentDescription = "Test speaker volume" }, valueRange = 0f..200f)
-        OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small,
+        OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(),
             modifier = Modifier.semantics { stateDescription = if (speakerPlaying) "On" else "Off" }) {
             Text(if (speakerPlaying) "Stop speaker test" else "Test speakers")
         }
@@ -410,7 +412,7 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             val json = detailsJson.encodeToString(JsonObject.serializer(), buildJsonObject { rows.forEach { (label, value) -> put(label, value) } })
             copyStatus = try { clipboard.setText(AnnotatedString(json)); "Copied diagnostics" } catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small) { Text("Copy diagnostics") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy diagnostics") }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     } else Text("No microphone capture started. Open Mic Test or join voice first.", color = TextMuted, fontSize = 12.sp)
 }
@@ -430,7 +432,7 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             copyStatus = try { clipboard.setText(AnnotatedString(connectionDetailsJson(diagnostics))); "Copied connection details" }
             catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small) { Text("Copy connection details") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy connection details") }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     }
 }

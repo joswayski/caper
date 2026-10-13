@@ -24,9 +24,9 @@ struct MessageEditorView: View {
                     .background(CaperTheme.composer, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border)).disabled(busy)
                     .accessibilityLabel("Message").accessibilityIdentifier("message-edit-text")
-                Text("\(draft.unicodeScalars.count) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error {
-                    Text(error).foregroundStyle(CaperTheme.terracottaBright)
+                    Text(error).foregroundStyle(CaperTheme.error)
                     Button("Discard draft and load latest") { perform {
                         baseline = try await chat.reloadMessage(baseline); draft = baseline.content.text; focused = true
                     } }.disabled(busy)
@@ -96,7 +96,7 @@ struct MessageHistoryView: View {
                     }
                 }
                 if loading { ProgressView("Loading versions…") }
-                if let error { Text(error).foregroundStyle(CaperTheme.terracottaBright); Button("Retry") { Task { await load(older: !versions.isEmpty) } }.disabled(loading) }
+                if let error { Text(error).foregroundStyle(CaperTheme.error); Button("Retry") { Task { await load(older: !versions.isEmpty) } }.disabled(loading) }
                 if more && error == nil { Button("Load older versions") { Task { await load(older: true) } }.disabled(loading) }
             }.padding(20)
         }.background(CaperTheme.raised)
