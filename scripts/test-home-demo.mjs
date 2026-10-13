@@ -670,10 +670,26 @@ try {
 
   // Resize after history checks: changing the scroll viewport can stop following.
   nextMoments(35); // 38: all six people are in voice
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 760, 761, 1023]) {
     browser("set", "viewport", String(width), "844", "2");
     evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
     browser("scrollintoview", ".live-invite");
+    assert.ok(
+      evaluate(`
+        const rail = document.querySelector('.sim-rail');
+        const sidebar = document.querySelector('.sim-sidebar');
+        const chat = document.querySelector('.sim-chat');
+        const scene = document.querySelector('.live-scene');
+        const desktopChrome = ['.sim-section-title', '.sim-brand', '.sim-direct', '.browse-channels', '.voice-dock', '.member-list-toggle', '.header-voice-people'];
+        return rail.offsetWidth > 0 && sidebar.offsetWidth > 0 && chat.clientWidth >= 320
+          && rail.offsetTop === sidebar.offsetTop && sidebar.offsetTop === chat.offsetTop
+          && rail.offsetLeft < sidebar.offsetLeft && sidebar.offsetLeft < chat.offsetLeft
+          && scene.offsetWidth > scene.offsetHeight
+          && desktopChrome.every(selector => document.querySelector('.sim-demo ' + selector).getClientRects().length > 0)
+          && document.documentElement.scrollWidth <= innerWidth;
+      `),
+      `The full desktop demo stays side by side, with all desktop chrome and no page overflow at ${width}px`,
+    );
     assert.ok(
       evaluate(`
         const pill = document.querySelector('.live-invite').getBoundingClientRect();
@@ -695,7 +711,7 @@ try {
       evaluate(
         'return document.querySelector(".sim-messages").clientHeight >= document.querySelector(".chat-forward-card").closest(".sim-message").offsetHeight',
       ),
-      `The complete forwarded message must fit beneath all six voice participants at ${width}px`,
+      `The complete forwarded message must fit beside all six voice participants at ${width}px`,
     );
     assert.equal(
       evaluate(
@@ -705,6 +721,7 @@ try {
       `Threads, pins and forwards must not overflow horizontally at ${width}px`,
     );
   }
+  console.log("PASS: full desktop demo at 320, 390, 760, 761 and 1023px; centered join link and no overflow");
   browser("set", "viewport", "1280", "800", "2");
   evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
   assert.equal(

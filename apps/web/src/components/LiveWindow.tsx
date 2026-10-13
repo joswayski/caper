@@ -377,7 +377,7 @@ export default function LiveWindow() {
           ))}
         </div>
         <div className="live-window">
-          <div className="sim-demo spaces-room navigation-open" aria-label="Simulated Caper conversation">
+          <div className="sim-demo spaces-room" aria-label="Simulated Caper conversation">
             <aside className="sim-rail" aria-label="Demo space">
               <span>C</span>
               <span className="sim-add-space" aria-hidden="true">

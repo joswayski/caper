@@ -753,50 +753,99 @@
 }
 
 @media (max-width: 760px) {
-  .sim-demo {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .sim-rail,
-  .sim-section-title {
-    display: none;
-  }
-  /* The homepage shows navigation and chat together; the real app switches
-     between them. Keep this read-only phone illustration compact. */
-  .sim-demo.spaces-room.navigation-open > .sim-sidebar {
+  /* The scene is a scaled desktop canvas even on phones. Override only the
+     real app's phone presentation; signed-in rooms keep their mobile layout. */
+  .sim-demo > .sim-sidebar {
     display: flex;
-  }
-  .sim-demo .sim-sidebar > .sidebar-channels {
-    margin: 0;
-    padding: 8px 12px;
-    border-radius: 0;
-  }
-  .sim-demo .sim-sidebar > .sim-voice-panel {
-    margin: 0 12px 11px;
-  }
-  .sim-sidebar .channel-navigation > header {
-    display: none;
-  }
-  .sim-direct,
-  .sim-sidebar .browse-channels,
-  .sim-sidebar .voice-dock {
-    display: none;
-  }
-  /* Keep every demo participant visible without taking over the phone card. */
-  .sim-sidebar .voice-occupants .voice-occupants-inner > ul {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    max-height: none;
-  }
-  /* This decorative divider can paint through the raised join pill on iOS.
-     Omit it only in the phone illustration, not in real conversations. */
-  .sim-chat > .chat-heading {
+    border-right: 1px solid var(--border);
     border-bottom: 0;
   }
-  .sim-message {
-    padding-block: 5px;
+  .sim-sidebar .voice-panel::before {
+    content: "";
   }
-  .sim-meme {
-    width: 96px;
+  .sim-demo .sim-account {
+    height: 40px;
+  }
+  .sim-demo .account-profile,
+  .sim-demo .sim-account :is(.voice-icon-button, .call-settings-trigger) {
+    height: 32px;
+  }
+  .sim-demo .sim-account :is(.voice-icon-button, .call-settings-trigger) {
+    width: 28px;
+  }
+  .sim-demo .sim-account .device-menu .call-settings-trigger {
+    width: 16px;
+  }
+  .sim-chat > .chat-heading {
+    gap: 16px;
+    padding: 8px 18px;
+  }
+  .sim-chat .member-list-toggle {
+    display: grid;
+    width: 34px;
+    height: 34px;
+  }
+  .sim-chat .header-voice {
+    flex: 0 1 auto;
+    gap: 10px;
+    margin-right: 6px;
+    padding: 0 14px 0 0;
+    border: 0;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+  }
+  .sim-chat .header-voice-people {
+    display: flex;
+  }
+  .sim-chat .voice-leave > span {
+    display: inline;
+  }
+  .sim-chat .header-voice :is(.header-voice-join, .voice-leave) {
+    width: auto;
+    min-height: 34px;
+    height: auto;
+    display: flex;
+    gap: 6px;
+    padding: 0 12px;
+    border-radius: 8px;
+  }
+  .sim-chat .header-voice .header-voice-join {
+    border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border));
+    background: rgb(182 77 50 / 0.14);
+  }
+  .sim-chat .header-voice .header-voice-join svg {
+    width: 16px;
+    height: 16px;
+  }
+  .sim-chat .header-voice .voice-leave svg {
+    width: 17px;
+    height: 17px;
+  }
+  /* Decorative rows need desktop sizing, not finger-sized touch targets. */
+  .sim-sidebar .channel-select {
+    min-height: 38px;
+  }
+  .sim-direct .channel-select,
+  .sim-direct .channel-section-heading,
+  .sim-sidebar .voice-stack {
+    min-height: 28px;
+  }
+  .sim-sidebar .voice-hangup {
+    width: 34px;
+    height: 32px;
+  }
+  .sim-sidebar .voice-occupants .participant {
+    padding-block: 4px;
+  }
+  .sim-message {
+    padding: 10px 18px;
+  }
+  .sim-chat :is(.sim-footer, .sim-typing) {
+    padding-inline: 18px;
+  }
+  .sim-reaction {
+    min-height: 30px;
+    padding-inline: 8px;
   }
 }
 
