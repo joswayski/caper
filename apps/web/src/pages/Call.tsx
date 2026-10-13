@@ -48,6 +48,7 @@ import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
+import { dialogKeyDown } from "../components/dialogKeyboard";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
 import { PublicCallClient, prepareVoiceJoin } from "../media/client";
@@ -1868,6 +1869,7 @@ export default function Call({
         ref={profileDialog}
         className="audio-dialog profile-dialog"
         aria-labelledby="profile-dialog-title"
+        onKeyDown={dialogKeyDown}
         onPointerDown={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           profileBackdropPress.current =
@@ -1931,6 +1933,7 @@ export default function Call({
         className="audio-dialog"
         data-panel={audioPanel}
         aria-labelledby="audio-dialog-title"
+        onKeyDown={dialogKeyDown}
         onPointerDown={(event) => {
           if (event.target !== event.currentTarget) return;
           const bounds = event.currentTarget.getBoundingClientRect();

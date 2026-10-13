@@ -1,6 +1,7 @@
 // Browser regression using explicitly mocked API responses. Never writes real data.
 // Run with the dev server: SPACES_TEST_WEB_URL=http://localhost:3000/spaces node scripts/test-space-controls.mjs
 // Focus on notification/DM privacy alignment with SETTINGS_ONLY=1.
+// Focus on modal Escape/focus behavior with KEYBOARD_ONLY=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -314,6 +315,82 @@ function closeBrowse() {
   browser("click", '.channel-select[aria-current="page"]');
   wait('!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition');
 }
+function testModalKeyboard() {
+  for (const width of [1280, 390]) {
+    browser("set", "viewport", String(width), "900", "2");
+    browser("open", `${url}?space=space1234567&channel=channel12345&debug`);
+    wait('!!document.querySelector(".channel-navigation")');
+    if (width < 760) openBrowse();
+    for (const label of ["Create space", "Create channel"]) {
+      const opener = `[aria-label="${label}"]`;
+      browser("focus", opener);
+      browser("press", "Enter");
+      wait('!!document.querySelector(".space-dialog[open]")');
+      assert.equal(evaluate('document.activeElement.matches(".space-field input")'), true);
+      // Include enabled and disabled buttons, and both Tab directions.
+      for (const key of ["Tab", "Shift+Tab"]) {
+        for (let step = 0; step < 8; step++) {
+          browser("press", key);
+          assert.ok(
+            evaluate('document.activeElement === document.body || !!document.activeElement.closest("dialog[open]")'),
+            "Tab must not reach a background app control (browser chrome is allowed)",
+          );
+        }
+      }
+      browser("focus", ".space-field input");
+      assert.equal(
+        evaluate(
+          'document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true, cancelable:true, isComposing:true}))',
+        ),
+        false,
+        "IME Escape must suppress native cancellation",
+      );
+      assert.equal(opens(), 1, "IME Escape must leave the editor open");
+      // A child-owned Escape (e.g. autocomplete) leaves its enclosing dialog open.
+      evaluate('document.activeElement.addEventListener("keydown", event => event.preventDefault(), {once:true})');
+      browser("press", "Escape");
+      assert.equal(opens(), 1, "Child-handled Escape must not dismiss its dialog");
+      // No browser-generated cancel event: key-down itself must dismiss.
+      evaluate(
+        'document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true, cancelable:true}))',
+      );
+      wait('!document.querySelector(".space-dialog[open]")');
+      assert.equal(
+        evaluate(`document.activeElement.matches(${JSON.stringify(opener)})`),
+        true,
+        "Return focus to opener",
+      );
+      browser("press", "Enter");
+      browser("press", "Escape");
+      assert.equal(opens(), 0, "A real Escape press must also dismiss");
+    }
+    openOverview();
+    evaluate("spaceControlFixture.fail = true");
+    browser("click", `${modal} .danger`);
+    wait("!!spaceControlFixture.release");
+    browser("press", "Escape");
+    assert.equal(opens(), 2, "An in-flight write retains its result surface");
+    evaluate("spaceControlFixture.release()");
+    wait('!!document.querySelector(".delete-confirmation [role=alert]")');
+    browser("press", "Escape");
+    assert.equal(opens(), 1, "Escape closes only the nested confirmation");
+    assert.equal(evaluate('document.activeElement.matches(".danger-outline")'), true);
+    browser("press", "Escape");
+    assert.equal(opens(), 0, "The next Escape closes settings");
+    browser("click", ".account-profile");
+    wait('!!document.querySelector(".profile-dialog[open]")');
+    browser("press", "Escape");
+    assert.equal(evaluate('!!document.querySelector(".profile-dialog[open]")'), false);
+    browser("click", '[aria-label="User Settings"]');
+    browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
+    wait('!!document.querySelector(".audio-dialog[open]")');
+    browser("press", "Escape");
+    assert.equal(evaluate('!!document.querySelector(".audio-dialog[open]")'), false);
+  }
+  console.log(
+    "PASS: modal Escape on key-down and real presses, IME/child isolation, nested dismissal, Tab/Shift+Tab and opener focus at 1280px and 390px (mock APIs; synthetic IME).",
+  );
+}
 function testModalGeometry() {
   for (const [width, height] of [
     [1280, 900],
@@ -514,8 +591,9 @@ function testModalGeometry() {
 try {
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
-  testModalGeometry();
-  if (!process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
+  if (process.env.KEYBOARD_ONLY) testModalKeyboard();
+  else testModalGeometry();
+  if (!process.env.KEYBOARD_ONLY && !process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
     for (const [viewport, saved, expected] of [
       [1280, "240", 240],
       [1280, "440", 440],

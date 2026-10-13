@@ -1278,6 +1278,7 @@ export default function Chat({
           >
             {message.replyTo && (
               <ReplyContext
+                motionKey={message.clientMessageId}
                 reference={message.replyTo}
                 hidden={blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId}
                 onOpen={() => void goToMessage({ ...message.replyTo!, channelId: state.channelId! })}
@@ -1733,6 +1734,7 @@ export default function Chat({
                     <article className="chat-message chat-pinned-message" key={message.id}>
                       {message.replyTo && (
                         <ReplyContext
+                          motionKey={message.clientMessageId}
                           reference={message.replyTo}
                           hidden={blockedIds.has(message.replyTo.author.id) && message.replyTo.author.id !== viewerId}
                           onOpen={() => void goToMessage({ ...message.replyTo!, channelId: state.channelId! })}

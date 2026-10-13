@@ -3,7 +3,7 @@ import { dailyIcon, dailyIconUrl, type DailyIcon } from "./daily-icon";
 
 export const DailyIconContext = createContext<number | null>(null);
 
-/** One daily choice for in-app branding and browser tabs. Installed icons stay fixed. */
+/** One daily choice for illustrations and browser tabs. Wordmarks and installed icons stay fixed. */
 export default function RotatingFavicon({ children }: { children: ReactNode }) {
   const [index, setIndex] = useState<number | null>(null);
   useEffect(() => {

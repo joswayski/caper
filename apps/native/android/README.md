@@ -52,8 +52,8 @@ The API defaults to `https://caper.chat`. Override it at build time with `-Pcape
 Launcher icons always use the original green mascot. Legacy avatar aliases retain
 their component names for upgrade/shortcut compatibility, but also use that icon.
 The app no longer switches launcher components: fresh installs use the default,
-and upgrades retain the previously enabled entry. Daily characters rotate only
-in in-app wordmarks. Verify declarations with
+and upgrades retain the previously enabled entry. Wordmarks also stay on the
+original green Caper; daily characters rotate only in file-drop illustrations. Verify declarations with
 `node scripts/generate-android-launcher-aliases.mjs --check` from the repository root;
 OEM launcher caches and signed upgrades still require real-device validation.
 

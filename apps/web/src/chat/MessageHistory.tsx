@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { dialogKeyDown } from "../components/dialogKeyboard";
 import { loadMessageVersions } from "./client.ts";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage, MessageVersion } from "./types.ts";
@@ -141,6 +142,7 @@ export default function MessageHistory({ message, onClose }: { message: ChatMess
       ref={dialog}
       className="chat-edit-dialog chat-version-dialog"
       aria-labelledby="chat-version-heading"
+      onKeyDown={dialogKeyDown}
       onCancel={(event) => {
         event.preventDefault();
         onClose();
