@@ -12510,7 +12510,7 @@ impl CaperApp {
             let draft_height = draft_layout(
                 ui,
                 &text,
-                (width - 22.0).max(1.0),
+                (width - 22.0 - 36.0).max(1.0),
                 &people,
                 specials,
                 egui::FontId::proportional(13.6),
@@ -12531,8 +12531,11 @@ impl CaperApp {
                 .size()
                 .y;
             let send_height = label_height.max(44.0);
+            let files = self.draft_file_count(Some(&root));
+            let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
+            let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
             egui::TopBottomPanel::bottom("thread-composer")
-                .min_height(editor_height + 8.0 + send_height + 28.0)
+                .min_height(editor_height + 8.0 + send_height + 28.0 + chips_height)
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -12565,8 +12568,12 @@ impl CaperApp {
                 // The channel composer's `:`/`@` suggestions, with their own state.
                 let composer_id = egui::Id::new(("thread-draft", &root));
                 let attach = self.can_attach() && !loading;
-                if self.draft_file_count(Some(&root)) > 0 {
-                    self.draft_chips(ui, Some(&root));
+                if files > 0 {
+                    egui::ScrollArea::vertical()
+                        .id_salt(("thread-draft-files", &root))
+                        .max_height(chips_height - 8.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| self.draft_chips(ui, Some(&root)));
                     ui.add_space(8.0);
                 }
                 if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
@@ -12583,12 +12590,21 @@ impl CaperApp {
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
+                let files = self.draft_file_count(Some(&root));
+                let full = files >= uploads::MAX_ATTACHMENTS;
+                let attach_unavailable = self.attach_unavailable_reason();
+                let mut pick = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
                     // Padding belongs outside the scrolling text. egui's
                     // default 3px clip expansion otherwise bleeds over the border.
                     ui.visuals_mut().clip_rect_margin = 0.0;
-                    ui.add_enabled_ui(!loading, |ui| {
+                    ui.horizontal_top(|ui| {
+                        pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
+                            .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
+                                else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
+                                else { "Attach files".to_owned() }).clicked();
+                        ui.add_enabled_ui(!loading, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt(("thread-composer-scroll", &root))
                             .max_height(editor_height - 20.0)
@@ -12603,26 +12619,18 @@ impl CaperApp {
                                 .layouter(&mut layouter)
                                 .hint_text(RichText::new("Reply to thread…").color(MUTED))
                                 .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
+                        }).inner
                     }).inner
                 });
                 let mut output = editor.inner;
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
-                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, output.response.rect, &mut output) {
+                if pick { self.pick_files(ui.ctx(), Some(root.clone())); }
+                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 ui.add_space(8.0);
-                let files = self.draft_file_count(Some(&root));
-                let full = files >= uploads::MAX_ATTACHMENTS;
-                ui.horizontal(|ui| {
-                    if ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
-                        .inner.on_disabled_hover_text(if !attach { self.attach_unavailable_reason().to_owned() }
-                            else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
-                            else { "Attach files".to_owned() }).clicked() {
-                        self.pick_files(ui.ctx(), Some(root.clone()));
-                    }
-                });
                 // Reserve the fixed controls first. Long channel names wrap in
                 // the remaining space instead of pushing Send outside the panel.
                 let send = ui
@@ -22797,8 +22805,10 @@ mod tests {
 
     #[test]
     fn thread_composer_keeps_text_and_actions_inside_narrow_panels() {
-        for width in [300.0, 340.0, 390.0, 480.0] {
-            let (context, mut app) = fixture("parity-thread");
+        for (width, name) in [300.0, 340.0, 390.0, 480.0].into_iter().flat_map(|width| {
+            ["parity-thread", "parity-thread-attachments"].map(|name| (width, name))
+        }) {
+            let (context, mut app) = fixture(name);
             context.enable_accesskit();
             app.detail.as_mut().unwrap().channels[0].name = "long-channel-name-".repeat(3);
             let root = app.thread_view.as_ref().unwrap().root.clone();
@@ -22850,6 +22860,7 @@ mod tests {
                         _ => None,
                     })
                     .expect("reply editor surface");
+                assert!(screen.contains_rect(editor), "reply editor stays onscreen");
                 assert!(
                     editor.height() <= 280.0,
                     "{width}: editor must scroll beyond 40% of the viewport: {editor:?}"
@@ -22874,6 +22885,11 @@ mod tests {
                 }
                 let send = node_bounds(&output, "Send reply").expect("send control");
                 let emoji = node_bounds(&output, "Insert emoji").expect("emoji control");
+                let attach = node_bounds(&output, "Attach files").expect("attachment control");
+                assert!(
+                    editor.contains_rect(attach),
+                    "attach stays inside the editor"
+                );
                 let broadcast =
                     node_bounds(&output, &format!("Also send to #{}", app.channel_name()))
                         .expect("broadcast control");
