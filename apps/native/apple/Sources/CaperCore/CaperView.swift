@@ -4606,9 +4606,13 @@ private struct MentionCardView: View {
                                     else { blockRequested = true; close() }
                                 }.accessibilityIdentifier("mention-card-block")
                             } label: {
+                                // The label must stay an accessibility element: with only
+                                // CaperIcon's hidden image, the menu leaves the tree entirely.
                                 CaperIcon(name: "ellipsis", size: 16)
                                     .foregroundStyle(CaperTheme.muted)
                                     .frame(width: 32, height: 32).contentShape(Rectangle())
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("More profile actions")
                             }
                             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                             .fixedSize()
