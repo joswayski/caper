@@ -12634,6 +12634,32 @@ impl CaperApp {
                             }
                         });
                     }
+                    let names: Vec<_> = self
+                        .typers
+                        .values()
+                        .filter(|typer| typer.typing)
+                        .map(|typer| typer.author.name.as_str())
+                        .collect();
+                    if !names.is_empty() {
+                        ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        typing_dots(ui);
+                        ui.label(
+                            RichText::new(if names.len() > 2 {
+                                "Several people are typing…".into()
+                            } else {
+                                format!(
+                                    "{} {} typing…",
+                                    names.join(" and "),
+                                    if names.len() == 1 { "is" } else { "are" }
+                                )
+                            })
+                            .size(11.0)
+                            .color(MUTED),
+                        );
+                        });
+                        ui.add_space(4.0);
+                    }
                     if attach && !self.draft_files.is_empty() {
                         self.draft_chips(ui);
                         ui.add_space(8.0);
@@ -12764,33 +12790,6 @@ impl CaperApp {
                                 .size(10.24)
                                 .color(counter_tone(count)),
                         );
-                    }
-                    // Typing status stays below the input, separate from its top inset.
-                    let names: Vec<_> = self
-                        .typers
-                        .values()
-                        .filter(|typer| typer.typing)
-                        .map(|typer| typer.author.name.as_str())
-                        .collect();
-                    if !names.is_empty() {
-                        ui.add_space(4.0);
-                        ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        typing_dots(ui);
-                        ui.label(
-                            RichText::new(if names.len() > 2 {
-                                "Several people are typing…".into()
-                            } else {
-                                format!(
-                                    "{} {} typing…",
-                                    names.join(" and "),
-                                    if names.len() == 1 { "is" } else { "are" }
-                                )
-                            })
-                            .size(11.0)
-                            .color(MUTED),
-                        );
-                        });
                     }
                 });
             self.navigation_swipe_bottom = composer.response.rect.top();
@@ -34503,6 +34502,26 @@ mod tests {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Maya is typing…")
             });
             assert_eq!(visible, !stopped);
+            let composer = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == super::COMPOSER => {
+                        assert!(
+                            rect.rect.bottom() <= shape.clip_rect.bottom(),
+                            "typing must not push the input out of view"
+                        );
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("visible composer");
+            if !stopped {
+                assert!(
+                    text_position(&output, "Maya is typing…").y < composer.top(),
+                    "typing belongs above the input"
+                );
+            }
         }
     }
 

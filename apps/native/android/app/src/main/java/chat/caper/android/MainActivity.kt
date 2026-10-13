@@ -1835,6 +1835,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
             // Keep the composer inset from the timeline and the panel edge.
             else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp)) {
+                TypingLine(state.typingAuthors)
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
                 state.pendingMessage?.takeIf { it.error != null && it.threadRootId != state.thread?.rootId }?.let { pending ->
@@ -1903,7 +1904,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 DraftCounter(draft.text)
-                TypingLine(state.typingAuthors)
             }
         }
         if (dropping.value && canAttach) {

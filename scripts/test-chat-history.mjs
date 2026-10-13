@@ -298,11 +298,16 @@ function quietTimeline(layout) {
   settle();
   composerSpacing();
   assert.ok(
-    evaluate(
-      'document.querySelector(".chat-typing").getBoundingClientRect().top >= document.querySelector("#chat-message").getBoundingClientRect().bottom',
-    ),
-    `${layout}: typing status belongs below the input`,
+    evaluate(`(() => {
+      const typing = document.querySelector('.chat-typing').getBoundingClientRect();
+      const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
+      const composer = document.querySelector('.chat-panel > .chat-composer').getBoundingClientRect();
+      return typing.top >= timeline.bottom && typing.bottom <= composer.top;
+    })()`),
+    `${layout}: typing status belongs between the timeline and composer without overlap`,
   );
+  assert.ok(latestVisible(), `${layout}: showing typing must retain the latest message`);
+  screenshot(`chat-typing-${layout}`);
   evaluate("chatHistoryFixture.typing(false)");
   wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
   composerSpacing();
@@ -341,6 +346,13 @@ function quietTimeline(layout) {
   settle();
   assert.ok(metrics().bottom > 80, `${layout}: PageUp must still scroll history`);
   const before = anchor();
+  evaluate("chatHistoryFixture.typing(true)");
+  settle();
+  assert.ok(Math.abs(anchorOffset(before.key) - before.offset) < 2, `${layout}: showing typing preserves history`);
+  evaluate("chatHistoryFixture.typing(false)");
+  wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
+  settle();
+  assert.ok(Math.abs(anchorOffset(before.key) - before.offset) < 2, `${layout}: clearing typing preserves history`);
   browser("fill", "#chat-message", "TEST FIXTURE reading history");
   evaluate('chatHistoryFixture.append("TEST FIXTURE arrival while reading")');
   settle();
