@@ -3848,7 +3848,7 @@ private struct MessageRow: View {
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
-            if let reference = message.replyTo { NativeReplyContext(reference: reference, chat: chat) }
+            if let reference = message.replyTo { NativeReplyContext(reference: reference, motionKey: message.clientMessageId, chat: chat) }
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
@@ -5548,6 +5548,7 @@ private struct ReactionPicker: View {
 
 private struct NativeReplyContext: View {
     let reference: MessageReply
+    let motionKey: String
     @Bindable var chat: ChatModel
     var replyGap: CGFloat = 6
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -5566,6 +5567,13 @@ private struct NativeReplyContext: View {
     }
     private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
+        // Match the other clients; seed the reply, not the original it quotes.
+        let seed = motionKey.utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }
+        let stiffness = 140 + CGFloat(seed & 255) / 255 * 100
+        let damping = 11 + CGFloat((seed >> 8) & 255) / 255 * 7
+        let impulse = 1 + CGFloat((seed >> 16) & 255) / 255 * 0.4
+        let limit = 5 + CGFloat(seed >> 24) / 255 * 2
+        let speedLimit = limit * 16
         let canExpand = !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1)
         #if os(iOS)
         let previewMinHeight: CGFloat = 54
@@ -5661,7 +5669,7 @@ private struct NativeReplyContext: View {
                 let delta = (previousY ?? y) - y
                 previousY = y
                 guard !reduceMotion && !hidden && delta != 0 else { return }
-                velocity = max(-60, min(60, velocity + delta * 0.8))
+                velocity = max(-speedLimit, min(speedLimit, velocity + delta * impulse))
                 guard motion == nil else { return }
                 motion = Task { @MainActor in
                     var previousTime = Date()
@@ -5670,8 +5678,8 @@ private struct NativeReplyContext: View {
                         let now = Date()
                         let dt = CGFloat(min(now.timeIntervalSince(previousTime), 0.032))
                         previousTime = now
-                        velocity -= (180 * displacement + 20 * velocity) * dt
-                        displacement = max(-4, min(4, displacement + velocity * dt))
+                        velocity -= (stiffness * displacement + damping * velocity) * dt
+                        displacement = max(-limit, min(limit, displacement + velocity * dt))
                         if abs(displacement) < 0.01 && abs(velocity) < 0.05 { break }
                     }
                     displacement = 0; velocity = 0; motion = nil
@@ -5679,6 +5687,7 @@ private struct NativeReplyContext: View {
             }
             .onChange(of: reduceMotion) { _, _ in stopMotion() }
             .onChange(of: hidden) { _, _ in stopMotion() }
+            .onChange(of: motionKey) { _, _ in stopMotion(); previousY = nil }
             .onDisappear { stopMotion(); previousY = nil }
     }
 
@@ -5753,7 +5762,7 @@ private struct PendingMessageRow: View {
     let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-        if let reference = pending.replyTo, let chat { NativeReplyContext(reference: reference, chat: chat, replyGap: 5) }
+        if let reference = pending.replyTo, let chat { NativeReplyContext(reference: reference, motionKey: pending.id, chat: chat, replyGap: 5) }
         HStack(alignment: .top, spacing: 10) {
             if grouped {
                 // Keep the avatar column empty; a clear name still reaches VoiceOver.

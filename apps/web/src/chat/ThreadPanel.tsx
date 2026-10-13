@@ -438,6 +438,7 @@ export default function ThreadPanel({
           <article className="chat-message chat-message-pending chat-message-arrive">
             {pending.replyTo && (
               <ReplyContext
+                motionKey={pending.clientMessageId}
                 reference={pending.replyTo}
                 hidden={blockedIds.has(pending.replyTo.author.id) && pending.replyTo.author.id !== state.author?.id}
                 onOpen={() => void client?.loadMessageContext({ ...pending.replyTo!, channelId: state.channelId! })}

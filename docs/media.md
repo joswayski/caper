@@ -7086,6 +7086,15 @@ neither a fade nor an expansion control unless
 line breaks overflow the preview. Scrolling flexes the string by a few pixels
 and slightly rotates the cups around their fixed avatar attachment points.
 A damped spring settles back to rest; there is no repeating glow or idle jiggling.
+Each reply derives its spring tension, damping, scroll response and travel limit
+from its own client message ID, not the quoted original. Replies to the same
+source therefore move and settle differently, with stable settings on remount
+and across pending/delivered rows. All clients use the same UTF-8 FNV-1a seed
+and tuning ranges: stiffness 140–240, damping 11–18, scroll impulse 1.0–1.4,
+travel 5–7 logical pixels and speed capped at 16 times that travel. This is a
+modest increase over the previous uniform 0.8 impulse and 4px travel. Web uses
+actual scroll events, including touch/inertial scrolling; native clients track
+the row's position as their scroll view moves, without intercepting swipes.
 Both string ends follow the rotating cup backs. Animation work stops at rest
 and on disposal; reduced motion keeps the connection static. Blocked-source
 context hides the decorative connection as well as the quoted identity/text.
@@ -7140,6 +7149,22 @@ labels on white pills. Fresh 2x desktop/narrow and Linux collapsed and expanded
 captures use disposable local demo conversation data; Linux also exercises
 actual pointer click-to-expand. Android compilation
 still stops at the missing SDK, and Apple remains uncompiled/unrendered here.
+
+**Independent cone-motion follow-up (October 13, 2026).** Web checks and all
+604 unit tests pass. The quote checks in `scripts/test-message-threads.mjs`, run
+independently of the earlier thread checks, cover two equal-size replies to one
+source on desktop and Chromium coarse-pointer mobile: different motion, attached
+endpoints, exact settling and static reduced motion. Restoring the old uniform
+physics makes the independence assertion fail. Separate mouse-wheel and CDP
+touch-swipe checks also pass; 2x desktop/mobile frames were inspected. The full
+thread suite stops earlier at its width assertion (527px versus 600px), so it is
+not a passing acceptance result. Recording failed because the encoder fell
+behind; frame-by-frame SVG measurements, not a recording, verify the motion.
+Linux desktop's linked debug build, application Clippy and 485 tests pass
+(12 device/audio tests ignored); its reply fixture was rendered, scrolled and inspected. Android still
+stops at the missing SDK; Apple has no Swift/Xcode here. Neither is native-device
+acceptance. This tuning needs only web/native client releases, independently;
+no API/gateway deployment, migration, infrastructure or configuration change.
 
 **Deployment order.**
 
