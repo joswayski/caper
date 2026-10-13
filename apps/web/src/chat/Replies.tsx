@@ -1,4 +1,4 @@
-import { CornerUpRight, Paperclip, X } from "lucide-react";
+import { Paperclip, Reply, X } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";
@@ -246,7 +246,7 @@ export function ReplyDraft({
 }) {
   return (
     <div className="chat-reply-draft" role="status">
-      <CornerUpRight size={14} aria-hidden="true" />
+      <Reply size={14} aria-hidden="true" />
       <span>
         Replying to <strong>{hidden ? "blocked message" : reference.author.name}</strong>
       </span>

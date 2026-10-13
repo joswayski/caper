@@ -46,6 +46,7 @@ import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
+import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
@@ -209,7 +210,7 @@ function Dialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
-  const backdropPress = useRef(false);
+  const backdrop = useBackdropDismiss(onClose, dismissOnBackdrop);
   useLayoutEffect(() => {
     const dialog = ref.current!;
     const opener = document.activeElement as HTMLElement | null;
@@ -231,29 +232,7 @@ function Dialog({
         event.stopPropagation();
         onClose();
       }}
-      onPointerDown={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        backdropPress.current =
-          event.target === event.currentTarget &&
-          (event.clientX < rect.left ||
-            event.clientX > rect.right ||
-            event.clientY < rect.top ||
-            event.clientY > rect.bottom);
-      }}
-      onClick={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        if (
-          dismissOnBackdrop &&
-          backdropPress.current &&
-          event.target === event.currentTarget &&
-          (event.clientX < rect.left ||
-            event.clientX > rect.right ||
-            event.clientY < rect.top ||
-            event.clientY > rect.bottom)
-        )
-          onClose();
-        backdropPress.current = false;
-      }}
+      {...backdrop}
     >
       <header>
         <div>
@@ -646,6 +625,7 @@ function RemoveMemberDialog({
   return (
     <Dialog
       title={title}
+      dismissOnBackdrop={!pending}
       onClose={() => {
         if (!submitting.current) onClose();
       }}
@@ -1908,12 +1888,12 @@ export default function Spaces({
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      // Every menu, including DM rows outside the channel list: Safari does not
+      // Every menu, including DM rows and the phone channel title: Safari does not
       // focus a tapped <summary>, so onBlur alone never closes them on an outside tap.
       for (const menu of [
         spaceMenu.current,
         channelMenu.current,
-        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]"),
+        ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-title-menu[open]"),
       ]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }

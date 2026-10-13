@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import {
   autoUpdate,
   flip,
@@ -28,10 +28,13 @@ export default function EmojiButton({
   disabled,
   onSelect,
   onOpenChange,
+  returnFocus,
 }: {
   disabled?: boolean;
   onSelect: (emoji: string) => void;
   onOpenChange?: (open: boolean) => void;
+  /** The composer that Escape, the close button or an outside press returns typing to. */
+  returnFocus?: RefObject<HTMLTextAreaElement | null>;
 }) {
   const [open, setOpenState] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -56,7 +59,7 @@ export default function EmojiButton({
   ]);
 
   const panel = (
-    <FloatingFocusManager context={context} returnFocus={false}>
+    <FloatingFocusManager context={context} returnFocus={returnFocus ?? false}>
       <div
         ref={refs.setFloating}
         className={`chat-reaction-picker${drawer ? " chat-reaction-picker-drawer" : ""}`}

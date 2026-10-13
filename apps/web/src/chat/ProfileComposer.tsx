@@ -380,7 +380,7 @@ export default function ProfileComposer({
           Enter to send. Shift+Enter for a new line. Your draft is kept if you close this card.
         </span>
         <div className="chat-composer-tools">
-          <EmojiButton disabled={locked} onSelect={chooseEmoji} onOpenChange={setEmojiOpen} />
+          <EmojiButton disabled={locked} onSelect={chooseEmoji} onOpenChange={setEmojiOpen} returnFocus={input} />
           <button
             type="submit"
             className="chat-composer-send"

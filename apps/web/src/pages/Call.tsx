@@ -539,11 +539,16 @@ export default function Call({
     [],
   );
   const [membersVisible, setMembersVisible] = useState(true);
+  const wideMembersVisible = useRef(true);
   const [narrow, setNarrow] = useState(false);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
-    if (media.matches) setMembersVisible(false);
-    const update = () => setNarrow(media.matches);
+    // Phone layouts start, and narrowing windows return, with the conversation instead of
+    // the wide member column reappearing as a drawer over it; widening restores the column.
+    const update = () => {
+      setNarrow(media.matches);
+      setMembersVisible(media.matches ? false : wideMembersVisible.current);
+    };
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -553,12 +558,10 @@ export default function Call({
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
   useBrowseLayout(roomRef, navigationOpen);
-  const members = useMembersDrawer(
-    roomRef,
-    narrow && !navigationOpen && !!membersPanel,
-    membersVisible,
-    setMembersVisible,
-  );
+  const members = useMembersDrawer(roomRef, narrow && !navigationOpen && !!membersPanel, membersVisible, (open) => {
+    if (!narrow) wideMembersVisible.current = open;
+    setMembersVisible(open);
+  });
   // The drawer owns touches until it has fully slid away.
   const navigationSwipe = useBrowseSwipe(
     narrow && !membersVisible && !members.closing,
