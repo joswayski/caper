@@ -28,6 +28,8 @@ packages=(
   curl
   file
   gnome-keyring
+  grim
+  imagemagick
   libasound2
   libasound2-dev
   libdbus-1-dev

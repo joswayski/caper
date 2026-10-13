@@ -4869,6 +4869,62 @@ and a long session. Force relay in a test-only PeerConnection override and inspe
 selected ICE stats, then test a restrictive network including TCP/TLS fallback.
 Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas.
 
+## Running the clients
+
+`scripts/emulators/` runs each native client against the loopback UI fixture
+(`scripts/native-parity-fixture.mjs`, port 3001, signed in as `fixture_owner`;
+never Caper or an SFU). `scripts/emulators/fixture.sh start|stop|status` manages
+the fixture; in an Amp orb it is the supervised service `caper-fixture`. Each
+script prints its usage when run without arguments. Screenshots default to
+`.amp/in/artifacts/`. These are fixture renders, not live-server, physical-device
+or audio acceptance.
+
+| Client | Where it runs | Command |
+| --- | --- | --- |
+| Web, desktop and mobile layouts | Any orb: Chromium via `agent-browser`, or the existing `scripts/test-*.mjs` | `npm run dev:web` |
+| Rust desktop (Linux) | Any orb or Linux machine | `scripts/emulators/desktop.sh show\|shot [FIXTURE]` |
+| Rust desktop (Windows) | A Windows machine only | `apps/native/desktop/build.ps1` |
+| Android | A KVM Linux host or a Mac, not an orb | `scripts/emulators/android.sh install\|start\|app\|shot\|smoke` |
+| iOS Simulator, macOS | macOS with Xcode only | `scripts/emulators/apple.sh ios\|macos [FIXTURE]` |
+
+**Rust desktop.** `desktop.sh show` builds if needed and opens the app in the orb's
+Desktop tab, where a person can click through it (on your own Linux machine, it
+uses your session). To capture what the Desktop tab shows, run
+`. ~/.cache/amp/desktop/environment && grim out.png`.
+`desktop.sh shot parity-narrow out.png` renders on a private
+2x Xvfb and captures just the window (2880×1800 wide, 780×1688 narrow), then
+exits. `FIXTURE` is any `--fixture` name from the desktop README. On an a1.small
+orb, a cold debug build took about 6 minutes, including the libwebrtc download;
+a rebuild after a source change took 23 seconds. Builds link with lld because the
+default linker can exceed orb memory. Linux rendering is not Windows or macOS acceptance.
+
+**Android.** The emulator needs hardware acceleration, and orbs have no
+`/dev/kvm` (and no binder, so container Android such as Redroid is unavailable
+too). On October 13, 2026, software emulation (`-accel off`) of the API 36 image
+failed on an a1.small orb: it needs 2.5–4 GB of guest RAM and exhausted host
+memory, killing the agent session. On a1.large (8 vCPU, 16 GB) it booted in
+27 minutes, with ~5 s per tap and 30–60 s per screenshot, and `system_server`
+watchdog restarts. That is not usable. `android.sh start` therefore refuses
+without KVM unless `CAPER_ANDROID_SOFTWARE=1` is set and 7 GB is available.
+Building still works in an orb: `android.sh install` and
+`apps/native/android/fixture-build.sh` produced the fixture APK on a1.small
+(9m44s cold). Where KVM exists, `android.sh install` installs the CI's SDK components, API 36
+image and a Pixel 7 Pro AVD named `caper`. `start` boots it headless and disables
+animations (`CAPER_ANDROID_WINDOW=1` shows the window). `app` builds the fixture
+APK, reverses port 3001 and opens the app; `smoke` runs `smoke.py`. The `main`
+Native CI Android job runs the same emulator flow on a KVM-enabled GitHub runner.
+
+**iOS and macOS.** These need Xcode. Amp Mac orbs were not available to this
+account as of October 13, 2026, and no Mac was connected as an Amp runner.
+Once either exists, `apple.sh ios` builds the Debug simulator app, boots
+`CAPER_IOS_DEVICE` (default iPhone 16), launches the app with the parity
+fixture environment and saves a screenshot. In an Amp Mac orb it also serves the
+simulator as an interactive portal (`amp orb simulator serve`). `apple.sh macos`
+launches the Mac app the same way. To let Amp threads use your own Mac, run
+`amp --no-tui --desktop` in a checkout there. `apple.sh` has not yet been run on
+a Mac. The parity UI tests (`apps/native/apple/parity-screenshots.sh`) remain
+the acceptance path on `main` CI.
+
 ## Runbook
 
 - Unavailable: inspect feature flag, `/health`, ingress routing, secret names,

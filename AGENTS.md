@@ -9,6 +9,7 @@ Adapted from the conventions in `joswayski/captures`.
 - `apps/api`: Rust media control, accounts, spaces and unified text/voice channels. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. The public General demo is retired; the homepage shows a labelled local simulation linking to email sign-in. Account spaces require membership, and private channels have explicit member grants. Owners manage spaces/channels, add existing accounts by username, and create Discord-style invite links (`/invite/<code>`, expiry/max uses/landing channel; owner-removed or blocked accounts cannot rejoin by link). Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No custom roles, camera, or screen sharing.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
+- `scripts/emulators/`: run the Linux desktop, Android and Apple clients against the loopback fixture; see "Running the clients" in `docs/media.md` for where each one can run (orbs: Linux desktop only).
 
 ## Working conventions
 
