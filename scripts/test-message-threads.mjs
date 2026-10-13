@@ -195,6 +195,12 @@ async function checkReactionFollow(root, layout) {
 }
 
 const checkThreadResize = (rootID) => {
+  // This scenario needs room for a 600px thread plus the channel. Don't depend
+  // on the default/remembered Members visibility to provide that space.
+  if (evaluate('!!document.querySelector("#space-member-list")')) {
+    browser("find", "role", "button", "click", "--name", "Hide member list", "--exact");
+    wait('!document.querySelector("#space-member-list")');
+  }
   const handle = ".chat-thread-resize";
   const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
   const drag = (delta) => {
@@ -357,6 +363,12 @@ const checkReplyDelivery = async (root, other, layout) => {
 };
 
 const checkLongQuotePreview = async (layout) => {
+  // Reloads restore Members; dismiss its mobile overlay before testing quotes.
+  if (evaluate('!!document.querySelector("#space-member-list")')) {
+    if (layout === "mobile") browser("click", "#space-member-list .member-list-close");
+    else browser("find", "role", "button", "click", "--name", "Hide member list", "--exact");
+    wait('!document.querySelector("#space-member-list")');
+  }
   const session = async (token) => {
     const auth = { authorization: `Bearer ${token}`, "content-type": "application/json", connection: "close" };
     const response = await fetch(`${api}/api/chat/session`, { method: "POST", headers: auth, body: "{}" });

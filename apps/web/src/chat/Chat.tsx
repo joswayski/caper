@@ -324,18 +324,18 @@ export default function Chat({
   // Runs of blocked messages the reader chose to show, by their first message.
   const [revealedRuns, setRevealedRuns] = useState<ReadonlySet<string>>(() => new Set());
   const blockedIds = useBlockedIds();
-  const [pressing, setPressing] = useState<{ key: string; inThread: boolean }>();
   const press = useRef<{
     timer: ReturnType<typeof setTimeout>;
     x: number;
     y: number;
     pointerId: number;
+    row?: HTMLElement;
   }>(undefined);
   const suppressClick = useRef(false);
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
+    press.current?.row?.removeAttribute("data-pressing");
     press.current = undefined;
-    setPressing(undefined);
   };
   useEffect(() => {
     setActionTarget(undefined);
@@ -1257,9 +1257,6 @@ export default function Chat({
             className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
-            data-pressing={
-              pressing?.key === message.clientMessageId && pressing.inThread === inThread ? true : undefined
-            }
             onPointerDown={(event) => {
               cancelPress();
               if (
@@ -1270,8 +1267,11 @@ export default function Chat({
               )
                 return;
               const anchor = event.currentTarget;
-              setPressing({ key: message.clientMessageId, inThread });
+              // Keep transient feedback on this exact row, without rerendering
+              // the virtualized timeline (or highlighting its channel/thread copy).
+              anchor.dataset.pressing = "true";
               press.current = {
+                row: anchor,
                 x: event.clientX,
                 y: event.clientY,
                 pointerId: event.pointerId,
