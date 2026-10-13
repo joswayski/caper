@@ -113,7 +113,7 @@ import kotlinx.coroutines.delay
         "Opens in", listOf<Pair<String?, String>>(null to "Default channel") + publicChannels.map { it.id to "#${it.name}" },
         landing?.id, !state.busy,
     ) { channelId = it; error = null }
-    Button({ create() }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { PendingLabel("Create link", "Creating…", state.busy && creating) }
+    Button({ create() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Create link", "Creating…", state.busy && creating) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     val now = Instant.now()
     if (loaded && state.inviteLinks.isEmpty()) Text("No active invite links.", color = TextMuted, fontSize = 11.sp)
@@ -222,7 +222,7 @@ import kotlinx.coroutines.delay
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(close, enabled = !checking, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-                Button({ submit() }, enabled = !checking && input.isNotBlank(), shape = MaterialTheme.shapes.small) { PendingLabel("Continue", "Checking…", checking) }
+                Button({ submit() }, enabled = !checking && input.isNotBlank(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Continue", "Checking…", checking) }
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,7 +241,7 @@ import kotlinx.coroutines.delay
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
-                Button({ error = null; viewModel.joinInvite(shownCode, close) { error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small) {
+                Button({ error = null; viewModel.joinInvite(shownCode, close) { error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                     PendingLabel(if (shown.alreadyMember) "Open space" else "Join space", if (shown.alreadyMember) "Opening…" else "Joining…", busy)
                 }
             }

@@ -235,13 +235,13 @@ import kotlinx.coroutines.launch
         )
         FilledIconButton(
             send,
-            Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else "Send" },
+            Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else "Send to @$username" },
             enabled = writable && draft.canSend, shape = MaterialTheme.shapes.small,
             colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = Action, contentColor = OnAction,
                 disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
             ),
-        ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
+        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
     }
     if (draft.sending) Text("Sending…", Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
     draft.error?.let {
