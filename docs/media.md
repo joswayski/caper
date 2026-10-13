@@ -4884,7 +4884,7 @@ or audio acceptance.
 | Web, desktop and mobile layouts | Any orb: Chromium via `agent-browser`, or the existing `scripts/test-*.mjs` | `npm run dev:web` |
 | Rust desktop (Linux) | Any orb or Linux machine | `scripts/emulators/desktop.sh show\|shot [FIXTURE]` |
 | Rust desktop (Windows) | A Windows machine only | `apps/native/desktop/build.ps1` |
-| Android | A KVM Linux host or a Mac, not an orb | `scripts/emulators/android.sh install\|start\|app\|shot\|smoke` |
+| Android | A KVM Linux host or a Mac; slowly in an a1.large or bigger orb | `scripts/emulators/android.sh install\|start\|app\|shot\|smoke` |
 | iOS Simulator, macOS | macOS with Xcode only | `scripts/emulators/apple.sh ios\|macos [FIXTURE]` |
 
 **Rust desktop.** `desktop.sh show` builds if needed and opens the app in the orb's
@@ -4898,21 +4898,38 @@ orb, a cold debug build took about 6 minutes, including the libwebrtc download;
 a rebuild after a source change took 23 seconds. Builds link with lld because the
 default linker can exceed orb memory. Linux rendering is not Windows or macOS acceptance.
 
-**Android.** The emulator needs hardware acceleration, and orbs have no
-`/dev/kvm` (and no binder, so container Android such as Redroid is unavailable
-too). On October 13, 2026, software emulation (`-accel off`) of the API 36 image
-failed on an a1.small orb: it needs 2.5–4 GB of guest RAM and exhausted host
-memory, killing the agent session. On a1.large (8 vCPU, 16 GB) it booted in
-27 minutes, with ~5 s per tap and 30–60 s per screenshot, and `system_server`
-watchdog restarts. That is not usable. `android.sh start` therefore refuses
-without KVM unless `CAPER_ANDROID_SOFTWARE=1` is set and 7 GB is available.
-Building still works in an orb: `android.sh install` and
-`apps/native/android/fixture-build.sh` produced the fixture APK on a1.small
-(9m44s cold). Where KVM exists, `android.sh install` installs the CI's SDK components, API 36
-image and a Pixel 7 Pro AVD named `caper`. `start` boots it headless and disables
-animations (`CAPER_ANDROID_WINDOW=1` shows the window). `app` builds the fixture
-APK, reverses port 3001 and opens the app; `smoke` runs `smoke.py`. The `main`
-Native CI Android job runs the same emulator flow on a KVM-enabled GitHub runner.
+**Android.** With hardware acceleration (Linux with `/dev/kvm`, or a Mac),
+`android.sh install` installs the CI's SDK components, the API 36 Google APIs
+image and a Pixel 7 Pro AVD named `caper`. `start` boots it headless and
+disables animations (`CAPER_ANDROID_WINDOW=1` shows the window). `app` builds
+the fixture APK, reverses port 3001 and opens the app; `shot` saves a host-side
+screenshot; `smoke` runs `smoke.py`. The `main` Native CI Android job runs the
+same emulator flow on a KVM-enabled GitHub runner.
+
+Orbs have no `/dev/kvm` (and no binder, so container Android such as Redroid is
+unavailable too), so `android.sh` falls back to software emulation (`-accel off`)
+of the lighter API 34 ATD image, AVD `caper-software`. It refuses with less than
+7 GB of available RAM: on an a1.small orb (4 GB) the emulator exhausted memory
+and killed the agent session. Measurements on an a1.large orb (8 vCPU, 16 GB) on
+October 13, 2026:
+
+| Image (software emulation) | Boot | Tap | Notes |
+| --- | --- | --- | --- |
+| API 34 `aosp_atd` (default) | ~6 min | 2.6–4 s | qemu RSS ~4.9 GB; `adb install` of the 221 MB fixture APK 112 s |
+| API 36 `google_apis` (CI image) | 23–27 min | 5–6 s | Peak 7.8 GB; repeated "isn't responding" dialogs; `adb install` 418 s |
+| API 30 `google_apis` | 13 min | 30–56 s | `system_server` restarted after boot |
+
+Emulation keeps about one host core busy whatever the guest core count. The
+fixture APK built in 6m50s alongside the emulator (9m44s cold on a1.small),
+installed, rendered "Welcome to Caper" and signed in (`fixture@example.test`, code `ABC234`)
+to the phone layout of #general on both API 34 and 36. `start` re-enables ATD's
+disabled app drawing (`debug.hwui.drawing_enabled`) and hides "isn't
+responding" dialogs. `shot` uses `adb emu screenrecord screenshot` (0.2 s,
+instead of 25–60 s for the guest's `screencap`). ATD has no on-screen keyboard:
+type with `adb shell input text` in chunks of a few characters, and `BACK` leaves
+the app. This is good enough for manual checks and screenshots. The full
+`smoke.py` failed after 442 s even with raised timeouts (`uiautomator dump`
+returned a null root node), so leave instrumentation and smoke runs to KVM hosts.
 
 **iOS and macOS.** These need Xcode. Amp Mac orbs were not available to this
 account as of October 13, 2026, and no Mac was connected as an Amp runner.

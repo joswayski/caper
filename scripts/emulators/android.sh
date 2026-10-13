@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 # Run the Android client (apps/native/android) in the Android Emulator against
-# the loopback fixture. Needs hardware acceleration: Linux with a writable
-# /dev/kvm (e.g. a GitHub-hosted Ubuntu runner or a Linux PC) or a Mac.
+# the loopback fixture. With hardware acceleration (Linux with a writable
+# /dev/kvm, or a Mac) it uses the CI's API 36 Google APIs image; without it
+# (Amp orbs) it uses software emulation of the lighter API 34 ATD image.
 #
-#   scripts/emulators/android.sh install   # SDK, emulator, API 36 image, NDK, AVD "caper"
+#   scripts/emulators/android.sh install   # SDK, emulator, system image, NDK, AVD
 #   scripts/emulators/android.sh start     # boot the AVD and wait for boot_completed
 #   scripts/emulators/android.sh app       # build + install the fixture APK, open it
 #   scripts/emulators/android.sh shot [OUT]
 #   scripts/emulators/android.sh smoke     # apps/native/android/smoke.py
 #   scripts/emulators/android.sh stop
 #
-# Amp orbs have no KVM. Software emulation (CAPER_ANDROID_SOFTWARE=1) is refused
-# unless 7 GB of RAM is available: on a 4 GB orb it exhausted memory, and on an
-# 8 vCPU/16 GB orb API 36 took 27 minutes to boot, taps took ~5 s, screenshots
-# 30-60 s and system_server restarted. Set CAPER_ANDROID_WINDOW=1 to show the
-# emulator window on your display. Emulator runs are not physical-device acceptance.
+# Software emulation needs 7 GB of available RAM (use an a1.large orb; on a
+# 4 GB orb it exhausted memory). It boots in about 6 minutes and takes 3-4 s per
+# tap: fine for manual checks and screenshots, too slow for smoke.py. ATD has no
+# on-screen keyboard: type with `adb shell input text` in short chunks.
+# Set CAPER_ANDROID_WINDOW=1 to show the emulator window on your display.
+# Emulator runs are not physical-device acceptance.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,8 +31,18 @@ export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$default_sdk}}"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
 case "$(uname -m)" in arm64 | aarch64) abi=arm64-v8a ;; *) abi=x86_64 ;; esac
-image="${CAPER_ANDROID_IMAGE:-system-images;android-36;google_apis;$abi}"
-avd="${CAPER_ANDROID_AVD:-caper}"
+accelerated() {
+  [[ "$(uname -s)" == Darwin ]] || [[ -r /dev/kvm && -w /dev/kvm ]]
+}
+if accelerated; then
+  image="${CAPER_ANDROID_IMAGE:-system-images;android-36;google_apis;$abi}"
+  avd="${CAPER_ANDROID_AVD:-caper}"
+else
+  # Measured without KVM: API 34 ATD boots in ~6 min; API 36 Google APIs takes
+  # ~25 min and keeps showing "isn't responding" dialogs.
+  image="${CAPER_ANDROID_IMAGE:-system-images;android-34;aosp_atd;$abi}"
+  avd="${CAPER_ANDROID_AVD:-caper-software}"
+fi
 package=chat.caper.android.debug
 activity="$package/chat.caper.android.MainActivity"
 apk="$android/dist/Caper-android-fixture-debug.apk"
@@ -61,27 +73,24 @@ install() {
   echo "AVD $avd ready ($image) in $ANDROID_HOME"
 }
 
-accelerated() {
-  [[ "$(uname -s)" == Darwin ]] || [[ -r /dev/kvm && -w /dev/kvm ]]
-}
-
 start() {
-  command -v emulator >/dev/null 2>&1 || install
-  if adb get-state >/dev/null 2>&1; then
+  if command -v adb >/dev/null 2>&1 && adb get-state >/dev/null 2>&1; then
     echo "An emulator is already connected."
     return 0
   fi
   local accel=on timeout="${CAPER_ANDROID_BOOT_TIMEOUT:-900}" available command
   if ! accelerated; then
     available="$(awk '/MemAvailable/ { print int($2 / 1024) }' /proc/meminfo)"
-    if [[ "${CAPER_ANDROID_SOFTWARE:-}" != 1 ]] || ((available < 7000)); then
-      echo "No hardware acceleration (/dev/kvm) here, so the Android Emulator is unusable:" >&2
-      echo "run this on a KVM Linux host or a Mac. See 'Running the clients' in docs/media.md." >&2
-      echo "To try software emulation anyway: CAPER_ANDROID_SOFTWARE=1 with >= 7000 MB available (now ${available} MB)." >&2
+    if ((available < 7000)); then
+      echo "No /dev/kvm, and software emulation needs >= 7000 MB available (now ${available} MB)." >&2
+      echo "It exhausted a 4 GB orb. Use an a1.large orb, a KVM Linux host or a Mac." >&2
       exit 2
     fi
-    accel=off timeout="${CAPER_ANDROID_BOOT_TIMEOUT:-3600}"
+    echo "No /dev/kvm: software emulation of $image (about 6 minutes to boot)."
+    # Software emulation keeps about one host core busy; more than 4 guest cores barely helps.
+    accel="off -cores 4" timeout="${CAPER_ANDROID_BOOT_TIMEOUT:-2400}"
   fi
+  [[ -d "$HOME/.android/avd/$avd.avd" && -x "$ANDROID_HOME/emulator/emulator" ]] || install
   command="$ANDROID_HOME/emulator/emulator -avd $avd -accel $accel -no-audio -no-snapshot -no-boot-anim -no-metrics -gpu swiftshader_indirect"
   [[ "${CAPER_ANDROID_WINDOW:-}" == 1 ]] || command+=" -no-window"
   if in_orb; then
@@ -99,6 +108,12 @@ start() {
   for scale in window_animation_scale transition_animation_scale animator_duration_scale; do
     adb shell settings put global "$scale" 0
   done
+  if [[ "$accel" != on ]]; then
+    # ATD images disable app drawing (blank screenshots), and slow software
+    # boots raise "isn't responding" dialogs over the app.
+    adb shell setprop debug.hwui.drawing_enabled 1
+    adb shell settings put global hide_error_dialogs 1
+  fi
   echo "Emulator booted in $((SECONDS - started))s (accel $accel)."
 }
 
@@ -114,13 +129,20 @@ app() {
 shot() {
   local out="${1:-$root/.amp/in/artifacts/android.png}"
   mkdir -p "$(dirname "$out")"
-  adb exec-out screencap -p >"$out"
+  out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
+  rm -f "$out"
+  # The emulator writes this host-side in well under a second; the guest's
+  # screencap takes 25-60 s under software emulation. Fall back to it otherwise.
+  adb emu screenrecord screenshot "$out" >/dev/null 2>&1 || true
+  for _ in {1..20}; do [[ -s "$out" ]] && break; sleep 0.25; done
+  [[ -s "$out" ]] || adb exec-out screencap -p >"$out"
   echo "$out"
 }
 
 smoke() {
   [[ -f "$apk" ]] || bash "$android/fixture-build.sh"
   "$root/scripts/emulators/fixture.sh" start
+  accelerated || echo "warning: smoke.py's timeouts assume KVM; under software emulation it times out." >&2
   # smoke.py reverses port 3001 and installs the APK itself.
   python3 "$android/smoke.py"
 }
