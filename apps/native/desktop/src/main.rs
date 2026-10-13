@@ -71,12 +71,12 @@ const DELETE_ACCOUNT_URL: &str = "https://caper.chat/privacy#delete-account";
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
 const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
-/// `--surface-hover`: a 6% white wash that stays visible on every dark surface,
-/// unlike RAISED, which nearly matches the sidebar and conversation fills.
-const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const SIDEBAR: Color32 = Color32::from_rgb(21, 28, 30);
 const CONVERSATION: Color32 = Color32::from_rgb(25, 33, 35);
 const COMPOSER: Color32 = Color32::from_rgb(40, 49, 51);
+/// Web's `--surface-hover`: a neutral wash that reads on every dark surface,
+/// where `RAISED` is too close to the sidebar and conversation backgrounds.
+const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const BORDER: Color32 = Color32::from_rgb(52, 56, 59);
 const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
 const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
@@ -1108,6 +1108,8 @@ struct CaperApp {
     browse_bar: f32,
     channels_expanded: bool,
     browse_channels: bool,
+    /// Browse just opened: its search takes focus, as web's dialog field does.
+    browse_focus: bool,
     channel_search: String,
     roster_generation: u64,
     voice_join_request: u64,
@@ -1374,6 +1376,7 @@ impl CaperApp {
             browse_bar: 0.0,
             channels_expanded: true,
             browse_channels: false,
+            browse_focus: false,
             channel_search: String::new(),
             roster_generation: 0,
             voice_join_request: 0,
@@ -9278,6 +9281,15 @@ impl CaperApp {
                             3.0,
                             3.0,
                         ));
+                        // Focus rings it like Join with invite link below.
+                        if add.has_focus() {
+                            ui.painter().rect_stroke(
+                                rect,
+                                12.0,
+                                Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                         add.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
@@ -9442,6 +9454,7 @@ impl CaperApp {
                             egui::Popup::menu(&actions).width(width).show(|ui| {
                                 if ui.button("Browse channels").clicked() {
                                     self.browse_channels = true;
+                                    self.browse_focus = true;
                                     self.channel_search.clear();
                                     ui.close();
                                 }
@@ -9517,10 +9530,10 @@ impl CaperApp {
                                     self.effects.toggle(self.channels_expanded);
                                 }
                                 ui.label(bold("Channels").size(12.0).color(MUTED));
-                                let count = self
-                                    .detail
-                                    .as_ref()
-                                    .map_or(0, |detail| detail.channels.len());
+                                // The sidebar's channels, as web's `joinedChannels`.
+                                let count = self.detail.as_ref().map_or(0, |detail| {
+                                    detail.channels.iter().filter(|channel| channel.joined).count()
+                                });
                                 ui.add_space(6.0);
                                 ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
                                 ui.with_layout(
@@ -9613,21 +9626,44 @@ impl CaperApp {
                             ui.scope(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 6.0);
                                 ui.spacing_mut().interact_size.y = 28.0;
-                                if secondary_button(ui, "Close Browse", true).clicked() {
+                                // Escape leaves Browse from anything focused in it, as
+                                // it closes web's Browse dialog.
+                                let mut escaped = false;
+                                let close = secondary_button(ui, "Close Browse", true);
+                                escaped |= close.lost_focus();
+                                if close.clicked() {
                                     self.browse_channels = false;
                                     self.channel_search.clear();
                                 }
-                                self.navigation_search_rect = ui.add_sized(
+                                let search = ui.add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::TextEdit::singleline(&mut self.channel_search)
+                                        .id(egui::Id::new("browse-channels-search"))
                                         .vertical_align(egui::Align::Center)
                                         .margin(egui::Margin::symmetric(8, 4))
                                         .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
-                                ).rect;
-                                let query = self.channel_search.to_lowercase();
+                                );
+                                if std::mem::take(&mut self.browse_focus) {
+                                    search.request_focus();
+                                }
+                                escaped |= search.lost_focus();
+                                self.navigation_search_rect = search.rect;
+                                // People often type the name as shown, with its `#`.
+                                let query = self.channel_search.trim().trim_start_matches('#').trim().to_lowercase();
                                 let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
                                     .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
                                     .map(|channel| (channel.id.clone(), channel.name.clone(), channel.private)).collect());
+                                if previews.is_empty() {
+                                    let empty = if !self.channel_search.trim().is_empty() {
+                                        "No channels match your search."
+                                    } else if self.detail.as_ref().is_some_and(|detail| !detail.channels.is_empty()) {
+                                        // Browse lists the channels outside your sidebar.
+                                        "You’ve joined every channel in this space."
+                                    } else {
+                                        "This space has no channels yet."
+                                    };
+                                    ui.label(RichText::new(empty).size(12.0).color(MUTED));
+                                }
                                 for (id, name, private) in previews {
                                     // A mention in an unjoined channel shows here, not in the sidebar.
                                     let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
@@ -9641,19 +9677,34 @@ impl CaperApp {
                                             !self.feedback_selected() && self.selected_channel.as_deref() == Some(&id),
                                             RowExtras { unread, ..RowExtras::default() },
                                         );
+                                        escaped |= row.lost_focus();
                                         if row.clicked() { self.select_channel(id.clone(), false); }
-                                        if toned(ui, SECONDARY_TONE, true, egui::Button::new(bold("Join").size(11.0)).min_size(egui::vec2(46.0, 28.0))).clicked()
+                                        let join = toned(ui, SECONDARY_TONE, true, egui::Button::new(bold("Join").size(11.0)).min_size(egui::vec2(46.0, 28.0)));
+                                        escaped |= join.lost_focus();
+                                        if join.clicked()
                                             && let Some(space) = self.selected_space.clone()
                                         {
                                             self.admin(AdminOperation::JoinChannel { space, channel: id.clone() });
                                         }
                                         // Web: owners manage any channel from Browse, joined or not.
-                                        if self.owner() && drawn_icon_button(ui, NavIcon::Settings, &format!("Manage {name}")).on_hover_text("Channel settings").clicked() {
-                                            self.browse_channels = false;
-                                            self.channel_search.clear();
-                                            self.open_manage_channel(&id, &name, private);
+                                        if self.owner() {
+                                            let manage = drawn_icon_button(ui, NavIcon::Settings, &format!("Manage {name}")).on_hover_text("Channel settings");
+                                            escaped |= manage.lost_focus();
+                                            if manage.clicked() {
+                                                self.browse_channels = false;
+                                                self.channel_search.clear();
+                                                self.open_manage_channel(&id, &name, private);
+                                            }
                                         }
                                     });
+                                }
+                                if escaped
+                                    && self.dialog.is_none()
+                                    && !self.showing_pins
+                                    && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+                                {
+                                    self.browse_channels = false;
+                                    self.channel_search.clear();
                                 }
                             });
                             ui.add_space(6.0);
@@ -9738,6 +9789,7 @@ impl CaperApp {
                                         duration: duration.as_deref(),
                                         voice: voice.as_ref().map(|(_, enabled)| *enabled),
                                         menu,
+                                        ..RowExtras::default()
                                     },
                                 );
                                 // An unavailable shortcut lets clicks through to the
@@ -9860,7 +9912,7 @@ impl CaperApp {
                 ui.horizontal(|ui| {
                     let (response, _, _) = channel_button(
                         ui,
-                        egui::vec2(ui.available_width() - 18.0, 28.0),
+                        egui::vec2(ui.available_width(), 28.0),
                         "Feedback",
                         Some(NavIcon::Speech),
                         active,
@@ -9894,9 +9946,10 @@ impl CaperApp {
                     .unwrap_or("You");
                 let name = format!("{display_name} you");
                 let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width() - 18.0, 28.0),
+                    egui::vec2(ui.available_width(), 28.0),
                     egui::Sense::click(),
                 );
+                let lit = response.hovered() || response.has_focus();
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
                         egui::WidgetType::SelectableLabel,
@@ -9905,25 +9958,7 @@ impl CaperApp {
                         &name,
                     )
                 });
-                if self_active || response.hovered() || response.has_focus() {
-                    ui.painter().rect_filled(
-                        rect,
-                        6.0,
-                        if self_active {
-                            Color32::from_rgba_unmultiplied(182, 77, 50, 40)
-                        } else {
-                            RAISED
-                        },
-                    );
-                }
-                if response.has_focus() {
-                    ui.painter().rect_stroke(
-                        rect,
-                        6.0,
-                        Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                        egui::StrokeKind::Inside,
-                    );
-                }
+                paint_row_state(ui.painter(), rect, self_active, &response);
                 paint_avatar(
                     ui,
                     egui::Rect::from_center_size(
@@ -9933,16 +9968,24 @@ impl CaperApp {
                     display_name,
                     account.avatar_id,
                 );
+                // Inside the row, so its highlight spans the whole width.
+                if self_unread {
+                    ui.painter().circle_filled(
+                        egui::pos2(rect.right() - 12.0, rect.center().y),
+                        3.0,
+                        TERRACOTTA_BRIGHT,
+                    );
+                }
                 // Level with the DM rows' names below; a long name gives way
                 // to "you".
                 paint_row_name(
                     ui,
                     egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
-                    rect.width() - 32.0 - 6.0,
+                    rect.width() - 32.0 - if self_unread { 22.0 } else { 6.0 },
                     (
                         display_name,
                         egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                        if self_active { TEXT } else { MUTED },
+                        if self_active || lit { TEXT } else { MUTED },
                     ),
                     (
                         "you",
@@ -9951,9 +9994,6 @@ impl CaperApp {
                     ),
                     true,
                 );
-                if self_unread {
-                    ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
-                }
                 if response.clicked() {
                     self.select_or_create_self_direct();
                 } else if (response.hovered() || response.has_focus())
@@ -9980,16 +10020,26 @@ impl CaperApp {
                 let unread = muted.is_none()
                     && model::sequence(&direct.last_seq).unwrap_or(0)
                         > model::sequence(&direct.read_seq).unwrap_or(0);
+                // As on web: you blocked them, or they haven't accepted yet.
+                let suffix = if direct.blocked || self.is_blocked(&direct.peer.id) {
+                    Some("Blocked")
+                } else if direct.status == model::DirectStatus::Outgoing {
+                    Some("Request sent")
+                } else {
+                    None
+                };
                 ui.horizontal(|ui| {
                     let (response, opened, _) = channel_button(
                         ui,
-                        egui::vec2(ui.available_width() - 18.0, 28.0),
+                        egui::vec2(ui.available_width(), 28.0),
                         &direct.peer.display_name,
                         None,
                         active,
                         RowExtras {
                             muted,
-                            unread: false,
+                            unread,
+                            direct: true,
+                            suffix,
                             duration: None,
                             voice: None,
                             menu: Some(RowMenu {
@@ -10013,9 +10063,6 @@ impl CaperApp {
                         &direct.peer.display_name,
                         direct.peer.avatar_id,
                     );
-                    if unread {
-                        ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT));
-                    }
                     if opened {
                         self.load_notifications();
                     } else if response.clicked() {
@@ -10265,14 +10312,14 @@ impl CaperApp {
         ui.horizontal(|ui| {
             let (response, _, _) = channel_button(
                 ui,
-                egui::vec2(ui.available_width() - 18.0, 28.0),
+                egui::vec2(ui.available_width(), 28.0),
                 "Message requests",
                 None,
                 false,
                 RowExtras::default(),
             );
             // Turns like the Channels chevron instead of swapping icons.
-            let openness = ui.ctx().animate_bool_with_time(response.id, open, 0.15);
+            let openness = chevron_turn(ui.ctx(), response.id, open);
             paint_chevron(
                 ui,
                 egui::Rect::from_center_size(
@@ -10280,12 +10327,19 @@ impl CaperApp {
                     egui::vec2(17.0, 17.0),
                 ),
                 openness,
-                MUTED,
+                if response.hovered() || response.has_focus() {
+                    TEXT
+                } else {
+                    MUTED
+                },
             );
-            ui.label(
-                RichText::new(requests.len().to_string())
-                    .size(11.0)
-                    .color(MUTED),
+            // The count sits inside the row, as on web.
+            ui.painter().text(
+                egui::pos2(response.rect.right() - 12.0, response.rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                requests.len().to_string(),
+                egui::FontId::proportional(11.0),
+                MUTED,
             );
             if response.clicked() {
                 self.requests_open = !open;
@@ -10299,10 +10353,8 @@ impl CaperApp {
             let active =
                 !self.feedback_selected() && self.selected_direct.as_deref() == Some(&request.id);
             let name = format!("{} @{}", request.peer.display_name, request.peer.username);
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width() - 18.0, 28.0),
-                egui::Sense::click(),
-            );
+            let (rect, response) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::SelectableLabel,
@@ -10311,17 +10363,8 @@ impl CaperApp {
                     format!("Message request from {name}"),
                 )
             });
-            if active || response.hovered() || response.has_focus() {
-                ui.painter().rect_filled(
-                    rect,
-                    6.0,
-                    if active {
-                        Color32::from_rgba_unmultiplied(182, 77, 50, 40)
-                    } else {
-                        RAISED
-                    },
-                );
-            }
+            let lit = response.hovered() || response.has_focus();
+            paint_row_state(ui.painter(), rect, active, &response);
             paint_avatar(
                 ui,
                 egui::Rect::from_center_size(
@@ -10339,7 +10382,7 @@ impl CaperApp {
                 (
                     &request.peer.display_name,
                     egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                    if active { TEXT } else { MUTED },
+                    if active || lit { TEXT } else { MUTED },
                 ),
                 (
                     &format!("@{}", request.peer.username),
@@ -10526,7 +10569,7 @@ impl CaperApp {
                     egui::pos2(count_x + text_width + 9.0, rect.center().y),
                     egui::vec2(14.0, 14.0),
                 ),
-                ui.ctx().animate_bool_with_time(stack.id, open, 0.15),
+                chevron_turn(ui.ctx(), stack.id, open),
                 MUTED,
             );
             let stack = stack.on_hover_text(label);
@@ -12162,40 +12205,58 @@ impl CaperApp {
         } else {
             frame
         };
-        frame
-            .show(ui, |ui| {
-        ui.set_min_size(ui.available_size());
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let bounds = ui.max_rect();
-        if !overlay {
-            ui.painter().vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
-        }
-        let (heading, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),54.0), egui::Sense::hover());
-        // Level with the rows' avatars below (16px in).
-        ui.painter().text(egui::pos2(heading.left()+16.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
-        // A thread can squeeze the channel toolbar; the list owns its close control.
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(heading.shrink2(egui::vec2(8.0, 0.0)))
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-            |ui| {
-                if drawn_icon_button(ui, NavIcon::Close, "Close member list").clicked() {
-                    if self.narrow_layout {
-                        self.narrow_members_visible = false;
-                    } else {
-                        self.members_visible = false;
-                    }
-                }
-            },
-        );
-            if !demo {
-                ui.painter().text(egui::pos2(heading.right()-52.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
+        frame.show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let bounds = ui.max_rect();
+            if !overlay {
+                ui.painter()
+                    .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
             }
-        ui.painter().hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
-        ui.add_space(8.0);
-        if demo {
-            ui.label(
-                RichText::new("General is open to everyone. People in voice appear in the channel sidebar.")
+            let (heading, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 54.0),
+                egui::Sense::hover(),
+            );
+            // Level with the rows' avatars below (16px in).
+            ui.painter().text(
+                egui::pos2(heading.left() + 16.0, heading.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Members",
+                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                MUTED,
+            );
+            // A thread can squeeze the channel toolbar, and phones show the
+            // list as a drawer: the list owns its close control.
+            let close = egui::Rect::from_center_size(
+                egui::pos2(heading.right() - 22.0, heading.center().y),
+                egui::vec2(28.0, 28.0),
+            );
+            let mut close_ui = ui.new_child(egui::UiBuilder::new().max_rect(close));
+            if drawn_icon_button(&mut close_ui, NavIcon::Close, "Close member list").clicked() {
+                if self.narrow_layout {
+                    self.narrow_members_visible = false;
+                } else {
+                    self.members_visible = false;
+                }
+            }
+            let count_end = close.left() - 8.0;
+            if !demo {
+                ui.painter().text(
+                    egui::pos2(count_end, heading.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    member_count.to_string(),
+                    egui::FontId::proportional(10.4),
+                    MUTED,
+                );
+            }
+            ui.painter()
+                .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
+            ui.add_space(8.0);
+            if demo {
+                ui.label(
+                    RichText::new(
+                        "General is open to everyone. People in voice appear in the channel sidebar.",
+                    )
                     .size(11.0)
                     .color(MUTED),
             );
@@ -12637,7 +12698,7 @@ impl CaperApp {
                         {
                             self.close_thread();
                         }
-                        ui.vertical(|ui| {
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.label(bold("Thread").size(15.0));
                             ui.add(
                                 egui::Label::new(
@@ -13211,18 +13272,22 @@ impl CaperApp {
                         ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
-                        ui.label(
-                            RichText::new(if names.len() > 2 {
-                                "Several people are typing…".into()
-                            } else {
-                                format!(
-                                    "{} {} typing…",
-                                    names.join(" and "),
-                                    if names.len() == 1 { "is" } else { "are" }
-                                )
-                            })
-                            .size(11.0)
-                            .color(MUTED),
+                        // Long names end in an ellipsis, as on web; hover shows all.
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(if names.len() > 2 {
+                                    "Several people are typing…".into()
+                                } else {
+                                    format!(
+                                        "{} {} typing…",
+                                        names.join(" and "),
+                                        if names.len() == 1 { "is" } else { "are" }
+                                    )
+                                })
+                                .size(11.0)
+                                .color(MUTED),
+                            )
+                            .truncate(),
                         );
                         });
                         ui.add_space(4.0);
@@ -14052,7 +14117,10 @@ impl CaperApp {
         };
         let short = grouped.then(|| short_time(&message.created_at));
         let can_react = self.selected_is_joined() && self.session.is_some();
-        let action_width = if in_thread { 76.0 } else { 102.0 };
+        // Web's hover actions: Reply in thread (outside threads), Reply and Add
+        // reaction for members, and ⋯ always, read-only previews included.
+        let action_count = 1 + usize::from(!in_thread) + if can_react { 2 } else { 0 };
+        let action_width = action_count as f32 * 26.0 - 2.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -14147,7 +14215,7 @@ impl CaperApp {
                     // Compact follow-ups have no header line for the hover
                     // actions to sit beside: keep their text clear of them
                     // instead of under them (web floats the first line).
-                    if grouped && can_react && !in_pins {
+                    if grouped && !in_pins {
                         ui.set_max_width((ui.available_width() - action_width - 8.0).max(80.0));
                     }
                     // Web: a thread reply also sent to the channel links back.
@@ -14333,7 +14401,7 @@ impl CaperApp {
                 });
         }
         let mut actions_open = false;
-        if can_react {
+        {
             let actions_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     message_rect.right() - action_width - 18.0,
@@ -14359,22 +14427,27 @@ impl CaperApp {
                         egui::Sense::click(),
                     ))
                 };
-                let reply_message_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
-                let reply_message = ui.interact(
-                    reply_message_rect,
-                    ui.id().with((&message.id, "reply-action")),
-                    if self.pending.is_none() {
-                        egui::Sense::click()
-                    } else {
-                        egui::Sense::hover()
-                    },
-                );
-                let emoji_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
-                let emoji = ui.interact(
-                    emoji_rect,
-                    ui.id().with((&message.id, "reaction-action")),
-                    egui::Sense::click(),
-                );
+                // Replying and reacting need membership.
+                let reply_message = can_react.then(|| {
+                    let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                    ui.interact(
+                        rect,
+                        ui.id().with((&message.id, "reply-action")),
+                        if self.pending.is_none() {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        },
+                    )
+                });
+                let emoji = can_react.then(|| {
+                    let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                    ui.interact(
+                        rect,
+                        ui.id().with((&message.id, "reaction-action")),
+                        egui::Sense::click(),
+                    )
+                });
                 let more_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                 let more = ui.interact(
                     more_rect,
@@ -14390,16 +14463,17 @@ impl CaperApp {
                 let visible = ui.rect_contains_pointer(message_rect)
                     || menu_open
                     || picker_open
-                    || emoji.has_focus()
                     || more.has_focus()
-                    || reply_message.has_focus()
-                    || reply.as_ref().is_some_and(|reply| reply.has_focus());
+                    || [&emoji, &reply_message, &reply]
+                        .into_iter()
+                        .flatten()
+                        .any(egui::Response::has_focus);
                 if visible {
                     // Web's bordered surface buttons.
                     for (button, open) in [
                         (reply.as_ref(), false),
-                        (Some(&reply_message), false),
-                        (Some(&emoji), picker_open),
+                        (reply_message.as_ref(), false),
+                        (emoji.as_ref(), picker_open),
                         (Some(&more), menu_open),
                     ] {
                         let Some(button) = button else {
@@ -14433,22 +14507,26 @@ impl CaperApp {
                             icon(reply, false),
                         );
                     }
-                    paint_icon(
-                        ui.painter(),
-                        reply_message_rect.shrink(5.0),
-                        NavIcon::Reply,
-                        if self.pending.is_some() {
-                            MUTED.gamma_multiply(0.5)
-                        } else {
-                            icon(&reply_message, false)
-                        },
-                    );
-                    paint_icon(
-                        ui.painter(),
-                        emoji_rect.shrink(5.0),
-                        NavIcon::SmilePlus,
-                        icon(&emoji, picker_open),
-                    );
+                    if let Some(reply_message) = &reply_message {
+                        paint_icon(
+                            ui.painter(),
+                            reply_message.rect.shrink(5.0),
+                            NavIcon::Reply,
+                            if self.pending.is_some() {
+                                MUTED.gamma_multiply(0.5)
+                            } else {
+                                icon(reply_message, false)
+                            },
+                        );
+                    }
+                    if let Some(emoji) = &emoji {
+                        paint_icon(
+                            ui.painter(),
+                            emoji.rect.shrink(5.0),
+                            NavIcon::SmilePlus,
+                            icon(emoji, picker_open),
+                        );
+                    }
                     paint_icon(
                         ui.painter(),
                         more_rect.shrink(5.0),
@@ -14469,33 +14547,37 @@ impl CaperApp {
                         );
                     }
                 }
-                reply_message.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        self.pending.is_none(),
-                        "Reply",
-                    )
-                });
-                if reply_message.on_hover_text("Reply").clicked() && self.pending.is_none() {
-                    self.select_reply(ui.ctx(), message, in_thread);
+                if let Some(reply_message) = reply_message {
+                    reply_message.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            self.pending.is_none(),
+                            "Reply",
+                        )
+                    });
+                    if reply_message.on_hover_text("Reply").clicked() && self.pending.is_none() {
+                        self.select_reply(ui.ctx(), message, in_thread);
+                    }
                 }
-                emoji.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
-                });
                 more.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
                 });
                 let more = more.on_hover_text("More actions");
-                if emoji.hovered() || emoji.has_focus() {
-                    self.reaction_textures
-                        .preload(ui.ctx(), emoji::CATEGORIES[0].0);
-                }
-                if emoji.on_hover_text("Add reaction").clicked() {
-                    self.reaction_picker = Some(message.id.clone());
-                    self.composer_emoji = None;
-                    self.reaction_search.clear();
-                    self.reaction_category = 0;
-                    self.reaction_search_focus = true;
+                if let Some(emoji) = emoji {
+                    emoji.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
+                    });
+                    if emoji.hovered() || emoji.has_focus() {
+                        self.reaction_textures
+                            .preload(ui.ctx(), emoji::CATEGORIES[0].0);
+                    }
+                    if emoji.on_hover_text("Add reaction").clicked() {
+                        self.reaction_picker = Some(message.id.clone());
+                        self.composer_emoji = None;
+                        self.reaction_search.clear();
+                        self.reaction_category = 0;
+                        self.reaction_search_focus = true;
+                    }
                 }
                 let active = message.pin.is_some();
                 egui::Popup::menu(&more)
@@ -15751,11 +15833,12 @@ impl CaperApp {
                 })
                 .collect::<Vec<_>>()
         });
-        let mut open = true;
+        let mut close = false;
         let mut chosen = None;
         let mut retry = false;
-        egui::Window::new("Reactions")
+        let shown = egui::Window::new("Reactions")
             .id(egui::Id::new("reactors"))
+            .title_bar(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(context.content_rect().center())
             // Above the Pins overlay, as its sublayer, when opened from a pin.
@@ -15764,11 +15847,12 @@ impl CaperApp {
             } else {
                 egui::Order::Middle
             })
-            .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(320.0)
             .show(context, |ui| {
+                close = floating_heading(ui, "Reactions", "Close reactions", true);
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     for reaction in &reactions {
@@ -15849,7 +15933,8 @@ impl CaperApp {
             });
         let escape =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        if !open || escape {
+        let outside = shown.is_some_and(|shown| clicked_outside(context, &shown.response));
+        if close || escape || outside {
             self.reactors_view = None;
             return;
         }
@@ -15976,17 +16061,18 @@ impl CaperApp {
         {
             self.emoji_picker_shown = Some((shown_key, context.cumulative_frame_nr()));
         }
-        let mut open = true;
         // Consumed, so Pins or the thread behind the picker stays open.
         let mut close_requested =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let mut selected = None;
-        let mut window = egui::Window::new(if profile {
+        let title = if profile {
             "Insert emoji"
         } else {
-            "Add reaction"
-        })
-        .id(egui::Id::new("emoji-picker"));
+            "Add a reaction"
+        };
+        let mut window = egui::Window::new(title)
+            .id(egui::Id::new("emoji-picker"))
+            .title_bar(false);
         // A composer's picker opens above its Emoji button, ending at it.
         if profile && let Some(anchor) = self.composer_emoji_anchor {
             window = window
@@ -16000,12 +16086,15 @@ impl CaperApp {
             } else {
                 egui::Order::Middle
             })
-            .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .fixed_size(egui::vec2(352.0, 430.0))
             .show(context, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                if floating_heading(ui, title, "Close emoji picker", true) {
+                    close_requested = true;
+                }
+                ui.add_space(6.0);
                 let category_width = ui.available_width() / emoji::CATEGORIES.len() as f32;
                 ui.horizontal(|ui| {
                     for (index, (category, name, icon)) in emoji::CATEGORIES.iter().enumerate() {
@@ -16055,7 +16144,7 @@ impl CaperApp {
                 let _search = ui.add(
                     egui::TextEdit::singleline(&mut self.reaction_search)
                         .id(search_id)
-                        .hint_text("Search emoji…")
+                        .hint_text("Search emoji")
                         .desired_width(f32::INFINITY),
                 );
                 if self.reaction_search_focus {
@@ -16090,7 +16179,7 @@ impl CaperApp {
                 // Web's order: smileys and people first, flags last.
                 choices.sort_by_key(|entry| emoji::picker_order(entry));
                 if choices.is_empty() {
-                    ui.label(RichText::new("No emoji found").color(MUTED));
+                    ui.label(RichText::new("No results. Try another search.").color(MUTED));
                 }
                 let columns = (ui.available_width() / 40.0).floor().max(1.0) as usize;
                 let cell_width = ui.available_width() / columns as f32;
@@ -16145,7 +16234,7 @@ impl CaperApp {
             }
             close_requested = true;
         }
-        if !open || close_requested {
+        if close_requested {
             self.close_emoji_picker(context, true);
         }
     }
@@ -16451,11 +16540,7 @@ impl CaperApp {
                             ui.spacing_mut().icon_spacing = 12.0;
                             ui.spacing_mut().item_spacing.y = 0.0;
                             for (index, choice) in choices.iter().enumerate() {
-                                let fill = if index == state.selected {
-                                    Color32::from_rgb(67, 36, 30)
-                                } else {
-                                    Color32::TRANSPARENT
-                                };
+                                let fill = suggestion_fill(ui, width, index, &mut state.selected);
                                 let clicked = match choice {
                                     Suggestion::Emoji(entry) => {
                                         let image = self.reaction_textures.image(ui, entry, 24.0);
@@ -19541,6 +19626,35 @@ fn drawn_icon_button_sized(
     response.on_hover_text(label)
 }
 
+/// Web's `.chat-reaction-picker-heading` on floating panels (the emoji
+/// picker, Reactions, the forward dialog): a bold title and a Lucide close
+/// in place of egui's title bar. True when Close was clicked.
+fn floating_heading(ui: &mut egui::Ui, title: &str, close_label: &str, enabled: bool) -> bool {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 30.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(bold(title).size(13.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    drawn_icon_button(ui, NavIcon::Close, close_label)
+                })
+                .inner
+                .clicked()
+            })
+            .inner
+        },
+    )
+    .inner
+}
+
+/// A floating panel's outside click closes it, as web's popovers do, but
+/// not the click that opened it in the panel's first pass.
+fn clicked_outside(context: &egui::Context, panel: &egui::Response) -> bool {
+    context.memory(|memory| memory.areas().visible_last_frame(&panel.layer_id))
+        && panel.clicked_elsewhere()
+}
+
 /// Web's device `<select>`: the choice at the start, a chevron at the end, a
 /// lighter border on hover and dimmed while unavailable.
 fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Response {
@@ -19690,14 +19804,36 @@ fn settings_switch(
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
     });
-    let fill = if *value { TERRACOTTA } else { BORDER };
+    // Web's switch hover (call.css): a neutral wash while off, terracotta
+    // once on. Focus keeps its terracotta ring either way.
+    let hovered = ui.is_enabled() && response.hovered();
+    let fill = match (*value, hovered) {
+        (true, true) => TERRACOTTA_BRIGHT,
+        (true, false) => TERRACOTTA,
+        (false, true) => Color32::from_rgb(72, 77, 81),
+        (false, false) => BORDER,
+    };
     ui.painter().rect_filled(rect, 12.0, fill);
-    if response.hovered() || response.has_focus() {
+    if response.has_focus() {
         ui.painter().rect_stroke(
             rect.expand(3.0),
             15.0,
             Stroke::new(1.0, TERRACOTTA_BRIGHT),
             egui::StrokeKind::Outside,
+        );
+    } else if hovered {
+        ui.painter().rect_stroke(
+            rect.expand(3.0),
+            15.0,
+            Stroke::new(
+                3.0,
+                if *value {
+                    Color32::from_rgba_unmultiplied(182, 77, 50, 46)
+                } else {
+                    SURFACE_HOVER
+                },
+            ),
+            egui::StrokeKind::Inside,
         );
     }
     let x = if *value {
@@ -19722,15 +19858,19 @@ fn paint_chevron(ui: &egui::Ui, rect: egui::Rect, openness: f32, color: Color32)
         .paint_at(ui, rect);
 }
 
+/// How far a section chevron has turned open (0 to 1): a short turn, or
+/// none with reduced motion.
+fn chevron_turn(context: &egui::Context, id: egui::Id, open: bool) -> f32 {
+    context.animate_bool_with_time(id, open, if motion::reduced() { 0.0 } else { 0.15 })
+}
+
 /// `drawn_icon_button` for a section toggle whose chevron turns as it opens.
 fn chevron_button(ui: &mut egui::Ui, open: bool, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 6.0, SURFACE_HOVER);
     }
-    let openness = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("open"), open, 0.15);
+    let openness = chevron_turn(ui.ctx(), response.id.with("open"), open);
     paint_chevron(
         ui,
         rect.shrink(5.0),
@@ -19984,12 +20124,25 @@ fn join_glow_color(time: f64) -> Color32 {
     Color32::from_rgba_unmultiplied(219, 104, 73, (0.45 * 255.0 * strength).round() as u8)
 }
 
+/// Whether looping decorations (the Join glow, typing dots) may animate:
+/// motion is allowed and the window is in front, or unknown as in tests.
+/// Otherwise they hold a still pose and schedule no repaints, so an idle
+/// background window stays idle.
+fn looping(ui: &egui::Ui) -> bool {
+    !motion::reduced()
+        && ui.input(|input| {
+            let viewport = input.viewport();
+            viewport.focused != Some(false) && viewport.minimized != Some(true)
+        })
+}
+
 /// Web's pulsing `box-shadow: 0 0 14px 2px` behind an occupied Join, into
 /// `slot` (reserved before the button so the glow sits behind it). It only
-/// repaints while drawn. With reduced motion it holds web's still glow,
+/// repaints while drawn and the window is in front. With reduced motion, or
+/// in the background, it holds web's still glow,
 /// `0 0 10px 1px rgb(219 104 73 / 0.35)`.
 fn join_glow(ui: &egui::Ui, slot: egui::layers::ShapeIdx, rect: egui::Rect, corner: f32) {
-    if motion::reduced() {
+    if !looping(ui) {
         let shadow = egui::Shadow {
             offset: [0, 0],
             blur: 10,
@@ -20120,6 +20273,10 @@ struct RowExtras<'a> {
     /// "Muted until 5:00 PM".
     muted: Option<String>,
     unread: bool,
+    /// A DM row: its unread dot is terracotta, as on web.
+    direct: bool,
+    /// A quieter note after the name, such as a DM's "Blocked".
+    suffix: Option<&'a str>,
     duration: Option<&'a str>,
     /// Web's hover-revealed voice shortcut before the menu, and whether it
     /// can join now. The caller names it and handles its click.
@@ -20272,26 +20429,44 @@ fn channel_button(
         name_right -= 20.0;
     }
     if extras.unread {
-        ui.painter()
-            .circle_filled(egui::pos2(name_right - 6.0, rect.center().y), 3.0, TEXT);
+        // A DM's dot is terracotta (web's `.direct-unread`), a channel's text.
+        ui.painter().circle_filled(
+            egui::pos2(name_right - 6.0, rect.center().y),
+            3.0,
+            if extras.direct {
+                TERRACOTTA_BRIGHT
+            } else {
+                TEXT
+            },
+        );
         name_right -= 16.0;
     }
-    // Long names end in "…" rather than a letter cut in half.
-    let label = truncated_galley(
-        ui,
-        name,
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-        color,
-        name_right - rect.left() - 32.0,
-    );
-    ui.painter().galley(
-        egui::pos2(
-            rect.left() + 32.0,
-            rect.center().y - 1.0 - label.size().y / 2.0,
-        ),
-        label,
-        color,
-    );
+    let name_font = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into()));
+    if let Some(suffix) = extras.suffix {
+        paint_row_name(
+            ui,
+            egui::pos2(rect.left() + 32.0, rect.center().y - 1.0),
+            name_right - rect.left() - 32.0,
+            (name, name_font, color),
+            (
+                suffix,
+                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                dim(MUTED),
+            ),
+            true,
+        );
+    } else {
+        // Long names end in "…" rather than a letter cut in half.
+        let label = truncated_galley(ui, name, name_font, color, name_right - rect.left() - 32.0);
+        ui.painter().galley(
+            egui::pos2(
+                rect.left() + 32.0,
+                rect.center().y - 1.0 - label.size().y / 2.0,
+            ),
+            label,
+            color,
+        );
+    }
     let mut opened = false;
     if let Some(menu) = extras.menu {
         let rect = egui::Rect::from_center_size(
@@ -20327,6 +20502,31 @@ fn channel_button(
         settings.on_hover_text(menu.label);
     }
     (response, opened, voice)
+}
+
+/// Web's sidebar row states: the selection's terracotta wash, the neutral
+/// hover wash, and quiet keyboard focus instead of an orange ring: a
+/// `BORDER` fill, or on the selected row its wash plus a muted inset line.
+fn paint_row_state(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    active: bool,
+    response: &egui::Response,
+) {
+    let focused = response.has_focus();
+    let fill = if active {
+        Color32::from_rgba_unmultiplied(182, 77, 50, 40)
+    } else if focused {
+        BORDER
+    } else if response.hovered() {
+        SURFACE_HOVER
+    } else {
+        return;
+    };
+    painter.rect_filled(rect, 6.0, fill);
+    if active && focused {
+        painter.rect_stroke(rect, 6.0, Stroke::new(1.0, MUTED), egui::StrokeKind::Inside);
+    }
 }
 
 /// A single-line galley cut with "…" at `width`.
@@ -21569,6 +21769,24 @@ fn person_suggestion(
     )
 }
 
+/// The fill of the 44px suggestion row about to be laid out at `index`: the
+/// selection, or web's hover wash. Moving the pointer over a row selects
+/// it, as web's `onMouseMove` does, so Enter takes what the pointer shows.
+fn suggestion_fill(ui: &egui::Ui, width: f32, index: usize, selected: &mut usize) -> Color32 {
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, 44.0));
+    let hovered = ui.rect_contains_pointer(rect);
+    if hovered && ui.input(|input| input.pointer.is_moving()) {
+        *selected = index;
+    }
+    if index == *selected {
+        Color32::from_rgb(67, 36, 30)
+    } else if hovered {
+        SURFACE_HOVER
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
 /// A 44px suggestion row laid out like an emoji row: a 24px avatar (`@` for
 /// the specials), the 12px icon gap, then the title over a small muted
 /// detail, each truncated to the row.
@@ -21720,11 +21938,7 @@ fn people_field(
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for (index, person) in rows.iter().enumerate() {
-                        let fill = if index == state.selected {
-                            Color32::from_rgb(67, 36, 30)
-                        } else {
-                            Color32::TRANSPARENT
-                        };
+                        let fill = suggestion_fill(ui, width, index, &mut state.selected);
                         if person_suggestion(ui, person, width, fill).clicked() {
                             chosen = Some(person.username.clone());
                         }
@@ -22623,8 +22837,17 @@ fn grouped(count: usize) -> String {
 }
 
 /// Web's three typing dots: 4 px, 3 px apart, bouncing 3 px every 1.2 s.
+/// Web's `.chat-typing-dots`. With reduced motion, or while the window is in
+/// the background, the dots rest at full strength and nothing repaints.
 fn typing_dots(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::hover());
+    if !looping(ui) {
+        for index in 0..3 {
+            let center = egui::pos2(rect.left() + 2.0 + index as f32 * 7.0, rect.center().y);
+            ui.painter().circle_filled(center, 2.0, MUTED);
+        }
+        return;
+    }
     let time = ui.input(|input| input.time);
     // As on web, reduced motion keeps the dots still (and idle).
     let still = motion::reduced();
@@ -23256,6 +23479,7 @@ mod tests {
                 for _ in 0..3 {
                     frame();
                 }
+                context.enable_accesskit();
                 let output = frame();
                 let dividers: Vec<_> = output
                     .shapes
@@ -24786,6 +25010,18 @@ mod tests {
             })
     }
 
+    /// DM rows' unread dots, painted inside the row in web's terracotta.
+    fn direct_dots(output: &egui::FullOutput) -> usize {
+        output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Circle(circle)
+                    if circle.fill == super::TERRACOTTA_BRIGHT && circle.radius == 3.0)
+            })
+            .count()
+    }
+
     fn node_center(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         node_bounds(output, label)
             .unwrap_or_else(|| panic!("missing {label}"))
@@ -25253,7 +25489,7 @@ mod tests {
         let mut app = notification_app(&context, &base, "parity-direct", serde_json::json!([]));
         app.directs[0].last_seq = "4".into();
         let output = settle(&mut app, &context);
-        assert!(texts(&output).contains(&"●"), "unread before muting");
+        assert!(direct_dots(&output) > 0, "unread before muting");
         let options = node_bounds(&output, "Conversation options for TEST FIXTURE Maya")
             .expect("DM options button");
         let painted = |output: &egui::FullOutput| {
@@ -25283,7 +25519,7 @@ mod tests {
             &context,
             vec![egui::Event::PointerMoved(node_center(
                 &output,
-                "TEST FIXTURE Maya",
+                "TEST FIXTURE Maya, unread activity",
             ))],
         );
         let hovered = settle(&mut app, &context);
@@ -25312,7 +25548,7 @@ mod tests {
         ));
         let output = settle(&mut app, &context);
         assert!(
-            texts(&output).contains(&"●"),
+            direct_dots(&output) > 0,
             "notifications off still shows unread"
         );
         click(&mut app, &context, options.center());
@@ -25331,10 +25567,7 @@ mod tests {
         let minutes = (until - chrono::Utc::now()).num_minutes();
         assert!((58..=60).contains(&minutes), "{minutes}");
         let output = settle(&mut app, &context);
-        assert!(
-            !texts(&output).contains(&"●"),
-            "a muted DM shows no unread dot"
-        );
+        assert_eq!(direct_dots(&output), 0, "a muted DM shows no unread dot");
         assert_ne!(
             text_color(&output, "TEST FIXTURE Maya"),
             text_color(&output, "Invite people"),
@@ -25424,8 +25657,11 @@ mod tests {
             bells.iter().any(|label| label.starts_with("Muted until ")),
             "{bells:?}"
         );
-        let dots = texts(&output).iter().filter(|text| **text == "●").count();
-        assert_eq!(dots, 1, "only Alex (notifications off) is dotted");
+        assert_eq!(
+            direct_dots(&output),
+            1,
+            "only Alex (notifications off) is dotted"
+        );
     }
 
     fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
@@ -26418,7 +26654,7 @@ mod tests {
             labels.contains(&"2"),
             "reaction chip count must remain visible: {labels:?}"
         );
-        assert!(!labels.contains(&"Add reaction"), "{labels:?}");
+        assert!(!labels.contains(&"Add a reaction"), "{labels:?}");
         assert!(!labels.contains(&"Retry"), "{labels:?}");
         assert!(app.reaction_picker.is_none());
     }
@@ -28375,6 +28611,12 @@ mod tests {
                 }
             };
             assert_eq!(count_shown, mode == "all", "{width}: {mode}");
+            // The name ends in "…" before the actions instead of under them.
+            let actions = node_bounds(&output, summary).map_or(join.left(), |people| people.left());
+            assert!(
+                title_end(&output, &format!("# {long}")) <= actions,
+                "{width}: the name runs under the header's actions"
+            );
             modes.insert(mode);
         }
         assert_eq!(modes.len(), 3, "{modes:?}");
@@ -28587,6 +28829,63 @@ mod tests {
                 "{width}: no glow once you are in"
             );
         }
+    }
+
+    #[test]
+    fn join_glow_rests_without_repainting_while_the_window_is_in_the_background() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-only".into());
+        app.channel_rosters.insert(
+            "chan00000001".into(),
+            vec![crate::model::VoiceOccupant {
+                id: "maya".into(),
+                avatar_id: Some(15),
+                name: "Maya".into(),
+                muted: false,
+                deafened: false,
+            }],
+        );
+        let frame = |app: &mut CaperApp, time: f64| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                time: Some(time),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .focused = Some(false);
+            context.run(input, |context| app.page(context))
+        };
+        frame(&mut app, 0.0);
+        let started = Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < Duration::from_secs(30));
+            std::thread::sleep(Duration::from_millis(10));
+            frame(&mut app, 0.0);
+        }
+        frame(&mut app, 0.6);
+        let output = frame(&mut app, 1.2);
+        let still = egui::Color32::from_rgba_unmultiplied(219, 104, 73, 89);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.blur_width > 0.0 && rect.fill == still)),
+            "web's still glow stands in for the breath"
+        );
+        let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(
+            repaint > Duration::from_millis(50),
+            "a background window doesn't animate: {repaint:?}"
+        );
     }
 
     #[test]
@@ -30118,7 +30417,7 @@ mod tests {
         app.reaction_picker = Some(message.id.clone());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        let title = text_position(&output, "Add reaction");
+        let title = text_position(&output, "Add a reaction");
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker"));
         assert_eq!(context.layer_id_at(title), Some(layer));
         assert!(context.memory(|memory| memory.is_above_modal_layer(layer)));
@@ -30185,6 +30484,132 @@ mod tests {
             context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))),
             "focus returns to the composer"
         );
+    }
+
+    #[test]
+    fn floating_panels_have_app_headers_and_close_on_an_outside_click() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let message = app.timeline.messages().nth(1).unwrap().clone();
+        app.reactors_view = Some((message.id.clone(), "👍".into()));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        // The app's heading and Lucide close, not egui's title bar.
+        assert!(shows(&output, "Reactions"));
+        let close = node_center(&output, "Close reactions");
+        click(&mut app, &context, text_position(&output, ":thumbs-up:"));
+        assert!(app.reactors_view.is_some(), "a click inside keeps it open");
+        // Far below the centred window: the conversation's empty edge.
+        let outside = egui::pos2(close.x, 860.0);
+        click(&mut app, &context, outside);
+        assert!(app.reactors_view.is_none(), "an outside click closes it");
+
+        // The picker opens from its trigger without that click closing it.
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, node_center(&output, "Add reaction"));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            app.reaction_picker.is_some(),
+            "the opening click keeps it open"
+        );
+        assert!(shows(&output, "Add a reaction"));
+        click(&mut app, &context, outside);
+        assert!(app.reaction_picker.is_none(), "an outside click closes it");
+
+        app.reaction_picker = Some(message.id.clone());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Close emoji picker"),
+        );
+        assert!(app.reaction_picker.is_none(), "its own close works too");
+    }
+
+    #[test]
+    fn browse_ignores_a_typed_hash_and_says_when_nothing_matches() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-channel-directory"),
+        );
+        assert!(app.browse_channels);
+        let unjoined = app
+            .detail
+            .as_ref()
+            .unwrap()
+            .channels
+            .iter()
+            .find(|channel| !channel.joined)
+            .unwrap()
+            .name
+            .clone();
+        app.channel_search = format!("  #{}  ", &unjoined[..3]);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, &unjoined), "{:?}", texts(&output));
+        app.channel_search = "no-such-channel".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "No channels match your search."));
+        assert!(!shows(&output, &unjoined));
+        // Opening Browse focuses its search; Escape there closes it.
+        app.channel_search.clear();
+        app.browse_focus = true;
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("browse-channels-search"))));
+    }
+
+    #[test]
+    fn a_full_member_page_scrolls_below_its_heading() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-mentions"),
+        );
+        app.members_visible = true;
+        let detail = app.detail.as_mut().unwrap();
+        detail.members = (0..30)
+            .map(|index| model::Member {
+                id: format!("member-{index}"),
+                avatar_id: Some(index),
+                username: format!("member_{index}"),
+                display_name: format!("Member {index}"),
+                owner: false,
+            })
+            .collect();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let first = text_position(&output, "Member 0");
+        let pager = text_position(&output, "Next");
+        assert!(
+            pager.y > 900.0,
+            "a full page overflows the window: {pager:?}"
+        );
+        let mut events = vec![
+            egui::Event::PointerMoved(first),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -2000.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        for _ in 0..30 {
+            render(&mut app, &context, std::mem::take(&mut events));
+        }
+        let output = render(&mut app, &context, vec![]);
+        let pager = text_position(&output, "Next");
+        assert!(pager.y < 900.0, "the pager scrolls into view: {pager:?}");
+        let heading = text_position(&output, "Members");
+        assert!(heading.y < 54.0, "the heading stays put: {heading:?}");
     }
 
     #[test]
@@ -33973,10 +34398,30 @@ mod tests {
         };
         let self_row = bounds("Fixture Owner you");
         let peer = bounds("TEST FIXTURE Maya");
-        let second_peer = bounds("Second fixture peer");
+        // Unread is part of the row's name, and its dot sits inside the row,
+        // so the highlight spans the sidebar like the other rows.
+        let second_peer = bounds("Second fixture peer, unread activity");
         for row in [self_row, peer, second_peer, bounds("Invite people")] {
             assert_eq!(row.height(), 28.0);
+            assert_eq!(row.x1, bounds("Invite people").x1);
         }
+        let dots: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle)
+                    if circle.fill == super::TERRACOTTA_BRIGHT && circle.radius == 3.0 =>
+                {
+                    Some(circle.center)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dots.len(), 1);
+        assert!(
+            (second_peer.x0..=second_peer.x1).contains(&(dots[0].x as f64))
+                && (second_peer.y0..=second_peer.y1).contains(&(dots[0].y as f64))
+        );
         assert_eq!(peer.y0 - self_row.y1, 2.0);
         assert_eq!(second_peer.y0 - peer.y1, 2.0);
         assert_eq!(bounds("general").height(), 32.0);

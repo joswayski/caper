@@ -3979,12 +3979,6 @@ a.chat-draft-preview:focus-visible strong {
   font-weight: 700;
   white-space: nowrap;
 }
-/* Long names end in an ellipsis and keep the chevron visible. */
-.chat-title-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .chat-title-name > svg {
   flex: none;
   color: var(--text-muted);

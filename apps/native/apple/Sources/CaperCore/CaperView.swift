@@ -3527,11 +3527,6 @@ private struct ChatView: View {
         }
         return .space(members: model.detail?.members ?? [], excluding: viewerID)
     }
-    /// Web's placeholder: "Message #general" in a channel, "Message Alice" in a DM.
-    private var composerPlaceholder: String {
-        let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
-        return direct ? "Message \(chat.channelName)" : "Message #\(chat.channelName.lowercased())"
-    }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
         let count = chat.draft.unicodeScalars.count
