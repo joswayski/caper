@@ -750,8 +750,18 @@
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
 }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .call-page a.chat-link {
+    transition:
+      color 100ms ease-in-out,
+      background-color 100ms ease-in-out,
+      text-decoration-thickness 100ms ease-in-out;
+  }
+}
 @media (hover: hover) {
   .chat-link:hover {
+    color: var(--action-hover);
+    background: rgb(182 77 50 / 12%);
     text-decoration-thickness: 2px;
   }
 }
