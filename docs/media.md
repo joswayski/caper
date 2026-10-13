@@ -4930,7 +4930,9 @@ responding" dialogs. `shot` uses `adb emu screenrecord screenshot` (0.2 s,
 instead of 25–60 s for the guest's `screencap`). ATD has no on-screen keyboard:
 type with `adb shell input text` in chunks of a few characters, and `BACK` leaves
 the app. Running the script there on October 13, 2026: `start` booted in 400 s,
-`app` (warm Gradle) took 159 s, and `shot` took 0.21 s; signing in by chunked
+`app` (warm Gradle) took 159 s, and `shot` took 0.21 s. With the first-frame wait, `app` returns at the "Loading your
+spaces…" screen (30 s after launch); the channel follows about 30 s later, so
+wait before capturing it. Signing in by chunked
 `input text` reached #general in 94 s. This is good enough for manual checks
 and screenshots. The full
 `smoke.py` failed after 442 s even with raised timeouts (`uiautomator dump`
