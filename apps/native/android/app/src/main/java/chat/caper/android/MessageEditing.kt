@@ -78,7 +78,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                     }
                 }, shape = MaterialTheme.shapes.small) { Text("Discard draft and load latest") } }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(close, enabled = !saving, shape = MaterialTheme.shapes.small) { Text("Cancel") }
+                    TextButton(close, enabled = !saving, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
                     Spacer(Modifier.width(8.dp))
                     Button(::save, enabled = !saving && validEditText(draft.text), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", saving) }
                 }
@@ -116,7 +116,7 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
             // The heading stays above its own scrolling body, as in the app's other dialogs.
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Message history", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                TextButton(close, shape = MaterialTheme.shapes.small) { Text("Close") }
+                TextButton(close, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Close") }
             }
             HorizontalDivider(color = Border)
             Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

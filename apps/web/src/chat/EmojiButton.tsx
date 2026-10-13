@@ -76,6 +76,7 @@ export default function EmojiButton({
         </div>
         <div className="chat-reaction-picker-body">
           <ReactionPicker
+            autoFocus={!drawer}
             onSelect={(emoji) => {
               setOpen(false);
               onSelect(emoji);

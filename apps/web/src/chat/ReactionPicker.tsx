@@ -30,7 +30,14 @@ const choices = Object.entries(english.emojis).flatMap(([category, entries]) =>
     }),
 );
 
-export default function ReactionPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
+export default function ReactionPicker({
+  onSelect,
+  autoFocus = true,
+}: {
+  onSelect: (emoji: string) => void;
+  /** Touch drawers skip it: the keyboard would cover the half-height drawer. */
+  autoFocus?: boolean;
+}) {
   const [category, setCategory] = useState(categories[0]);
   const [query, setQuery] = useState("");
   const term = query.trim().toLowerCase();
@@ -69,7 +76,7 @@ export default function ReactionPicker({ onSelect }: { onSelect: (emoji: string)
         <input
           aria-label="Search emoji"
           placeholder="Search emoji"
-          autoFocus
+          autoFocus={autoFocus}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />

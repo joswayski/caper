@@ -13,8 +13,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -130,7 +132,7 @@ import kotlinx.coroutines.launch
         Text("You won't see their messages unless you choose to, and they can't send you DMs or requests.", color = TextMuted)
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small) { Text("Cancel") }
+            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
             Spacer(Modifier.width(8.dp))
             Button(
                 { working = true; error = null; viewModel.block(account, { close(); blocked() }) { working = false; error = it } },
@@ -140,14 +142,18 @@ import kotlinx.coroutines.launch
     }
 }
 
-/** "⊘ N blocked messages — Show", or Hide above a revealed run. */
+/** Web's Ban icon, "N blocked messages — Show", or Hide above a revealed run; the icon sits in the avatar column. */
 @Composable internal fun BlockedRunRow(count: Int, revealed: Boolean, toggle: () -> Unit) = Row(
-    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 62.dp, end = 18.dp),
+    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 27.dp, end = 18.dp),
     verticalAlignment = Alignment.CenterVertically,
 ) {
-    Text("⊘ ${blockedRunLabel(count)}", Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp)
-    Text(" — ", color = TextMuted, fontSize = 12.sp)
-    TextButton(toggle, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "${if (revealed) "Hide" else "Show"} ${blockedRunLabel(count)}" }, shape = MaterialTheme.shapes.small) {
+    Icon(painterResource(R.drawable.lucide_ban), null, Modifier.size(16.dp), tint = TextMuted)
+    Spacer(Modifier.width(8.dp))
+    Text(blockedRunLabel(count), Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 12.sp)
+    // Decorative, as on web (aria-hidden): TalkBack reads the count, then Show or Hide.
+    Text(" — ", Modifier.clearAndSetSemantics {}, color = TextMuted, fontSize = 12.sp)
+    TextButton(toggle, Modifier.heightIn(min = 48.dp).semantics { contentDescription = "${if (revealed) "Hide" else "Show"} ${blockedRunLabel(count)}" },
+        shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors(TextMuted)) {
         Text(if (revealed) "Hide" else "Show", fontSize = 12.sp)
     }
 }

@@ -1813,7 +1813,9 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-@container channels (max-width: 259px) {
+/* The default 260px sidebar (a 227px channel list) shows both faces; only
+   narrower sidebars drop one. */
+@container channels (max-width: 226px) {
   .voice-stack-avatar + .voice-stack-avatar {
     display: none;
   }

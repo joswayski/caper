@@ -589,6 +589,23 @@ export default function Call({
     if (sidebar) observer.observe(sidebar);
     return () => observer.disconnect();
   }, [membersShown, narrow]);
+  // Like the other overlays, Escape closes the phone member drawer and returns
+  // focus to the conversation title that opens it.
+  const closeMembers = useRef(members.change);
+  closeMembers.current = members.change;
+  useEffect(() => {
+    if (!narrow || !membersVisible) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // A profile card or dialog opened from the list closes first.
+      if (event.target instanceof Element && event.target.closest('dialog, [role="dialog"]')) return;
+      event.preventDefault();
+      closeMembers.current(false);
+      roomRef.current?.querySelector<HTMLElement>(".chat-title-menu > summary")?.focus();
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [narrow, membersVisible]);
   // The drawer owns touches until it has fully slid away.
   const navigationSwipe = useBrowseSwipe(
     narrow && !membersVisible && !members.closing,
@@ -945,11 +962,21 @@ export default function Call({
     const dismiss = (event: PointerEvent | FocusEvent) => {
       if (!audioMenuRef.current?.contains(event.target as Node)) setAudioMenu(undefined);
     };
+    // A mouse-opened menu may not hold focus (Safari, Firefox on macOS), so its
+    // own Escape handler never runs; close it from anywhere instead.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.target instanceof HTMLSelectElement) return;
+      event.preventDefault();
+      setAudioMenu(undefined);
+      audioMenuRef.current?.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus();
+    };
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("focusin", dismiss);
+    document.addEventListener("keydown", escape);
     return () => {
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("focusin", dismiss);
+      document.removeEventListener("keydown", escape);
     };
   }, [audioMenu]);
 

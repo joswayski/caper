@@ -476,7 +476,8 @@ struct AttachmentFileCard: View {
 
     private var card: some View {
         HStack(spacing: 10) {
-            Image(systemName: attachment.unavailable ? "trash" : "doc.text").font(.system(size: 17)).foregroundStyle(CaperTheme.muted)
+            // Web's FileText, for removed files too.
+            CaperIcon(name: "file-text", size: 18).foregroundStyle(CaperTheme.muted)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.name).font(CaperTheme.font(13, weight: .bold)).lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(attachment.unavailable ? CaperTheme.muted : CaperTheme.text)
@@ -568,7 +569,7 @@ private struct AttachmentFailedCard: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 16)).foregroundStyle(CaperTheme.muted)
+            CaperIcon(name: "file-warning", size: 18).foregroundStyle(CaperTheme.muted)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.name).font(CaperTheme.font(13, weight: .bold)).lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(CaperTheme.muted)
@@ -955,14 +956,14 @@ private struct MediaViewer: View {
                 if MediaViewerPolicy.isViewable(item), let raw = item.url, let url = URL(string: raw) {
                     shareButton(item, url: url)
                     Button { openAttachment(item, chat: request.chat, openURL: openURL) } label: {
-                        Image(systemName: "arrow.up.right.square")
+                        CaperIcon(name: "external-link", size: 18)
                     }
                     .buttonStyle(MediaViewerButton())
                     .help("Open in browser")
                     .accessibilityLabel("Open in browser")
                     .accessibilityIdentifier("media-viewer-open")
                 }
-                Button(action: close) { Image(systemName: "xmark") }
+                Button(action: close) { CaperIcon(name: "x", size: 20) }
                     .buttonStyle(MediaViewerButton())
                     .keyboardShortcut(.cancelAction)
                     .help("Close")
@@ -976,7 +977,7 @@ private struct MediaViewer: View {
         .overlay {
             if showsArrows && count > 1 {
                 HStack {
-                    Button { move(-1, count: count) } label: { Image(systemName: "chevron.left") }
+                    Button { move(-1, count: count) } label: { CaperIcon(name: "chevron-left", size: 20) }
                         .buttonStyle(MediaViewerButton())
                         .keyboardShortcut(.leftArrow, modifiers: [])
                         .disabled(position == 0)
@@ -984,7 +985,7 @@ private struct MediaViewer: View {
                         .accessibilityLabel("Previous file")
                         .accessibilityIdentifier("media-viewer-previous")
                     Spacer()
-                    Button { move(1, count: count) } label: { Image(systemName: "chevron.right") }
+                    Button { move(1, count: count) } label: { CaperIcon(name: "chevron-right", size: 20) }
                         .buttonStyle(MediaViewerButton())
                         .keyboardShortcut(.rightArrow, modifiers: [])
                         .disabled(position >= count - 1)
@@ -1566,6 +1567,8 @@ struct StagedFileChip: View {
                     Group {
                         if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        } else if kind == .file {
+                            CaperIcon(name: "file-text", size: 18).foregroundStyle(CaperTheme.muted)
                         } else {
                             Image(systemName: icon).font(.system(size: 15)).foregroundStyle(CaperTheme.muted)
                         }
@@ -1596,7 +1599,7 @@ struct StagedFileChip: View {
             }
             if removable {
                 Button(action: remove) {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).frame(width: 24, height: 24)
+                    CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
                         #if os(iOS)
                         .frame(minWidth: 44, minHeight: 44)
                         #endif
@@ -1610,7 +1613,7 @@ struct StagedFileChip: View {
         .padding(.leading, 6).padding(.trailing, 4).padding(.vertical, 6)
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? CaperTheme.terracottaBright : CaperTheme.border))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
         .task(id: localURL) {
             guard kind == .image else { thumbnail = nil; return }
             let key = "draft:\(id):\(localURL.lastPathComponent)"

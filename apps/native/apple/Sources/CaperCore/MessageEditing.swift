@@ -24,7 +24,7 @@ struct MessageEditorView: View {
                     .background(CaperTheme.composer, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border)).disabled(busy)
                     .accessibilityLabel("Message").accessibilityIdentifier("message-edit-text")
-                Text("\(draft.unicodeScalars.count) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error {
                     Text(error).foregroundStyle(CaperTheme.error)
                     Button("Discard draft and load latest") { perform {

@@ -2603,7 +2603,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
         assertStaticText("No pinned messages", in: app, timeout: 2)
         capture("narrow-empty-pins", app: app)
-        app.buttons["Messages"].tap()
+        app.buttons["Close pins"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
         XCTAssertTrue(title.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
         XCTAssertEqual(composer.value as? String, "Draft survives Browse")

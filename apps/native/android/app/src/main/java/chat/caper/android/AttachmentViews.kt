@@ -39,6 +39,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -223,10 +224,14 @@ internal fun durationLabel(durationMs: Long?): String? {
                 }
             })
             prepare()
-            playWhenReady = true
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
+    // Like the viewer's video: plays only while the app is visible, and pauses when it is stopped.
+    LifecycleStartEffect(player) {
+        player.playWhenReady = true
+        onStopOrDispose { player.pause() }
+    }
     if (failed) return
     AndroidView(
         factory = {
