@@ -158,7 +158,7 @@ private struct FirstSpaceView: View {
                     Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
                 if let error {
-                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Divider().overlay(CaperTheme.border)
@@ -210,7 +210,7 @@ private struct SpacesUnavailableView: View {
         VStack(spacing: 14) {
             Wordmark()
             Text("Spaces are unavailable.").font(CaperTheme.font(22, weight: .bold))
-            Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.terracottaBright).multilineTextAlignment(.center)
+            Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.error).multilineTextAlignment(.center)
             Button(model.busy ? "Trying…" : "Try again") { Task { await model.loadSpaces() } }
                 .buttonStyle(CaperSecondaryButton()).disabled(model.busy)
             Button("Direct messages") { model.navigationOpen = true }
@@ -724,11 +724,7 @@ private struct WorkspaceView: View {
                                     Color.clear
                                         .frame(width: 8).frame(maxHeight: .infinity)
                                         .contentShape(Rectangle())
-                                        .onHover { hovering in
-                                            #if os(macOS)
-                                            if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                                            #endif
-                                        }
+                                        .modifier(ResizeCursor())
                                         .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
                                             sidebarFocused = true
                                             if sidebarDragStart == nil { sidebarDragStart = liveSidebarWidth }
@@ -1095,6 +1091,7 @@ private struct ChannelSidebar: View {
     @State private var channelSearch = ""
     @State private var searchFrame: CGRect = .null
     @State private var browsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(macOS)
     @State private var directHeadingHovered = false
     @FocusState private var directActionFocused: Bool
@@ -1150,7 +1147,7 @@ private struct ChannelSidebar: View {
                                 // One chevron that turns, as for message requests and voice rosters.
                                 CaperIcon(name: "chevron-down")
                                     .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                                    .animation(.easeOut(duration: 0.15), value: channelsExpanded)
+                                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
                                 Text("Channels")
                                 Text("\(model.detail?.channels.filter(\.joined).count ?? 0)").font(CaperTheme.font(10, weight: .bold))
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -2574,7 +2571,7 @@ private struct ConversationStage: View {
         if model.selectedChannelID == nil && model.selectedDirectMessageID == nil && model.visit == nil {
             VStack(spacing: 8) {
                 // Wider windows already show Browse beside this, where the button did nothing.
-                if narrow { Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(CaperSecondaryButton()) }
+                if narrow { Button(action: browse) { Label { Text("Browse spaces") } icon: { CaperIcon(name: "arrow-left", size: 14) } }.buttonStyle(CaperSecondaryButton()) }
                 CaperIcon(name: "hash", size: 30).foregroundStyle(CaperTheme.terracottaBright)
                 Text(model.spaces.isEmpty ? "Select a direct message" : "No joined channels").font(CaperTheme.font(20, weight: .bold))
                 Text(model.spaces.isEmpty ? "Open a conversation from Direct messages." : "Browse public channels or accept a private invitation from the channel list.")
@@ -2885,11 +2882,7 @@ private struct ChatView: View {
                     .overlay(alignment: .leading) {
                         if threadResizeFocused { Rectangle().fill(CaperTheme.terracotta).frame(width: 2) }
                     }
-                    .onHover { hovering in
-                        #if os(macOS)
-                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-                        #endif
-                    }
+                    .modifier(ResizeCursor())
                     .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
                         threadResizeFocused = true
                         if threadDragStart == nil { threadDragStart = width }
@@ -3227,7 +3220,7 @@ private struct ChatView: View {
                        chat.error != nil || chat.sendRejected, chat.threadRootID != root {
                         HStack(spacing: 8) {
                             Text(chat.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.")
-                                .foregroundStyle(CaperTheme.terracottaBright)
+                                .foregroundStyle(CaperTheme.error)
                             Button("Review reply") { Task { await chat.openThread(root) } }
                         }.font(CaperTheme.font(11))
                     }
@@ -3238,7 +3231,7 @@ private struct ChatView: View {
                         AttachmentPickerButton(chat: chat).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
                             if chat.draft.isEmpty {
-                                Text("Message #\(chat.channelName.lowercased())").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                     .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                             }
                             messageComposer
@@ -3409,7 +3402,7 @@ private struct ChatView: View {
         } else {
             pasteAttachments = nil
         }
-        return NativeMessageComposer(text: $chat.draft, placeholder: "Message #\(chat.channelName.lowercased())",
+        return NativeMessageComposer(text: $chat.draft, placeholder: composerPlaceholder,
                                      controller: composerAutocomplete, mentions: mentionSource,
                                      submit: { Task { await chat.send() } },
                                      pasteAttachments: pasteAttachments)
@@ -3427,6 +3420,11 @@ private struct ChatView: View {
             return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
         }
         return .space(members: model.detail?.members ?? [], excluding: viewerID)
+    }
+    /// Web's placeholder: "Message #general" in a channel, "Message Alice" in a DM.
+    private var composerPlaceholder: String {
+        let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
+        return direct ? "Message \(chat.channelName)" : "Message #\(chat.channelName.lowercased())"
     }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
@@ -3617,7 +3615,7 @@ private struct NativeThreadView: View {
             if chat.isPreview { Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.").font(CaperTheme.font(12)).padding(18) }
             else { VStack(alignment: .leading, spacing: 8) {
                 if let root = chat.threadRootID, let reference = chat.replyTargets[root] { NativeReplyDraft(reference: reference, chat: chat, root: root) }
-                if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright) }
+                if let error = chat.error, chat.pendingMessage == nil { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
                 if let error = chat.sessionError {
                     // As under the channel's composer.
                     HStack(spacing: 8) {
@@ -3656,7 +3654,7 @@ private struct NativeThreadView: View {
                 }
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
-                    Text("Confirm or dismiss the pending message first.").font(CaperTheme.font(11))
+                    Text("Confirm or dismiss the pending message before sending a reply.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                 }
             }.padding(.horizontal, 12)
             .padding(.top, 12)
@@ -3781,10 +3779,16 @@ struct ChatDateDivider: View {
         }
     }
 
+    /// Parsed for every row on each timeline render: build the parsers once.
+    private static let fractionalParser: ISO8601DateFormatter = {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser
+    }()
+    private static let wholeSecondParser = ISO8601DateFormatter()
+
     static func date(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+        fractionalParser.date(from: value) ?? wholeSecondParser.date(from: value)
     }
 
     static func sameLocalDay(_ first: String, _ second: String, calendar: Calendar = .current) -> Bool {
@@ -3928,7 +3932,7 @@ private struct MessageRow: View {
                         Text(error)
                         Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryPin(messageID: message.id) } } }
                             .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
-                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
+                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
                 }
                 if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
                     Button { if !SwipeTapGuard.swiping { Task { await chat.openThread(message.threadRootId ?? message.id) } } } label: {
@@ -3951,7 +3955,7 @@ private struct MessageRow: View {
                         Text(error)
                         Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryReaction(messageID: message.id) } } }
                             .disabled(!chat.canInteract)
-                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
+                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
                 }
             }
             }
@@ -3983,31 +3987,33 @@ private struct MessageRow: View {
                     if !inThread {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                             Image(systemName: "bubble.right").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
-                        }.buttonStyle(.plain).focused($replyFocused).accessibilityLabel("Reply in thread")
+                        }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
                     Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
                         Image(systemName: "arrowshape.turn.up.left").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).focused($replyMessageFocused).accessibilityLabel("Reply")
+                    }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
                         .modifier(ControlHover(isFocused: replyMessageFocused))
                         .disabled(!chat.canInteract || chat.pendingMessage != nil)
                     Button(action: showReactionPicker) {
                         Image(systemName: "face.smiling").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }.buttonStyle(.plain).frame(width: 24, height: 24)
-                        .focused($reactionFocused).accessibilityLabel("Add reaction")
+                        .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
                         .modifier(ControlHover(isFocused: reactionFocused))
                         .disabled(!chat.canInteract)
                         .accessibilityIdentifier("add-reaction-\(message.id)")
                     Menu {
                         messageMenuItems
                     } label: {
-                        Image(systemName: "ellipsis").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
+                        // Lucide's ellipsis, as on the sidebar rows and web's More actions.
+                        CaperIcon(name: "ellipsis", size: 14).frame(width: 24, height: 24)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden)
                         // Native Menu otherwise expands the overlay to the row's
                         // width, moving Add reaction away from the trailing edge.
                         .frame(width: 24, height: 24).focused($actionsFocused)
                         .modifier(ControlHover(isFocused: actionsFocused))
+                        .help("More actions")
                         .accessibilityLabel("Message options")
                 }.opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
@@ -4136,9 +4142,7 @@ private struct MessageRow: View {
             .accessibilityLabel("\(message.author.name), \(timeLabel(message.createdAt))")
     }
     private func timeLabel(_ value: String) -> String {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
+        guard let date = ChatDateDivider.date(value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
     }
 }
@@ -4428,7 +4432,7 @@ private struct MentionCardView: View {
                                     else { blockRequested = true; close() }
                                 }.accessibilityIdentifier("mention-card-block")
                             } label: {
-                                Image(systemName: "ellipsis").font(.system(size: 16, weight: .medium))
+                                CaperIcon(name: "ellipsis", size: 16)
                                     .foregroundStyle(CaperTheme.muted)
                                     .frame(width: 32, height: 32).contentShape(Rectangle())
                             }
@@ -4445,7 +4449,7 @@ private struct MentionCardView: View {
                             .disabled(pending != nil || draft.sending || draft.presentingDialog)
                             .accessibilityIdentifier("mention-card-message")
                         }
-                        CardIconButton(systemImage: "xmark", label: "Close profile") { close() }
+                        CardIconButton(icon: "x", label: "Close profile") { close() }
                             .disabled(draft.sending || draft.presentingDialog)
                             .accessibilityIdentifier("mention-card-close")
                     }
@@ -4475,7 +4479,7 @@ private struct MentionCardView: View {
                             .accessibilityIdentifier("mention-card-status")
                     }
                     if let error {
-                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("mention-card-error")
                     }
@@ -4567,7 +4571,7 @@ private struct MentionCardView: View {
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
                 Button { draft.presentingDialog = true; showingFiles = true } label: {
-                    Image(systemName: "paperclip").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+                    CaperIcon(name: "paperclip", size: 17).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -4613,12 +4617,12 @@ private struct MentionCardView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             if draft.pending != nil, !draft.sending {
                 Text("Delivery isn’t confirmed. Send retries the same message.")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let progress = draft.progress { Text(progress).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
             if let error = draft.error {
-                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("mention-card-error")
             }
@@ -5327,7 +5331,7 @@ private struct PinnedMessagesView: View {
                 // Centred on the bar, not between buttons of different widths.
                 .overlay { Text("Pins").font(CaperTheme.font(15, weight: .bold)).accessibilityAddTraits(.isHeader) }
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-            if let error = chat.jumpError { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright).padding(12) }
+            if let error = chat.jumpError { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error).padding(12) }
             if chat.displayedPins.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
@@ -5406,13 +5410,15 @@ private struct PinnedMessagesView: View {
 
 /// A muted icon control in a card header (Open conversation, Close).
 private struct CardIconButton: View {
-    let systemImage: String
+    /// A shared Lucide glyph (`CaperIcon`); else `systemImage`, where the catalog has none yet.
+    var icon: String? = nil
+    var systemImage = ""
     let label: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage).font(.system(size: 15, weight: .medium)).foregroundStyle(CaperTheme.muted)
+            glyph.foregroundStyle(CaperTheme.muted)
                 .frame(width: 32, height: 32)
                 #if os(iOS)
                 .frame(minWidth: 44, minHeight: 44)
@@ -5423,6 +5429,11 @@ private struct CardIconButton: View {
         .modifier(ControlHover())
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    @ViewBuilder private var glyph: some View {
+        if let icon { CaperIcon(name: icon, size: 15) }
+        else { Image(systemName: systemImage).font(.system(size: 15, weight: .medium)) }
     }
 }
 
@@ -5615,7 +5626,7 @@ private struct NativeReplyContext: View {
                         else {
                             Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
                             Text(reference.author.name).fontWeight(.bold).lineLimit(1)
-                            if reference.hasAttachments { Image(systemName: "paperclip") }
+                            if reference.hasAttachments { CaperIcon(name: "paperclip", size: 13) }
                         }
                         Spacer(minLength: 4)
                         Text("View original").font(CaperTheme.font(11)).fixedSize()
@@ -6915,7 +6926,7 @@ private struct LoginActionLabel: View {
                 Text(busyTitle)
             } else {
                 Text(title)
-                Image(systemName: "arrow.right")
+                CaperIcon(name: "arrow-right", size: 14)
             }
         }
     }
@@ -7871,20 +7882,36 @@ struct ControlPointer: ViewModifier {
     }
 }
 
+/// A resize handle's left-right cursor, owned by AppKit like `ControlPointer`'s.
+/// Pushing it on hover left it stuck when the handle went away under the
+/// pointer (Escape closing the thread, a window narrowing past the sidebar).
+private struct ResizeCursor: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.background(PointerRegion(enabled: true, cursor: .resizeLeftRight).allowsHitTesting(false))
+        #else
+        content
+        #endif
+    }
+}
+
 #if os(macOS)
 private struct PointerRegion: NSViewRepresentable {
     let enabled: Bool
+    var cursor: NSCursor = .pointingHand
     func makeNSView(context: Context) -> PointerView { PointerView() }
     func updateNSView(_ view: PointerView, context: Context) {
         view.enabled = enabled
+        view.cursor = cursor
         view.window?.invalidateCursorRects(for: view)
     }
     final class PointerView: NSView {
         var enabled = true
+        var cursor: NSCursor = .pointingHand
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func resetCursorRects() {
             super.resetCursorRects()
-            if enabled { addCursorRect(visibleRect, cursor: .pointingHand) }
+            if enabled { addCursorRect(visibleRect, cursor: cursor) }
         }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
