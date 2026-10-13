@@ -2027,6 +2027,9 @@
   color: var(--text-muted);
   font-size: 0.8rem;
 }
+.chat-mention-suggestions {
+  width: calc(100% - 36px);
+}
 .chat-mention-suggestions button {
   padding-block: 6px;
 }
@@ -2863,6 +2866,9 @@ a.chat-draft-preview:focus-visible strong {
   .chat-emoji-suggestions {
     left: 14px;
     width: min(260px, calc(100% - 28px));
+  }
+  .chat-mention-suggestions {
+    width: calc(100% - 28px);
   }
 }
 .chat-reaction[aria-disabled="true"] {

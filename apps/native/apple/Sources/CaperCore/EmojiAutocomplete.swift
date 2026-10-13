@@ -196,7 +196,7 @@ struct ComposerSuggestionsView: View {
                 .onChange(of: controller.selected) { _, index in
                     if ids.indices.contains(index) { proxy.scrollTo(ids[index], anchor: .center) }
                 }
-            }.frame(maxWidth: 260)
+            }.frame(maxWidth: match.isMention ? .infinity : 260)
                 .background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
                 .accessibilityIdentifier(match.isMention ? "mention-suggestions" : "emoji-suggestions")
