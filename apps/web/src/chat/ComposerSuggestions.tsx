@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type KeyboardEvent, type RefObject } from "react";
 import { PersonSuggestion } from "../components/PeopleSuggestions";
 import { emojiAsset } from "./emoji.ts";
 import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
@@ -47,7 +47,11 @@ export function useComposerSuggestions({
   const suggesting = focused && !composing && dismissed !== selectionKey;
   const token = suggesting ? emojiToken(draft, selection.start, selection.end) : undefined;
   const emojiOpen = !!token;
-  const emojiOptions = token && emojiChoices ? emojiSuggestions(emojiChoices, token.query) : [];
+  const emojiQuery = token?.query;
+  const emojiOptions = useMemo(
+    () => (emojiQuery !== undefined && emojiChoices ? emojiSuggestions(emojiChoices, emojiQuery) : []),
+    [emojiChoices, emojiQuery],
+  );
   // `:` and `@` tokens never overlap; only one popup can be open.
   const mention = suggesting && !token ? mentionToken(draft, selection.start, selection.end) : undefined;
   const mentionOptions = mention ? mentionSuggestions(people ?? [], mention.query, specialMentions) : [];

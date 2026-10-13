@@ -1576,7 +1576,7 @@ struct StagedFileChip: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
                         Text(status).font(CaperTheme.font(10))
-                            .foregroundStyle(failed ? CaperTheme.terracottaBright : CaperTheme.muted).lineLimit(2)
+                            .foregroundStyle(failed ? CaperTheme.error : CaperTheme.muted).lineLimit(2)
                         if let progress {
                             ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
                                 // Glides between progress events instead of jumping.

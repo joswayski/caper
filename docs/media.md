@@ -7991,3 +7991,86 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
 Live Claude schema acceptance, GitHub publication, production dispatch, physical
 phone/Mac testing and Mac scroll frame timing remain separate rollout checks.
 No Docker daemon was available; web/API build stages were checked directly.
+
+## Cross-client UI consistency pass (October 13, 2026)
+
+A second audit of every client for dismissal, focus, hover, clipping, parity and
+performance problems, on top of #616. Behaviour changes ship on every client they
+apply to; the rest are one-client defects.
+
+- **Layout and clipping:**
+  - Web: between 761 and 1099px, Members no longer stack under the composer. They
+    sit beside the conversation while it keeps 320px, as on desktop, and otherwise
+    float over its right edge below the header, as on desktop and Android.
+  - Web: resizing the window or a panel keeps the newest message in view when you
+    were already reading it.
+  - Web: the conversation grid has a column track, so no long header content can
+    widen it; an empty composer keeps a long placeholder on one line.
+  - Desktop: long (up to 80-character) channel and DM names truncate in the wide
+    header instead of running under Join voice, Pins and Members. The member list
+    scrolls (a full page and its pager stay reachable in short windows) and long
+    names truncate. The sidebar space name truncates with a tooltip. Channel
+    settings scrolls to its bottom edge instead of clipping above an empty band.
+- **Dismissal and focus:**
+  - Web: Block and New direct message opened inside the hidden phone sidebar,
+    leaving an invisible modal that swallowed every tap. They now open at the top
+    level. Phones also get Block in a DM's name menu, where the header button is hidden.
+  - Web and desktop: a backdrop click no longer discards unsaved Channel settings
+    or a renamed space. Escape and the close button still close them.
+  - Web: Forward can't be closed while forwarding; row menus re-place themselves
+    when Notifications or Mute expand inside them; the pinned message ⋯ toggles.
+  - Desktop: changing channels or closing a thread closes its composer emoji
+    picker, which could otherwise insert into the next conversation's draft. A
+    dialog opened over a profile card gets Escape first. Files dropped over a
+    dialog or modal no longer go to the hidden composer. Browse channels closes on
+    a space switch. Choosing System default closes the device menu; long device
+    lists scroll.
+  - Android: opening Browse or Members on a phone hides the keyboard. Back is only
+    caught when Members actually shows. The message actions sheet opens fully and
+    scrolls. The thread's "Also send to" label toggles its checkbox.
+  - Apple: a dialog's disabled composer stops taking keystrokes. The timeline only
+    follows new messages when you are at the bottom (or sent them). A pending
+    private-channel invitation can't be dismissed, and finishing it no longer
+    closes another dialog. Browse closes on a space switch and ignores a leading
+    `#`. Reaction and pin errors can be dismissed. A failed join no longer carries
+    over to the next channel.
+- **Labels and actions:** every client hides **Copy text** for attachment-only
+  messages and says **Message history**. Desktop's menu adds **Reply in thread**
+  and says **Pin message**/**Unpin message** (**Saving…** while pending), the hover
+  bar's ⋯ says **More actions**, **New direct message** replaces "Start direct
+  message", and **Leave channel** is neutral. Android says **New direct message**;
+  its DM rows say **Blocked** or **Request sent** like web. The macOS menu adds
+  **Reply in thread** and **Add reaction…**. Apple's thread composer shows its
+  placeholder.
+- **Hover, touch and tokens:**
+  - Desktop: hover fills use the shared 6% white `--surface-hover` wash instead of
+    RAISED, which matched the sidebar and conversation backgrounds. Channel rows
+    brighten on hover and keep the selection wash while focused. Menus and windows
+    use BORDER and 8px corners.
+  - Web: three hover styles no longer stick after a tap.
+  - Android: file-card ripples keep their corners; account-bar volume sliders tick
+    like the Audio test's; composers capitalize sentences.
+  - Apple: muted/deafened account controls use web's red (#ED5265); iOS sidebar
+    icon buttons show press feedback; macOS DM rows get one hover highlight
+    instead of two; a few more error labels use `CaperTheme.error`.
+- **Performance:**
+  - Web: call statistics re-render the call each second only while Connection
+    details shows them; the Join glow animates opacity instead of repainting a
+    shadow; emoji search normalizes the catalog once; emoji preloading waits for idle time.
+  - Android: typing indicators are throttled like web (at most one start per
+    500ms, a stop after 500ms idle) instead of one gateway command per keystroke.
+
+No API, database, gateway, infrastructure or configuration changes. Web and native
+clients deploy independently; merging alone deploys nothing.
+
+| Client | Validation |
+| --- | --- |
+| Web | `npm run check` and `npm test` (610 tests) pass. Chromium against the disposable native parity fixture at 1440, 1300, 1024, 900, 820 and 390px (DPR 2, fine pointer): the medium Members layout beside and floating, latest message kept in view through resizes, phone Block dialog visible and closable, an 80-character channel name in desktop and phone headers and a one-line phone placeholder. Not Safari, Firefox or a physical phone. |
+| Rust desktop | `cargo fmt --check`, `cargo test -p caper-desktop` (501 passed, 12 ignored device tests) and `cargo clippy --all-targets --no-deps -D warnings` pass on Linux with clang 21. Linux Xvfb fixture renders inspected: Channel settings scrolling to its bottom edge, row and member hover washes. Windows built only by CI. |
+| Android | Edited without an Android SDK: not compiled or run here. Imports and API signatures were checked against the compose-bom 2025.09.01 APIs already used. CI must compile it. |
+| Apple iOS/macOS | Edited without Xcode or a Swift toolchain: not compiled, tested or run here. CI must build it. |
+
+Before native distribution, verify on devices: Android Browse/Members hiding the
+keyboard and Back with a hidden member list; the full-height actions sheet; Apple
+typing with a dialog open, timeline follow while scrolled up and at the bottom,
+and the invitation dialog while pending.

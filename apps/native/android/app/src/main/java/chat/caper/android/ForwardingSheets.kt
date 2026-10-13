@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -129,7 +131,8 @@ import java.util.UUID
             }
             if (destinations == null && error == null) Text("Loading destinations…", color = TextMuted)
             if (visible?.isEmpty() == true) Text("No matching destinations. Join a channel or start a DM.", color = TextMuted)
-            OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
             error?.let { Text(it, color = ErrorText); if (destinations == null) TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry loading") } }
             Button({
                 if (sending || selected.isEmpty()) return@Button

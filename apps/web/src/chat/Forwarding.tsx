@@ -80,11 +80,14 @@ function failureText(reason: unknown, fallback: string) {
 function ForwardDialog({
   title,
   anchor,
+  busy = false,
   onClose,
   children,
 }: {
   title: string;
   anchor: HTMLElement;
+  /** While forwarding, closing would silently drop the remaining destinations. */
+  busy?: boolean;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -95,7 +98,7 @@ function ForwardDialog({
       if (!open) onClose();
     },
   });
-  const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);
+  const { getFloatingProps } = useInteractions([useDismiss(context, { enabled: !busy }), useRole(context)]);
   return (
     <FloatingPortal>
       <FloatingOverlay lockScroll className="chat-forward-overlay">
@@ -103,7 +106,7 @@ function ForwardDialog({
           <section className="chat-forward-dialog" ref={refs.setFloating} aria-label={title} {...getFloatingProps()}>
             <header className="chat-reaction-picker-heading">
               <strong>{title}</strong>
-              <button type="button" aria-label={`Close ${title.toLowerCase()}`} onClick={onClose}>
+              <button type="button" aria-label={`Close ${title.toLowerCase()}`} disabled={busy} onClick={onClose}>
                 <X size={18} />
               </button>
             </header>
@@ -312,7 +315,7 @@ export function ForwardPicker({
     terms.every((term) => `${item.spaceName} ${item.name}`.toLocaleLowerCase().includes(term)),
   );
   return (
-    <ForwardDialog title="Forward message" anchor={target.anchor} onClose={onClose}>
+    <ForwardDialog title="Forward message" anchor={target.anchor} busy={sending} onClose={onClose}>
       <div className="chat-forward-body">
         <p className="chat-forward-disclosure">
           Shares this message and its conversation, including future edits, reactions and replies. People in the

@@ -136,7 +136,7 @@ struct NotificationErrorRow: View {
             HStack(alignment: .top, spacing: 8) {
                 Text(message)
                     .font(CaperTheme.font(11))
-                    .foregroundStyle(CaperTheme.terracottaBright)
+                    .foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Dismiss") { model.notificationError = nil }

@@ -409,6 +409,8 @@ struct NativeMessageComposer: UIViewRepresentable {
     /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
     var highlightSource: MentionSource? = nil
     @Environment(\.composerCovered) private var covered
+    /// False while a workspace dialog covers the conversation.
+    @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
         let view = ComposerTextView(); view.delegate = context.coordinator
@@ -432,9 +434,18 @@ struct NativeMessageComposer: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         (view as? ComposerTextView)?.setCovered(covered)
         (view as? ComposerTextView)?.pasteAttachments = pasteAttachments
-        view.isEditable = editable
+        // A disabled composer (under a dialog) must not keep taking keystrokes.
+        view.isEditable = editable && isEnabled
         if !editable { (view as? ComposerTextView)?.hideEmojiName() }
+        if !isEnabled, view.isFirstResponder {
+            // After this update, and only if nothing else (the dialog's own field) took focus first.
+            Task { @MainActor [weak view] in
+                if let view, view.isFirstResponder { _ = view.resignFirstResponder() }
+            }
+        }
         view.accessibilityIdentifier = accessibilityID
+        // The conversation can change under the same editor (a channel, then a DM).
+        view.accessibilityLabel = placeholder
         let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
         context.coordinator.parent = self
         if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
@@ -538,6 +549,8 @@ struct NativeMessageComposer: NSViewRepresentable {
     var pasteAttachments: (() -> Bool)? = nil
     /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
     var highlightSource: MentionSource? = nil
+    /// False while a workspace dialog covers the conversation.
+    @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
@@ -566,8 +579,17 @@ struct NativeMessageComposer: NSViewRepresentable {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? ComposerTextView else { return }
         view.pasteAttachments = pasteAttachments
-        view.isEditable = editable
+        // A disabled composer (under a dialog) must not keep taking keystrokes.
+        view.isEditable = editable && isEnabled
+        if !isEnabled, view.window?.firstResponder === view {
+            // After this update, and only if nothing else (the dialog's own field) took focus first.
+            Task { @MainActor [weak view] in
+                if let view, let window = view.window, window.firstResponder === view { _ = window.makeFirstResponder(nil) }
+            }
+        }
         view.setAccessibilityIdentifier(accessibilityID)
+        // The conversation can change under the same editor (a channel, then a DM).
+        view.setAccessibilityLabel(placeholder)
         view.setAccessibilityHelp(submitOnReturn ? "Return sends. Shift-Return adds a new line." : "Use the Send button. Return adds a new line.")
         // The text view reports its own text as its accessibility value; setting
         // it would replace the text on every update.

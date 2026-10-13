@@ -240,10 +240,12 @@ export default function MessageActions({
                   {pinning ? "Saving…" : message.pin ? "Unpin message" : "Pin message"}
                 </button>
               )}
-              <button type="button" onClick={() => void copy(message.content.text, "Text")}>
-                <Copy size={16} aria-hidden="true" />
-                Copy text
-              </button>
+              {message.content.text && (
+                <button type="button" onClick={() => void copy(message.content.text, "Text")}>
+                  <Copy size={16} aria-hidden="true" />
+                  Copy text
+                </button>
+              )}
               <button type="button" onClick={() => void copy(message.id, "Message ID")}>
                 <Hash size={16} aria-hidden="true" />
                 Copy message ID

@@ -287,7 +287,8 @@ internal fun durationLabel(durationMs: Long?): String? {
         else -> AttachmentPolicy.formatBytes(attachment.size)
     }
     Surface(
-        Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp)
+        // Clipped first, so the press ripple keeps the card's corners.
+        Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${attachment.name}", onClick = onClick) else Modifier),
         shape = MaterialTheme.shapes.small, color = if (muted) Color.Transparent else Surface,
         border = BorderStroke(1.dp, if (error) ErrorText.copy(alpha = 0.6f) else Border),
