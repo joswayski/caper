@@ -105,6 +105,8 @@ function ReactionChip({
     clearTimeout(hold.current?.timer);
     hold.current = undefined;
   };
+  // A chip removed live mid-hold must not open reactors for a detached anchor.
+  useEffect(() => () => clearTimeout(hold.current?.timer), []);
   const show = (anchor: HTMLElement) => {
     setOpen(false);
     onShowReactors(emoji, anchor);
