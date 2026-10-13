@@ -13,6 +13,7 @@ import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyContext, ReplyDraft } from "./Replies.tsx";
+import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
 
 const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
@@ -61,6 +62,7 @@ export default function ThreadPanel({
   useEffect(() => saveThreadDrafts(drafts), [drafts]);
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
+  const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");
   const scroll = useRef<HTMLDivElement>(null);
   const olderAnchor = useRef<{ height: number; top: number }>(undefined);
   const follow = useRef(true);
@@ -377,6 +379,7 @@ export default function ThreadPanel({
         role="region"
         aria-label="Thread replies"
         aria-busy={state.thread.loading}
+        {...keyboardDismiss}
         onScroll={(event) => {
           const element = event.currentTarget;
           follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;

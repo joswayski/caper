@@ -3095,6 +3095,9 @@ private struct ChatView: View {
                         if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
+                #if os(iOS)
+                .scrollDismissesKeyboard(.immediately)
+                #endif
                 .accessibilityIdentifier("chat-timeline")
                 // Pills report the pointer in this space; the popover anchors in it too.
                 .coordinateSpace(.named(MentionCard.timelineSpace))
@@ -3579,6 +3582,9 @@ private struct NativeThreadView: View {
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
+                #if os(iOS)
+                .scrollDismissesKeyboard(.immediately)
+                #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
                 #endif

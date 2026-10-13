@@ -830,6 +830,75 @@ try {
   const { sessionId } = await cdp("Target.attachToTarget", { targetId: target.targetId, flatten: true });
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 }, sessionId);
   assert.equal(evaluate('matchMedia("(pointer: coarse)").matches'), true);
+  const checkKeyboardDismiss = async (scroller, composer) => {
+    const saved = evaluate(`document.querySelector('${composer}').value`);
+    const top = evaluate(`document.querySelector('${scroller}').scrollTop`);
+    const draft = "TEST FIXTURE — scrolling keeps this unsent draft";
+    browser("fill", composer, draft);
+    evaluate(`(() => {
+      const list = document.querySelector('${scroller}');
+      list.scrollTop = list.scrollHeight;
+      list.dispatchEvent(new Event('scroll'));
+    })()`);
+    assert.equal(evaluate("document.activeElement.id"), composer.slice(1), "Automatic scrolling keeps focus");
+    const point = evaluate(`(() => {
+      const r = document.querySelector('${scroller}').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 180) };
+    })()`);
+    const touch = (type, dx = 0, dy = 0) =>
+      cdp(
+        "Input.dispatchTouchEvent",
+        {
+          type,
+          touchPoints: type === "touchEnd" || type === "touchCancel" ? [] : [{ x: point.x + dx, y: point.y + dy }],
+        },
+        sessionId,
+      );
+    // A small movement/cancel is not a scroll gesture and must not dismiss.
+    await touch("touchStart");
+    await touch("touchMove", 2, 5);
+    assert.equal(evaluate("document.activeElement.id"), composer.slice(1));
+    await touch("touchCancel");
+    if (composer === "#chat-thread-reply") {
+      // Threads have no horizontal Browse navigation to legitimately dismiss focus.
+      await touch("touchStart");
+      await touch("touchMove", 60, 2);
+      assert.equal(evaluate("document.activeElement.id"), composer.slice(1), "Horizontal movement keeps focus");
+      await touch("touchCancel");
+    }
+    for (const dy of [120, -120]) {
+      browser("focus", composer);
+      await touch("touchStart");
+      await touch("touchMove", 3, dy);
+      assert.notEqual(evaluate("document.activeElement.id"), composer.slice(1), "Timeline dragging dismisses focus");
+      await touch("touchEnd");
+      assert.equal(evaluate(`document.querySelector('${composer}').value`), draft, "Dismissal retains the draft");
+    }
+    const multiline = Array.from({ length: 20 }, (_, index) => `Unsent line ${index}`).join("\n");
+    browser("fill", composer, multiline);
+    const inputPoint = evaluate(`(() => {
+      const r = document.querySelector('${composer}').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 3 };
+    })()`);
+    await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [inputPoint] }, sessionId);
+    await cdp(
+      "Input.dispatchTouchEvent",
+      { type: "touchMove", touchPoints: [{ x: inputPoint.x, y: inputPoint.y + 40 }] },
+      sessionId,
+    );
+    assert.equal(evaluate("document.activeElement.id"), composer.slice(1), "Scrolling inside the draft keeps focus");
+    assert.equal(evaluate(`document.querySelector('${composer}').value`), multiline);
+    await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
+    browser("focus", composer);
+    assert.equal(evaluate("document.activeElement.id"), composer.slice(1), "The composer can reopen normally");
+    browser("fill", composer, saved);
+    evaluate(`document.querySelector('${composer}').blur()`);
+    evaluate(`document.querySelector('${scroller}').scrollTop = ${top}`);
+    console.log(
+      `PASS: ${composer}: vertical touch dismissal in both directions, retained draft, focus reopening, automatic-scroll and cancelled-gesture controls.`,
+    );
+  };
+  await checkKeyboardDismiss(".chat-scroller", "#chat-message");
   assert.equal(
     evaluate(
       `(() => { const row = document.querySelector('${channel(root.clientMessageId)}'); const reply = row.querySelector('.chat-reply-thread'); const summary = row.querySelector('.chat-thread-summary').getBoundingClientRect(); const more = row.querySelector('.chat-message-actions-trigger').getBoundingClientRect(); return !reply.checkVisibility({ visibilityProperty: true }) && summary.width > 0 && summary.height > 0 && more.width >= 44 && more.height >= 44 && (summary.right <= more.left || summary.top >= more.bottom); })()`,
@@ -865,6 +934,7 @@ try {
   );
   alignedHeaders(390);
   assert.equal(evaluate('document.querySelector(".chat-thread-resize").checkVisibility()'), false);
+  await checkKeyboardDismiss(".chat-thread-messages", "#chat-thread-reply");
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
   browser("set", "viewport", "320", "844", "2");
