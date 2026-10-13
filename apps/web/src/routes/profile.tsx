@@ -4,6 +4,7 @@ import { getAccount, getRememberedAccount, logout, type Account } from "../accou
 import ProfileForm from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
+import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import { inviteFromSearch } from "../spaces/client";
 
@@ -15,17 +16,30 @@ export const Route = createFileRoute("/profile")({
 function Profile() {
   const navigate = useNavigate();
   const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
+  // Only a missing session means signed out; an outage keeps you here to retry.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (account) return;
+    if (account || failed) return;
     void getAccount()
       .then((result) => {
         if (!result) return void navigate({ to: "/login", replace: true });
         setAccount(result);
       })
-      .catch(() => void navigate({ to: "/login", replace: true }));
-  }, [account, navigate]);
+      .catch(() => setFailed(true));
+  }, [account, failed, navigate]);
 
+  if (failed)
+    return (
+      <StatusPage title="Your account didn’t load.">
+        <p role="alert">Check your connection, then try again.</p>
+        <div className="status-page-actions">
+          <button type="button" className="primary" onClick={() => setFailed(false)}>
+            Try again
+          </button>
+        </div>
+      </StatusPage>
+    );
   if (!account) return null;
 
   return (

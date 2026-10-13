@@ -1,7 +1,5 @@
-import { useContext } from "react";
 import { FileText, Film, Image } from "lucide-react";
-import { DailyIconContext } from "../components/RotatingFavicon";
-import { dailyIconUrl } from "../components/daily-icon";
+import DailyCaper from "../components/DailyCaper";
 import { dropText } from "./drop.ts";
 
 /** Covers the conversation while files are dragged over it: today's Caper
@@ -15,7 +13,6 @@ export default function DropOverlay({
   direct: boolean;
   attached: number;
 }) {
-  const index = useContext(DailyIconContext);
   const { title, detail } = dropText(channelName, direct, attached);
   return (
     <div className="chat-drop" role="status">
@@ -29,7 +26,7 @@ export default function DropOverlay({
             </span>
           ))}
           <span className="chat-drop-character">
-            <img src={dailyIconUrl(index)} alt="" width="256" height="256" draggable={false} />
+            <DailyCaper />
           </span>
         </div>
         <strong>{title}</strong>

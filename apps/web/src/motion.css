@@ -46,6 +46,13 @@
     translate: 0 6px;
   }
 }
+/* Caper characters greeting an empty conversation or a dead end. */
+@keyframes caper-character-in {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
 @keyframes caper-chip-in {
   from {
     opacity: 0;
@@ -97,6 +104,12 @@
   animation: caper-message-in var(--motion-slow) var(--ease-out);
 }
 
+/* Today's character greets an empty conversation or a dead end. */
+.chat-empty-caper,
+.status-page-caper {
+  animation: caper-character-in var(--motion-slow) var(--ease-out) both;
+}
+
 /* Attached files pop into the composer, and upload progress glides. */
 .chat-drafts li {
   animation: caper-chip-in var(--motion-base) var(--ease-out);
@@ -122,6 +135,8 @@
   .space-actions,
   .chat-thread-panel,
   .chat-message-arrive,
+  .chat-empty-caper,
+  .status-page-caper,
   .chat-drafts li {
     animation: none;
   }

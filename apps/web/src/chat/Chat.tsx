@@ -42,6 +42,7 @@ import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSetting
 import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
+import DailyCaper from "../components/DailyCaper";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
 import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
@@ -1846,7 +1847,8 @@ export default function Chat({
               </div>
             )}
             {state.phase === "ready" && !messages.length && (
-              <div className="chat-state">
+              <div className="chat-state chat-empty">
+                <DailyCaper className="chat-empty-caper" />
                 {direct && viewerId && directPeerId === viewerId ? (
                   <p>You can message yourself here to keep notes, reminders, and ideas.</p>
                 ) : (
