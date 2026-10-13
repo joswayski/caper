@@ -863,9 +863,7 @@ try {
   browser("find", "role", "button", "click", "--name", "Show member list", "--exact");
   wait('!!document.querySelector("#space-member-list")');
   browser("set", "viewport", "390", "844", "2");
-  // Explicitly open it above: members now start closed on desktop too.
-  // The open desktop member list becomes a mobile overlay on resize.
-  browser("click", ".member-list-close");
+  // Narrowing dismisses the desktop member column instead of covering chat.
   wait('!document.querySelector("#space-member-list")');
   socket = new WebSocket(browser("get", "cdp-url").cdpUrl);
   await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
