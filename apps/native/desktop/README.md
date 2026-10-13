@@ -421,6 +421,13 @@ DM with unread messages (no dot) and a DM with notifications off (still
 dotted); it sends no notification requests.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
+`parity-thread` opens a thread with an admin parent, reply count and one reply;
+`parity-thread-loading` shows its loading state. Check the 300px minimum panel,
+long channel names, multiline drafts and the message-actions menu. The reply
+editor grows to the same 320px/40%-of-window cap as web, then scrolls, leaving
+the broadcast choice, emoji picker and Send accessible. Narrow windows use a
+back arrow; side-by-side threads use Close. These Linux previews exercise the
+shared Rust layout, not Windows display scaling or a live send.
 `parity-opening` and `parity-opening-narrow` preview pending navigation with
 retained history and a labelled fixture draft; `parity-opening-error` previews
 retry, and `parity-loading` previews the initial history skeleton.

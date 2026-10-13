@@ -385,6 +385,7 @@ impl EmojiTarget {
 #[derive(Clone, Copy)]
 enum NavIcon {
     Chevron,
+    ArrowLeft,
     Close,
     More,
     Plus,
@@ -394,8 +395,14 @@ enum NavIcon {
     Lock,
     Users,
     Pin,
+    PinOff,
     Speech,
     Reply,
+    Forward,
+    Pencil,
+    History,
+    Copy,
+    Ban,
     Mic,
     MicOff,
     Headphones,
@@ -417,6 +424,7 @@ enum NavIcon {
     Archive,
     Restore,
     Smile,
+    SmilePlus,
     Send,
     MessageCircle,
 }
@@ -1561,6 +1569,16 @@ impl CaperApp {
                     let root = messages[0].id.clone();
                     let loading = name.contains("loading");
                     if !loading {
+                        messages[0].author.admin = true;
+                        app.session = Some(ChatSession {
+                            token: "fixture-token".into(),
+                            author: messages[0].author.clone(),
+                        });
+                        messages[0].thread = Some(model::ThreadSummary {
+                            reply_count: 1,
+                            participants: vec![messages[1].author.clone()],
+                            seq: "4".into(),
+                        });
                         messages[1].thread_root_id = Some(root.clone());
                         messages[1].content.text =
                             "TEST FIXTURE — Replies stay put when you reopen this thread.".into();
@@ -12316,14 +12334,14 @@ impl CaperApp {
             let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
             let from = motion::mark(ui);
             if narrow {
-                self.thread_panel(ui);
+                self.thread_panel(ui, true);
             } else {
                 egui::SidePanel::right("message-thread")
                     .default_width(340.0)
                     .min_width(300.0)
                     .max_width(480.0)
                     .frame(egui::Frame::new().fill(CONVERSATION))
-                    .show_inside(ui, |ui| self.thread_panel(ui));
+                    .show_inside(ui, |ui| self.thread_panel(ui, false));
             }
             motion::settle(
                 ui.ctx(),
@@ -12359,7 +12377,7 @@ impl CaperApp {
         }
     }
 
-    fn thread_panel(&mut self, ui: &mut egui::Ui) {
+    fn thread_panel(&mut self, ui: &mut egui::Ui, narrow: bool) {
         let Some(thread) = &self.thread_view else {
             return;
         };
@@ -12415,20 +12433,40 @@ impl CaperApp {
             .frame(
                 egui::Frame::new()
                     .fill(CONVERSATION)
-                    .inner_margin(egui::Margin::symmetric(18, 8)),
+                    .inner_margin(if narrow {
+                        egui::Margin::symmetric(12, 4)
+                    } else {
+                        egui::Margin::symmetric(18, 8)
+                    }),
             )
             .show_inside(ui, |ui| {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 38.0),
-                    egui::Layout::right_to_left(egui::Align::Center),
+                    egui::vec2(ui.available_width(), if narrow { 46.0 } else { 38.0 }),
+                    if narrow {
+                        egui::Layout::left_to_right(egui::Align::Center)
+                    } else {
+                        egui::Layout::right_to_left(egui::Align::Center)
+                    },
                     |ui| {
-                        if ui
-                            .button(if direct {
-                                "Back to conversation"
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let label = if !narrow {
+                            "Close thread"
+                        } else if direct {
+                            "Back to conversation"
+                        } else {
+                            "Back to channel"
+                        };
+                        if drawn_icon_button_sized(
+                            ui,
+                            if narrow {
+                                NavIcon::ArrowLeft
                             } else {
-                                "Back to channel"
-                            })
-                            .clicked()
+                                NavIcon::Close
+                            },
+                            label,
+                            if narrow { 44.0 } else { 36.0 },
+                        )
+                        .clicked()
                         {
                             self.close_thread();
                         }
@@ -12459,7 +12497,45 @@ impl CaperApp {
                 bottom: 16,
             });
         if !read_only {
+            // TopBottomPanel remembers its previous height. Reserve the current
+            // editor and send row before it clips the child UI, as in the channel.
+            let (people, specials) = self.mention_people();
+            let text = self
+                .thread_drafts
+                .entry(root.clone())
+                .or_default()
+                .0
+                .clone();
+            let width = (ui.available_width() - 36.0).max(1.0);
+            let draft_height = draft_layout(
+                ui,
+                &text,
+                (width - 22.0 - 36.0).max(1.0),
+                &people,
+                specials,
+                egui::FontId::proportional(13.6),
+            )
+            .size()
+            .y;
+            let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(80.0, 320.0);
+            let editor_height = (draft_height + 20.0).clamp(80.0, max_editor_height);
+            // Two 36px buttons, two 8px gaps, then the checkbox's icon and gap.
+            let label_height = ui
+                .painter()
+                .layout(
+                    broadcast_label.clone(),
+                    egui::FontId::proportional(11.52),
+                    MUTED,
+                    (width - 88.0 - 23.0).max(1.0),
+                )
+                .size()
+                .y;
+            let send_height = label_height.max(44.0);
+            let files = self.draft_file_count(Some(&root));
+            let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
+            let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
             egui::TopBottomPanel::bottom("thread-composer")
+                .min_height(editor_height + 8.0 + send_height + 28.0 + chips_height)
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -12468,12 +12544,6 @@ impl CaperApp {
                 self.reply_draft(ui, &root);
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
-                    let arrival = self.arrival(ui.ctx(), &pending.id);
-                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
-                        if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference, &pending.id); }
-                        if !pending.text.is_empty() { ui.label(&pending.text); }
-                        self.attachment_list(ui, &pending.attachments, true);
-                    });
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
@@ -12498,8 +12568,12 @@ impl CaperApp {
                 // The channel composer's `:`/`@` suggestions, with their own state.
                 let composer_id = egui::Id::new(("thread-draft", &root));
                 let attach = self.can_attach() && !loading;
-                if self.draft_file_count(Some(&root)) > 0 {
-                    self.draft_chips(ui, Some(&root));
+                if files > 0 {
+                    egui::ScrollArea::vertical()
+                        .id_salt(("thread-draft-files", &root))
+                        .max_height(chips_height - 8.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| self.draft_chips(ui, Some(&root)));
                     ui.add_space(8.0);
                 }
                 if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
@@ -12515,45 +12589,69 @@ impl CaperApp {
                 }
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
-                let (people, specials) = self.mention_people();
-                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::TextStyle::Body.resolve(ui.style()));
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
+                let files = self.draft_file_count(Some(&root));
+                let full = files >= uploads::MAX_ATTACHMENTS;
+                let attach_unavailable = self.attach_unavailable_reason();
+                let mut pick = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
-                let mut output = ui.add_enabled_ui(!loading, |ui| egui::TextEdit::multiline(&mut draft.0)
-                    .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
-                    .layouter(&mut layouter)
-                    .hint_text("Reply to thread…").return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner;
+                let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
+                    // Padding belongs outside the scrolling text. egui's
+                    // default 3px clip expansion otherwise bleeds over the border.
+                    ui.visuals_mut().clip_rect_margin = 0.0;
+                    ui.horizontal_top(|ui| {
+                        pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
+                            .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
+                                else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
+                                else { "Attach files".to_owned() }).clicked();
+                        ui.add_enabled_ui(!loading, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("thread-composer-scroll", &root))
+                            .max_height(editor_height - 20.0)
+                            .min_scrolled_height(60.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
+                                .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
+                                .min_size(egui::vec2(0.0, 60.0))
+                                .font(egui::FontId::proportional(13.6))
+                                .margin(egui::Margin::ZERO)
+                                .frame(false)
+                                .layouter(&mut layouter)
+                                .hint_text(RichText::new("Reply to thread…").color(MUTED))
+                                .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
+                        }).inner
+                    }).inner
+                });
+                let mut output = editor.inner;
+                ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
-                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, output.response.rect, &mut output) {
+                if pick { self.pick_files(ui.ctx(), Some(root.clone())); }
+                if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 ui.add_space(8.0);
-                let files = self.draft_file_count(Some(&root));
-                let full = files >= uploads::MAX_ATTACHMENTS;
-                ui.horizontal(|ui| {
-                    if ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
-                        .inner.on_disabled_hover_text(if !attach { self.attach_unavailable_reason().to_owned() }
-                            else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
-                            else { "Attach files".to_owned() }).clicked() {
-                        self.pick_files(ui.ctx(), Some(root.clone()));
-                    }
-                    let draft = self.thread_drafts.entry(root.clone()).or_default();
-                    ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
-                });
-                // Keep Send on its own row so the broadcast label fits narrow threads.
+                // Reserve the fixed controls first. Long channel names wrap in
+                // the remaining space instead of pushing Send outside the panel.
                 let send = ui
-                    .horizontal(|ui| {
+                    .allocate_ui_with_layout(egui::vec2(ui.available_width(), send_height), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let draft = self.thread_drafts.entry(root.clone()).or_default();
                         let empty = draft.0.trim().is_empty() && files == 0;
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let send = primary_button(ui, "Send reply", !blocked && !loading && !empty).clicked();
+                            let send = send_icon_button_sized(ui, !blocked && !loading && !empty, "Send reply", 36.0).clicked();
                             let emoji = ui
-                                .add_enabled_ui(!loading, |ui| drawn_icon_button(ui, NavIcon::Smile, "Insert emoji"))
+                                .add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 36.0))
                                 .inner
                                 .clicked();
+                            ui.allocate_ui_with_layout(ui.available_size(), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.spacing_mut().icon_width = 16.0;
+                                ui.spacing_mut().icon_spacing = 7.0;
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
+                                ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
+                                ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
+                                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, RichText::new(&broadcast_label).size(11.52).color(MUTED)));
+                            });
                             (send, emoji)
-                        })
-                        .inner
                     })
                     .inner;
                 let (send, choose_emoji) = send;
@@ -12590,6 +12688,7 @@ impl CaperApp {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.add_space(8.0);
                 let rows: Vec<_> = self
                     .timeline
                     .messages()
@@ -12602,6 +12701,42 @@ impl CaperApp {
                     .collect();
                 if let Some(parent) = rows.iter().find(|message| message.id == root) {
                     self.messages_or_blocked(ui, &[parent]);
+                    ui.add_space(8.0);
+                    if let Some(summary) = &parent.thread
+                        && summary.reply_count > 0
+                    {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin {
+                                left: 18,
+                                right: 18,
+                                bottom: 12,
+                                top: 0,
+                            })
+                            .show(ui, |ui| {
+                                ui.spacing_mut().interact_size.y = 0.0;
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    let label = ui.label(
+                                        RichText::new(format!(
+                                            "{} {}",
+                                            summary.reply_count,
+                                            if summary.reply_count == 1 {
+                                                "reply"
+                                            } else {
+                                                "replies"
+                                            }
+                                        ))
+                                        .size(11.52)
+                                        .color(MUTED),
+                                    );
+                                    ui.painter().hline(
+                                        ui.available_rect_before_wrap().x_range(),
+                                        label.rect.center().y,
+                                        Stroke::new(1.0, BORDER),
+                                    );
+                                });
+                            });
+                    }
                 }
                 if let Some(error) = error {
                     ui.colored_label(ERROR, error);
@@ -12633,6 +12768,30 @@ impl CaperApp {
                     });
                 }
                 self.messages_or_blocked(ui, &replies);
+                // Pending replies belong in the scrolling history, not above
+                // the editor where a long send can push all controls offscreen.
+                if let Some(pending) = self
+                    .pending
+                    .clone()
+                    .filter(|pending| pending.thread_root_id.as_deref() == Some(&root))
+                {
+                    let arrival = self.arrival(ui.ctx(), &pending.id);
+                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+                        if let Some(reference) = &pending.reply_to {
+                            self.reply_context(ui, reference, &pending.id);
+                        }
+                        if let Some(session) = &self.session {
+                            message_row(ui, &session.author, "Now", None, false, 0.0, |ui| {
+                                if !pending.text.is_empty() {
+                                    ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
+                                }
+                            });
+                        } else if !pending.text.is_empty() {
+                            ui.label(&pending.text);
+                        }
+                        self.attachment_list(ui, &pending.attachments, true);
+                    });
+                }
                 if has_newer
                     && history_row(ui, |ui| {
                         centered_history_button(ui, "Load newer replies", !self.context_loading)
@@ -13162,7 +13321,7 @@ impl CaperApp {
                                     reply_connector(ui, source, ui.cursor().top() + 11.0, &pending.id);
                                 }
                             }
-                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, |ui| {
+                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, 0.0, |ui| {
                                 // File-only messages have no text row.
                                 if !pending.text.is_empty() {
                                     ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -13795,8 +13954,14 @@ impl CaperApp {
                     );
                 }
             }
-            let (timestamp, profile, body) =
-                message_row(ui, &message.author, &time, short.as_deref(), true, |ui| {
+            let (timestamp, profile, body) = message_row(
+                ui,
+                &message.author,
+                &time,
+                short.as_deref(),
+                true,
+                if can_react { action_width + 6.0 } else { 0.0 },
+                |ui| {
                     // Compact follow-ups have no header line for the hover
                     // actions to sit beside: keep their text clear of them
                     // instead of under them (web floats the first line).
@@ -13826,7 +13991,8 @@ impl CaperApp {
                         },
                         grouped && edited,
                     )
-                });
+                },
+            );
             if let Some(response) = profile {
                 self.open_author_card(&message.author, &response, true);
             }
@@ -14095,11 +14261,12 @@ impl CaperApp {
                             icon(&reply_message, false)
                         },
                     );
-                    if let Some(entry) = emoji::find("🙂") {
-                        self.reaction_textures
-                            .image(ui, entry, 14.0)
-                            .paint_at(ui, emoji_rect.shrink(5.0));
-                    }
+                    paint_icon(
+                        ui.painter(),
+                        emoji_rect.shrink(5.0),
+                        NavIcon::SmilePlus,
+                        icon(&emoji, picker_open),
+                    );
                     paint_icon(
                         ui.painter(),
                         more_rect.shrink(5.0),
@@ -14148,37 +14315,54 @@ impl CaperApp {
                     self.reaction_search_focus = true;
                 }
                 let active = message.pin.is_some();
-                egui::Popup::menu(&more).show(|ui| {
-                    // Web's quick reactions toggle your own; then the full picker.
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        for (emoji, mine) in quick_reactions(&reactions, author.as_deref()) {
-                            let Some(entry) = emoji::find(emoji) else {
-                                continue;
-                            };
-                            let image = self.reaction_textures.image(ui, entry, 20.0);
-                            if quick_reaction(ui, image, &format!("React with {emoji}"), mine)
+                egui::Popup::menu(&more)
+                    .align(egui::RectAlign::BOTTOM_END)
+                    .show(|ui| {
+                        ui.set_width(244.0);
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                        ui.spacing_mut().button_padding = egui::vec2(4.0, 4.0);
+                        ui.spacing_mut().interact_size.y = 32.0;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 30.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if drawn_icon_button_sized(
+                                    ui,
+                                    NavIcon::Close,
+                                    "Close message actions",
+                                    24.0,
+                                )
+                                .clicked()
+                                {
+                                    ui.close();
+                                }
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(bold("Message actions").size(12.48));
+                                    },
+                                );
+                            },
+                        );
+                        // Web's quick reactions toggle your own; then the full picker.
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for (emoji, mine) in quick_reactions(&reactions, author.as_deref()) {
+                                let Some(entry) = emoji::find(emoji) else {
+                                    continue;
+                                };
+                                let image = self.reaction_textures.image(ui, entry, 20.0);
+                                if quick_reaction(ui, image, &format!("React with {emoji}"), mine)
+                                    .clicked()
+                                {
+                                    self.set_reaction(&message.id, emoji, !mine);
+                                    ui.close();
+                                }
+                            }
+                            if drawn_icon_button_sized(ui, NavIcon::SmilePlus, "Add reaction", 32.0)
                                 .clicked()
                             {
-                                self.set_reaction(&message.id, emoji, !mine);
-                                ui.close();
-                            }
-                        }
-                        if let Some(entry) = emoji::find("🙂") {
-                            let image = self.reaction_textures.image(ui, entry, 16.0);
-                            let add = ui.add(
-                                egui::Button::image(image)
-                                    .min_size(egui::vec2(32.0, 32.0))
-                                    .frame(false),
-                            );
-                            add.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "Add reaction",
-                                )
-                            });
-                            if add.on_hover_text("Add reaction").clicked() {
                                 self.reaction_picker = Some(message.id.clone());
                                 self.composer_emoji = None;
                                 self.reaction_search.clear();
@@ -14186,70 +14370,96 @@ impl CaperApp {
                                 self.reaction_search_focus = true;
                                 ui.close();
                             }
-                        }
-                    });
-                    ui.separator();
-                    if ui
-                        .add_enabled(self.pending.is_none(), egui::Button::new("Reply"))
-                        .clicked()
-                    {
-                        self.select_reply(ui.ctx(), message, in_thread);
-                        ui.close();
-                    }
-                    if ui.button("Forward message").clicked()
-                        && let Some(token) = self.token.clone()
-                    {
-                        self.forwarding.picker(
-                            &self.worker,
-                            self.generation,
-                            token,
-                            message.clone(),
-                        );
-                        ui.close();
-                    }
-                    if self.can_edit(message) && ui.button("Edit message").clicked() {
-                        self.open_editor(message);
-                        ui.close();
-                    }
-                    if message.forward.is_none()
-                        && message.revision > 1
-                        && ui.button("View edit history").clicked()
-                    {
-                        self.open_edit_history(message);
-                        ui.close();
-                    }
-                    if !reactions.is_empty() && ui.button("View reactions").clicked() {
-                        self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
-                        ui.close();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.pending_pins.contains(&message.id),
-                            egui::Button::new(if active { "Unpin" } else { "Pin" }),
-                        )
-                        .clicked()
-                    {
-                        self.set_pin(message, !active);
-                        ui.close();
-                    }
-                    copy_items(ui, message);
-                    if let Some(account) = self.blockable_author(&message.author) {
-                        let name = if account.username.is_empty() {
-                            account.display_name.clone()
-                        } else {
-                            format!("@{}", account.username)
-                        };
-                        if self.is_blocked(&account.id) {
-                            if ui.button(format!("Unblock {name}")).clicked() {
-                                self.unblock(account);
-                                ui.close();
-                            }
-                        } else if ui.button(format!("Block {name}")).clicked() {
-                            self.confirm_block(account, None);
+                        });
+                        ui.add_space(8.0);
+                        if message_menu_item(ui, NavIcon::Reply, "Reply", self.pending.is_none())
+                            .clicked()
+                        {
+                            self.select_reply(ui.ctx(), message, in_thread);
                             ui.close();
                         }
-                    }
-                });
+                        if message_menu_item(ui, NavIcon::Forward, "Forward message", true)
+                            .clicked()
+                            && let Some(token) = self.token.clone()
+                        {
+                            self.forwarding.picker(
+                                &self.worker,
+                                self.generation,
+                                token,
+                                message.clone(),
+                            );
+                            ui.close();
+                        }
+                        if self.can_edit(message)
+                            && message_menu_item(ui, NavIcon::Pencil, "Edit message", true)
+                                .clicked()
+                        {
+                            self.open_editor(message);
+                            ui.close();
+                        }
+                        if message.forward.is_none()
+                            && message.revision > 1
+                            && message_menu_item(ui, NavIcon::History, "View edit history", true)
+                                .clicked()
+                        {
+                            self.open_edit_history(message);
+                            ui.close();
+                        }
+                        if !reactions.is_empty()
+                            && message_menu_item(ui, NavIcon::Users, "View reactions", true)
+                                .clicked()
+                        {
+                            self.reactors_view =
+                                Some((message.id.clone(), reactions[0].emoji.clone()));
+                            ui.close();
+                        }
+                        if message_menu_item(
+                            ui,
+                            if active {
+                                NavIcon::PinOff
+                            } else {
+                                NavIcon::Pin
+                            },
+                            if active { "Unpin" } else { "Pin" },
+                            !self.pending_pins.contains(&message.id),
+                        )
+                        .clicked()
+                        {
+                            self.set_pin(message, !active);
+                            ui.close();
+                        }
+                        copy_items(ui, message);
+                        if let Some(account) = self.blockable_author(&message.author) {
+                            let name = if account.username.is_empty() {
+                                account.display_name.clone()
+                            } else {
+                                format!("@{}", account.username)
+                            };
+                            if self.is_blocked(&account.id) {
+                                if message_menu_item(
+                                    ui,
+                                    NavIcon::Ban,
+                                    &format!("Unblock {name}"),
+                                    true,
+                                )
+                                .clicked()
+                                {
+                                    self.unblock(account);
+                                    ui.close();
+                                }
+                            } else if message_menu_item(
+                                ui,
+                                NavIcon::Ban,
+                                &format!("Block {name}"),
+                                true,
+                            )
+                            .clicked()
+                            {
+                                self.confirm_block(account, None);
+                                ui.close();
+                            }
+                        }
+                    });
             });
         }
         let controls = egui::Frame::new()
@@ -18984,8 +19194,17 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
 /// Web's composer Send: the eggshell primary action with the Send icon,
 /// neutral while unavailable.
 fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    send_icon_button_sized(ui, enabled, label, 28.0)
+}
+
+fn send_icon_button_sized(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    size: f32,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(28.0, 28.0),
+        egui::vec2(size, size),
         if enabled {
             egui::Sense::click()
         } else {
@@ -19000,11 +19219,12 @@ fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Resp
         } else {
             ACTION
         };
-        ui.painter().rect_filled(rect, 6.0, fill);
+        ui.painter()
+            .rect_filled(rect, if size > 28.0 { 8.0 } else { 6.0 }, fill);
     }
     paint_icon(
         ui.painter(),
-        rect.shrink(7.0),
+        rect.shrink(size / 4.0),
         NavIcon::Send,
         if enabled {
             ON_ACTION
@@ -19017,13 +19237,23 @@ fn send_icon_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Resp
 }
 
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    drawn_icon_button_sized(ui, icon, label, 28.0)
+}
+
+fn drawn_icon_button_sized(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    size: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     if response.hovered() || response.has_focus() {
-        ui.painter().rect_filled(rect, 6.0, RAISED);
+        ui.painter()
+            .rect_filled(rect, if size > 28.0 { 8.0 } else { 6.0 }, RAISED);
     }
     paint_icon(
         ui.painter(),
-        rect.shrink(5.0),
+        rect.shrink((size - if size > 28.0 { 20.0 } else { 18.0 }) / 2.0),
         icon,
         if response.hovered() { TEXT } else { MUTED },
     );
@@ -19528,6 +19758,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
     // These are the web client's Lucide vectors, not approximate glyphs.
     let source = match icon {
         NavIcon::Chevron => egui::include_image!("../resources/icons/chevron-down.svg"),
+        NavIcon::ArrowLeft => egui::include_image!("../resources/icons/arrow-left.svg"),
         NavIcon::ChevronRight => egui::include_image!("../resources/icons/chevron-right.svg"),
         NavIcon::ChevronLeft => egui::include_image!("../resources/icons/chevron-left.svg"),
         NavIcon::Pause => egui::include_image!("../resources/icons/pause.svg"),
@@ -19536,6 +19767,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Link => egui::include_image!("../resources/icons/link.svg"),
         NavIcon::Volume => egui::include_image!("../resources/icons/volume-2.svg"),
         NavIcon::Smile => egui::include_image!("../resources/icons/smile.svg"),
+        NavIcon::SmilePlus => egui::include_image!("../resources/icons/smile-plus.svg"),
         NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
         NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
@@ -19547,8 +19779,14 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
         NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
         NavIcon::Pin => egui::include_image!("../resources/icons/pin.svg"),
+        NavIcon::PinOff => egui::include_image!("../resources/icons/pin-off.svg"),
         NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
         NavIcon::Reply => egui::include_image!("../resources/icons/reply.svg"),
+        NavIcon::Forward => egui::include_image!("../resources/icons/forward.svg"),
+        NavIcon::Pencil => egui::include_image!("../resources/icons/pencil.svg"),
+        NavIcon::History => egui::include_image!("../resources/icons/history.svg"),
+        NavIcon::Copy => egui::include_image!("../resources/icons/copy.svg"),
+        NavIcon::Ban => egui::include_image!("../resources/icons/ban.svg"),
         NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
         NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
         NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),
@@ -20254,6 +20492,7 @@ fn message_row<R>(
     time: &str,
     grouped: Option<&str>,
     profile: bool,
+    header_inset: f32,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (Option<egui::Rect>, Option<egui::Response>, R) {
     let profile = profile && !author.is_guest;
@@ -20322,31 +20561,45 @@ fn message_row<R>(
                 }
                 ui.vertical(|ui| {
                     let timestamp = ui
-                        .horizontal_wrapped(|ui| {
-                            let name = ui.add(
-                                egui::Label::new(bold(&author.name).size(13.0)).sense(if profile {
-                                    egui::Sense::click()
-                                } else {
-                                    egui::Sense::hover()
-                                }),
-                            );
-                            if profile {
-                                if name.hovered() {
-                                    ui.painter().hline(
-                                        name.rect.x_range(),
-                                        name.rect.bottom(),
-                                        Stroke::new(1.0, TEXT),
-                                    );
+                        .scope(|ui| {
+                            // Text headers must not inherit the 36px button row
+                            // height; it pushes the body below the avatar.
+                            ui.spacing_mut().interact_size.y = 0.0;
+                            // Reserve the hover toolbar even while hidden, as
+                            // web does, so names/badges/times never sit under it.
+                            ui.set_max_width((ui.available_width() - header_inset).max(1.0));
+                            ui.horizontal_wrapped(|ui| {
+                                let name =
+                                    ui.add(egui::Label::new(bold(&author.name).size(13.0)).sense(
+                                        if profile {
+                                            egui::Sense::click()
+                                        } else {
+                                            egui::Sense::hover()
+                                        },
+                                    ));
+                                if profile {
+                                    if name.hovered() {
+                                        ui.painter().hline(
+                                            name.rect.x_range(),
+                                            name.rect.bottom(),
+                                            Stroke::new(1.0, TEXT),
+                                        );
+                                    }
+                                    profile_response(ui, name);
                                 }
-                                profile_response(ui, name);
-                            }
-                            if author.admin {
-                                admin_badge(ui);
-                            }
-                            if author.is_guest {
-                                ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
-                            }
-                            ui.label(RichText::new(time).size(10.0).color(MUTED)).rect
+                                if author.admin {
+                                    admin_badge(ui);
+                                }
+                                if author.is_guest {
+                                    ui.label(RichText::new("GUEST").size(9.0).color(MUTED));
+                                }
+                                ui.add(
+                                    egui::Label::new(RichText::new(time).size(10.0).color(MUTED))
+                                        .extend(),
+                                )
+                                .rect
+                            })
+                            .inner
                         })
                         .inner;
                     (Ok(timestamp), body(ui))
@@ -20885,13 +21138,63 @@ fn quick_reaction(
     response
 }
 
+/// The web message-action list's compact icon rows, independent of the
+/// application's larger default button padding and minimum control height.
+fn message_menu_item(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
+        ui.painter().rect_filled(
+            rect,
+            0.0,
+            if response.hovered() || response.has_focus() {
+                BORDER
+            } else {
+                RAISED
+            },
+        );
+        ui.painter()
+            .hline(rect.x_range(), rect.top(), Stroke::new(1.0, BORDER));
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            ),
+            icon,
+            TEXT,
+        );
+        let galley = truncated_galley(
+            ui,
+            label,
+            egui::FontId::proportional(12.48),
+            TEXT,
+            rect.width() - 40.0,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            TEXT,
+        );
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        response.on_hover_text(label)
+    })
+    .inner
+}
+
 /// Web's **Copy text** and **Copy message ID** menu items.
 fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
-    if ui.button("Copy text").clicked() {
+    if message_menu_item(ui, NavIcon::Copy, "Copy text", true).clicked() {
         ui.ctx().copy_text(message.content.text.clone());
         ui.close();
     }
-    if ui.button("Copy message ID").clicked() {
+    if message_menu_item(ui, NavIcon::Hash, "Copy message ID", true).clicked() {
         ui.ctx().copy_text(message.id.clone());
         ui.close();
     }
@@ -22501,10 +22804,132 @@ mod tests {
     }
 
     #[test]
+    fn thread_composer_keeps_text_and_actions_inside_narrow_panels() {
+        for (width, name) in [300.0, 340.0, 390.0, 480.0].into_iter().flat_map(|width| {
+            ["parity-thread", "parity-thread-attachments"].map(|name| (width, name))
+        }) {
+            let (context, mut app) = fixture(name);
+            context.enable_accesskit();
+            app.detail.as_mut().unwrap().channels[0].name = "long-channel-name-".repeat(3);
+            let root = app.thread_view.as_ref().unwrap().root.clone();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
+            // Resize a previously empty editor, not only an initially tall draft.
+            for (draft, sending) in [
+                (String::new(), false),
+                ("First line\nSecond line\nThird line".into(), false),
+                ("line\n".repeat(80), false),
+                (String::new(), false),
+                (String::new(), true),
+            ] {
+                app.thread_drafts.entry(root.clone()).or_default().0 = draft;
+                if sending {
+                    let mut pending =
+                        PendingSend::prepare(None, &"Pending line\n".repeat(80), vec![]);
+                    pending.thread_root_id = Some(root.clone());
+                    app.pending = Some(pending);
+                }
+                let mut frame = || {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                context,
+                                |ui| {
+                                    app.thread_panel(ui, false);
+                                },
+                            );
+                        },
+                    )
+                };
+                for _ in 0..3 {
+                    frame();
+                }
+                let output = frame();
+                let editor = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill == super::COMPOSER && rect.rect.width() > width - 50.0 =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("reply editor surface");
+                assert!(screen.contains_rect(editor), "reply editor stays onscreen");
+                assert!(
+                    editor.height() <= 280.0,
+                    "{width}: editor must scroll beyond 40% of the viewport: {editor:?}"
+                );
+                if !app.thread_drafts[&root].0.is_empty() {
+                    let text = output.shapes.iter().find(|shape| matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == app.thread_drafts[&root].0
+                    )).expect("draft text");
+                    assert!(
+                        text.clip_rect.top() >= editor.top() + 10.0
+                            && text.clip_rect.bottom() <= editor.bottom() - 10.0,
+                        "scrolling text must stay inside the padded editor: {:?}, {editor:?}",
+                        text.clip_rect
+                    );
+                }
+                if app.thread_drafts[&root].0.is_empty() {
+                    assert_eq!(
+                        editor.height(),
+                        80.0,
+                        "editor shrinks when the draft clears"
+                    );
+                }
+                let send = node_bounds(&output, "Send reply").expect("send control");
+                let emoji = node_bounds(&output, "Insert emoji").expect("emoji control");
+                let attach = node_bounds(&output, "Attach files").expect("attachment control");
+                assert!(
+                    editor.contains_rect(attach),
+                    "attach stays inside the editor"
+                );
+                let broadcast =
+                    node_bounds(&output, &format!("Also send to #{}", app.channel_name()))
+                        .expect("broadcast control");
+                for (name, rect) in [("send", send), ("emoji", emoji), ("broadcast", broadcast)] {
+                    assert!(
+                        screen.contains_rect(rect),
+                        "{width}: {name} outside panel: {rect:?}"
+                    );
+                }
+                assert!(
+                    broadcast.right() <= emoji.left() && emoji.right() <= send.left(),
+                    "{width}: controls overlap"
+                );
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && ["Reply to thread…", "First line\nSecond line\nThird line"]
+                            .contains(&text.galley.job.text.as_str())
+                    {
+                        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                        assert!(
+                            shape.clip_rect.contains_rect(rect),
+                            "{width}: reply text clipped: {rect:?} by {:?}",
+                            shape.clip_rect
+                        );
+                    }
+                }
+                assert!(
+                    send.top() > 350.0,
+                    "long drafts must leave room for replies"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn thread_and_channel_header_dividers_align_without_clipping_controls() {
         for width in [1200.0, 840.0, 390.0] {
             for name in ["general".to_owned(), "long-channel-name-".repeat(3)] {
                 let context = egui::Context::default();
+                context.enable_accesskit();
                 let mut app = CaperApp::new(
                     &context,
                     crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -22562,23 +22987,31 @@ mod tests {
                     if width > 760.0 { 2 } else { 1 },
                     "{width}: header borders must be at y=54"
                 );
-                for label in ["Thread", "Back to channel"] {
-                    let shape = output
-                        .shapes
-                        .iter()
-                        .find(|shape| {
-                            matches!(&shape.shape,
-                        egui::Shape::Text(text) if text.galley.job.text == label)
+                for label in [
+                    "Thread",
+                    if width > 760.0 {
+                        "Close thread"
+                    } else {
+                        "Back to channel"
+                    },
+                ] {
+                    let rect = node_bounds(&output, label)
+                        .or_else(|| {
+                            output.shapes.iter().find_map(|shape| match &shape.shape {
+                                egui::Shape::Text(text) if text.galley.job.text == label => {
+                                    let rect =
+                                        egui::Rect::from_min_size(text.pos, text.galley.size());
+                                    assert!(
+                                        shape.clip_rect.contains_rect(rect),
+                                        "{width}: {label} clipped"
+                                    );
+                                    Some(rect)
+                                }
+                                _ => None,
+                            })
                         })
-                        .unwrap();
-                    let egui::Shape::Text(text) = &shape.shape else {
-                        unreachable!()
-                    };
-                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                    assert!(
-                        screen.contains_rect(rect) && shape.clip_rect.contains_rect(rect),
-                        "{width}: {label} is clipped"
-                    );
+                        .unwrap_or_else(|| panic!("missing {label}"));
+                    assert!(screen.contains_rect(rect), "{width}: {label} is clipped");
                     assert!(
                         rect.bottom() < 54.0,
                         "{width}: {label} extends below its header"
