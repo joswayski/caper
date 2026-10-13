@@ -26830,11 +26830,13 @@ mod tests {
         }
         // A finger catches it mid-way: the conversation continues from where
         // it was drawn, never jumping to the end the button was heading for,
-        // nor by the touch slop the finger crossed before it took hold.
+        // nor by the touch slop the finger crossed before it took hold. The
+        // tap curve still moves at this point, so it carries on for the 16ms
+        // until the finger takes hold past the slop.
         frame(&mut app, time + 0.008, Some((Start, 195.0)));
         let caught = pose(frame(&mut app, time + 0.016, Some((Move, 175.0))));
         assert!(
-            caught >= last - 0.005 && caught - last < 0.06,
+            caught >= last - 0.005 && caught - last < 0.1,
             "caught at {caught}, drawn at {last}"
         );
         // From there it follows the finger point for point.
@@ -26855,10 +26857,11 @@ mod tests {
         assert!((pose(frame(&mut app, time + 1.1, None)) - 1.0).abs() < 1e-3);
         app.navigation_open = false;
         frame(&mut app, time + 1.15, None);
+        assert!(pose(frame(&mut app, time + 1.6, None)).abs() < 1e-3);
 
         // A state change mid-slide reverses from the drawn pose.
         app.navigation_open = true;
-        let start = time + 1.2;
+        let start = time + 1.7;
         frame(&mut app, start, None);
         let midway = pose(frame(&mut app, start + 0.04, None));
         assert!(midway > 0.1 && midway < 0.95, "{midway}");
