@@ -11821,8 +11821,23 @@ impl CaperApp {
         let (heading, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),54.0), egui::Sense::hover());
         // Level with the rows' avatars below (16px in).
         ui.painter().text(egui::pos2(heading.left()+16.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
+        // A thread can squeeze the channel toolbar; the list owns its close control.
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(heading.shrink2(egui::vec2(8.0, 0.0)))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                if drawn_icon_button(ui, NavIcon::Close, "Close member list").clicked() {
+                    if self.narrow_layout {
+                        self.narrow_members_visible = false;
+                    } else {
+                        self.members_visible = false;
+                    }
+                }
+            },
+        );
             if !demo {
-                ui.painter().text(egui::pos2(heading.right()-16.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
+                ui.painter().text(egui::pos2(heading.right()-52.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
             }
         ui.painter().hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
         ui.add_space(8.0);
@@ -25644,6 +25659,70 @@ mod tests {
             app.members_visible,
             "narrow toggle must preserve wide preference"
         );
+    }
+
+    #[test]
+    fn members_close_keeps_the_thread_and_other_layout_preferences() {
+        for width in [1440.0, 840.0, 390.0] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            let root = app.timeline.messages().next().unwrap().id.clone();
+            open_loaded_thread(&mut app, &root);
+            app.thread_drafts
+                .insert(root.clone(), ("Keep this reply".into(), false));
+            app.members_visible = true;
+            app.narrow_members_visible = true;
+            let frame = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 844.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame(&mut app, vec![]);
+            let output = frame(&mut app, vec![]);
+            let pos = labelled_center(&output, "Close member list")
+                .expect("members have their own close button with a thread open");
+            assert!((0.0..width).contains(&pos.x));
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert_eq!(
+                app.members_visible,
+                width <= 760.0,
+                "only the active layout closes"
+            );
+            assert_eq!(
+                app.narrow_members_visible,
+                width > 760.0,
+                "the other layout's preference stays intact"
+            );
+            assert_eq!(app.thread_view.as_ref().unwrap().root, root);
+            assert_eq!(app.thread_drafts[&root].0, "Keep this reply");
+        }
     }
 
     #[test]

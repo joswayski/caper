@@ -795,14 +795,14 @@ private struct WorkspaceView: View {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 showMembers(!membersVisible)
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model, close: { showMembers(false) }).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
                                             ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 showMembers(!membersVisible)
                                             }
-                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
+                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model, close: { showMembers(false) }).frame(width: 220).padding(.top, 50) }
                                         }
                                     }
                                 }
