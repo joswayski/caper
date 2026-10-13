@@ -29,6 +29,15 @@ real phone keyboard. Android compilation stops at the missing SDK; no Swift/Xcod
 toolchain is available here. Added iPhone scroll-dismiss/draft UI checks still need
 Xcode and native keyboard/device acceptance before release.
 
+The narrow iOS workspace sizes its sliding layers from the outer, keyboard-aware
+`GeometryReader`; those layers ignore additional keyboard safe-area adjustments.
+Container safe areas remain intact. The existing iPhone Browse test now refocuses
+after its vertical scroll and checks a keyboard-open swipe out/return, restored
+composer and timeline geometry, draft retention, cancelled-swipe editing, and
+keyboard reopening. This targets the reported gap after returning from Browse;
+Apple compilation, before/after rendering, channel/DM device checks and Reduce
+Motion acceptance remain unverified in the Linux orb.
+
 Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
 desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
 after whitespace or after an opening bracket activates suggestions; URLs, times,
