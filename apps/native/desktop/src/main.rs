@@ -126,7 +126,11 @@ struct NavigationTouch {
     /// settling drawer carries on from where it was drawn.
     base: f32,
     travel: f32,
+    /// How far the finger has moved toward the slide's end since it touched down.
     distance: f32,
+    /// `distance` when the slide took the drawer, past the touch slop: the
+    /// drawer follows from there instead of jumping by the slop.
+    grabbed: f32,
     /// Horizontal positions, one per frame: egui gives a frame's touch events
     /// its single time.
     samples: Vec<(f64, f32)>,
@@ -134,7 +138,7 @@ struct NavigationTouch {
 
 impl NavigationTouch {
     fn progress(&self) -> f32 {
-        let moved = self.distance / self.travel;
+        let moved = (self.distance - self.grabbed) / self.travel;
         if self.slide.is_some_and(NavigationSlide::open) {
             (self.base + moved).clamp(0.0, 1.0)
         } else {
@@ -8337,6 +8341,7 @@ impl CaperApp {
                         base: 0.0,
                         travel: 1.0,
                         distance: 0.0,
+                        grabbed: 0.0,
                         samples: vec![(now, pos.x)],
                     });
                 }
@@ -8412,6 +8417,7 @@ impl CaperApp {
                 } else {
                     (browse, screen.width() + 16.0)
                 };
+                touch.grabbed = delta.x * slide.direction();
             }
             let direction = touch.slide.unwrap().direction();
             touch.distance = delta.x * direction;
@@ -25713,9 +25719,12 @@ mod tests {
         assert!(!app.navigation_open);
         // The conversation follows a rightward finger from the middle.
         frame(&mut app, Some(Start), center, 0.016);
-        let moving = frame(&mut app, Some(Move), egui::pos2(290.0, 422.0), 0.016);
+        // Taking the drawer past the slop doesn't move it; then it follows 1:1.
+        let taken = frame(&mut app, Some(Move), egui::pos2(210.0, 422.0), 0.016);
+        assert!((node_center(&taken, "Browse").x - back.x).abs() < 1.0);
+        let moving = frame(&mut app, Some(Move), egui::pos2(305.0, 422.0), 0.016);
         assert!((node_center(&moving, "Browse").x - back.x - 95.0).abs() < 1.0);
-        frame(&mut app, Some(End), egui::pos2(320.0, 422.0), 0.016);
+        frame(&mut app, Some(End), egui::pos2(335.0, 422.0), 0.016);
         let browse = frame(&mut app, None, center, 0.5);
         assert!(app.navigation_open);
         assert!(node_center(&browse, "Close navigation").x < 390.0);
@@ -25880,19 +25889,26 @@ mod tests {
             last = next;
         }
         // A finger catches it mid-way: the conversation continues from where
-        // it was drawn, never jumping to the end the button was heading for.
+        // it was drawn, never jumping to the end the button was heading for,
+        // nor by the touch slop the finger crossed before it took hold.
         frame(&mut app, time + 0.008, Some((Start, 195.0)));
         let caught = pose(frame(&mut app, time + 0.016, Some((Move, 175.0))));
-        let expected = last - 20.0 / travel;
         assert!(
-            caught <= last && (caught - expected).abs() < 0.08,
+            caught >= last - 0.005 && caught - last < 0.06,
             "caught at {caught}, drawn at {last}"
         );
-        // Released held still, it settles back without jumping either.
-        let released = pose(frame(&mut app, time + 0.2, Some((End, 175.0))));
+        // From there it follows the finger point for point.
+        let followed = pose(frame(&mut app, time + 0.024, Some((Move, 155.0))));
+        let expected = caught - 20.0 / travel;
         assert!(
-            (released - caught).abs() < 0.02,
-            "{released} after {caught}"
+            (followed - expected).abs() < 0.005,
+            "followed to {followed}, expected {expected}"
+        );
+        // Released held still, it settles back without jumping either.
+        let released = pose(frame(&mut app, time + 0.2, Some((End, 155.0))));
+        assert!(
+            (released - followed).abs() < 0.02,
+            "{released} after {followed}"
         );
         frame(&mut app, time + 1.0, None);
         assert!(app.navigation_open, "still over half way, it stays open");

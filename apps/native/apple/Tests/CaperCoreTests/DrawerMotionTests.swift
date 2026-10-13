@@ -72,6 +72,74 @@ final class DrawerMotionTests: XCTestCase {
         XCTAssertTrue(settle.finished(at: start.addingTimeInterval(0.33)))
     }
 
+    private final class TestDrawer: SlideDrawer {
+        var drag: CGFloat?
+        var travel: CGFloat = 400
+        var settle: DrawerSettle?
+        var rest: CGFloat?
+        static let opening: CGFloat = 1
+    }
+
+    /// Where the drawer is drawn every 1/120 s of `seconds` from `start`.
+    private func frames(_ drawer: TestDrawer, rest: CGFloat, from start: Date, seconds: Double = 0.4) -> [CGFloat] {
+        stride(from: 0.0, through: seconds, by: 1.0 / 120).map {
+            drawer.position(rest: rest, fallback: .tap, reduceMotion: false, at: start.addingTimeInterval($0))
+        }
+    }
+
+    func testReleasedSwipeCarriesOnFromTheFingerAndNeverPassesItsRest() {
+        // Browse open, dragged 30% of the way closed, then released and switched.
+        let start = Date(timeIntervalSinceReferenceDate: 2000)
+        let drawer = TestDrawer()
+        XCTAssertEqual(drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start), 1)
+        drawer.drag = 0.7
+        XCTAssertEqual(drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start), 0.7)
+        let release = DrawerRelease(open: true, position: 0.7, velocity: -600, distance: -120, travel: drawer.travel)
+        XCTAssertTrue(release.commit)
+        drawer.settle = DrawerSettle(from: 0.7, to: release.target, start: start, timing: .release(release))
+        drawer.drag = nil
+        let drawn = frames(drawer, rest: release.target, from: start)
+        XCTAssertEqual(drawn.first ?? -1, 0.7, accuracy: 0.0001)
+        XCTAssertEqual(drawn.last ?? -1, 0, accuracy: 0.0001)
+        for (earlier, later) in zip(drawn, drawn.dropFirst()) {
+            XCTAssertLessThanOrEqual(later, earlier + 0.0001, "Only moves toward the conversation")
+        }
+        XCTAssertGreaterThanOrEqual(drawn.min() ?? -1, 0, "Never drawn past the conversation's rest, on Browse's side")
+    }
+
+    func testModelChangeSlidesFromWhereTheDrawerWas() {
+        let start = Date(timeIntervalSinceReferenceDate: 3000)
+        let drawer = TestDrawer()
+        _ = drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: start)
+        let drawn = frames(drawer, rest: 1, from: start)
+        XCTAssertEqual(drawn.first ?? -1, 0, accuracy: 0.0001, "Starts where it was rather than jumping to its new rest")
+        XCTAssertEqual(drawn.last ?? -1, 1, accuracy: 0.0001)
+        XCTAssertTrue(drawn.allSatisfy { (0...1).contains($0) })
+    }
+
+    func testModelChangeMidSlideTurnsAroundWhereItIsDrawn() {
+        let start = Date(timeIntervalSinceReferenceDate: 4000)
+        let drawer = TestDrawer()
+        _ = drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: start)
+        let midway = start.addingTimeInterval(0.1)
+        let opening = drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start)
+        XCTAssertEqual(opening, 0, accuracy: 0.0001)
+        let there = drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: midway)
+        XCTAssertGreaterThan(there, 0)
+        XCTAssertLessThan(there, 1)
+        // Sent back before it arrives: it turns around from there, not from 1.
+        XCTAssertEqual(drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: midway), there, accuracy: 0.0001)
+        XCTAssertEqual(drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: midway.addingTimeInterval(1)), 0)
+    }
+
+    func testReducedMotionGoesStraightToRest() {
+        let start = Date(timeIntervalSinceReferenceDate: 5000)
+        let drawer = TestDrawer()
+        _ = drawer.position(rest: 0, fallback: .tap, reduceMotion: true, at: start)
+        XCTAssertEqual(drawer.position(rest: 1, fallback: .tap, reduceMotion: true, at: start), 1)
+        XCTAssertNil(drawer.settle)
+    }
+
     @MainActor func testSwipeKeepsControlsOffThroughItsLift() {
         SwipeTapGuard.follow()
         XCTAssertTrue(SwipeTapGuard.swiping)
