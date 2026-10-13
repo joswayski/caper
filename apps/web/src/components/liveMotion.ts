@@ -1,12 +1,10 @@
 /**
  * Geometry and motion for the homepage's 3D window.
  *
- * The scene's layout box is always its *active* size, so the real app inside
- * lays out once for the size people use it at. At rest a transform shrinks and
- * tilts that box into the stage; opening it animates the transform to identity.
- * Wide screens open in place over the hero ("expand"); narrower screens open a
- * full-screen sheet. The controller writes CSS custom properties; React never
- * re-renders for motion.
+ * The illustration always uses a desktop-sized layout box. A transform shrinks
+ * and tilts it into the stage, beside the hero copy on wide screens and below
+ * the tagline on narrower screens. The controller writes CSS custom properties;
+ * React never re-renders for motion.
  */
 
 export type LiveMode = "expand" | "sheet";
@@ -54,9 +52,9 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
       dy: stageBox.height / 2 - (top + height / 2),
     };
   } else {
-    // The resting card keeps the viewport's width so the app inside already
-    // uses the same layout it will have full screen.
-    const width = viewportWidth;
+    // Show the desktop illustration on phones too. Scale the complete window
+    // into the stage instead of squeezing its sidebar and chat to phone width.
+    const width = Math.max(960, viewportWidth);
     const height = Math.round((width * stageBox.height) / stageBox.width);
     geometry = {
       width,

@@ -570,8 +570,8 @@
   }
 }
 
-/* Below the expand breakpoint (LiveWindow EXPAND_MIN_WIDTH) the window stacks
-   under the copy and opens as a full-screen sheet. */
+/* Below the desktop hero breakpoint, the scaled desktop illustration sits
+   below the tagline, with the rest of the copy following it. */
 @media (max-width: 1023px) {
   .latest-changes {
     padding-left: 0;
@@ -626,11 +626,6 @@
   .call-header {
     width: calc(100% - 24px);
   }
-  /* The stacked navigation still needs room for a complete forwarded message,
-     including at 320px with all six voice participants present. */
-  .hero .live-stage {
-    min-height: 700px;
-  }
 }
 
 @media (max-width: 640px) {
@@ -674,7 +669,6 @@
   }
   /* Leave room for the tilted card's projected edge and upward idle motion. */
   .hero .live-stage {
-    aspect-ratio: 0.8;
     margin-top: 40px;
     margin-inline: -8px;
     width: calc(100% + 16px);
