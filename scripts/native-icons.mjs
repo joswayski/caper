@@ -32,6 +32,21 @@ const apple = resolve("apps/native/apple/Resources/CaperIcons.xcassets");
 const info = { author: "xcode", version: 1 };
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const files = [[`${apple}/Contents.json`, json({ info })]];
+const desktopActions = {
+  forward: "Forward",
+  pencil: "Pencil",
+  history: "History",
+  copy: "Copy",
+  ban: "Ban",
+  "pin-off": "PinOff",
+  "smile-plus": "SmilePlus",
+};
+for (const [file, name] of Object.entries(desktopActions)) {
+  files.push([
+    `${output}/${file}.svg`,
+    `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 }))}\n`,
+  ]);
+}
 for (const [file, name] of Object.entries(names)) {
   const svg = `${renderToStaticMarkup(createElement(icons[name], { color: "#ffffff", size: 24 }))}\n`;
   const image = `${apple}/caper-${file}.imageset`;
@@ -59,5 +74,5 @@ for (const [file, content] of files) {
   }
 }
 console.log(
-  `${process.argv.includes("--check") ? "Verified" : "Exported"} ${Object.keys(names).length} web Lucide icons for Rust and Apple native clients.`,
+  `${process.argv.includes("--check") ? "Verified" : "Exported"} ${Object.keys(names).length} shared web Lucide icons and ${Object.keys(desktopActions).length} Rust desktop action icons.`,
 );
