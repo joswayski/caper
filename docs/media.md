@@ -7312,6 +7312,14 @@ or have its own thread. **Reply in thread** remains a separate action. Channel
 and thread composers support the same attachments. Replying does not implicitly
 mention or ping the source author.
 
+While composing, all clients show **Replying to [author]** followed by up to two
+lines of the original text above the input, including narrow/mobile layouts.
+The preview uses the complete local snapshot when available so a wide composer
+does not stop arbitrarily at 200 characters. Attachment-only messages show
+**Attachment**; blocked sources expose neither identity nor text. The X removes
+the reply target without clearing the text being written. This October 13
+composer refinement does not change the sent quote, source navigation or API.
+
 The quoted original sits in a separate neutral card, with clear spacing before
 the current reply and a visible **View original** affordance. Small shaded
 pewter cup sockets touch the left edges of the original and replying avatars,

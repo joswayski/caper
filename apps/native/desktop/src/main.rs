@@ -13557,24 +13557,65 @@ impl CaperApp {
 
     fn reply_draft(&mut self, ui: &mut egui::Ui, key: &str) {
         if let Some(reference) = self.reply_targets.get(key).cloned() {
-            ui.horizontal(|ui| {
-                let name = if self.is_blocked(&reference.author.id) {
-                    "Blocked message"
-                } else {
-                    &reference.author.name
-                };
-                ui.label(
-                    RichText::new(format!("Replying to {name}"))
-                        .size(12.0)
-                        .color(MUTED),
-                );
-                if ui
-                    .add(egui::Button::new("Cancel reply").min_size(egui::vec2(0.0, 44.0)))
-                    .clicked()
-                {
-                    self.reply_targets.remove(key);
-                }
-            });
+            let hidden = self.is_blocked(&reference.author.id);
+            let shown = egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 10,
+                    right: 8,
+                    top: 8,
+                    bottom: 8,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        let width =
+                            (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
+                        ui.vertical(|ui| {
+                            ui.set_width(width);
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            let name = if hidden {
+                                "blocked message"
+                            } else {
+                                &reference.author.name
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    bold(format!("Replying to {name}")).size(12.0).color(MUTED),
+                                )
+                                .truncate(),
+                            );
+                            if !hidden {
+                                let text =
+                                    reference.full_text.as_deref().unwrap_or(&reference.text);
+                                let text = if text.is_empty() {
+                                    if reference.has_attachments {
+                                        "Attachment"
+                                    } else {
+                                        "Message"
+                                    }
+                                } else {
+                                    text
+                                };
+                                let mut job = egui::text::LayoutJob::simple(
+                                    text.to_owned(),
+                                    egui::FontId::proportional(12.0),
+                                    MUTED,
+                                    width,
+                                );
+                                job.wrap.max_rows = 2;
+                                ui.add(egui::Label::new(job).show_tooltip_when_elided(false));
+                            }
+                        });
+                        if drawn_icon_button(ui, NavIcon::Close, "Cancel reply").clicked() {
+                            self.reply_targets.remove(key);
+                        }
+                    });
+                });
+            ui.painter().vline(
+                shown.response.rect.left() + 1.0,
+                shown.response.rect.y_range(),
+                Stroke::new(2.0, TERRACOTTA),
+            );
+            ui.add_space(6.0);
         }
     }
 

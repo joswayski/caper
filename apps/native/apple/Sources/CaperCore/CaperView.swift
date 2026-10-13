@@ -5781,12 +5781,22 @@ private struct NativeReplyDraft: View {
     let reference: MessageReply
     @Bindable var chat: ChatModel
     let root: String
+    private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
     var body: some View {
-        HStack {
-            Text("Replying to \(chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID ? "blocked message" : reference.author.name)")
-                .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-            Button("Cancel reply") { chat.replyTargets[root] = nil }.buttonStyle(.plain).frame(minHeight: 44)
-        }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+        HStack(alignment: .top, spacing: 7) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Replying to \(hidden ? "blocked message" : reference.author.name)")
+                    .fontWeight(.bold).lineLimit(1)
+                if !hidden {
+                    let text = reference.fullText ?? reference.text
+                    Text(text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            CardIconButton(systemImage: "xmark", label: "Cancel reply") { chat.replyTargets[root] = nil }
+        }.padding(.leading, 10).padding(.vertical, 8)
+            .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.terracotta).frame(width: 2) }
+            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
     }
 }
 
