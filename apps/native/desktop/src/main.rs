@@ -1038,6 +1038,11 @@ struct CaperApp {
     composer_emoji: Option<(EmojiTarget, emoji::Token)>,
     /// Where the composer's Emoji button was clicked; the picker opens above it.
     composer_emoji_anchor: Option<egui::Pos2>,
+    /// What the emoji picker shows (composer target, reaction message) and the
+    /// frame it first showed that, so the opening click is not an outside click.
+    emoji_picker_shown: Option<((Option<EmojiTarget>, String), u64)>,
+    /// The emoji picker's window this frame, for outside-click dismissal.
+    emoji_picker_rect: Option<egui::Rect>,
     /// The profile composer's Attach menu (Choose files / Paste) was open last frame.
     profile_attach_menu: bool,
     profile_send_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1306,6 +1311,8 @@ impl CaperApp {
             composer_emoji: None,
             profile_attach_menu: false,
             composer_emoji_anchor: None,
+            emoji_picker_shown: None,
+            emoji_picker_rect: None,
             profile_send_cancel: None,
             profile_navigation: None,
             thread_view: None,
@@ -7628,12 +7635,17 @@ impl eframe::App for CaperApp {
                     .any(|key| input.key_pressed(key))
             });
         self.settings_menu_dialog = from_settings_menu;
-        let messages = self
-            .timeline
-            .messages()
-            .chain(self.timeline.pinned_messages())
-            .cloned()
-            .collect::<Vec<_>>();
+        // Only an open forward looks messages up: don't copy the whole
+        // timeline every frame otherwise.
+        let messages = if self.forwarding.is_open() {
+            self.timeline
+                .messages()
+                .chain(self.timeline.pinned_messages())
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         self.forwarding.show(
             context,
             &self.worker,
@@ -7697,6 +7709,7 @@ impl CaperApp {
             self.pins_dialog(context);
             self.dialogs(context, dialog_was_open);
             self.message_edit_dialogs(context);
+            self.dismiss_emoji_picker_outside(context);
         }
         if self.account.is_some() {
             self.space_notice(context);
@@ -9063,10 +9076,15 @@ impl CaperApp {
                         } else {
                             TERRACOTTA_BRIGHT.gamma_multiply(0.45)
                         };
+                        // At the limit it only explains itself: no hover fill.
                         ui.painter().rect_filled(
                             rect,
                             12.0,
-                            if add.hovered() { RAISED } else { SURFACE },
+                            if add_enabled && add.hovered() {
+                                RAISED
+                            } else {
+                                SURFACE
+                            },
                         );
                         let inset = rect.shrink(0.5);
                         let corners = [
@@ -12319,8 +12337,10 @@ impl CaperApp {
             self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
-        // Pins draws these above its overlay instead.
+        // Pins draws these above its overlay instead. The picker too: drawn
+        // by both panes, its focused search field read each keystroke twice.
         if !self.showing_pins {
+            self.emoji_picker(ui.ctx());
             self.mention_card(ui.ctx());
             self.reactors_window(ui.ctx());
         }
@@ -12630,7 +12650,6 @@ impl CaperApp {
                     self.open_thread(root.clone());
                 }
             });
-        self.emoji_picker(ui.ctx());
         self.file_drop_overlay(ui.ctx(), drop_area, Some(&root));
     }
 
@@ -13196,7 +13215,6 @@ impl CaperApp {
                     }
                 });
             self.file_drop_overlay(ui.ctx(), conversation, None);
-            self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
     }
@@ -13982,7 +14000,11 @@ impl CaperApp {
                         let Some(button) = button else {
                             continue;
                         };
-                        let lit = open || button.hovered() || button.has_focus();
+                        // Reply while a send is pending only senses hover:
+                        // like web's `:hover:not(:disabled)`, it stays unlit.
+                        let lit = open
+                            || (button.sense.senses_click() && button.hovered())
+                            || button.has_focus();
                         ui.painter().rect(
                             button.rect,
                             8.0,
@@ -15463,12 +15485,22 @@ impl CaperApp {
             .clone()
             .or_else(|| target.as_ref().map(|_| String::new()))
         else {
+            self.emoji_picker_shown = None;
+            self.emoji_picker_rect = None;
             return;
         };
         let profile = target.is_some();
         if !profile && (!self.selected_is_joined() || self.session.is_none()) {
             self.reaction_picker = None;
             return;
+        }
+        let shown_key = (target.clone(), message.clone());
+        if self
+            .emoji_picker_shown
+            .as_ref()
+            .is_none_or(|(shown, _)| *shown != shown_key)
+        {
+            self.emoji_picker_shown = Some((shown_key, context.cumulative_frame_nr()));
         }
         let mut open = true;
         // Consumed, so Pins or the thread behind the picker stays open.
@@ -15487,7 +15519,7 @@ impl CaperApp {
                 .pivot(egui::Align2::RIGHT_BOTTOM)
                 .fixed_pos(anchor + egui::vec2(14.0, -18.0));
         }
-        window
+        let shown = window
             // Above the Pins overlay, as its sublayer, when opened from a pin.
             .order(if profile || self.showing_pins {
                 egui::Order::Foreground
@@ -15626,6 +15658,7 @@ impl CaperApp {
                         }
                     });
             });
+        self.emoji_picker_rect = shown.map(|shown| shown.response.rect);
         if let Some(emoji) = selected {
             match &target {
                 Some(target) => self.insert_composer_emoji(context, target, &emoji),
@@ -15634,16 +15667,52 @@ impl CaperApp {
             close_requested = true;
         }
         if !open || close_requested {
-            if let Some(target) = self.composer_emoji.take().map(|(target, _)| target) {
-                if let EmojiTarget::Profile(_) = target
-                    && let Some(card) = &mut self.mention_card
-                {
-                    card.fresh = true;
-                }
-                context.memory_mut(|memory| memory.request_focus(target.editor()));
-            } else {
-                self.reaction_picker = None;
+            self.close_emoji_picker(context, true);
+        }
+    }
+
+    /// Closes the emoji picker; a composer's picker can return its focus.
+    fn close_emoji_picker(&mut self, context: &egui::Context, refocus: bool) {
+        self.emoji_picker_shown = None;
+        self.emoji_picker_rect = None;
+        if let Some(target) = self.composer_emoji.take().map(|(target, _)| target) {
+            if let EmojiTarget::Profile(_) = target
+                && let Some(card) = &mut self.mention_card
+            {
+                card.fresh = true;
             }
+            if refocus {
+                context.memory_mut(|memory| memory.request_focus(target.editor()));
+            }
+        } else {
+            self.reaction_picker = None;
+        }
+    }
+
+    /// As on web, a click outside the emoji picker closes only the picker
+    /// (not the card, Pins or thread under it) and leaves focus where the
+    /// click put it. The click that opened or retargeted it is not outside.
+    /// Runs once, after every surface that can draw the picker.
+    fn dismiss_emoji_picker_outside(&mut self, context: &egui::Context) {
+        if self.reaction_picker.is_none() && self.composer_emoji.is_none() {
+            return;
+        }
+        let (Some((_, opened)), Some(rect)) = (&self.emoji_picker_shown, self.emoji_picker_rect)
+        else {
+            return;
+        };
+        if *opened == context.cumulative_frame_nr() {
+            return;
+        }
+        let outside = context.input(|input| {
+            input.pointer.any_click()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !rect.contains(position))
+        });
+        if outside {
+            self.close_emoji_picker(context, false);
         }
     }
 
@@ -15654,6 +15723,15 @@ impl CaperApp {
         output: &egui::text_edit::TextEditOutput,
         text: &str,
     ) {
+        // Its Emoji button toggles the picker, as on web.
+        if self
+            .composer_emoji
+            .as_ref()
+            .is_some_and(|(open, _)| *open == target)
+        {
+            self.close_emoji_picker(&output.response.ctx, true);
+            return;
+        }
         let selection = output.state.cursor.char_range().map_or_else(
             || {
                 let caret = text.chars().count();
@@ -17966,8 +18044,14 @@ impl CaperApp {
             .invite_links
             .copied
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < COPIED_FOR)
-            .map(|(code, at)| (code.clone(), COPIED_FOR - at.elapsed()));
+            // One reading: two could straddle the deadline, and a negative
+            // `Duration` panics.
+            .and_then(|(code, at)| {
+                COPIED_FOR
+                    .checked_sub(at.elapsed())
+                    .filter(|remaining| !remaining.is_zero())
+                    .map(|remaining| (code.clone(), remaining))
+            });
         if let Some((_, remaining)) = &copied {
             ui.ctx().request_repaint_after(*remaining);
         }
@@ -21878,10 +21962,12 @@ fn grouped(count: usize) -> String {
 fn typing_dots(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::hover());
     let time = ui.input(|input| input.time);
+    // As on web, reduced motion keeps the dots still (and idle).
+    let still = motion::reduced();
     for index in 0..3 {
         let phase = ((time - index as f64 * 0.15).rem_euclid(1.2) / 1.2) as f32;
         // Keyframes: rest at 0%/60%/100%, peak at 30%, eased in and out.
-        let lift = if phase < 0.6 {
+        let lift = if !still && phase < 0.6 {
             let t = if phase < 0.3 {
                 phase / 0.3
             } else {
@@ -21898,7 +21984,10 @@ fn typing_dots(ui: &mut egui::Ui) {
         ui.painter()
             .circle_filled(center, 2.0, MUTED.gamma_multiply(0.45 + 0.55 * lift));
     }
-    ui.ctx().request_repaint();
+    if !still {
+        // A 3px bounce needs no more than the join glow's frame rate.
+        ui.ctx().request_repaint_after(Duration::from_millis(33));
+    }
 }
 
 /// Web's narrow `.navigation-toggle`: a bordered icon + label button.
@@ -28724,6 +28813,25 @@ mod tests {
     }
 
     #[test]
+    fn emoji_search_beside_a_thread_reads_each_keystroke_once() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        app.reaction_picker = Some(root.clone());
+        app.reaction_search_focus = true;
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![egui::Event::Text("ok".into())]);
+        assert_eq!(app.reaction_search, "ok");
+    }
+
+    #[test]
     fn thread_composer_suggests_emoji_and_mentions_with_its_own_state() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -29072,6 +29180,66 @@ mod tests {
         render(&mut app, &context, press(egui::Key::Escape));
         assert!(app.reaction_picker.is_none());
         assert!(app.showing_pins, "Escape closes the picker first");
+
+        // As on web, a click outside closes only the picker, not Pins.
+        app.reaction_picker = Some(message.id.clone());
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let picker = app.emoji_picker_rect.expect("picker drawn");
+        // Its title row: the grid's emoji would react and close it.
+        click(
+            &mut app,
+            &context,
+            picker.left_top() + egui::vec2(16.0, 14.0),
+        );
+        assert!(app.reaction_picker.is_some(), "clicks inside keep it open");
+        // Inside Pins (its title row or footer), outside the picker.
+        let pins = context
+            .memory(|memory| memory.area_rect(egui::Id::new("pinned-messages")))
+            .expect("Pins drawn");
+        let outside = [
+            pins.left_top() + egui::vec2(30.0, 30.0),
+            pins.left_bottom() + egui::vec2(30.0, -12.0),
+        ]
+        .into_iter()
+        .find(|position| !picker.contains(*position))
+        .expect("a point in Pins outside the picker");
+        click(&mut app, &context, outside);
+        assert!(
+            app.reaction_picker.is_none(),
+            "a click outside closes the picker"
+        );
+        assert!(app.showing_pins, "and leaves Pins open");
+    }
+
+    #[test]
+    fn composer_emoji_button_toggles_its_picker_and_returns_focus() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let button = labelled_center(&output, "Insert emoji").expect("Emoji button");
+        click(&mut app, &context, button);
+        assert!(matches!(
+            app.composer_emoji,
+            Some((crate::EmojiTarget::Channel, _))
+        ));
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, button);
+        assert!(
+            app.composer_emoji.is_none(),
+            "a second click closes the picker"
+        );
+        render(&mut app, &context, vec![]);
+        assert!(
+            context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))),
+            "focus returns to the composer"
+        );
     }
 
     #[test]
