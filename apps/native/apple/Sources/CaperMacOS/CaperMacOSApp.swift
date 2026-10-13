@@ -22,7 +22,9 @@ struct CaperMacOSApp: App {
             }
         }
         Settings {
-            CaperSettingsView(whatsNew: whatsNew)
+            if let whatsNew {
+                CaperSettingsView(whatsNew: whatsNew)
+            }
         }
     }
 }

@@ -159,11 +159,14 @@ struct WhatsNewDisplay: Identifiable {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
             }
-            HStack { Spacer(); Button(display.automatic ? "Got it" : "Done", action: close) }.padding(22)
+            HStack {
+                Spacer()
+                Button(display.automatic ? "Got it" : "Done", action: close).buttonStyle(CaperPrimaryButton())
+            }.padding(22)
         }
         .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.text)
         .background(CaperTheme.surface).preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
-        .buttonStyle(.bordered).accessibilityIdentifier("whats-new")
+        .buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("whats-new")
         .onChange(of: notes.presentation?.sequence, initial: true) { _, _ in
             if display.releases == nil, let loaded = notes.presentation, loaded.id == display.id {
                 display = loaded

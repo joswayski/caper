@@ -43,9 +43,34 @@
   padding: 14px 20px;
   border-top: 1px solid var(--border);
 }
-.whats-new-footer .primary {
+.whats-new-footer .primary,
+.whats-new-dialog .secondary {
   min-height: 40px;
   padding: 8px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface-raised);
+  font-weight: 700;
+  cursor: pointer;
+}
+.whats-new-footer .primary {
+  border-color: var(--action);
+  color: var(--on-action);
+  background: var(--action);
+}
+@media (hover: hover) {
+  .whats-new-footer .primary:hover {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
+  .whats-new-dialog .secondary:hover:not(:disabled) {
+    background: var(--border);
+  }
+}
+.whats-new-footer .primary:active {
+  border-color: var(--action-press);
+  background: var(--action-press);
 }
 .whats-new-history {
   margin-right: auto;

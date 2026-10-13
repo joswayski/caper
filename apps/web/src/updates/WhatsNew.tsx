@@ -146,7 +146,13 @@ export default function WhatsNew({
     return () => {
       element.close();
       if (opener?.isConnected && opener !== document.body) opener.focus();
-      else document.querySelector<HTMLElement>('button[aria-label="User Settings"]')?.focus();
+      else {
+        const settings = document.querySelector<HTMLElement>('button[aria-label="User Settings"]');
+        (settings?.getClientRects().length
+          ? settings
+          : document.querySelector<HTMLElement>('button[aria-label="Back to Browse"]')
+        )?.focus();
+      }
     };
   }, [open]);
 
