@@ -109,7 +109,7 @@ import kotlinx.coroutines.launch
         else {
             val invite = !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
             if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                enabled = idle, shape = MaterialTheme.shapes.small) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                enabled = idle, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
             if (invite && choosingSpace && card.username != null && viewModel != null) Column(
                 Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -122,7 +122,7 @@ import kotlinx.coroutines.launch
                             status = "Invitation sent to ${space.name}."
                         }, { already -> invited = invited + (space.id to already) }, { pending = null; error = it })
                     }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = idle && space.id !in invited,
-                        shape = MaterialTheme.shapes.small) { Text(if (pending == space.id) "Sending…" else space.name + (invited[space.id]?.let { " · $it" } ?: "")) }
+                        shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text(if (pending == space.id) "Sending…" else space.name + (invited[space.id]?.let { " · $it" } ?: "")) }
                 }
             }
             status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }

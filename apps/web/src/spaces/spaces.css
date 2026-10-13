@@ -983,7 +983,7 @@
 @media (hover: hover) {
   .member-list-toggle:hover:not([aria-expanded="true"]) {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-hover);
   }
 }
 .member-list-toggle:focus-visible {

@@ -22,6 +22,8 @@ internal object EmojiArtwork {
     private val pages = LruCache<Int, Bitmap>(4)
     private var catalog: List<EmojiEntry>? = null
     private var names: Map<String, String>? = null
+    /** The catalog by ID, built once; the first entry wins, as a scan would find it. */
+    private var entries: Map<String, EmojiEntry>? = null
 
     fun catalog(context: Context): List<EmojiEntry> = synchronized(this) {
         catalog ?: context.assets.open("catalog.json").bufferedReader().use {
@@ -44,7 +46,10 @@ internal object EmojiArtwork {
     fun bitmap(context: Context, emoji: String): Bitmap? {
         val id = id(emoji)
         crops.get(id)?.let { return it }
-        val entry = catalog(context).firstOrNull { it.id == id } ?: return null
+        val index = synchronized(this) {
+            entries ?: HashMap<String, EmojiEntry>().apply { catalog(context).forEach { putIfAbsent(it.id, it) } }.also { entries = it }
+        }
+        val entry = index[id] ?: return null
         val sheet = pages.get(entry.sheet) ?: context.assets.open("sheet-${entry.sheet}.png").use {
             BitmapFactory.decodeStream(it)
         }.also { pages.put(entry.sheet, it) }

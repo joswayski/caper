@@ -131,3 +131,12 @@ val TabularNumbers: TextStyle
 @Composable fun primaryButtonColors(): ButtonColors = ButtonDefaults.buttonColors(
     containerColor = Action, contentColor = OnAction, disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
 )
+
+/**
+ * Secondary and dismissive actions (Cancel, Close, Decline, Reset, Back): neutral labels, as on web.
+ * Material's text and outlined buttons otherwise take theme `primary`, which stays terracotta.
+ */
+@Composable fun neutralTextButtonColors(contentColor: Color = Text): ButtonColors = ButtonDefaults.textButtonColors(contentColor = contentColor)
+
+/** [neutralTextButtonColors] for bordered secondary actions. */
+@Composable fun neutralOutlinedButtonColors(): ButtonColors = ButtonDefaults.outlinedButtonColors(contentColor = Text)

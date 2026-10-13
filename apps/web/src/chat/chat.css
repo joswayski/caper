@@ -234,7 +234,7 @@
 @media (hover: hover) {
   .chat-pins-toggle:hover {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-hover);
   }
 }
 .chat-pins-toggle:focus-visible {
@@ -283,8 +283,11 @@
   display: grid;
   gap: 6px;
 }
-.chat-heading-alerts > .chat-refresh-error {
+.chat-heading-alerts > :is(.chat-refresh-error, .chat-offline) {
   position: static;
+}
+.chat-heading-alerts > .chat-offline {
+  justify-self: end;
 }
 .chat-refresh-error button {
   border: 0;
@@ -366,7 +369,12 @@
   flex-direction: column;
   background: var(--surface-conversation);
 }
-.chat-initial-rows {
+/* A short history sits at the bottom with its header directly above the first
+   message, the same as the native clients, rather than leaving the header
+   stranded at the top of the pane. Virtuoso lays out its viewport as a column
+   when aligned to the bottom; MessageList drops the list's own auto margin. */
+.chat-initial-messages > .chat-history,
+.chat-scroller [data-viewport-type] > :has(> .chat-history) {
   margin-top: auto;
 }
 .chat-scroller {
@@ -742,6 +750,10 @@
   }
 }
 @media (hover: hover) {
+  .chat-reply-draft button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
   .chat-message:hover {
     background: rgb(255 255 255 / 2%);
   }
@@ -1275,9 +1287,19 @@
   place-items: center;
   padding: 0;
   border: 0;
+  border-radius: 6px;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
+}
+@media (hover: hover) {
+  .chat-emoji-search button:hover {
+    color: var(--text);
+  }
+}
+.chat-emoji-search button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-emoji-category-label {
   padding: 0 12px 8px;
@@ -2222,6 +2244,22 @@
 .chat-profile-composer form textarea {
   max-height: 160px;
   padding-right: 84px;
+}
+.chat-composer-send-touch {
+  display: none;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-composer-send-touch {
+    display: grid;
+  }
+  .chat-composer form textarea {
+    padding-right: 84px;
+  }
+}
+@media (pointer: coarse) {
+  .chat-composer form textarea {
+    padding-right: 92px;
+  }
 }
 .chat-mention-input {
   position: relative;
@@ -3941,6 +3979,12 @@ a.chat-draft-preview:focus-visible strong {
   font-weight: 700;
   white-space: nowrap;
 }
+/* Long names end in an ellipsis and keep the chevron visible. */
+.chat-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .chat-title-name > svg {
   flex: none;
   color: var(--text-muted);
@@ -3996,6 +4040,19 @@ a.chat-draft-preview:focus-visible strong {
   color: var(--text-muted);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+}
+/* The same pressed and focused feedback as the other menus. */
+.chat-header-menu button:active {
+  background: var(--surface-hover);
+}
+@media (hover: hover) {
+  .chat-header-menu button:hover {
+    background: var(--surface-hover);
+  }
+}
+.chat-header-menu button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 @media (max-width: 760px) {
   .chat-title-menu {

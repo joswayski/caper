@@ -322,7 +322,7 @@ private const val MAX_RECORDING_SECONDS = 30
         VolumeRow("Speaker volume", outputVolume)
         Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) },
             modifier = Modifier.semantics { contentDescription = "Test speaker volume" }, valueRange = 0f..200f)
-        OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small,
+        OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(),
             modifier = Modifier.semantics { stateDescription = if (speakerPlaying) "On" else "Off" }) {
             Text(if (speakerPlaying) "Stop speaker test" else "Test speakers")
         }
@@ -412,7 +412,7 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             val json = detailsJson.encodeToString(JsonObject.serializer(), buildJsonObject { rows.forEach { (label, value) -> put(label, value) } })
             copyStatus = try { clipboard.setText(AnnotatedString(json)); "Copied diagnostics" } catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small) { Text("Copy diagnostics") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy diagnostics") }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     } else Text("No microphone capture started. Open Mic Test or join voice first.", color = TextMuted, fontSize = 12.sp)
 }
@@ -432,7 +432,7 @@ private const val MAX_RECORDING_SECONDS = 30
         OutlinedButton({
             copyStatus = try { clipboard.setText(AnnotatedString(connectionDetailsJson(diagnostics))); "Copied connection details" }
             catch (_: Throwable) { "Copy failed; try again." }
-        }, shape = MaterialTheme.shapes.small) { Text("Copy connection details") }
+        }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Copy connection details") }
         if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
     }
 }

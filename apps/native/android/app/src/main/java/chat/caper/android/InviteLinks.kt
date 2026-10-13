@@ -124,7 +124,7 @@ import kotlinx.coroutines.delay
                     Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(inviteLinkMeta(link, now), color = TextMuted, fontSize = 10.sp)
                 }
-                TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, shape = MaterialTheme.shapes.small) {
+                TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
                     PendingLabel("Copy", "Copied", copied == link.code)
                 }
                 TextButton({ error = null; revoking = link.code; viewModel.revokeInviteLink(link) { error = it } }, enabled = !state.busy,
@@ -221,7 +221,7 @@ import kotlinx.coroutines.delay
                 keyboardActions = KeyboardActions(onGo = { if (!checking && input.isNotBlank()) submit() }))
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(close, enabled = !checking, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+                TextButton(close, enabled = !checking, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
                 Button({ submit() }, enabled = !checking && input.isNotBlank(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Continue", "Checking…", checking) }
             }
         } else {
@@ -240,7 +240,7 @@ import kotlinx.coroutines.delay
             }
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+                TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
                 Button({ error = null; viewModel.joinInvite(shownCode, close) { error = it } }, enabled = !busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                     PendingLabel(if (shown.alreadyMember) "Open space" else "Join space", if (shown.alreadyMember) "Opening…" else "Joining…", busy)
                 }

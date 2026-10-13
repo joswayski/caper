@@ -274,7 +274,7 @@ export default function MessageActions({
           </div>
         ) : (
           <div className="chat-reaction-picker-body">
-            <ReactionPicker onSelect={(emoji) => react(emoji, true)} />
+            <ReactionPicker autoFocus={!target.drawer} onSelect={(emoji) => react(emoji, true)} />
           </div>
         )}
       </div>

@@ -82,6 +82,7 @@ function ForwardDialog({
   anchor,
   busy = false,
   onClose,
+  busy = false,
   children,
 }: {
   title: string;
@@ -89,6 +90,8 @@ function ForwardDialog({
   /** While forwarding, closing would silently drop the remaining destinations. */
   busy?: boolean;
   onClose: () => void;
+  /** While forwards are in flight, an outside press or Escape must not drop the rest. */
+  busy?: boolean;
   children: ReactNode;
 }) {
   const returnFocus = useRef(anchor);

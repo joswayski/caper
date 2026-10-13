@@ -1437,6 +1437,7 @@ function InvitationDialog({
     <Dialog
       title="You’re invited!"
       titleIcon={<img src="/images/invitation/1f4e8.png" width={32} height={32} alt="" />}
+      dismissOnBackdrop
       onClose={() => {
         if (!submitting.current) onClose();
       }}
@@ -1573,6 +1574,7 @@ function ChannelInvitationDialog({
   return (
     <Dialog
       title="Private channel invitation"
+      dismissOnBackdrop
       onClose={() => {
         if (!submitting.current) onClose();
       }}
@@ -1910,19 +1912,33 @@ export default function Spaces({
   const [channelsExpanded, setChannelsExpanded] = useState(true);
 
   useEffect(() => {
-    const dismiss = (event: PointerEvent) => {
-      // Every menu, including DM rows and the phone channel title: Safari does not
-      // focus a tapped <summary>, so onBlur alone never closes them on an outside tap.
-      for (const menu of [
+    const openMenus = () =>
+      [
         spaceMenu.current,
         channelMenu.current,
         ...document.querySelectorAll<HTMLDetailsElement>(".channel-menu[open], .chat-title-menu[open]"),
-      ]) {
-        if (menu && !menu.contains(event.target as Node)) menu.open = false;
-      }
+      ].filter((menu): menu is HTMLDetailsElement => !!menu?.open);
+    const dismiss = (event: PointerEvent) => {
+      // Every menu, including DM rows outside the channel list and the phone
+      // conversation title: Safari does not focus a tapped <summary>, so onBlur
+      // alone never closes them on an outside tap.
+      for (const menu of openMenus()) if (!menu.contains(event.target as Node)) menu.open = false;
+    };
+    // Safari and Firefox on macOS do not focus a clicked <summary> either, so
+    // the menus' own Escape handlers never see the key after a mouse open.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const menus = openMenus();
+      if (!menus.length) return;
+      event.preventDefault();
+      for (const menu of menus) closeMenu(menu);
     };
     document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
   }, []);
 
   const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string, visit?: VisitTarget) => {

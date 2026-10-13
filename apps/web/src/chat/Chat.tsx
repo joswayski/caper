@@ -107,7 +107,14 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
   useLayoutEffect(() => {
     if (Array.isArray(children) && children.length && props.style?.visibility !== "hidden") context?.onListReady?.();
   }, [children, props.style?.visibility, context?.onListReady]);
-  return <div {...props}>{children}</div>;
+  // Bottom-aligned short histories keep the history header directly above the
+  // first message (see .chat-scroller in chat.css), not at the top of the pane.
+  const style = props.style?.marginTop === "auto" ? { ...props.style, marginTop: 0 } : props.style;
+  return (
+    <div {...props} style={style}>
+      {children}
+    </div>
+  );
 }
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
@@ -1664,6 +1671,12 @@ export default function Chat({
     />
   );
 
+  const headingAlerts = (state.phase === "ready" && !!state.error) || !!pinError;
+  const offlineStatus = (
+    <span className="chat-offline" role="status">
+      {state.phase === "error" ? "Offline" : "Connecting…"}
+    </span>
+  );
   return (
     <div className="chat-layout" data-thread-open={!!state.thread}>
       <section
@@ -1706,8 +1719,12 @@ export default function Chat({
             <details
               className="chat-title-menu"
               onClick={(event) => {
-                // Choosing an item closes the menu.
-                if ((event.target as HTMLElement).closest(".chat-header-menu button")) event.currentTarget.open = false;
+                // Choosing an item closes the menu. Focus its visible summary first, so a
+                // dialog opened from the item (Pins) returns focus there, not to the hidden item.
+                if ((event.target as HTMLElement).closest(".chat-header-menu button")) {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape" && event.currentTarget.open) {
@@ -1743,13 +1760,11 @@ export default function Chat({
           {pinsToggle}
           {headerActions}
 
-          {!state.online && showConnectionStatus && (
-            <span className="chat-offline" role="status">
-              {state.phase === "error" ? "Offline" : "Connecting…"}
-            </span>
-          )}
-          {((state.phase === "ready" && state.error) || pinError) && (
+          {!state.online && showConnectionStatus && !headingAlerts && offlineStatus}
+          {headingAlerts && (
             <div className="chat-heading-alerts">
+              {/* Stacked with the alerts rather than drawn underneath them. */}
+              {!state.online && showConnectionStatus && offlineStatus}
               {state.phase === "ready" && state.error && (
                 <div className="chat-refresh-error" role="alert">
                   {state.error}{" "}
@@ -1892,6 +1907,7 @@ export default function Chat({
                         type="button"
                         className="chat-message-actions-trigger"
                         aria-label={`Message actions for ${message.author.name}`}
+                        title="More actions"
                         aria-haspopup="dialog"
                         aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
                         onClick={(event) =>
