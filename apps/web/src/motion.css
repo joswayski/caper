@@ -79,6 +79,7 @@
 .chat-mention-card:not(.chat-mention-card-drawer),
 .chat-reactors:not(.chat-reactors-drawer),
 .chat-reaction-tooltip,
+.chat-emoji-tooltip,
 .top-layer-tooltip:popover-open,
 :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
@@ -131,6 +132,7 @@
   .chat-mention-card,
   .chat-reactors,
   .chat-reaction-tooltip,
+  .chat-emoji-tooltip,
   .top-layer-tooltip,
   .space-actions,
   .chat-thread-panel,

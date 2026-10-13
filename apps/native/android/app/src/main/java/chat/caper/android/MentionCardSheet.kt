@@ -207,7 +207,7 @@ import kotlinx.coroutines.launch
     val editable = writable && draft.editable
     DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = !draft.sending)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-        OutlinedTextField(
+        EmojiTextField(
             field, { value ->
                 val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
                     val limitedText = value.text.substring(0, value.text.offsetByCodePoints(0, 4000))

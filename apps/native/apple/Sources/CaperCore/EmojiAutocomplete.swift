@@ -259,6 +259,12 @@ struct SuggestionRow: ViewModifier {
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
     for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
+    #if os(macOS)
+    storage.removeAttribute(.toolTip, range: NSRange(location: 0, length: storage.length))
+    for emoji in EmojiArtwork.namedRanges(in: storage.string) {
+        storage.addAttribute(.toolTip, value: ":\(emoji.name):", range: emoji.range)
+    }
+    #endif
     storage.endEditing()
 }
 #endif
@@ -268,6 +274,81 @@ final class ComposerTextView: UITextView {
     var autocompleteActive: (() -> Bool)?
     var handleKey: ((String) -> Void)?
     var pasteAttachments: (() -> Bool)?
+    private var emojiTooltip: UILabel?
+    private var emojiHover: Task<Void, Never>?
+    private var inspectedRange: NSRange?
+    private var holdPoint: CGPoint?
+
+    func hideEmojiName() {
+        emojiHover?.cancel(); emojiHover = nil; inspectedRange = nil
+        emojiTooltip?.removeFromSuperview(); emojiTooltip = nil
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { hideEmojiName() }
+    }
+    private func emoji(at point: CGPoint) -> (range: NSRange, name: String, rect: CGRect)? {
+        guard isEditable, !covered else { return nil }
+        let containerPoint = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
+        let glyph = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs else { return nil }
+        let character = layoutManager.characterIndexForGlyph(at: glyph)
+        guard let emoji = EmojiArtwork.namedRanges(in: text).first(where: { NSLocationInRange(character, $0.range) }) else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: emoji.range, actualCharacterRange: nil)
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+            .offsetBy(dx: textContainerInset.left, dy: textContainerInset.top)
+        guard rect.contains(point) else { return nil }
+        return (emoji.range, emoji.name, rect)
+    }
+    private func showEmojiName(_ name: String, rect: CGRect) {
+        guard let window else { return }
+        emojiTooltip?.removeFromSuperview()
+        let label = UILabel()
+        label.text = ":\(name):"; label.font = UIFont(name: "Satoshi-Bold", size: 12)
+        label.textColor = UIColor(CaperTheme.text); label.backgroundColor = UIColor(CaperTheme.blackout)
+        label.textAlignment = .center; label.numberOfLines = 0; label.isUserInteractionEnabled = false
+        label.layer.cornerRadius = 8; label.layer.masksToBounds = true
+        label.layer.borderWidth = 1; label.layer.borderColor = UIColor(CaperTheme.border).cgColor
+        label.accessibilityIdentifier = "emoji-name-tooltip"
+        let safe = window.bounds.inset(by: window.safeAreaInsets).insetBy(dx: 12, dy: 12)
+        let size = label.sizeThatFits(CGSize(width: min(260, safe.width - 18), height: .greatestFiniteMagnitude))
+        let anchor = convert(rect, to: window)
+        let width = size.width + 18, height = size.height + 14
+        let above = anchor.minY - height - 6
+        label.frame = CGRect(x: min(max(safe.minX, anchor.midX - width / 2), safe.maxX - width),
+                             y: min(max(safe.minY, above >= safe.minY ? above : anchor.maxY + 6), safe.maxY - height), width: width, height: height)
+        window.addSubview(label); emojiTooltip = label
+        if !UIAccessibility.isReduceMotionEnabled {
+            label.alpha = 0; label.transform = CGAffineTransform(translationX: 0, y: 4)
+            UIView.animate(withDuration: 0.14, delay: 0, options: .curveEaseOut) { label.alpha = 1; label.transform = .identity }
+        }
+    }
+    @objc func inspectEmojiHold(_ gesture: UILongPressGestureRecognizer) {
+        let point = gesture.location(in: self)
+        switch gesture.state {
+        case .began:
+            hideEmojiName(); holdPoint = point
+            if let emoji = emoji(at: point) { inspectedRange = emoji.range; showEmojiName(emoji.name, rect: emoji.rect) }
+        case .changed:
+            if let start = holdPoint, hypot(point.x - start.x, point.y - start.y) > 10 { hideEmojiName() }
+        case .ended:
+            emojiHover = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+                self?.hideEmojiName()
+            }
+        default: hideEmojiName()
+        }
+    }
+    @objc func inspectEmojiHover(_ gesture: UIHoverGestureRecognizer) {
+        guard gesture.state != .ended, gesture.state != .cancelled,
+              let emoji = emoji(at: gesture.location(in: self)) else { hideEmojiName(); return }
+        guard inspectedRange != emoji.range else { return }
+        hideEmojiName(); inspectedRange = emoji.range
+        emojiHover = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            self?.showEmojiName(emoji.name, rect: emoji.rect)
+        }
+    }
     override func paste(_ sender: Any?) {
         if pasteAttachments?() != true { super.paste(sender) }
     }
@@ -287,13 +368,13 @@ final class ComposerTextView: UITextView {
         guard covered != self.covered else { return }
         self.covered = covered
         focusRelease?.cancel(); focusRelease = nil
-        if covered { focusHeld = true; return }
+        if covered { hideEmojiName(); focusHeld = true; return }
         focusRelease = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
             self?.focusHeld = false
         }
     }
-    func touched() { if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
+    func touched() { hideEmojiName(); if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
     override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
     override var keyCommands: [UIKeyCommand]? {
         guard markedTextRange == nil, autocompleteActive?() == true else { return super.keyCommands }
@@ -333,6 +414,11 @@ struct NativeMessageComposer: UIViewRepresentable {
         touchDown.cancelsTouchesInView = false; touchDown.delaysTouchesEnded = false
         touchDown.touched = { [weak view] in view?.touched() }
         view.addGestureRecognizer(touchDown)
+        let hold = UILongPressGestureRecognizer(target: view, action: #selector(ComposerTextView.inspectEmojiHold(_:)))
+        hold.minimumPressDuration = 0.5; hold.allowableMovement = 10
+        hold.cancelsTouchesInView = false; hold.delegate = context.coordinator
+        view.addGestureRecognizer(hold)
+        view.addGestureRecognizer(UIHoverGestureRecognizer(target: view, action: #selector(ComposerTextView.inspectEmojiHover(_:))))
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) }
         view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Satoshi-Regular", size: 14)
@@ -345,10 +431,11 @@ struct NativeMessageComposer: UIViewRepresentable {
         (view as? ComposerTextView)?.setCovered(covered)
         (view as? ComposerTextView)?.pasteAttachments = pasteAttachments
         view.isEditable = editable
+        if !editable { (view as? ComposerTextView)?.hideEmojiName() }
         view.accessibilityIdentifier = accessibilityID
         let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
         context.coordinator.parent = self
-        if view.text != text { view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
         else if mentionsChanged { context.coordinator.refresh(view) }
         view.accessibilityValue = text; view.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
@@ -358,13 +445,15 @@ struct NativeMessageComposer: UIViewRepresentable {
         let height = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         return CGSize(width: width, height: min(174, max(42, height)))
     }
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: NativeMessageComposer; weak var view: UITextView?; var dismissed = false
         private var highlighting = false
         init(_ parent: NativeMessageComposer) { self.parent = parent }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) { (scrollView as? ComposerTextView)?.hideEmojiName() }
         func textViewDidBeginEditing(_ textView: UITextView) { refresh(textView) }
-        func textViewDidEndEditing(_ textView: UITextView) { parent.controller.update(nil) }
-        func textViewDidChange(_ textView: UITextView) { guard !highlighting else { return }; parent.text = textView.text; dismissed = false; refresh(textView) }
+        func textViewDidEndEditing(_ textView: UITextView) { (textView as? ComposerTextView)?.hideEmojiName(); parent.controller.update(nil) }
+        func textViewDidChange(_ textView: UITextView) { guard !highlighting else { return }; (textView as? ComposerTextView)?.hideEmojiName(); parent.text = textView.text; dismissed = false; refresh(textView) }
         func textViewDidChangeSelection(_ textView: UITextView) { guard !highlighting else { return }; dismissed = false; refresh(textView) }
         func refresh(_ textView: UITextView) {
             guard !highlighting else { return }
@@ -528,6 +617,7 @@ struct NativeMessageComposer: NSViewRepresentable {
             highlighting = true
             highlightDraft(storage, source: parent.highlightSource ?? parent.mentions)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
+            view.typingAttributes.removeValue(forKey: .toolTip)
             highlighting = false
         }
         @MainActor func insert(_ emoji: String, selection: NSRange) {

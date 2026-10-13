@@ -159,6 +159,9 @@ test("emoji names come from the picker data and ignore variation selectors", () 
     ["💀", "skull"],
     ["❤️", "red-heart"],
     ["❤", "red-heart"],
+    // Keycap catalog IDs pad their ASCII code points with leading zeroes.
+    ["1️⃣", "keycap:-1"],
+    ["#️⃣", "keycap:-#"],
   ]) {
     assert.equal(emojiNameFrom(index, emoji), name, emoji);
   }

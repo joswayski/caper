@@ -63,6 +63,15 @@ enum EmojiArtwork {
         return entry.name
     }
 
+    /// UTF-16 ranges for the native text views; a joined emoji is one target.
+    static func namedRanges(in text: String) -> [(range: NSRange, name: String)] {
+        var result: [(range: NSRange, name: String)] = []
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byComposedCharacterSequences) { value, range, _, _ in
+            if let value, let name = name(for: value) { result.append((NSRange(range, in: text), name)) }
+        }
+        return result
+    }
+
     private static let entriesByBareEmoji: [String: EmojiCatalogEntry] = {
         var result: [String: EmojiCatalogEntry] = [:]
         for entry in EmojiArtwork.entries {

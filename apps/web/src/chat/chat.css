@@ -2869,7 +2869,8 @@ a.chat-draft-preview:focus-visible strong {
   cursor: default;
 }
 /* Matches components/tooltip.css. */
-.chat-reaction-tooltip {
+.chat-reaction-tooltip,
+.chat-emoji-tooltip {
   z-index: 1001;
   display: flex;
   align-items: center;
@@ -2885,6 +2886,9 @@ a.chat-draft-preview:focus-visible strong {
   font-weight: 700;
   line-height: 1.35;
   pointer-events: none;
+}
+.chat-emoji-tooltip {
+  overflow-wrap: anywhere;
 }
 .chat-reaction-tooltip img {
   flex-shrink: 0;

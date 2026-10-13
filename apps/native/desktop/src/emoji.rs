@@ -2,6 +2,7 @@ use eframe::egui;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Deserialize)]
 pub struct Entry {
@@ -90,6 +91,70 @@ pub fn name(value: &str) -> Option<&'static str> {
         })
         .filter(|entry| entry.name != entry.id)
         .map(|entry| entry.name.as_str())
+}
+
+/// Observe the editor's rendered glyphs without adding interactive widgets or changing selection.
+pub fn editor_tooltip(output: &egui::text_edit::TextEditOutput, text: &str) {
+    let response = &output.response;
+    let hold_id = response.id.with("emoji-name-hold");
+    let held = response
+        .ctx
+        .data_mut(|data| data.remove_temp::<(egui::Pos2, String)>(hold_id));
+    let Some(pointer) = response.ctx.input(|input| input.pointer.hover_pos()) else {
+        return;
+    };
+    if !response.rect.contains(pointer) || !output.text_clip_rect.contains(pointer) {
+        return;
+    }
+    let local = pointer - output.galley_pos;
+    let mut scalar = 0;
+    let mut hit = None;
+    for row in &output.galley.rows {
+        for glyph in &row.glyphs {
+            if glyph
+                .logical_rect()
+                .translate(row.pos.to_vec2())
+                .contains(local.to_pos2())
+            {
+                hit = Some(scalar);
+                break;
+            }
+            scalar += 1;
+        }
+        if hit.is_some() {
+            break;
+        }
+        scalar += usize::from(row.ends_with_newline);
+    }
+    let Some(hit) = hit else {
+        return;
+    };
+    let mut start = 0;
+    for grapheme in text.graphemes(true) {
+        let end = start + grapheme.chars().count();
+        if (start..end).contains(&hit) {
+            if let Some(name) = name(grapheme) {
+                let label = format!(":{name}:");
+                let holding = response
+                    .ctx
+                    .input(|input| input.pointer.any_down() && !input.pointer.any_pressed())
+                    && held.as_ref().is_some_and(|(origin, previous)| {
+                        previous == &label && origin.distance(pointer) <= 10.0
+                    });
+                // long_touched is a one-frame event; keep displaying during the hold.
+                if response.long_touched() || holding {
+                    response.ctx.data_mut(|data| {
+                        data.insert_temp(hold_id, held.unwrap_or((pointer, label.clone())));
+                    });
+                    response.show_tooltip_text(label);
+                } else {
+                    response.clone().on_hover_text_at_pointer(label);
+                }
+            }
+            break;
+        }
+        start = end;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +387,86 @@ mod tests {
         assert_eq!(name("\u{1f3f3}\u{200d}\u{1f308}"), Some("rainbow-flag"));
         assert_eq!(name("👍🏽"), None, "skin tones have no catalog name");
         assert_eq!(name("not an emoji"), None);
+    }
+
+    #[test]
+    fn composer_names_follow_graphemes_and_persist_during_a_touch_hold() {
+        let context = egui::Context::default();
+        context.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let original = "prefix 🚀\n👩‍💻 🎎 suffix";
+        let mut text = original.to_owned();
+        let mut frame = |time, events| {
+            let mut editor = None;
+            let painted = context.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        let output = egui::TextEdit::multiline(&mut text).show(ui);
+                        editor_tooltip(&output, &text);
+                        editor = Some(output);
+                    });
+                },
+            );
+            (painted, editor.unwrap())
+        };
+        let (_, output) = frame(0.0, vec![]);
+        let point = |prefix: &str| {
+            output.galley_pos
+                + output
+                    .galley
+                    .pos_from_cursor(egui::text::CCursor::new(prefix.chars().count()))
+                    .center()
+                    .to_vec2()
+                + egui::vec2(3.0, 0.0)
+        };
+        let has_label = |painted: &egui::FullOutput, label| {
+            painted.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        for (time, prefix, label) in [
+            (1.0, "prefix ", ":rocket:"),
+            (2.0, "prefix 🚀\n", ":woman-technologist:"),
+            (3.0, "prefix 🚀\n👩‍💻 ", ":Japanese-dolls:"),
+        ] {
+            frame(time, vec![egui::Event::PointerMoved(point(prefix))]);
+            frame(time + 0.1, vec![]);
+            assert!(has_label(&frame(time + 0.2, vec![]).0, label), "{label}");
+        }
+        frame(4.0, vec![egui::Event::PointerMoved(point("pre"))]);
+        assert!(!has_label(&frame(4.1, vec![]).0, ":Japanese-dolls:"));
+        let pos = point("prefix 🚀\n👩‍💻 ");
+        frame(
+            5.0,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(1),
+                    id: egui::TouchId(1),
+                    phase: egui::TouchPhase::Start,
+                    pos,
+                    force: None,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame(6.0, vec![]);
+        assert!(has_label(&frame(6.1, vec![]).0, ":Japanese-dolls:"));
+        assert!(has_label(&frame(6.4, vec![]).0, ":Japanese-dolls:"));
+        assert_eq!(text, original, "inspection never changes the draft");
     }
 
     #[test]

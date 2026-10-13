@@ -7741,3 +7741,33 @@ Before native distribution, verify on an iPhone: a slow and a fast release in ea
 direction for Browse and the member list continue smoothly to their rest with no
 bounce past it; Back and channel choices still slide; and a finger still catches
 a drawer mid-slide.
+
+## Emoji names inside composers (October 13, 2026)
+
+Channel/DM, thread and profile composers show the picker's catalog name when an
+inline emoji is hovered or held. Joined emoji, flags and keycaps stay one target;
+ordinary text and unnamed catalog variants do not show a tooltip. This does not
+change messages, reactions, picker insertion or native text selection.
+
+- Web, Android and iOS use a 400ms hover and 500ms hold. A completed hold remains
+  readable for 1.5 seconds after release. Movement, editing, scrolling and leaving
+  the composer dismiss it; entrance motion honors reduced motion.
+- macOS uses text-range AppKit tooltips. Rust desktop uses egui's hover/long-touch
+  timing and keeps a completed long-touch tooltip visible throughout the hold.
+- Web reuses the mention mirror without changing text metrics and associates the
+  tooltip with the textarea's existing accessible description. Its name lookup
+  normalizes padded keycap code points to match the catalog.
+
+| Client | Validation |
+| --- | --- |
+| Web desktop/touch | `npm run check` and `npm test` pass. `scripts/test-emoji-tooltips.mjs` mounts the actual composer in a labelled local fixture and checks hover, real Chromium touch input with `(pointer: coarse)`, joined emoji/flags/hearts/keycaps, wrapped lines, Escape/edit/tap/movement/release dismissal, unchanged drafts and no sends. Desktop and 390px tooltip captures inspected. Not Safari or physical-device acceptance. |
+| Rust desktop | Desktop tests and application Clippy pass on Linux with clang 21; a rendered-editor regression checks names across newlines/joined emoji and persistent touch holds. An actual Linux window's composer hover tooltip was captured and inspected against the labelled local fixture. No physical touchscreen or Windows/macOS run here. |
+| Android | Implementation present; Gradle configuration stops because this orb has no Android SDK. No compilation, emulator or device validation. |
+| Apple iOS/macOS | Implementation present; no Swift compiler/Xcode SDK in this orb. No platform build, XCTest, simulator or device validation. |
+
+Before native distribution, compile and inspect the native composers with their
+platform toolchains. Verify that long presses still select text and reveal names,
+scrolling dismisses names, and closing/covering a composer leaves no tooltip.
+No API/gateway, infrastructure, secret or database change is required. Web and
+native releases can deploy independently; reverting a client removes only these
+tooltips and needs no data rollback.

@@ -92,6 +92,7 @@ export function fallbackSummary(reaction: ChatReaction, selfId: string | undefin
 const bareCode = (code: string) =>
   code
     .split("-")
+    .map((point) => Number.parseInt(point, 16).toString(16))
     .filter((point) => point !== "fe0f")
     .join("-");
 let names: Promise<Map<string, string>> | undefined;

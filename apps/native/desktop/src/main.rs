@@ -15649,6 +15649,7 @@ impl CaperApp {
         text: &str,
         output: &mut egui::text_edit::TextEditOutput,
     ) -> Option<String> {
+        emoji::editor_tooltip(output, text);
         let id = pass.id;
         let response = output.response.clone();
         let mut state = self.composer_suggestions.remove(&id).unwrap_or_default();

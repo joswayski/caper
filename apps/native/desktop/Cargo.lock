@@ -827,6 +827,7 @@ dependencies = [
  "similar",
  "tokio",
  "tungstenite",
+ "unicode-segmentation",
  "url",
  "uuid",
  "webpx",

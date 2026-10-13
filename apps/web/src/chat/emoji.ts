@@ -13,6 +13,22 @@ export function emojiCode(emoji: string) {
   return Array.from(emoji, (point) => point.codePointAt(0)!.toString(16)).join("-");
 }
 
+/** Keep joined emoji, flags, keycaps and skin tones together when inspecting a draft. */
+export function emojiSegments(text: string) {
+  const segments: { text: string; emoji?: true }[] = [];
+  // Unicode property escapes work at our browser floor; Intl.Segmenter does not.
+  const pattern =
+    /\p{Regional_Indicator}{2}|[0-9#*]\ufe0f?\u20e3|\p{Extended_Pictographic}[\ufe0e\ufe0f\p{Emoji_Modifier}]*(?:\u200d\p{Extended_Pictographic}[\ufe0e\ufe0f\p{Emoji_Modifier}]*)*(?:[\u{e0020}-\u{e007e}]+\u{e007f})?/gu;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) segments.push({ text: text.slice(cursor, match.index) });
+    segments.push({ text: match[0], emoji: true });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) segments.push({ text: text.slice(cursor) });
+  return segments;
+}
+
 // The picker displays the last alias. Prefer dashes, but accept all three
 // separator spellings in search across web and the generated native catalog.
 // The package orders names by length, so its last name can be slang or a
