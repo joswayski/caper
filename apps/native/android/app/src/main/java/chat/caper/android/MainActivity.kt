@@ -2240,7 +2240,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
                     pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
-                    pending.replyTo?.let { ReplyContext(it, state) }
+                    pending.replyTo?.let { ReplyContext(it, state, pending.clientMessageId) }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
@@ -2519,7 +2519,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }) {
-        message.replyTo?.let { reference -> ReplyContext(reference, state, openReference?.let { open -> { open(reference) } }) }
+        message.replyTo?.let { reference -> ReplyContext(reference, state, message.clientMessageId, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
             onClick = {},
@@ -2792,7 +2792,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         }
     }
 }
-@Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, onOpen: (() -> Unit)? = null) {
+@Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
     val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
@@ -2816,11 +2816,19 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     val canExpand = !hidden && (preview != text || clipped)
     var excerptHeight by remember(reference.id) { mutableIntStateOf((54 * density).toInt()) }
     var buttonHeight by remember(reference.id) { mutableIntStateOf((48 * density).toInt()) }
-    var previousY by remember(reference.id) { mutableStateOf<Float?>(null) }
-    var displacement by remember(reference.id) { mutableFloatStateOf(0f) }
-    var velocity by remember(reference.id) { mutableFloatStateOf(0f) }
-    var motion by remember(reference.id) { mutableStateOf<Job?>(null) }
-    DisposableEffect(hidden, still) {
+    // Match the other clients: each replying message has stable spring settings,
+    // including when several messages quote the same original.
+    val seed = remember(motionKey) { motionKey.toByteArray(Charsets.UTF_8).fold(2166136261u) { hash, byte -> (hash xor byte.toUByte().toUInt()) * 16777619u } }
+    val stiffness = 140f + (seed and 255u).toFloat() / 255f * 100f
+    val damping = 11f + ((seed shr 8) and 255u).toFloat() / 255f * 7f
+    val impulse = 1f + ((seed shr 16) and 255u).toFloat() / 255f * 0.4f
+    val limit = 5f + (seed shr 24).toFloat() / 255f * 2f
+    val speedLimit = limit * 16f
+    var previousY by remember(motionKey) { mutableStateOf<Float?>(null) }
+    var displacement by remember(motionKey) { mutableFloatStateOf(0f) }
+    var velocity by remember(motionKey) { mutableFloatStateOf(0f) }
+    var motion by remember(motionKey) { mutableStateOf<Job?>(null) }
+    DisposableEffect(motionKey, hidden, still) {
         onDispose { motion?.cancel(); displacement = 0f; velocity = 0f }
     }
     val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
@@ -2829,15 +2837,15 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         val delta = (previousY ?: y) - y
         previousY = y
         if (!hidden && !still && delta != 0f) {
-            velocity = (velocity + delta * 0.8f).coerceIn(-60f, 60f)
+            velocity = (velocity + delta * impulse).coerceIn(-speedLimit, speedLimit)
             if (motion?.isActive != true) motion = scope.launch {
                 var previousTime = withFrameNanos { it }
                 while (isActive) {
                     val time = withFrameNanos { it }
                     val dt = ((time - previousTime) / 1_000_000_000f).coerceAtMost(0.032f)
                     previousTime = time
-                    velocity -= (180f * displacement + 20f * velocity) * dt
-                    displacement = (displacement + velocity * dt).coerceIn(-4f, 4f)
+                    velocity -= (stiffness * displacement + damping * velocity) * dt
+                    displacement = (displacement + velocity * dt).coerceIn(-limit, limit)
                     if (abs(displacement) < 0.01f && abs(velocity) < 0.05f) break
                 }
                 displacement = 0f; velocity = 0f

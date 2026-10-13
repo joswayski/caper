@@ -345,20 +345,27 @@ const checkLongQuotePreview = async (layout) => {
     "END-OF-QUOTE";
   const preview =
     "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the ori…";
-  const send = async (auth, text, replyToId) => {
+  const send = async (auth, text, replyToId, clientMessageId = randomUUID()) => {
     const response = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ text, clientMessageId: randomUUID(), ...(replyToId ? { replyToId } : {}) }),
+      body: JSON.stringify({ text, clientMessageId, ...(replyToId ? { replyToId } : {}) }),
     });
     assert.equal(response.status, 200);
     return response.json();
   };
   const source = await send(peer, fullText);
+  const sibling = await send(
+    own,
+    "TEST FIXTURE — Following up on this message, with the full original available in the quote.",
+    source.id,
+    `00000000-0000-4000-8000-0000000000${layout === "desktop" ? "11" : "22"}`,
+  );
   const quoted = await send(
     own,
     "TEST FIXTURE — Following up on this message, with the full original available in the quote.",
     source.id,
+    `00000000-0000-4000-8000-0000000000${layout === "desktop" ? "a7" : "e9"}`,
   );
   assert.equal(quoted.replyTo.fullText, fullText);
   assert.equal([...quoted.replyTo.text].length, 200);
@@ -444,15 +451,15 @@ const checkLongQuotePreview = async (layout) => {
   screenshot(`reply-preview-${layout}-expanded`);
   browser("click", `${selector} .chat-reply-expand`);
   wait(`document.querySelector('${selector} .chat-reply-expand')?.getAttribute('aria-expanded') === 'false'`);
-  if (layout === "desktop") {
-    browser("mouse", "move", "10", "10");
-    evaluate("document.activeElement.blur()");
-    browser("wait", "1000");
-    const sampleScroll = () =>
-      evaluate(`new Promise(resolve => {
+  browser("mouse", "move", "10", "10");
+  evaluate("document.activeElement.blur()");
+  browser("wait", "2000");
+  const sampleScroll = () =>
+    evaluate(`new Promise(resolve => {
       const quote = document.querySelector('${selector} .chat-reply-context');
       const scroller = quote.closest('.chat-scroller');
       const cup = quote.querySelector('.chat-reply-socket-target');
+      const sibling = scroller.querySelector('${row(sibling.clientMessageId)} .chat-reply-socket-target');
       const wire = quote.querySelector('.chat-reply-route');
       const initial = wire.getAttribute('d');
       const samples = []; const start = performance.now();
@@ -460,38 +467,48 @@ const checkLongQuotePreview = async (layout) => {
       scroller.scrollTop += top > 80 ? -64 : 64;
       const sample = () => {
         const rotation = Math.atan2(cup.getCTM().b, cup.getCTM().a);
+        const siblingRotation = Math.atan2(sibling.getCTM().b, sibling.getCTM().a);
         const back = new DOMPoint(-12, 0).matrixTransform(cup.getScreenCTM());
         const end = wire.getPointAtLength(0).matrixTransform(wire.getScreenCTM());
-        samples.push({ rotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
-        if (performance.now() - start < 1300) requestAnimationFrame(sample);
+        samples.push({ rotation, siblingRotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
+        if (performance.now() - start < 2000) requestAnimationFrame(sample);
         else resolve({ samples, initial, final: wire.getAttribute('d'), moved: Math.abs(scroller.scrollTop - top) });
       }; requestAnimationFrame(sample);
     })`);
-    const motion = sampleScroll();
-    assert.ok(motion.moved >= 60, "The real timeline scrolled");
-    assert.ok(
-      motion.samples.some((sample) => Math.abs(sample.rotation) > 0.008 && sample.changed),
-      "Scrolling flexes the string and tilts the cups",
-    );
-    assert.ok(
-      motion.samples.every((sample) => sample.attached < 0.1),
-      "The string remains attached throughout the spring",
-    );
-    assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
-    assert.ok(
-      motion.samples.slice(-10).every((sample) => sample.rotation === 0 && !sample.changed),
-      "No idle jiggling",
-    );
-    browser("set", "media", "dark", "reduced-motion");
-    const reduced = sampleScroll();
-    assert.ok(reduced.moved >= 60);
-    assert.ok(
-      reduced.samples.every((sample) => sample.rotation === 0 && !sample.changed),
-      "Reduced-motion connections stay still while scrolling",
-    );
-    browser("set", "media", "dark");
-    assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
-  }
+  const motion = sampleScroll();
+  assert.ok(motion.moved >= 60, "The real timeline scrolled");
+  assert.ok(
+    motion.samples.some((sample) => Math.abs(sample.rotation) > 0.008 && sample.changed),
+    "Scrolling flexes the string and tilts the cups",
+  );
+  assert.ok(
+    motion.samples.some((sample) => Math.abs(sample.siblingRotation) > 0.008),
+    "Both replies move",
+  );
+  assert.ok(
+    motion.samples.some((sample) => Math.abs(sample.rotation - sample.siblingRotation) > 0.005),
+    "Replies to the same original respond independently to the same scroll",
+  );
+  assert.ok(
+    motion.samples.every((sample) => sample.attached < 0.1),
+    "The string remains attached throughout the spring",
+  );
+  assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
+  assert.ok(
+    motion.samples
+      .slice(-10)
+      .every((sample) => sample.rotation === 0 && sample.siblingRotation === 0 && !sample.changed),
+    "No idle jiggling",
+  );
+  browser("set", "media", "dark", "reduced-motion");
+  const reduced = sampleScroll();
+  assert.ok(reduced.moved >= 60);
+  assert.ok(
+    reduced.samples.every((sample) => sample.rotation === 0 && sample.siblingRotation === 0 && !sample.changed),
+    "Reduced-motion connections stay still while scrolling",
+  );
+  browser("set", "media", "dark");
+  assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
   const edited = "TEST FIXTURE — The original was edited after this reply was sent.";
   const edit = await fetch(`${api}/api/chat/channels/chan00000001/messages/${source.id}`, {
     method: "PUT",
@@ -523,7 +540,7 @@ const checkLongQuotePreview = async (layout) => {
   browser("open", `${web}/spaces`);
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
-    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar sockets and string attachments, separate quote card, URL containment, source jump and blocked-source privacy${layout === "desktop" ? ", scroll-driven spring, attached endpoints during motion, exact settling, no idle jiggling and static reduced motion" : ""}.`,
+    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar sockets and string attachments, separate quote card, URL containment, source jump and blocked-source privacy; independent scroll-driven springs for replies to the same source, attached endpoints during motion, exact settling, no idle jiggling and static reduced motion.`,
   );
 };
 

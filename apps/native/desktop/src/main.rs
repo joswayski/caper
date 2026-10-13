@@ -13500,7 +13500,12 @@ impl CaperApp {
             if let Some((source, visible)) = quote {
                 actions_y = Some(ui.cursor().top());
                 if visible {
-                    reply_connector(ui, source, ui.cursor().top() + 11.0, &message.id);
+                    reply_connector(
+                        ui,
+                        source,
+                        ui.cursor().top() + 11.0,
+                        &message.client_message_id,
+                    );
                 }
             }
             let (timestamp, profile, body) =
@@ -19536,6 +19541,15 @@ struct ReplyStringMotion {
 fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str) {
     let target = egui::pos2(ui.cursor().left() + 18.0, avatar_top + 16.0);
     let id = ui.id().with(("reply-string", key));
+    // Match the other clients: stable per-reply settings, not per quoted source.
+    let seed = key.bytes().fold(2166136261_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16777619)
+    });
+    let stiffness = 140.0 + (seed & 255) as f32 / 255.0 * 100.0;
+    let damping = 11.0 + ((seed >> 8) & 255) as f32 / 255.0 * 7.0;
+    let impulse = 1.0 + ((seed >> 16) & 255) as f32 / 255.0 * 0.4;
+    let limit = 5.0 + (seed >> 24) as f32 / 255.0 * 2.0;
+    let speed_limit = limit * 16.0;
     let now = ui.input(|input| input.time);
     let mut motion = ui
         .data(|data| data.get_temp::<ReplyStringMotion>(id))
@@ -19552,12 +19566,13 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
         let mut remaining = (now - motion.time).clamp(0.0, 0.25) as f32;
         while remaining > 0.0 {
             let dt = remaining.min(1.0 / 120.0);
-            motion.velocity -= (180.0 * motion.displacement + 20.0 * motion.velocity) * dt;
-            motion.displacement = (motion.displacement + motion.velocity * dt).clamp(-4.0, 4.0);
+            motion.velocity -= (stiffness * motion.displacement + damping * motion.velocity) * dt;
+            motion.displacement = (motion.displacement + motion.velocity * dt).clamp(-limit, limit);
             remaining -= dt;
         }
         // This frame's scroll impulse happens now, not at the previous frame's time.
-        motion.velocity = (motion.velocity + (motion.source_y - source.y) * 0.8).clamp(-60.0, 60.0);
+        motion.velocity = (motion.velocity + (motion.source_y - source.y) * impulse)
+            .clamp(-speed_limit, speed_limit);
         if motion.displacement.abs() < 0.01 && motion.velocity.abs() < 0.05 {
             motion.displacement = 0.0;
             motion.velocity = 0.0;

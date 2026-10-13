@@ -18,10 +18,12 @@ export function replyReference(message: ChatMessage): ChatReplyReference {
 }
 
 export function ReplyContext({
+  motionKey,
   reference,
   hidden,
   onOpen,
 }: {
+  motionKey: string;
   reference: ChatReplyReference;
   hidden: boolean;
   onOpen: () => void;
@@ -87,6 +89,15 @@ export function ReplyContext({
     const element = root.current!;
     const scroller = element.closest<HTMLElement>(".chat-scroller, .chat-thread-messages, .chat-pins");
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    // Seed from the replying message, not its quoted source: even replies to the
+    // same original have their own weight, tension and settling time on remount.
+    let seed = 2166136261;
+    for (const byte of new TextEncoder().encode(motionKey)) seed = Math.imul(seed ^ byte, 16777619) >>> 0;
+    const stiffness = 140 + ((seed & 255) / 255) * 100;
+    const damping = 11 + (((seed >>> 8) & 255) / 255) * 7;
+    const impulse = 1 + (((seed >>> 16) & 255) / 255) * 0.4;
+    const limit = 5 + ((seed >>> 24) / 255) * 2;
+    const speedLimit = limit * 16;
     let frame = 0;
     let previousTime = 0;
     let previousScroll = scroller?.scrollTop ?? 0;
@@ -124,8 +135,8 @@ export function ReplyContext({
     const step = (time: number) => {
       const dt = Math.min((time - previousTime) / 1000, 0.032);
       previousTime = time;
-      velocity -= (180 * offset + 20 * velocity) * dt;
-      offset = Math.max(-4, Math.min(4, offset + velocity * dt));
+      velocity -= (stiffness * offset + damping * velocity) * dt;
+      offset = Math.max(-limit, Math.min(limit, offset + velocity * dt));
       if (Math.abs(offset) < 0.01 && Math.abs(velocity) < 0.05) stop();
       else {
         draw();
@@ -141,7 +152,7 @@ export function ReplyContext({
         stop();
         return;
       }
-      velocity = Math.max(-60, Math.min(60, velocity + delta * 0.8));
+      velocity = Math.max(-speedLimit, Math.min(speedLimit, velocity + delta * impulse));
       if (!frame) {
         previousTime = performance.now();
         frame = requestAnimationFrame(step);
@@ -155,7 +166,7 @@ export function ReplyContext({
       scroller?.removeEventListener("scroll", scroll);
       motion.removeEventListener("change", stop);
     };
-  }, [connection, hidden]);
+  }, [connection, hidden, motionKey]);
   return (
     <div
       ref={root}
