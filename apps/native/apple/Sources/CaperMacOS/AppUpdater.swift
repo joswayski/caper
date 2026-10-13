@@ -15,7 +15,7 @@ import Foundation
         let changelog: [ChangelogEntry]
         let historyComplete: Bool
         let canApply: Bool
-        var lastError: String? = nil
+        let lastError: String?
     }
 
     struct ChangelogEntry: Decodable, Equatable {

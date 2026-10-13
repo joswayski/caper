@@ -70,7 +70,7 @@ final class AppUpdaterTests: XCTestCase {
         let update = AppUpdater.Update(version: "0.1.42", notes: "Fallback",
             changelog: [AppUpdater.ChangelogEntry(version: "0.1.42", notes: String(repeating: "• A long wrapped change\n", count: 100)),
                         AppUpdater.ChangelogEntry(version: "0.1.39", notes: "Skipped change")],
-            historyComplete: false, canApply: true)
+            historyComplete: false, canApply: true, lastError: "Access denied")
         let scroll = AppUpdater.notesView(update, size: size)
         let text = try XCTUnwrap(scroll.documentView as? NSTextView)
         XCTAssertEqual(scroll.frame.size, size)
@@ -78,6 +78,7 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertGreaterThan(text.frame.height, scroll.contentSize.height)
         XCTAssertTrue(text.string.contains("0.1.39\nSkipped change"))
         XCTAssertTrue(text.string.contains("Earlier release notes aren’t available"))
+        XCTAssertTrue(text.string.contains("Access denied"))
         XCTAssertFalse(text.string.contains("Fallback"))
     }
 }
