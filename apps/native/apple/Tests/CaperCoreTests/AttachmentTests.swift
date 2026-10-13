@@ -452,6 +452,34 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNotNil(MessageValidation.error(for: "", attachmentCount: 11))
     }
 
+    func testInlineGIFKeepsFramesAndTimingWithinItsMemoryBudget() async throws {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data as CFMutableData, UTType.gif.identifier as CFString, 2, nil))
+        for (color, delay) in [([UInt8(255), 0, 0, 255], 0.08), ([UInt8(0), 0, 255, 255], 0.8)] {
+            let frame = rgbaImage(width: 40, height: 20) { _, _ in color }
+            CGImageDestinationAddImage(destination, frame, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay]] as CFDictionary)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gif")
+        try (data as Data).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let loader = AttachmentImageLoader()
+        let frames = try await loader.loadFrames(key: "inline", url: url, maxPixelSize: 20, animationByteLimit: 32 * 1024 * 1024)
+        XCTAssertEqual(frames.images.count, 2)
+        XCTAssertEqual(frames.images.first?.width, 20)
+        XCTAssertEqual(frames.images.first?.height, 10)
+        XCTAssertEqual(frames.durations, [0.08, 0.8])
+        let first = try XCTUnwrap(frames.images.first)
+        let second = try XCTUnwrap(frames.images.dropFirst().first)
+        let red = try XCTUnwrap(AttachmentPreparer.rgbaPixels(first)).straight
+        let blue = try XCTUnwrap(AttachmentPreparer.rgbaPixels(second)).straight
+        XCTAssertEqual(Array(red.prefix(4)), [255, 0, 0, 255])
+        XCTAssertEqual(Array(blue.prefix(4)), [0, 0, 255, 255])
+        let limited = try await loader.loadFrames(key: "limited", url: url, maxPixelSize: 20, animationByteLimit: 800)
+        XCTAssertEqual(limited.images.count, 1, "show one still, never loop a truncated prefix")
+        XCTAssertTrue(limited.durations.isEmpty)
+    }
+
     // MARK: Compression decisions
 
     func testCompressionSettingsDecodeWithDefaults() throws {

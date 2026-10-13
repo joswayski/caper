@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
+import { MessageAttachments } from "../chat/Attachments.tsx";
 import {
   attachmentView,
   attachmentsOf,
@@ -104,6 +107,18 @@ test("render decision follows status, and animated videos play like GIFs", () =>
   assert.equal(attachmentView(file({ status: "ready", kind: "audio", url })), "audio");
   assert.equal(attachmentView(file({ status: "ready", kind: "image" })), "file", "no URL falls back to a file card");
   assert.equal(attachmentView(file({ status: "processing", unavailable: true })), "unavailable");
+});
+
+test("GIFs render their original even with a still preview; photos keep using previews", () => {
+  const url = "https://cdn.test/original/gif";
+  const previewUrl = "https://cdn.test/preview/gif";
+  for (const contentType of ["image/gif", "image/jpeg", "image/avif"]) {
+    const markup = renderToStaticMarkup(
+      createElement(MessageAttachments, { attachments: [file({ contentType, url, previewUrl })] }),
+    );
+    const source = markup.match(/<img\b[^>]*\bsrc="([^"]+)"/)?.[1];
+    assert.equal(source, contentType === "image/gif" ? url : previewUrl, contentType);
+  }
 });
 
 test("live attachment events are validated and unknown fields tolerated", () => {

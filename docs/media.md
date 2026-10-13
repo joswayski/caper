@@ -1454,6 +1454,67 @@ Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
 toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
 No Docker daemon is available; the web production build was checked directly.
 
+### Inline GIF playback
+
+GIF uploads remain ordinary `image/gif` originals; the current upload path does
+not convert them to videos. Upload preparation can also produce a **still**
+WebP/JPEG preview. That preview is useful for placeholders and notifications,
+but choosing it as the ready chat image freezes the animation. The legacy
+`animated` video flag is not required for ordinary GIFs.
+
+Ready GIF tiles now load the original on web, Android, Apple and Rust desktop;
+still photos retain their smaller previews. The native clients must also use
+animation decoding, not just select a different URL. Android uses the existing
+Coil GIF decoder per request. Apple reuses its ImageIO frame loader and timeline;
+Rust advances composited GIF frames on the visible tile's existing texture.
+Local first-frame thumbnails cannot overwrite a loading/playing desktop GIF.
+Click/tap still opens the existing viewer. No upload, wire, API or database
+change is needed, and existing GIF attachments do not need to be uploaded again.
+
+Reduced-motion readers see a still inline, including GIFs with no uploaded
+preview. Web draws a bounded canvas still; native clients use their existing
+motion preference. Apple and Rust inline decoding is limited to a 720px long
+edge, 600 frames and 32 MiB of retained frame pixels per GIF; animations exceeding
+the frame/retained-memory budget fall back to one still, not a truncated loop.
+Rust also applies decoder allocation/dimension limits and the existing 40 MiB
+network limit, so files exceeding those limits may fail inline. Apple releases
+frames on disappearance and Rust releases inactive animation cache entries.
+Animated WebP/APNG timeline support is not added by this GIF fix.
+
+Validation (October 13, 2026): `npm run check` passes; `npm test -- --maxWorkers=2`
+passes 605 tests. Chromium exercised actual `prepareFile` and `MessageAttachments`
+with a generated 720×400 GIF, with and without its generated still preview,
+and a still-photo control. Before the fix, the preview-backed GIF changed zero
+pixels between captures; after, both GIF tiles changed 33,893 pixels without a
+click. The photo control and both reduced-motion GIFs changed zero pixels.
+Desktop/narrow (390px)/reduced-motion captures and a playback recording were
+inspected. Cold reduced-motion loads also load the original and display a still.
+This is a labelled local component fixture, not live R2, Safari or phone evidence.
+Rust desktop tests pass (486 passed, 12 existing ignored), including real GIF
+frame pixels, asymmetric timing, looping, reduced motion, re-signed URLs and a
+late local thumbnail. Apple has a real ImageIO decode/budget regression test,
+but no Apple toolchain/device acceptance is available in this Linux orb.
+Android's compile/unit-test attempt stops at `SDK location not found`.
+Android/Apple builds, native visual/device checks and live R2 acceptance remain
+required before release. No Docker daemon is available; the web production
+build was validated directly.
+
+Deployment order:
+
+1. Infrastructure, secrets/configuration, migrations, API, gateway and CDN:
+   **no changes or deployment required**. Keep the current signed delivery and
+   private R2 bucket; do not publish a bucket or rewrite stored assets.
+2. Deploy the web build through its normal image/release process. Merging alone
+   does not deploy it. In a real channel and DM, send a GIF large enough to have
+   a preview; verify playback before clicking and after reloading, narrow layout,
+   viewer opening, reduced motion and an unchanged still-photo control.
+3. Release Android, iOS/macOS and Rust desktop through their normal client
+   channels; these can deploy independently of web and one another. First build
+   and validate each platform, including scrolling offscreen/back, URL expiry,
+   replacing a pending thumbnail, reduced motion and memory with multiple GIFs.
+4. Roll back the web image if necessary; native rollback uses a corrected release
+   with a higher build number. No data/config rollback or GIF re-upload is needed.
+
 ### In-app viewer
 
 Clicking a sent image or video opens it almost full screen inside the app on
@@ -5694,6 +5755,65 @@ account, member, chat and voice views; it must not reroll the mascot or show ini
 This is the contract for the future upload feature, not implemented upload/delete
 functionality. This change neither accepts arbitrary image URLs nor exposes
 upload-looking controls.
+
+#### Custom-avatar implementation proposal (not implemented)
+
+The October 13 investigation confirms the R2 upload and signed-CDN machinery is
+reusable, but the current API/schema is **attachment-only**. `assets.purpose`
+only permits `attachment`, creation requires channel membership, URL refresh
+joins channels/messages, and cleanup expires every unlinked completed asset
+after 24 hours. Using that flow unchanged would eventually delete a profile
+picture. Profile writes currently accept only username and display name.
+
+The proposed implementation requires approval of an additive migration and API
+contract before implementation:
+
+1. Add an `avatar` asset purpose and a nullable `users.avatar_asset_id` reference.
+   Keep `users.avatar_id` unchanged as the durable fallback. Reuse the existing
+   owner, reservation, completion, quota and soft-deletion records; do not store
+   signed URLs in the database or repurpose channel attachment IDs as avatars.
+2. Extend `POST /api/assets` with an explicit avatar purpose (existing callers
+   keep the attachment default). Avatar reservations are account-owned and do
+   not require joining a channel. Restrict formats to validated still images and
+   ordinary GIFs; keep GIF bytes rather than flattening or converting them to
+   video. Add small avatar-specific byte/dimension/frame/decode limits, verified
+   from the uploaded bytes, not client metadata or only the current magic check.
+   Still-image resizing can reuse client preparation. Exact limits and any new
+   decoder dependency need to be settled with the implementation approval.
+3. Add `PUT /api/account/avatar {assetId}` to select only the caller's completed,
+   validated avatar upload, and `DELETE /api/account/avatar` to clear the custom
+   reference. Swap/clear atomically, retain prior rows using soft deletion, and
+   make cancellation/cleanup aware of current avatar references. Removing the
+   custom image restores the same saved mascot, not a newly assigned one.
+4. Enrich account, member, DM/people, chat-history/replay and voice identities
+   with the current custom asset descriptor and freshly signed delivery URLs.
+   Extend URL refresh with profile-visibility authorization rather than requiring
+   a channel/message link. Preserve private storage, bounded URL lifetimes and
+   versioned asset IDs for cache invalidation. Old clients can ignore the optional
+   descriptor and still show their saved mascot.
+5. Add change/remove controls to account settings and the user's own avatar on
+   web (wide/narrow), Android, iOS/macOS and Rust desktop. Reuse each platform's
+   file picker and GIF-capable renderer, including reduced motion and fallback
+   while a URL fails/refreshes. Propagate a successful change throughout the
+   current client; do not limit custom images to the settings page.
+
+Likely ownership: `apps/api/src/assets.rs` for upload/auth/cleanup,
+`accounts.rs` and account routes in `lib.rs` for atomic selection, identity
+enrichment in `chat.rs`, `gateway`, `spaces.rs`, `direct.rs` and voice snapshots;
+web `account/ProfileForm.tsx` and `components/Avatar.tsx`; each native client's
+account settings, account/author/member/voice models and shared avatar view.
+Reuse `apps/cdn/worker.mjs` signature validation and original/preview keys unless
+the approved avatar access policy requires a separate route.
+
+Acceptance must cover unauthorized/unfinished/non-avatar asset rejection,
+malformed and over-budget GIFs, concurrent replace/remove/cancel, cleanup beyond
+24 hours, expired URL refresh, unchanged mascot fallback, historical authors,
+active voice, and static/animated presentation on every client. Rollout would be
+migration → API/gateway identity and cleanup support → client releases; the
+cleanup fix must precede allowing avatar selection. None of this proposal is
+deployed or exposed by the GIF playback fix.
+
+#### Saved-avatar validation
 
 Validation: migration/backfill/profile stability and repeat email-login tests run
 against disposable Postgres. Chat tests cover missing-avatar historical payloads,
