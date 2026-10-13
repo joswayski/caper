@@ -1490,7 +1490,7 @@ click. The photo control and both reduced-motion GIFs changed zero pixels.
 Desktop/narrow (390px)/reduced-motion captures and a playback recording were
 inspected. Cold reduced-motion loads also load the original and display a still.
 This is a labelled local component fixture, not live R2, Safari or phone evidence.
-Rust desktop tests pass (486 passed, 12 existing ignored), including real GIF
+Rust desktop tests pass (487 passed, 12 existing ignored), including real GIF
 frame pixels, asymmetric timing, looping, reduced motion, re-signed URLs and a
 late local thumbnail. Apple has a real ImageIO decode/budget regression test,
 but no Apple toolchain/device acceptance is available in this Linux orb.
