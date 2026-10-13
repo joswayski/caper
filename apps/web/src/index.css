@@ -350,8 +350,7 @@
     color: var(--terracotta-bright);
   }
 }
-:is(.made-by, .experimental-note, .latest-changes) a:focus-visible,
-.not-found a:focus-visible {
+:is(.made-by, .experimental-note, .latest-changes) a:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 4px;
   border-radius: 2px;
@@ -406,40 +405,101 @@
   overflow-wrap: anywhere;
   font-size: 0.75rem;
 }
-.not-found {
+/* Dead ends (not found, failed loads): the site header, then today's
+   character, the message and one way forward, centred in the space left. */
+.status-page {
   min-height: 100vh;
   min-height: 100dvh;
   display: grid;
-  place-content: center;
-  text-align: center;
-  padding: 24px;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--blackout);
 }
-.not-found p {
+.status-page > section {
+  align-self: center;
+  justify-self: center;
+  width: min(520px, calc(100% - 48px));
+  display: grid;
+  justify-items: center;
+  /* The header's height again below, so the message sits at the window's centre. */
+  padding: 24px 0 88px;
+  text-align: center;
+}
+.status-page-caper {
+  width: 104px;
+  height: 104px;
+  margin-bottom: 22px;
+  user-select: none;
+}
+.status-page-eyebrow {
   margin: 0 0 12px;
   color: var(--terracotta-bright);
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
-/* Match the other standalone pages' bold, tightly tracked headings. */
-.not-found h1 {
-  margin: 0 0 28px;
-  font-size: clamp(3rem, 8vw, 6rem);
+.status-page h1 {
+  margin: 0;
+  font-size: clamp(2.4rem, 6vw, 4rem);
   font-weight: 700;
   letter-spacing: -0.055em;
   line-height: 1.08;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
-.not-found a {
-  justify-self: center;
+.status-page section > p:not(.status-page-eyebrow) {
+  max-width: 420px;
+  margin: 14px 0 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.status-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px 24px;
+  margin-top: 28px;
+}
+.status-page-actions a {
   color: var(--text);
   text-decoration: underline;
   text-underline-offset: 5px;
-  transition: color 0.2s ease;
+  transition: color var(--motion-fast) ease;
+}
+.status-page-actions .primary {
+  min-height: 46px;
+  padding: 0 20px;
+  border: 1px solid var(--action);
+  border-radius: var(--radius);
+  color: var(--on-action);
+  background: var(--action);
+  font-weight: 700;
+  transition:
+    background-color var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
 }
 @media (hover: hover) {
-  .not-found a:hover {
+  .status-page-actions a:hover {
     color: var(--terracotta-bright);
   }
+  .status-page-actions .primary:hover {
+    border-color: var(--action-hover);
+    background: var(--action-hover);
+  }
+}
+.status-page-actions .primary:active {
+  border-color: var(--action-press);
+  background: var(--action-press);
+}
+.status-page :focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+.status-page-actions .primary:focus-visible {
+  border-radius: var(--radius);
 }
 /* Full shell width with the list on the hero copy's left edge, instead of a
    centred 680px column that lined up with nothing above it. */
@@ -591,6 +651,13 @@
   }
   .site-header-actions {
     gap: 12px;
+  }
+  .status-page > section {
+    padding-bottom: 72px;
+  }
+  .status-page-caper {
+    width: 88px;
+    height: 88px;
   }
   .hero {
     padding-block: 20px 48px;

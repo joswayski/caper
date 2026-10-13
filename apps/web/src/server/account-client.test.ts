@@ -111,3 +111,13 @@ test("verification errors preserve the server's remaining-attempt count", async 
     (error: unknown) => error instanceof AccountApiError && error.status === 401 && error.attemptsRemaining === 1,
   );
 });
+
+test("proxy error bodies do not become the error message", async (t) => {
+  mockFetch(t, () => Response.json({ error: true, statusCode: 500, message: "fetch failed" }, { status: 500 }));
+
+  await assert.rejects(
+    getAccount(),
+    (error: unknown) =>
+      error instanceof AccountApiError && error.status === 500 && error.message === "Account request failed",
+  );
+});

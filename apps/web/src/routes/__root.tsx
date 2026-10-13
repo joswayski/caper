@@ -1,6 +1,7 @@
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import RotatingFavicon from "../components/RotatingFavicon";
+import StatusPage from "../components/StatusPage";
 import { sidebarWidthScript } from "../pages/ChannelSidebar";
 import "../index.css";
 
@@ -89,11 +90,11 @@ function RootComponent() {
 
 function NotFound() {
   return (
-    <main className="not-found">
-      <p>404</p>
-      <h1>Nothing here.</h1>
-      <a href="/">Return home</a>
-    </main>
+    <StatusPage eyebrow="404" title="Nothing here.">
+      <div className="status-page-actions">
+        <a href="/">Return home</a>
+      </div>
+    </StatusPage>
   );
 }
 

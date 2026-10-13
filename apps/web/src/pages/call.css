@@ -434,9 +434,14 @@
     background: rgb(182 77 50 / 0.24);
   }
 }
+/* Unavailable steps back to neutral chrome; Joining…/Leaving… keep the accent. */
 .voice-button[aria-disabled="true"] {
-  opacity: 0.5;
   cursor: default;
+}
+.voice-button[aria-disabled="true"]:not([aria-busy="true"]) {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: transparent;
 }
 .people-panel ul {
   display: grid;

@@ -462,6 +462,32 @@
 .chat-state small {
   margin-top: 7px;
 }
+/* An empty conversation: today's character, centred where the first messages will land. */
+.chat-state.chat-empty {
+  height: 100%;
+  padding: 24px;
+}
+.chat-empty-caper {
+  width: 88px;
+  height: 88px;
+  margin-bottom: 14px;
+  user-select: none;
+}
+.chat-empty p {
+  max-width: 360px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.chat-empty p:has(+ small) {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.chat-empty small {
+  max-width: 360px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .chat-state button,
 .chat-inline-error button {
   margin-top: 10px;

@@ -67,8 +67,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string; attemptsRemaining?: number } | null;
-    throw new AccountApiError(response.status, body?.error ?? "Account request failed", body?.attemptsRemaining);
+    const body = (await response.json().catch(() => null)) as { error?: unknown; attemptsRemaining?: number } | null;
+    // Proxies and gateways answer with their own JSON (`{"error": true, ...}`); only an API message is a message.
+    const message = typeof body?.error === "string" ? body.error : "Account request failed";
+    throw new AccountApiError(response.status, message, body?.attemptsRemaining);
   }
   return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }

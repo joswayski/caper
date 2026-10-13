@@ -42,6 +42,7 @@ import { forwardedConversation } from "../chat/Forwarding";
 import { excludePeople, type MentionCandidate } from "../chat/mentions";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { FocusTarget } from "../chat/Chat";
+import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
@@ -2803,20 +2804,20 @@ export default function Spaces({
     );
   if (error && !spaces.length)
     return (
-      <main className="spaces-state">
-        <Wordmark />
-        <h1>Spaces are unavailable.</h1>
+      <StatusPage className="spaces-state" title="Spaces are unavailable.">
         <p role="alert">{error}</p>
-        <button type="button" onClick={() => window.location.reload()}>
-          Try again
-        </button>
-      </main>
+        <div className="status-page-actions">
+          <button type="button" className="primary" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>
+      </StatusPage>
     );
   if (!spaces.length && !selected.dmId && !selected.visit)
     return (
       <main className="spaces-empty">
-        <Wordmark />
         <section>
+          <Wordmark />
           {notice && <p role="status">{notice}</p>}
           {invitations.length > 0 && (
             <div className="pending-space-invites">
@@ -2841,13 +2842,14 @@ export default function Spaces({
   if (!detail && !error) return <SpacesLoading />;
   if (!detail)
     return (
-      <main className="spaces-state">
-        <Wordmark />
+      <StatusPage className="spaces-state" title="This space didn’t load.">
         <p role="alert">{error}</p>
-        <button type="button" onClick={() => setSelected({ ...selected })}>
-          Try again
-        </button>
-      </main>
+        <div className="status-page-actions">
+          <button type="button" className="primary" onClick={() => setSelected({ ...selected })}>
+            Try again
+          </button>
+        </div>
+      </StatusPage>
     );
 
   const joinedChannels = detail.channels.filter((item) => item.joined !== false);
