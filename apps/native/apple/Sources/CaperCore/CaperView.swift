@@ -221,28 +221,11 @@ private struct SpacesUnavailableView: View {
 }
 
 private struct Wordmark: View {
-    @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
-    @Environment(\.scenePhase) private var scenePhase
-    private let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
-
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Image("CaperWordmarkLetters").resizable().scaledToFit()
-                .frame(width: 132, height: 35)
-            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
-                .renderingMode(.original).resizable().scaledToFit()
-                .frame(width: 132 * 132 / 1042, height: 132 * 132 / 1042)
-                .offset(x: 132 * 904 / 1042, y: 35 * 91 / 276)
-        }.frame(width: 132, height: 35)
+        Image("CaperWordmark").renderingMode(.original).resizable().scaledToFit()
+            .frame(width: 132, height: 35)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Caper")
-            .onAppear(perform: refresh)
-            .onChange(of: scenePhase) { _, phase in if phase == .active { refresh() } }
-            .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in refresh() }
-    }
-
-    private func refresh() {
-        if !fixture { dailyIndex = CaperDailyIcon.current() }
     }
 }
 

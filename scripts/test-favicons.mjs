@@ -16,10 +16,12 @@ const expected = [
   { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/caper-face.svg?v=3" },
   { rel: "apple-touch-icon", type: null, sizes: "180x180", href: "/icons/caper-main-v3-180.png" },
 ];
-for (const route of ["/", "/login"]) {
+for (const route of ["/", "/login", "/spaces"]) {
   const response = await fetch(new URL(route, origin));
   assert.equal(response.status, 200);
   const html = await response.text();
+  assert.match(html, /class="wordmark-character" src="\/caper-face\.svg\?v=3"/, `Fixed server wordmark on ${route}`);
+  assert.doesNotMatch(html, /data-pending/, `Wordmark is visible before hydration on ${route}`);
   const links = [...html.matchAll(/<link\b[^>]*>/g)]
     .map(([tag]) =>
       Object.fromEntries(
@@ -78,6 +80,24 @@ function fixture() {
     return interval(callback, ms, ...args);
   };
   if (location.search.includes("installed-icon-test")) Object.defineProperty(navigator, "standalone", { value: true });
+  const spaceState = new URL(location.href).searchParams.get("wordmark-space-test");
+  if (spaceState) {
+    // Explicit account/list mocks: never contact or modify a real account space.
+    localStorage.setItem("caper.daily-icon.v1", JSON.stringify({ day: Math.floor(Date.now() / 86400000), index: 560 }));
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, options) => {
+      const path = new URL(typeof input === "string" ? input : input.url, location.origin).pathname;
+      if (!path.startsWith("/api/")) return originalFetch(input, options);
+      if (path === "/api/account/me")
+        return Response.json({ id: "wordmark-fixture", username: "wordmark_fixture", displayName: "Wordmark fixture" });
+      if (path === "/api/spaces") {
+        if (spaceState === "loading") return new Promise(() => {});
+        if (spaceState === "empty")
+          return Response.json({ spaces: [], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
+      }
+      return Response.json({ error: "Test fixture: spaces unavailable" }, { status: 503 });
+    };
+  }
 }
 writeFileSync(init, `(${fixture.toString()})();`);
 const session = `favicons-${process.pid}`;
@@ -87,11 +107,11 @@ const browser = (...args) =>
     timeout: 40000,
   });
 const evaluate = (code) => JSON.parse(browser("eval", code));
-const waitForWordmark = (index) =>
+const waitForWordmark = () =>
   browser(
     "wait",
     "--fn",
-    `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === (location.pathname === '/' ? '/caper-face.svg?v=3' : '/images/branding/v1/${index}.svg') && image.complete && (location.pathname === '/' ? image.naturalWidth > 0 : image.naturalWidth === 256))`,
+    `[...document.querySelectorAll('.wordmark-character')].length > 0 && [...document.querySelectorAll('.wordmark-character')].every(image => image.getAttribute('src') === '/caper-face.svg?v=3' && image.complete && image.naturalWidth > 0 && getComputedStyle(image).visibility === 'visible' && getComputedStyle(image).opacity === '1')`,
   );
 const waitForIcon = (index, previousPNG = "") => {
   browser(
@@ -99,7 +119,7 @@ const waitForIcon = (index, previousPNG = "") => {
     "--fn",
     `document.querySelector('#caper-favicon-svg')?.getAttribute('href') === '/images/branding/v1/${index}.svg' && document.querySelector('#caper-favicon-32')?.href.startsWith('data:image/png') && document.querySelector('#caper-favicon-32')?.href !== ${JSON.stringify(previousPNG)}`,
   );
-  waitForWordmark(index);
+  waitForWordmark();
 };
 const record = () =>
   evaluate(
@@ -137,6 +157,7 @@ try {
   browser("find", "first", 'a[href="/login"]', "click");
   browser("wait", "--url", "**/login");
   waitForIcon(799);
+  if (artifacts) browser("screenshot", "main section", join(artifacts, "wordmark-login-desktop.png"));
   browser("eval", `window.__iconNow += 1; window.dispatchEvent(new Event('focus'));`);
   waitForIcon(0, today["32"]);
   const tomorrow = record();
@@ -184,7 +205,7 @@ try {
   );
   browser("set", "viewport", "390", "844", "2");
   assert.equal(record().svg, "/images/branding/v1/1.svg");
-  waitForWordmark(1);
+  waitForWordmark();
   if (artifacts) {
     browser("eval", "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
     browser("screenshot", join(artifacts, "wordmark-login-narrow.png"));
@@ -245,7 +266,7 @@ try {
   browser("eval", "window.__iconNow += 86400000; window.__iconTimers.forEach(tick => tick());");
   waitForIcon(1);
   browser("open", `${origin}?installed-icon-test=1&icon-now=${evaluate("window.__iconNow")}`);
-  waitForWordmark(1);
+  waitForWordmark();
   assert.equal(
     evaluate(`document.querySelector('#caper-favicon-svg').getAttribute('href')`),
     "/caper-face.svg?v=3",
@@ -257,8 +278,33 @@ try {
   waitForIcon(160);
   browser("eval", 'window.__iconNow += 1; window.dispatchEvent(new Event("focus"));');
   waitForIcon(560);
+  for (const [state, selector] of [
+    ["loading", ".spaces-loading"],
+    ["empty", ".spaces-empty"],
+    ["error", ".spaces-state"],
+  ]) {
+    browser("open", `${origin}spaces?wordmark-space-test=${state}`);
+    browser(
+      "wait",
+      "--fn",
+      `[...document.querySelectorAll('${selector}')].some(element => element.getClientRects().length)`,
+    );
+    waitForIcon(560);
+    for (const [width, layout] of [
+      [1280, "desktop"],
+      [390, "narrow"],
+    ]) {
+      browser("set", "viewport", String(width), "844", "2");
+      browser("eval", "new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+      waitForWordmark();
+      if (artifacts) browser("screenshot", join(artifacts, `wordmark-spaces-${state}-${layout}.png`));
+    }
+    browser("find", "role", "link", "click", "--name", "Caper home");
+    browser("wait", "--url", `${origin}`);
+    waitForIcon(560);
+  }
   console.log(
-    "Favicon + wordmark checks passed: fixed plain homepage character across reloads, navigation, shared tabs and UTC focus/timer rotation; other pages retain daily branding; all 800 characters decode without backgrounds; same-day favicon stability; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons; accessible home link; desktop/narrow layouts.",
+    "Favicon + wordmark checks passed: fixed original wordmarks before hydration and across reloads, navigation, shared tabs and UTC focus/timer rotation; mocked spaces loading/empty/error and return home; favicons retain daily characters; all 800 characters decode without backgrounds; same-day favicon stability; cross-tab persistence; blocked-storage stability; SVG/PNG agreement; fixed installed icons; accessible home link; desktop/narrow layouts.",
   );
 } finally {
   browser("close");
