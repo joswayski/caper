@@ -12584,18 +12584,21 @@ impl CaperApp {
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
-                let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).show(ui, |ui| {
+                let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
+                    // Padding belongs outside the scrolling text. egui's
+                    // default 3px clip expansion otherwise bleeds over the border.
+                    ui.visuals_mut().clip_rect_margin = 0.0;
                     ui.add_enabled_ui(!loading, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt(("thread-composer-scroll", &root))
-                            .max_height(editor_height)
-                            .min_scrolled_height(80.0)
+                            .max_height(editor_height - 20.0)
+                            .min_scrolled_height(60.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
                                 .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
-                                .min_size(egui::vec2(0.0, 80.0))
+                                .min_size(egui::vec2(0.0, 60.0))
                                 .font(egui::FontId::proportional(13.6))
-                                .margin(egui::vec2(11.0, 10.0))
+                                .margin(egui::Margin::ZERO)
                                 .frame(false)
                                 .layouter(&mut layouter)
                                 .hint_text(RichText::new("Reply to thread…").color(MUTED))
@@ -22851,6 +22854,17 @@ mod tests {
                     editor.height() <= 280.0,
                     "{width}: editor must scroll beyond 40% of the viewport: {editor:?}"
                 );
+                if !app.thread_drafts[&root].0.is_empty() {
+                    let text = output.shapes.iter().find(|shape| matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == app.thread_drafts[&root].0
+                    )).expect("draft text");
+                    assert!(
+                        text.clip_rect.top() >= editor.top() + 10.0
+                            && text.clip_rect.bottom() <= editor.bottom() - 10.0,
+                        "scrolling text must stay inside the padded editor: {:?}, {editor:?}",
+                        text.clip_rect
+                    );
+                }
                 if app.thread_drafts[&root].0.is_empty() {
                     assert_eq!(
                         editor.height(),
