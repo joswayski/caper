@@ -253,6 +253,8 @@ function AudioMenu({
         // Let native device pickers handle Escape without also removing their panel.
         if (event.target instanceof HTMLSelectElement) return;
         if (event.key === "Escape" && open && !event.defaultPrevented) {
+          // Handled: an open thread beneath must not also close on this Escape.
+          event.preventDefault();
           onOpenChange(false);
           event.currentTarget.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus();
         }
@@ -573,6 +575,7 @@ export default function Call({
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [loggingOut, setLoggingOut] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
@@ -1729,8 +1732,23 @@ export default function Call({
                 )}
                 {identityReady &&
                   (account ? (
-                    <button type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>
-                      Log out
+                    <button
+                      type="button"
+                      disabled={loggingOut}
+                      onClick={() => {
+                        setLoggingOut(true);
+                        setActionError(undefined);
+                        logout().then(
+                          () => window.location.assign("/"),
+                          () => {
+                            // Stay signed in and say so, instead of a click that silently did nothing.
+                            setLoggingOut(false);
+                            setActionError("Couldn’t log out. Check your connection and try again.");
+                          },
+                        );
+                      }}
+                    >
+                      {loggingOut ? "Logging out…" : "Log out"}
                     </button>
                   ) : (
                     <a href="/login">Sign in</a>

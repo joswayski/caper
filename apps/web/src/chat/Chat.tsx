@@ -1671,8 +1671,10 @@ export default function Chat({
             >
               <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
                 <span className="chat-title-name">
-                  {direct ? "" : "# "}
-                  {channelName}
+                  <span className="chat-title-text">
+                    {direct ? "" : "# "}
+                    {channelName}
+                  </span>
                   <ChevronDown size={16} aria-hidden="true" />
                 </span>
                 {headerSubtitle && <small className="chat-title-subtitle">{headerSubtitle}</small>}

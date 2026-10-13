@@ -176,7 +176,7 @@ export function InviteLinkManager({
                 <small>{inviteLinkSummary(link)}</small>
               </span>
               <span className="invite-link-actions">
-                <button type="button" onClick={() => void copy(link.code)}>
+                <button type="button" className="invite-link-copy" onClick={() => void copy(link.code)}>
                   {copied === link.code ? "Copied" : "Copy"}
                 </button>
                 <button

@@ -510,6 +510,11 @@
   margin-top: 12px;
   min-height: 32px;
 }
+/* Each heading is its own stacking layer, so an open section menu must lift
+   its heading above the next one (Direct messages) instead of sliding under it. */
+.channel-section-heading:has(details[open]) {
+  z-index: 4;
+}
 .channel-section-heading button,
 .channel-section-menu summary {
   display: flex;
@@ -2184,6 +2189,11 @@
   .member-manager li button:hover:not(:disabled) {
     color: #ff8c9a;
     background: rgb(185 54 70 / 0.12);
+  }
+  /* Copy is not destructive: neutral hover beside Revoke's red one. */
+  .member-manager li .invite-link-copy:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-hover);
   }
 }
 :is(
