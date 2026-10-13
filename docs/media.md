@@ -5493,35 +5493,39 @@ no Android release is needed for this change. Before distribution, verify native
 scrolling and incoming messages on each changed platform. Roll back the web to its
 previous image; native rollback requires a corrected higher-build release.
 
-### Fixed app icons and rotating site characters
+### Fixed wordmarks and app icons, rotating illustrations
 
 Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and
-package icons) use the original plain green Caper. Browser favicons and in-app
-wordmarks still choose one of the 800 bundled v3 characters per UTC day, remember
-it locally, and exclude the preceding choice. This does not change account
-avatars. Rotation runs on launch/resume or while the client is running; it is not
-an exact midnight job while closed, suspended or throttled. There are no alarms,
+package icons) and every client wordmark use the original plain green Caper.
+Browser favicons and playful file-drop illustrations still choose one of the 800
+bundled v3 characters per UTC day, remember it locally, and exclude the preceding
+choice. This does not change account avatars. Rotation runs on launch/resume or
+while the client is running; it is not an exact midnight job while closed,
+suspended or throttled. There are no alarms,
 background services, icon-change prompts or new dependencies.
 
-In-app wordmarks keep the original lettering and replace its plain dot with the
-same installation-local daily character. Web shares one React selection with the
-favicon (including blocked storage). Native clients retain their existing local
-selection keys for in-app branding only; those keys no longer replace app icons.
-iOS and standalone web also rotate only the in-app character, leaving their
-packaged/installed icons original. Different installations may choose different
-characters. Native test fixtures use design 0 for deterministic wordmarks.
+Wordmarks never change on navigation, hydration, or daily rollover, including the
+homepage, sign-in, loading, empty and error screens. Web shares one React daily
+selection between the favicon and file-drop illustration (including blocked
+storage), not the wordmark. Native clients retain their existing local selection
+keys for illustrations only; those keys no longer replace app icons or wordmarks.
+Apple refreshes its daily selection when the file-drop illustration appears,
+resumes or remains open across rollover. iOS and standalone web rotate only the
+illustration, leaving their packaged/installed icons original. Different
+installations may choose different characters. Native test fixtures use design 0
+for deterministic illustrations and the original green Caper for wordmarks.
 The [character catalog](../assets/avatars/README.md) names all 100 designs and
 explains their eight hues; it does not add mascot reactions to the chat protocol.
 
 | Surface | Behavior and validation |
 | --- | --- |
-| In-app wordmarks | Web headers/forms, Rust desktop forms, and Apple/Android shared wordmarks compose dot-free lettering with a bundled v3 character. Clock-controlled Chromium checks cover matching favicon/wordmark selection, same-day navigation/reload, rollover, other tabs, unavailable storage, standalone branding, decorative images and desktop/narrow layouts. Rust desktop is checked separately on Linux X11. Apple/Android builds and rendering need native CI/device acceptance; browser checks do not verify them. |
+| In-app wordmarks | Web headers/forms always compose dot-free lettering with the original green face; Rust desktop and Apple/Android reuse their bundled original full wordmark. Clock-controlled Chromium checks cover fixed server markup, navigation/reload, rollover, other tabs, unavailable storage, standalone branding, decorative images and desktop/narrow layouts while favicons continue rotating. Apple/Android builds and rendering need native/device acceptance; browser checks do not verify them. |
 | Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
 | Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
 | Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
 | Native Android | Application/default launcher and all 800 legacy aliases use the original green mascot. Keep alias component names and enabled state for existing entries and pinned shortcuts; the app no longer switches launcher components. An instrumented fixture test covers a same-day upgrade state and next-day branding-only rotation without changing the enabled entry; it requires Android CI/device execution. Signed upgrade/rollback and OEM icon caches remain device acceptance gates. |
-| Native macOS | Dock/Finder/package icons use the original AppIcon; no runtime `applicationIconImage` replacement. Swift daily-choice tests cover only in-app branding. Bundle compilation and a real Dock check require Apple CI/Xcode/macOS, unavailable in a Linux orb. |
-| Rust desktop | Runtime window icons retain the bundled original-mascot PNG; installer, pinned-shortcut and Wayland package identities also stay original. Daily selection/persistence affects only in-app wordmarks. An actual X11/Openbox window's 128px RGBA icon exactly matched the original PNG on fresh launch and restart with saved character 799; its in-app choice remained 799. Inspected the rendered window and icon on light/dark backgrounds. Windows taskbar/Wayland shell caching need platform acceptance. |
+| Native macOS | Dock/Finder/package icons use the original AppIcon; no runtime `applicationIconImage` replacement. Swift daily-choice tests cover only illustrations. Bundle compilation and a real Dock check require Apple CI/Xcode/macOS, unavailable in a Linux orb. |
+| Rust desktop | Runtime window icons retain the bundled original-mascot PNG; installer, pinned-shortcut and Wayland package identities also stay original. Daily selection/persistence affects only file-drop illustrations, not wordmarks. Earlier X11/Openbox checks confirmed the original window icon across fresh launch and restart with saved character 799. Windows taskbar/Wayland shell caching need platform acceptance. |
 
 Deterministic native parity/Android fixture runs retain the original icon. The web
 test uses a labelled clock/storage fixture, not a physical home-screen test:
@@ -5529,13 +5533,41 @@ test uses a labelled clock/storage fixture, not a physical home-screen test:
 Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
 librsvg); launcher declarations use
 `node scripts/generate-android-launcher-aliases.mjs --check`. Native wordmarks reuse
-their already-bundled vector resources. `node scripts/generate-wordmark.mjs`
+their already-bundled original artwork. `node scripts/generate-wordmark.mjs`
 exports dot-free lettering to web/Rust, Apple and Android without changing the
 original full-logo source; `--check` runs in web tests to detect drift.
 Docker is unavailable; web production
 build stages and the Rust desktop build were checked directly. Application-only
 desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
 existing vendored WebRTC safety-documentation warnings.
+
+#### Stable-wordmark rollout order
+
+1. No infrastructure apply, secrets/configuration, database migration, API,
+   gateway or SFU rollout is needed. Existing daily preferences and saved profile
+   avatars remain untouched. Web and native clients can deploy independently;
+   merging does not deploy or distribute them.
+2. Set `MERGED_SHA` to the full merged revision. Once its immutable AWS web image
+   is available, deploy through the existing operator workflow:
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # After the deployment workflow succeeds:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+   Check home → spaces → home, sign-in, and space loading/empty/error screens at
+   desktop and narrow widths. Every wordmark keeps its original green mascot
+   while browser favicons and file-drop illustrations can keep their daily character.
+3. Before native distribution, build/test with the Android SDK, Xcode, and the
+   Rust desktop toolchains. Verify original wordmarks and rotating file-drop
+   illustrations on Android, iOS/macOS, and Rust desktop, including existing
+   saved daily choices. After separate release approval, publish with:
+   ```sh
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+4. Roll back web with the same deployment workflow and the previous known-good
+   revision. Native rollback requires a corrected higher-build-number release.
+   No database or infrastructure rollback is needed. No deployment or release
+   was run for this wordmark change.
 
 #### Fixed-app-icon rollout order
 

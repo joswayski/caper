@@ -429,15 +429,10 @@ private val LocalBrandAvatar = compositionLocalOf { 0 }
 /** The account bar's User Settings button, which takes focus back when settings close. */
 private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { null }
 
-@Composable private fun Wordmark(modifier: Modifier = Modifier) = Box(
+@Composable private fun Wordmark(modifier: Modifier = Modifier) = Image(
+    painterResource(R.drawable.caper_wordmark), null,
     modifier.size(width = 132.dp, height = 35.dp).clearAndSetSemantics { contentDescription = "Caper" },
-) {
-    Image(painterResource(R.drawable.caper_wordmark_letters), null, Modifier.matchParentSize())
-    // Same dot slot as web/Rust/Apple; keep the two images decorative to accessibility.
-    Image(painterResource(caperBrandingResources[LocalBrandAvatar.current]), null,
-        Modifier.offset(x = (132f * 904 / 1042).dp, y = (35f * 91 / 276).dp)
-            .size((132f * 132 / 1042).dp))
-}
+)
 
 @Composable private fun HomeScreen(
     state: AppUiState,

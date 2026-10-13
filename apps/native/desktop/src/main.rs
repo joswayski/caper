@@ -7755,20 +7755,9 @@ impl CaperApp {
             ui.allocate_exact_size(egui::vec2(132.0, 35.0), egui::Sense::hover());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Caper"));
         egui::Image::new(egui::include_image!(
-            "../../../web/public/caper-wordmark-letters.svg"
+            "../../../web/public/caper-wordmark.svg"
         ))
         .paint_at(ui, rect);
-        // Dot slot in the original viewBox (20 17 1042 276): x=924, y=108, size=132.
-        let character = egui::Rect::from_min_size(
-            rect.min + egui::vec2(rect.width() * 904.0 / 1042.0, rect.height() * 91.0 / 276.0),
-            egui::vec2(rect.width() * 132.0 / 1042.0, rect.width() * 132.0 / 1042.0),
-        );
-        let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
-        egui::Image::from_bytes(
-            format!("bytes://caper-branding-v1/{index}.svg"),
-            avatar_images::BRANDING[index],
-        )
-        .paint_at(ui, character);
     }
 
     /// Covers the conversation while the window has files dragged over it.

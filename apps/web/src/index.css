@@ -125,17 +125,6 @@
   top: 32.971014%;
   width: 12.667946%;
   aspect-ratio: 1;
-  /* Fades in once the client picks the day's character. */
-  transition: opacity 160ms ease-out;
-}
-.wordmark .wordmark-character[data-pending] {
-  visibility: hidden;
-  opacity: 0;
-}
-@media (prefers-reduced-motion: reduce) {
-  .wordmark .wordmark-character {
-    transition: none;
-  }
 }
 .wordmark:focus-visible {
   outline: 2px solid var(--terracotta);

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Daily selection for in-app wordmarks only. App icons keep the original mascot.
+/// Daily selection for playful illustrations only. Wordmarks and app icons keep the original mascot.
 /// Account avatar IDs are deliberately unrelated to this installation-local choice.
 public enum CaperDailyIcon {
     public static let count = 800

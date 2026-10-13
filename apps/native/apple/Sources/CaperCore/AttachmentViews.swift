@@ -1677,6 +1677,7 @@ struct FileDropOverlay: View {
     let title: String
     let detail: String
     @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var start = Date()
     private let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
@@ -1710,6 +1711,13 @@ struct FileDropOverlay: View {
         }
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
+        .onAppear(perform: refresh)
+        .onChange(of: scenePhase) { _, phase in if phase == .active { refresh() } }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in refresh() }
+    }
+
+    private func refresh() {
+        if !fixture { dailyIndex = CaperDailyIcon.current() }
     }
 
     private func art(_ elapsed: Double, rest: Bool) -> some View {
