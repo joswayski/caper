@@ -3252,11 +3252,11 @@ internal fun counterTone(count: Int): Color = when {
  */
 @Composable private fun PrimaryButton(
     label: String, pendingLabel: String, pending: Boolean, enabled: Boolean, modifier: Modifier = Modifier,
-    minWidth: Dp = 200.dp, onClick: () -> Unit,
+    minWidth: Dp = 200.dp, contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 16.dp), onClick: () -> Unit,
 ) = Button(
     onClick, modifier.widthIn(min = minWidth), enabled = enabled && !pending, shape = MaterialTheme.shapes.small,
     colors = primaryButtonColors(),
-    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+    contentPadding = contentPadding,
 ) {
     if (pending) {
         CircularProgressIndicator(Modifier.size(16.dp), color = LocalContentColor.current, strokeWidth = 2.dp)
@@ -3367,7 +3367,8 @@ internal fun counterTone(count: Int): Color = when {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
         PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name),
-            Modifier.align(Alignment.End)) { submit(username, name) }
+            Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
+            contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submit(username, name) }
     }
     // Onboarding spaces the form as the Edit profile dialog does.
     if (close == null) AuthFrame { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) { form() } }

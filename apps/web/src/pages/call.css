@@ -1302,6 +1302,14 @@
   height: min(640px, calc(100vh - 32px));
   height: min(640px, calc(100dvh - 32px));
 }
+/* Profile editing uses a compact action, not the larger sign-in CTA. */
+.profile-dialog button[type="submit"] {
+  min-width: 148px;
+  min-height: 44px;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 0.875rem;
+}
 .call-page :is(button, a, summary, .voice-action-group, .device-options label),
 .device-menu .call-settings-trigger svg {
   transition:

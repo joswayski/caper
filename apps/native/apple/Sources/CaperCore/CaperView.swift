@@ -6903,6 +6903,8 @@ private struct ProfileSheet: View {
                         .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)
                     Button(model.busy ? "Saving…" : "Save profile", action: save)
                         .buttonStyle(CaperPrimaryButton())
+                        .frame(width: 148)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                         .disabled(!canSave)
                         .accessibilityIdentifier("profile-save")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)

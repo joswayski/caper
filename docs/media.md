@@ -212,11 +212,21 @@ is required. Web can deploy independently; merging does not deploy it.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
-retrying a save does not move its button. Channel and space settings and new
+retrying a save does not move its button. Profile, channel and space settings and new
 direct-message dialogs dismiss on outside click/tap; nested delete confirmation
-dismissal leaves settings open. Rust desktop also dismisses new direct messages
+dismissal leaves settings open. Rust desktop also dismisses profile and new direct messages
 on outside clicks; Apple keeps platform sheet dismissal, and Android keeps its
-existing outside-tap behavior.
+existing outside-tap behavior. Edit-profile save actions are compact and right-aligned;
+web keeps a 148×44px target and leaves sign-in/onboarding button sizing unchanged.
+`PROFILE_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-profile-refresh.mjs`
+covers profile sizing (including pending/error), inside clicks/drags, backdrop and
+Escape dismissal at desktop, narrow and short viewport sizes with mocked APIs.
+October 13 profile-control validation: `npm run check` and all 604 Vitest tests
+pass, as do that script's profile-control checks and Rust desktop's backdrop
+regression and Clippy. The browser script subsequently times out at its existing
+member-profile refresh assertion; the unmodified script fails at the same assertion.
+Android/Apple profile sizing is implemented but not built or rendered in this Linux
+orb (no Android SDK or Xcode); touch-device acceptance remains unverified.
 Web dialogs handle Escape on key-down as well as native cancellation; child-owned
 Escape (suggestions or a native select popup) closes that layer first, and IME
 composition Escape leaves the editor open. In-flight write guards remain in place.
