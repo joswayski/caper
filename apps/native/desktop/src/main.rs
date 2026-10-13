@@ -12641,7 +12641,7 @@ impl CaperApp {
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
-                        ui.horizontal_centered(|ui| {
+                        ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
                         ui.label(
@@ -34502,6 +34502,26 @@ mod tests {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Maya is typing…")
             });
             assert_eq!(visible, !stopped);
+            let composer = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == super::COMPOSER => {
+                        assert!(
+                            rect.rect.bottom() <= shape.clip_rect.bottom(),
+                            "typing must not push the input out of view"
+                        );
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("visible composer");
+            if !stopped {
+                assert!(
+                    text_position(&output, "Maya is typing…").y < composer.top(),
+                    "typing belongs above the input"
+                );
+            }
         }
     }
 
