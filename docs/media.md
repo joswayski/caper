@@ -7417,7 +7417,7 @@ stops at the missing SDK; Apple has no Swift/Xcode here. Neither is native-devic
 acceptance. This tuning needs only web/native client releases, independently;
 no API/gateway deployment, migration, infrastructure or configuration change.
 
-**Composer preview follow-up (October 13, 2026).** Web checks and all 606 unit
+**Composer preview follow-up (October 13, 2026).** Web checks and all 607 unit
 tests pass. Focused Chromium checks at 1280px and 390px (coarse pointer verified)
 cover the author/excerpt above channel and thread inputs, two-line long text,
 URLs and emoji, attachment-only fallback, target switching/cancellation without
