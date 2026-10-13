@@ -545,12 +545,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     @State private var grab: (position: CGFloat, offset: CGFloat)?
     /// The gesture this state belongs to, by where it started, and when it
     /// ended. After an end, or from another start, a move begins a new gesture
-    /// decided afresh, so no earlier gesture can leave a stale slide. Moves that
-    /// keep an ended gesture's start and arrive far along are its tail: following
-    /// them reopened the slide it had just finished. A new drag from that same
-    /// point reports its first move just past the minimum distance. From another
-    /// start a far first move is still new: a link or button under the finger
-    /// holds back a fast swipe's first report until it gives up the touch.
+    /// decided afresh, so no earlier gesture can leave a stale slide; but only
+    /// a move just past the minimum distance, as every real gesture's first is.
+    /// Moves that start far along trail an ended gesture: following them
+    /// reopened the slide it had just finished.
     @State private var gesture: (start: CGPoint, endedAt: Date?)?
     @GestureState private var dragging = false
 
@@ -565,10 +563,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    let sameStart = gesture?.start == value.startLocation
-                    if !sameStart || gesture?.endedAt != nil {
-                        // An ended gesture's tail keeps its start and arrives far along.
-                        if sameStart { guard hypot(value.translation.width, value.translation.height) < 60 else { return } }
+                    if gesture?.start != value.startLocation || gesture?.endedAt != nil {
+                        // A gesture's first move is just past the minimum distance;
+                        // moves that start far along trail one that has already ended.
+                        guard hypot(value.translation.width, value.translation.height) < 60 else { return }
                         // An abandoned slide of an earlier gesture settles back first.
                         if tracking == true, let drawer, let position = drawer.drag {
                             drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: .settle)
@@ -594,26 +592,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                 }
                 .onEnded { value in
                     // Only the current gesture's end acts; an earlier one's leaves it alone.
-                    guard gesture?.start == value.startLocation else { return }
+                    guard gesture?.start == value.startLocation else { return releaseUnfollowed(value) }
                     let followed = tracking == true && gesture?.endedAt == nil
                     defer { tracking = nil; grab = nil; if gesture?.endedAt == nil { gesture?.endedAt = Date() } }
                     guard followed, let drawer, let position = drawer.drag else { return }
-                    let release = DrawerRelease(open: open, position: position, velocity: opening * value.velocity.width,
-                                                distance: opening * value.translation.width, travel: drawer.travel)
-                    let timing = DrawerSettle.Timing.release(release)
-                    drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
-                    SwipeTapGuard.release()
-                    withAnimation(reduceMotion ? nil : timing.animation) {
-                        drawer.drag = nil
-                        if release.commit {
-                            // Only Browse marks its switch; the member list animates inside the conversation.
-                            if let browse = drawer as? BrowseDrawer {
-                                browse.releasing = true
-                                withTransaction(\.browseSlide, true, navigate)
-                                browse.releasing = false
-                            } else { navigate() }
-                        }
-                    }
+                    release(drawer, from: position, value)
                 }, including: enabled ? .all : .subviews)
             .onChange(of: dragging) { _, active in
                 guard !active else { return }
@@ -634,6 +617,39 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     withAnimation(reduceMotion ? nil : timing.animation) { drawer.drag = nil }
                 }
             }
+    }
+    /// A link or button under the finger can hold a fast swipe's moves until it
+    /// lifts, so only its end (or a first move far along) arrives. Decide that
+    /// swipe from where it ended, as if the view had followed the whole way.
+    /// Its trailing moves keep its start, which it records as ended.
+    private func releaseUnfollowed(_ value: DragGesture.Value) {
+        let dx = Drawer.opening * value.translation.width, dy = value.translation.height
+        guard enabled, let drawer, !excludedStart.contains(value.startLocation),
+              abs(dx) >= 40, abs(dx) >= abs(dy) * 1.5, open ? dx < 0 : dx > 0 else { return }
+        gesture = (value.startLocation, Date())
+        tracking = nil
+        grab = nil
+        let moved = min(1, abs(dx) / drawer.travel)
+        release(drawer, from: open ? 1 - moved : moved, value)
+    }
+
+    private func release(_ drawer: Drawer, from position: CGFloat, _ value: DragGesture.Value) {
+        let release = DrawerRelease(open: open, position: position, velocity: Drawer.opening * value.velocity.width,
+                                    distance: Drawer.opening * value.translation.width, travel: drawer.travel)
+        let timing = DrawerSettle.Timing.release(release)
+        drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
+        SwipeTapGuard.release()
+        withAnimation(reduceMotion ? nil : timing.animation) {
+            drawer.drag = nil
+            if release.commit {
+                // Only Browse marks its switch; the member list animates inside the conversation.
+                if let browse = drawer as? BrowseDrawer {
+                    browse.releasing = true
+                    withTransaction(\.browseSlide, true, navigate)
+                    browse.releasing = false
+                } else { navigate() }
+            }
+        }
     }
 }
 
