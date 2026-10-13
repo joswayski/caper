@@ -48,6 +48,7 @@ import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
+import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
@@ -527,7 +528,7 @@ export default function Call({
   const audioReturnFocus = useRef<HTMLElement | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialog = useRef<HTMLDialogElement>(null);
-  const profileBackdropPress = useRef(false);
+  const profileBackdrop = useBackdropDismiss(() => setProfileOpen(false));
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
@@ -1873,28 +1874,7 @@ export default function Call({
         className="audio-dialog profile-dialog"
         aria-labelledby="profile-dialog-title"
         onKeyDown={dialogKeyDown}
-        onPointerDown={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          profileBackdropPress.current =
-            event.target === event.currentTarget &&
-            (event.clientX < rect.left ||
-              event.clientX > rect.right ||
-              event.clientY < rect.top ||
-              event.clientY > rect.bottom);
-        }}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          if (
-            profileBackdropPress.current &&
-            event.target === event.currentTarget &&
-            (event.clientX < rect.left ||
-              event.clientX > rect.right ||
-              event.clientY < rect.top ||
-              event.clientY > rect.bottom)
-          )
-            setProfileOpen(false);
-          profileBackdropPress.current = false;
-        }}
+        {...profileBackdrop}
         onCancel={(event) => {
           event.preventDefault();
           setProfileOpen(false);
