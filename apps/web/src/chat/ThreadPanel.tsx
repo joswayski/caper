@@ -1,8 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Send, X } from "lucide-react";
+import { ArrowLeft, Paperclip, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
+import { DraftAttachments, MessageAttachments, type LocalPreview } from "./Attachments.tsx";
+import type { ComposerAttachments } from "./Composer.tsx";
+import DropOverlay from "./DropOverlay.tsx";
+import { carriesFiles } from "./drop.ts";
+import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
@@ -29,6 +34,9 @@ export default function ThreadPanel({
   mentionPeople,
   specialMentions,
   replyTo,
+  attachments,
+  localPreviews,
+  onSend,
   onReplyChange,
   blockedIds,
   renderMessage,
@@ -44,6 +52,9 @@ export default function ThreadPanel({
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
   replyTo?: ChatReplyReference;
+  attachments?: ComposerAttachments;
+  localPreviews: Record<string, LocalPreview>;
+  onSend: (text: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
   renderMessage: (
@@ -63,6 +74,15 @@ export default function ThreadPanel({
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
   const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const pickerAdd = useRef<ComposerAttachments["onAdd"]>(undefined);
+  const canAttach = !!attachments?.enabled;
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+  const endDrop = () => {
+    dragDepth.current = 0;
+    setDropping(false);
+  };
   const scroll = useRef<HTMLDivElement>(null);
   const olderAnchor = useRef<{ height: number; top: number }>(undefined);
   const follow = useRef(true);
@@ -199,6 +219,7 @@ export default function ThreadPanel({
   }, [open, mobile, onClose]);
   useEffect(() => {
     setValidation(undefined);
+    endDrop();
     if (!rootId) return;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     olderAnchor.current = undefined;
@@ -286,9 +307,18 @@ export default function ThreadPanel({
   const sending = !!state.pendingSend && !state.sendError;
   const blocked = !!state.pendingSend && !pending;
   const submit = async () => {
-    if (!client || readOnly || blocked || sending || state.sendRejected) return;
+    if (
+      !client ||
+      readOnly ||
+      blocked ||
+      sending ||
+      state.sendRejected ||
+      state.phase !== "ready" ||
+      state.thread?.loading
+    )
+      return;
     try {
-      await client.send(pending?.text ?? draft.text, { threadRootId: rootId, broadcast: draft.broadcast, replyTo });
+      await onSend(pending?.text ?? draft.text, pending?.broadcast ?? draft.broadcast);
       follow.current = true;
     } catch (error) {
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
@@ -303,7 +333,29 @@ export default function ThreadPanel({
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
+      onDragEnter={(event) => {
+        if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+        dragDepth.current += 1;
+        setDropping(true);
+      }}
+      onDragLeave={() => {
+        if (!dragDepth.current) return;
+        dragDepth.current -= 1;
+        if (!dragDepth.current) setDropping(false);
+      }}
+      onDragOver={(event) => {
+        if (!canAttach || !carriesFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        endDrop();
+        if (!canAttach || !event.dataTransfer.files.length) return;
+        event.preventDefault();
+        attachments.onAdd([...event.dataTransfer.files]);
+      }}
     >
+      {dropping && canAttach && <DropOverlay channelName="thread" direct attached={attachments.drafts.length} />}
       <div
         className="chat-thread-resize"
         role="separator"
@@ -454,7 +506,8 @@ export default function ThreadPanel({
               <header>
                 <strong>{pending.author?.name}</strong>
               </header>
-              <p>{pending.text}</p>
+              {pending.text && <p>{pending.text}</p>}
+              <MessageAttachments attachments={pending.attachments ?? []} localPreviews={localPreviews} />
             </div>
           </article>
         )}
@@ -481,9 +534,9 @@ export default function ThreadPanel({
                 </button>
               </p>
             )}
-            {validation && (
+            {(validation ?? attachments?.error) && (
               <p className="chat-inline-error" role="alert">
-                {validation}
+                {validation ?? attachments?.error}
               </p>
             )}
             {pending && state.sendError && (
@@ -517,12 +570,56 @@ export default function ThreadPanel({
             {blocked && state.sendError && (
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
+            {attachments && (
+              <DraftAttachments
+                drafts={attachments.drafts}
+                onRemove={attachments.onRemove}
+                onRetry={attachments.onRetry}
+              />
+            )}
             <form
+              data-attach={!!attachments || undefined}
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
               }}
             >
+              {attachments && (
+                <>
+                  <button
+                    type="button"
+                    className="chat-attach"
+                    aria-label="Attach files"
+                    title={
+                      !canAttach
+                        ? (attachments.disabledReason ?? "Checking file uploads…")
+                        : attachments.drafts.length >= MAX_ATTACHMENTS
+                          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                          : "Attach files"
+                    }
+                    disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
+                    onClick={() => {
+                      pickerAdd.current = attachments.onAdd;
+                      fileInput.current?.click();
+                    }}
+                  >
+                    <Paperclip size={17} aria-hidden="true" />
+                  </button>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    multiple
+                    hidden
+                    disabled={!canAttach}
+                    onChange={(event) => {
+                      if (!canAttach) return;
+                      (pickerAdd.current ?? attachments.onAdd)([...(event.target.files ?? [])]);
+                      pickerAdd.current = undefined;
+                      event.target.value = "";
+                    }}
+                  />
+                </>
+              )}
               <label className="sr-only" htmlFor="chat-thread-reply">
                 Reply to thread
               </label>
@@ -544,6 +641,12 @@ export default function ThreadPanel({
                   suggestions.change(event.target);
                 }}
                 onBlur={suggestions.blur}
+                onPaste={(event) => {
+                  if (event.clipboardData.files.length && canAttach) {
+                    event.preventDefault();
+                    attachments.onAdd([...event.clipboardData.files]);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (suggestions.keyDown(event)) return;
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -570,7 +673,12 @@ export default function ThreadPanel({
                 <button
                   type="submit"
                   disabled={
-                    sending || blocked || state.sendRejected || state.thread.loading || (!pending && !draft.text.trim())
+                    sending ||
+                    blocked ||
+                    state.sendRejected ||
+                    state.phase !== "ready" ||
+                    state.thread.loading ||
+                    (!pending && !draft.text.trim() && !attachments?.drafts.length)
                   }
                   aria-label="Send reply"
                 >

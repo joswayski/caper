@@ -447,6 +447,24 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
 ) {
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
     val conversationState = rememberSaveableStateHolder()
+    // Outside per-conversation saved state and transient thread panels: picker results
+    // return to their original channel/thread, including after navigation or resizing.
+    var pickingChannel by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickingThread by rememberSaveable { mutableStateOf<String?>(null) }
+    var pickingEpoch by rememberSaveable { mutableLongStateOf(0L) }
+    fun picked(uris: List<android.net.Uri>) {
+        pickingChannel?.let { viewModel.addAttachments(uris, AttachmentDraftTarget(it, pickingThread), pickingEpoch) }
+        pickingChannel = null; pickingThread = null
+    }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS), ::picked)
+    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::picked)
+    fun pickFiles(target: AttachmentDraftTarget, photos: Boolean) {
+        pickingChannel = target.channelId; pickingThread = target.threadRootId; pickingEpoch = viewModel.accountEpoch
+        runCatching {
+            if (photos) media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            else documents.launch(arrayOf("*/*"))
+        }.onFailure { pickingChannel = null; pickingThread = null }
+    }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
     var pendingVoiceJoin by remember(viewModel.accountEpoch, viewModel.spaceAccessEpoch, state.selectedSpace?.space?.id) { mutableStateOf<VoiceJoinIntent?>(null) }
@@ -560,7 +578,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 .then(if (navigationOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 conversationState.SaveableStateProvider(state.selectedChannel?.id ?: if (state.feedbackShown) "feedback" else "empty") {
                                     Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
-                                        { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice) { setNavigationOpen(true) }
+                                        { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, ::pickFiles) { setNavigationOpen(true) }
                                 }
                                 // Composed while shown or sliding; it moves with the conversation over Browse.
                                 if (membersShown || membersInView) {
@@ -592,11 +610,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
-                            { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, Modifier.fillMaxSize()) { setNavigationOpen(true) }
+                            { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, ::pickFiles, Modifier.fillMaxSize()) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd), close = { membersVisible = false })
                     } else {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
-                            { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, Modifier.weight(1f)) { setNavigationOpen(true) }
+                            { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, ::pickFiles, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight(), close = { membersVisible = false })
                     }
                 }
@@ -1460,6 +1478,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     joinVoice: (Channel) -> Unit,
     pendingVoiceJoin: VoiceJoinIntent?,
     leaveVoice: () -> Unit,
+    pickFiles: (AttachmentDraftTarget, Boolean) -> Unit,
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
@@ -1478,11 +1497,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
         Row(Modifier.fillMaxSize()) {
             ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, dismissVoiceError,
-                joinVoice, pendingVoiceJoin, leaveVoice, Modifier.weight(1f), openNavigation)
+                joinVoice, pendingVoiceJoin, leaveVoice, pickFiles, Modifier.weight(1f), openNavigation)
             // The thread opens beside the conversation (web's `.chat-thread-panel`).
             if (!narrow && state.thread != null) Box(Modifier.entrance(MOTION_BASE, dx = 12.dp).width(width.dp).fillMaxHeight()) {
                 threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-                    ThreadConversation(state, viewModel, Modifier.fillMaxSize())
+                    ThreadConversation(state, viewModel, pickFiles, Modifier.fillMaxSize())
                 }
                 Box(Modifier.align(Alignment.CenterStart).width(12.dp).fillMaxHeight()
                     .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)))
@@ -1520,13 +1539,47 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            ThreadConversation(state, viewModel, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize().systemBarsPadding().imePadding())
+            ThreadConversation(state, viewModel, pickFiles, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize().systemBarsPadding().imePadding())
         }
     }
 }
 
-@Composable private fun ThreadConversation(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+/** Drop targets retain their composer identity while compression/upload continues elsewhere. */
+@Composable private fun Modifier.attachmentDrop(
+    enabled: Boolean, target: AttachmentDraftTarget, viewModel: CaperViewModel, dropping: MutableState<Boolean>,
+): Modifier {
+    val attachable by rememberUpdatedState(enabled)
+    val activity = LocalActivity.current
+    val dropTarget = remember(viewModel, activity, target, dropping) {
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) { dropping.value = true }
+            override fun onExited(event: DragAndDropEvent) { dropping.value = false }
+            override fun onEnded(event: DragAndDropEvent) { dropping.value = false }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                dropping.value = false
+                val drag = event.toAndroidDragEvent()
+                val clip = drag.clipData ?: return false
+                val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                if (uris.isEmpty() || !attachable) return false
+                activity?.requestDragAndDropPermissions(drag)
+                viewModel.addAttachments(uris, target)
+                return true
+            }
+        }
+    }
+    return dragAndDropTarget({ attachable && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)
+}
+
+@Composable private fun ThreadConversation(
+    state: AppUiState, viewModel: CaperViewModel, pickFiles: (AttachmentDraftTarget, Boolean) -> Unit, modifier: Modifier,
+) {
     val thread = state.thread ?: return
+    val channel = state.selectedChannel ?: return
+    val target = AttachmentDraftTarget(channel.id, thread.rootId)
+    val files = state.attachmentDrafts[target].orEmpty()
+    val canAttach = state.canParticipate && state.uploadsEnabled && state.chatAuthorId != null && !thread.loading && thread.error == null &&
+        !state.messagesLoading && state.messagesError == null && state.sessionError == null
+    val dropping = remember(target) { mutableStateOf(false) }
     var draft by rememberSaveable(state.selectedChannel?.id, thread.rootId, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var broadcast by rememberSaveable(state.selectedChannel?.id, thread.rootId) { mutableStateOf(false) }
     val pending = state.pendingMessage?.takeIf { it.threadRootId == thread.rootId }
@@ -1538,51 +1591,68 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if (draft.text.isNotBlank()) { viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast); draft = TextFieldValue(""); broadcast = false }
+        else if ((draft.text.isNotBlank() || files.isNotEmpty()) && viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast)) {
+            draft = TextFieldValue(""); broadcast = false
+        }
     }
-    Column(modifier.background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small) { Text(if (direct) "Back to conversation" else "Back to channel") }
+    Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
+        Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
+            Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small) { Text(if (direct) "Back to conversation" else "Back to channel") }
+            }
+            HorizontalDivider(color = Border)
+            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+            if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
+            val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+            MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+                pending?.error?.let { error ->
+                    Text(error, color = ErrorText)
+                    if (pending.rejected) Row {
+                        TextButton({
+                            viewModel.discardPending(restoreFiles = true)?.let {
+                                draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
+                            }
+                        }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small) { Text("Edit") }
+                        TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
+                    } else TextButton(::send, shape = MaterialTheme.shapes.small) { Text("Retry send") }
+                }
+            }
+            if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
+            if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
+                Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
+            if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
+                state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
+                state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft)
+                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
+                    EmojiTextField(draft, change, Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
+                        visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                        leadingIcon = {
+                            AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
+                        },
+                        trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
+                    Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
+                    TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()), shape = MaterialTheme.shapes.small) { Text("Send reply") }
+                }
+                DraftCounter(draft.text)
+                if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
+            } else Text(when {
+                state.selectedDirect?.incoming == true -> "Accept the request to reply."
+                direct -> "You can’t reply in this conversation."
+                else -> "Join the channel to reply."
+            }, Modifier.padding(18.dp), color = TextMuted)
         }
-        HorizontalDivider(color = Border)
-        thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
-        if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-        val rows = state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-            (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-            (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
-        MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
-            pending?.error?.let { error ->
-                Text(error, color = ErrorText)
-                if (pending.rejected) Row {
-                    TextButton({ viewModel.discardPending(restoreReply = true)?.let { draft = TextFieldValue(it, TextRange(it.length)) } }, enabled = draft.text.isEmpty(), shape = MaterialTheme.shapes.small) { Text("Edit") }
-                    TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small) { Text("Dismiss") }
-                } else TextButton(::send, shape = MaterialTheme.shapes.small) { Text("Retry send") }
-            }
+        if (dropping.value && canAttach) {
+            val (_, detail) = FileDrop.text(channel.name, channel.direct, files.size)
+            FileDropOverlay("Attach to thread", detail, caperBrandingResources[LocalBrandAvatar.current])
         }
-        if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
-        if (!thread.loading && rows.none { it.threadRootId == thread.rootId })
-            Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
-        if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
-            state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
-            SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
-                EmojiTextField(draft, change, Modifier.fillMaxWidth().then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
-                    visualTransformation = MentionVisualTransformation(mentionSource(state)),
-                    trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(pending?.broadcast ?: broadcast, { broadcast = it }, enabled = pending == null)
-                Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
-                TextButton(::send, enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && draft.text.isNotBlank(), shape = MaterialTheme.shapes.small) { Text("Send reply") }
-            }
-            DraftCounter(draft.text)
-            if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
-        } else Text(when {
-            state.selectedDirect?.incoming == true -> "Accept the request to reply."
-            direct -> "You can’t reply in this conversation."
-            else -> "Join the channel to reply."
-        }, Modifier.padding(18.dp), color = TextMuted)
     }
 }
 
@@ -1590,6 +1660,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit,
     narrow: Boolean, membersVisible: Boolean, toggleMembers: () -> Unit, voicePermissionError: String?,
     dismissVoiceError: () -> Unit, joinVoice: (Channel) -> Unit, pendingVoiceJoin: VoiceJoinIntent?, leaveVoice: () -> Unit,
+    pickFiles: (AttachmentDraftTarget, Boolean) -> Unit,
     modifier: Modifier = Modifier, openNavigation: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1628,29 +1699,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
     val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
-    val attachable by rememberUpdatedState(canAttach)
-    // Held, not delegated, so the remembered target below always updates this conversation.
-    val dropping = remember { mutableStateOf(false) }
-    val activity = LocalActivity.current
-    val dropTarget = remember(viewModel, activity, dropping) {
-        object : DragAndDropTarget {
-            override fun onEntered(event: DragAndDropEvent) { dropping.value = true }
-            override fun onExited(event: DragAndDropEvent) { dropping.value = false }
-            override fun onEnded(event: DragAndDropEvent) { dropping.value = false }
-            override fun onDrop(event: DragAndDropEvent): Boolean {
-                dropping.value = false
-                val drag = event.toAndroidDragEvent()
-                val clip = drag.clipData ?: return false
-                val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
-                if (uris.isEmpty() || !attachable) return false
-                // Lets this activity read another app's content URIs while the copy runs.
-                activity?.requestDragAndDropPermissions(drag)
-                viewModel.addAttachments(uris)
-                return true
-            }
-        }
-    }
-    Box(modifier.fillMaxHeight().dragAndDropTarget({ attachable && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)) {
+    val target = AttachmentDraftTarget(channel.id)
+    val dropping = remember(target) { mutableStateOf(false) }
+    Box(modifier.fillMaxHeight().attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation)) {
             // Web waits a second before announcing a lost connection.
             val live = state.gateway == GatewayStatus.LIVE
@@ -1871,13 +1922,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 SuggestingComposer(draft, { updateDraft(it); viewModel.reportActivity(); viewModel.setTyping(it.text.isNotBlank()) }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                         EmojiTextField(
-                            draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach, viewModel::addAttachments).then(field),
+                            draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
                             placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
                             visualTransformation = MentionVisualTransformation(mentionSource(state)),
                             // Reserve the icon inside the field while uploads/session become ready.
                             // Read-only previews and locked DMs have no composer.
                             leadingIcon = {
-                                AttachButton(attachDisabledReason(state), viewModel::addAttachments)
+                                AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
                             },
                             // The `:name:` shortcut still works; this is the visible way in.
                             trailingIcon = {
@@ -3063,10 +3114,11 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
  * Why Attach is disabled, or null when it can be used, worded as on every client: checking while upload settings
  * or the conversation load, unavailable once either fails, and the attachment limit.
  */
-internal fun attachDisabledReason(state: AppUiState): String? = when {
+internal fun attachDisabledReason(state: AppUiState, target: AttachmentDraftTarget? = state.selectedChannel?.id?.let { AttachmentDraftTarget(it) }): String? = when {
     (state.uploadsChecked && !state.uploadsEnabled) || state.messagesError != null || state.sessionError != null -> "File uploads are unavailable"
-    !state.uploadsEnabled || state.chatAuthorId == null || state.messagesLoading -> "Checking file uploads…"
-    state.drafts.size >= AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
+    target?.threadRootId != null && state.thread?.error != null -> "File uploads are unavailable"
+    !state.uploadsEnabled || state.chatAuthorId == null || state.messagesLoading || (target?.threadRootId != null && state.thread?.loading == true) -> "Checking file uploads…"
+    state.attachmentDrafts[target].orEmpty().size >= AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
     else -> null
 }
 
@@ -3091,6 +3143,8 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     disabledReason: String?, add: (List<android.net.Uri>) -> Unit, interaction: (Boolean) -> Unit = {},
     /** Imports files copied to the clipboard, where a composer supports it. */
     paste: (() -> Unit)? = null,
+    /** Conversation launchers live outside transient thread panels and retain their original target. */
+    pick: ((Boolean) -> Unit)? = null,
 ) {
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
@@ -3111,11 +3165,13 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }
         DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
+                if (pick != null) { open = false; pick(true); return@DropdownMenuItem }
                 open = false; picking = true
                 runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
                     .onFailure { picking = false; interaction(false) }
             })
             DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
+                if (pick != null) { open = false; pick(false); return@DropdownMenuItem }
                 open = false; picking = true
                 runCatching { documents.launch(arrayOf("*/*")) }
                     .onFailure { picking = false; interaction(false) }

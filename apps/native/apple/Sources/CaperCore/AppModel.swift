@@ -2295,7 +2295,8 @@ public final class ChatModel {
     public private(set) var uploadsChecked = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
-    public private(set) var attachmentDrafts: [AttachmentDraft] = []
+    public var attachmentDrafts: [AttachmentDraft] { attachmentFiles() }
+    public var threadAttachmentDrafts: [AttachmentDraft] { attachmentFiles(inThread: true) }
     public private(set) var sendUploadFailed = false
     private var preparedUploads: [String: PreparedAttachment] = [:]
     private var pendingDrafts: [AttachmentDraft] = []
@@ -2303,7 +2304,14 @@ public final class ChatModel {
     /// Latest ephemeral `attachment.progress` percent per processing attachment id.
     public private(set) var attachmentProgress: [String: Int] = [:]
     /// Composer-level attachment message, such as the 10-file limit.
-    public var attachmentNotice: String?
+    public var attachmentNotice: String? {
+        get { composerTarget().flatMap { attachmentNotices[$0] } }
+        set { if let target = composerTarget() { attachmentNotices[target] = newValue } }
+    }
+    public var threadAttachmentNotice: String? {
+        get { composerTarget(inThread: true).flatMap { attachmentNotices[$0] } }
+        set { if let target = composerTarget(inThread: true) { attachmentNotices[target] = newValue } }
+    }
     public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
     /// Every client's wording for a disabled attach control: checking while
     /// usage or the conversation loads, otherwise unavailable.
@@ -2311,11 +2319,15 @@ public final class ChatModel {
         (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
     }
     /// The send control's enabled state: text or uploaded files, nothing still uploading.
-    public var canSubmit: Bool {
+    public var canSubmit: Bool { canSubmit(inThread: false) }
+    public func canSubmit(inThread: Bool) -> Bool {
         if sending || delivery.rejected { return false }
-        if delivery.pending != nil { return true }
-        return attachmentDrafts.allSatisfy { $0.attachment != nil }
-            && MessageValidation.error(for: draft, attachmentCount: attachmentDrafts.count) == nil
+        let root = inThread ? threadRootID : nil
+        if inThread && root == nil { return false }
+        if let pending = delivery.pending { return pending.threadRootId == root }
+        let files = attachmentFiles(inThread: inThread)
+        return files.allSatisfy { $0.attachment != nil }
+            && MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
@@ -2335,9 +2347,17 @@ public final class ChatModel {
     private var threadDrafts: [String: String] = [:]
     /// Unsent text of other conversations by channel or DM ID, restored on return.
     private var drafts: [String: String] = [:]
-    /// Staged files of conversations that are not open, by channel or DM ID.
-    /// Like their text, they stay (uploads carrying on) until reopened.
-    private var stagedFiles: [String: [AttachmentDraft]] = [:]
+    /// A picker owns its original composer even if selection finishes after
+    /// navigation. Access IDs invalidate old callbacks after sign-out/revocation.
+    struct AttachmentTarget: Hashable {
+        let channelID: String
+        let threadRootID: String?
+        let accessID: UUID
+    }
+    private var attachmentAccessIDs: [String: UUID] = [:]
+    /// Files of every composer, open or not. Uploads carry on while it is closed.
+    private var stagedFiles: [AttachmentTarget: [AttachmentDraft]] = [:]
+    private var attachmentNotices: [AttachmentTarget: String] = [:]
     /// The conversation each staged file uploads to, open or not.
     private var draftChannels: [String: String] = [:]
     private var restoredDraft: String?
@@ -2747,6 +2767,7 @@ public final class ChatModel {
             guard generation == requestGeneration else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
                 clearLocal()
+                discardStagedFiles(channelID: channelID)
                 onAccessRevoked?(channelID)
             }
             self.error = error.localizedDescription
@@ -2802,6 +2823,7 @@ public final class ChatModel {
         } catch {
             guard generation == requestGeneration, anchorRequest == historyAnchorRequest, self.channelID == channelID else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                discardStagedFiles(channelID: channelID)
                 onAccessRevoked?(channelID)
                 await stop()
                 guard generation == requestGeneration + 1 else { return }
@@ -2870,6 +2892,7 @@ public final class ChatModel {
         guard around != nil || threadRootID != rootID else { return }
         threadRequest += 1
         threadRootID = rootID; threadError = nil
+        for file in threadAttachmentDrafts where file.needsUpload { retryAttachmentDraft(id: file.id) }
         let cached = around == nil ? threadPages[rootID] : nil
         threadBefore = cached?.before; threadHasMore = cached?.hasMore ?? false
         threadAfter = cached?.after; threadHasNewer = cached?.hasNewer ?? false
@@ -2915,15 +2938,16 @@ public final class ChatModel {
         if !inThread, let root { Task { await openThread(root) } }
     }
 
-    public func send(inThread: Bool = false) async {
+    public func send(inThread: Bool = false, retryPending: Bool = false) async {
         guard !sending, !delivery.rejected else { return }
+        guard !retryPending || delivery.pending != nil else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
-        let rootID = inThread ? threadRootID : nil
+        let rootID = inThread ? (retryPending ? delivery.pending?.threadRootId : threadRootID) : nil
         guard !inThread || rootID != nil else { return }
         if let pending = delivery.pending, pending.threadRootId != rootID { return }
         let text = inThread ? threadDraft : draft
-        // Files attach only from the channel composer.
-        let files: [AttachmentDraft] = inThread ? [] : attachmentDrafts
+        let target = composerTarget(inThread: inThread)
+        let files = attachmentFiles(inThread: inThread)
         if delivery.pending == nil {
             if files.contains(where: { $0.attachment == nil }) {
                 for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
@@ -2948,12 +2972,12 @@ public final class ChatModel {
             replyTargets[rootID ?? "channel"] = nil
             pendingDrafts = files
             pendingNeedsUpload = files.contains { $0.needsUpload }
+            // Pending and processing rows retain originals from either composer.
+            for item in files { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
+            if let target { stagedFiles[target] = nil; attachmentNotices[target] = nil }
             // "Also send to channel" applies to one reply, so it resets with the draft.
             if inThread { threadDraft = ""; threadBroadcast = false } else {
-                // Kept for the pending row and the processing placeholder; removed
-                // when the file is ready or failed, or when the conversation closes.
-                for item in attachmentDrafts { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
-                draft = ""; attachmentDrafts = []; attachmentNotice = nil
+                draft = ""
             }
         }
         let requestGeneration = generation
@@ -3204,21 +3228,26 @@ public final class ChatModel {
 
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         let root = delivery.pending?.threadRootId
-        guard !sending, delivery.rejected, !edit || (root == nil ? draft.isEmpty : threadDraft.isEmpty) else { return false }
+        let target = channelID.flatMap { channel in attachmentAccessIDs[channel].map { AttachmentTarget(channelID: channel, threadRootID: root, accessID: $0) } }
+        let textEmpty = root.map { (threadDrafts[$0] ?? "").isEmpty } ?? draft.isEmpty
+        guard !sending, delivery.rejected,
+              !edit || (textEmpty && (target.flatMap { stagedFiles[$0] } ?? []).isEmpty) else { return false }
         let reference = delivery.pending?.replyTo
+        let broadcast = delivery.pending?.broadcast ?? false
         let attachments = delivery.pending?.attachmentIDs ?? []
         guard let text = delivery.discardRejected() else { return false }
         // Only definitively rejected sends may be discarded.
         for id in attachments {
-            Task { await api.cancelAsset(id: id) }
-            if let local = localAttachmentCopies.removeValue(forKey: id) { AttachmentStaging.remove(local) }
+            localAttachmentCopies[id] = nil
         }
-        pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
-        releasePendingUploads()
         if edit {
-            if root == nil { draft = text } else { threadDraft = text }
+            if let target { stagedFiles[target] = pendingDrafts }
+            if let root { threadDrafts[root] = text; threadBroadcasts[root] = broadcast } else { draft = text }
             replyTargets[root ?? "channel"] = reference
+        } else {
+            pendingDrafts.forEach(abandon)
         }
+        releasePendingUploads(keepingDrafts: edit)
         error = nil
         return true
     }
@@ -3424,33 +3453,29 @@ public final class ChatModel {
     private func stashDraft() {
         guard let channelID else { return }
         drafts[channelID] = draft.isEmpty ? nil : draft
-        if !attachmentDrafts.isEmpty {
-            stagedFiles[channelID] = attachmentDrafts
-            attachmentDrafts = []
-            attachmentNotice = nil
-        }
     }
 
     /// Returns a reopened conversation's staged files, renewing any that
     /// failed or expired while it was closed.
     private func restoreStagedFiles(channelID: String) {
-        guard let files = stagedFiles.removeValue(forKey: channelID) else { return }
-        attachmentDrafts = files
+        let files = stagedFiles.filter { $0.key.channelID == channelID }.values.flatMap { $0 }
         for file in files where file.needsUpload && preparedUploads[file.id] != nil { retryAttachmentDraft(id: file.id) }
     }
 
     private func hasDraft(_ id: String) -> Bool {
-        (attachmentDrafts + pendingDrafts).contains(where: { $0.id == id })
+        pendingDrafts.contains(where: { $0.id == id })
             || stagedFiles.values.contains(where: { $0.contains(where: { $0.id == id }) })
     }
 
     /// Gives up staged files that can no longer be sent: on sign-out, or for a
     /// conversation whose access ended.
     private func discardStagedFiles(channelID: String? = nil) {
-        let ids = channelID.map { [$0] } ?? Array(stagedFiles.keys)
-        for id in ids {
-            for draft in stagedFiles.removeValue(forKey: id) ?? [] { abandon(draft) }
+        let targets = stagedFiles.keys.filter { channelID == nil || $0.channelID == channelID }
+        for target in targets {
+            for draft in stagedFiles.removeValue(forKey: target) ?? [] { abandon(draft) }
         }
+        attachmentNotices = attachmentNotices.filter { channelID != nil && $0.key.channelID != channelID }
+        if let channelID { attachmentAccessIDs[channelID] = nil } else { attachmentAccessIDs = [:]; uploadGeneration += 1 }
     }
 
     private func abandon(_ draft: AttachmentDraft) {
@@ -3470,7 +3495,6 @@ public final class ChatModel {
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
         if !preservingPending {
-            discardAttachmentDrafts()
             pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
             releasePendingUploads()
             localAttachmentCopies.values.forEach { AttachmentStaging.remove($0) }
@@ -3658,44 +3682,75 @@ public final class ChatModel {
         }
     }
 
+    private func composerTarget(inThread: Bool = false) -> AttachmentTarget? {
+        guard let channelID, let accessID = attachmentAccessIDs[channelID], !inThread || threadRootID != nil else { return nil }
+        return AttachmentTarget(channelID: channelID, threadRootID: inThread ? threadRootID : nil, accessID: accessID)
+    }
+
+    /// Capture before opening a picker, not after its asynchronous import.
+    func attachmentTarget(inThread: Bool = false) -> AttachmentTarget? {
+        guard canAttach, let channelID, !inThread || threadRootID != nil else { return nil }
+        if attachmentAccessIDs[channelID] == nil { attachmentAccessIDs[channelID] = UUID() }
+        return composerTarget(inThread: inThread)
+    }
+
+    func attachmentFiles(inThread: Bool = false) -> [AttachmentDraft] {
+        composerTarget(inThread: inThread).flatMap { stagedFiles[$0] } ?? []
+    }
+
+    func setAttachmentNotice(_ notice: String?, target: AttachmentTarget) {
+        guard attachmentAccessIDs[target.channelID] == target.accessID else { return }
+        attachmentNotices[target] = notice
+    }
+
+    func attachmentNotice(target: AttachmentTarget) -> String? { attachmentNotices[target] }
+
     /// Return false for ordinary text/links so the native editor handles them.
-    func pasteAttachments() -> Bool {
-        guard canAttach else { return false }
+    func pasteAttachments(inThread: Bool = false) -> Bool {
+        guard let target = attachmentTarget(inThread: inThread) else { return false }
         do {
             let files = try NativeAttachmentPaste.stage()
             guard !files.isEmpty else { return false }
-            addAttachments(files)
-        } catch { attachmentNotice = "Pasted files couldn’t be added. Try selecting them with Files." }
+            addAttachments(files, to: target)
+        } catch { setAttachmentNotice("Pasted files couldn’t be added. Try selecting them with Files.", target: target) }
         return true
     }
 
     /// Compresses (with the server's settings) and uploads staged files for
     /// the next message, up to 10.
-    public func addAttachments(_ files: [LocalAttachmentFile]) {
-        guard canAttach, !files.isEmpty else {
+    public func addAttachments(_ files: [LocalAttachmentFile], inThread: Bool = false) {
+        guard let target = attachmentTarget(inThread: inThread) else {
             files.forEach { AttachmentStaging.remove($0.url) }
             return
         }
-        let room = AttachmentPolicy.maxAttachments - attachmentDrafts.count
+        addAttachments(files, to: target)
+    }
+
+    func addAttachments(_ files: [LocalAttachmentFile], to target: AttachmentTarget) {
+        guard attachmentAccessIDs[target.channelID] == target.accessID, !files.isEmpty else {
+            files.forEach { AttachmentStaging.remove($0.url) }
+            return
+        }
+        let room = AttachmentPolicy.maxAttachments - (stagedFiles[target]?.count ?? 0)
         guard room > 0 else {
-            attachmentNotice = "You can attach up to \(AttachmentPolicy.maxAttachments) files."
+            setAttachmentNotice("You can attach up to \(AttachmentPolicy.maxAttachments) files.", target: target)
             files.forEach { AttachmentStaging.remove($0.url) }
             return
         }
-        attachmentNotice = files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil
+        setAttachmentNotice(files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil, target: target)
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
         let settings = attachmentCompression
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
             let id = UUID().uuidString
-            if let channelID { draftChannels[id] = channelID }
-            attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
-                                                    localURL: file.url, sourceSize: file.size))
+            draftChannels[id] = target.channelID
+            stagedFiles[target, default: []].append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
+                                                                  localURL: file.url, sourceSize: file.size))
             uploadTasks[id] = Task { [weak self] in
                 let prepared = await AttachmentPreparer.prepare(file, settings: settings)
                 guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled, self.hasDraft(id) else {
-                    // Removed (or the conversation closed) while compressing.
+                    // Removed or access revoked while compressing.
                     AttachmentStaging.remove(prepared.fileURL)
                     if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
                     return
@@ -3721,41 +3776,30 @@ public final class ChatModel {
     }
 
     public func removeAttachmentDraft(id: String) {
-        uploadTasks[id]?.cancel()
-        uploadTasks[id] = nil
-        preparedUploads[id] = nil
-        draftChannels[id] = nil
-        if let draft = attachmentDrafts.first(where: { $0.id == id }) {
-            if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
-            AttachmentStaging.remove(draft.localURL)
+        for (target, files) in stagedFiles {
+            guard let draft = files.first(where: { $0.id == id }) else { continue }
+            abandon(draft)
+            stagedFiles[target]?.removeAll { $0.id == id }
+            attachmentNotices[target] = nil
+            return
         }
-        attachmentDrafts.removeAll { $0.id == id }
-        attachmentNotice = nil
-    }
-
-    /// Gives up the open conversation's files. Switching conversations stashes
-    /// them first (`stashDraft`), so this only drops what is still open.
-    private func discardAttachmentDrafts() {
-        attachmentDrafts.forEach(abandon)
-        attachmentDrafts = []
-        attachmentNotice = nil
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
-        if let index = attachmentDrafts.firstIndex(where: { $0.id == id }) { change(&attachmentDrafts[index]) }
-        for (channel, files) in stagedFiles {
-            if let index = files.firstIndex(where: { $0.id == id }) { change(&stagedFiles[channel]![index]) }
+        for (target, files) in stagedFiles {
+            if let index = files.firstIndex(where: { $0.id == id }) { change(&stagedFiles[target]![index]) }
         }
         if let index = pendingDrafts.firstIndex(where: { $0.id == id }) { change(&pendingDrafts[index]) }
     }
 
     public func refreshDraftUploads() {
-        for file in attachmentDrafts where file.needsUpload { retryAttachmentDraft(id: file.id) }
-        if sendUploadFailed { Task { await send(inThread: delivery.pending?.threadRootId != nil) } }
+        for file in stagedFiles.values.flatMap({ $0 }) where file.needsUpload { retryAttachmentDraft(id: file.id) }
+        if sendUploadFailed { Task { await send(inThread: delivery.pending?.threadRootId != nil, retryPending: true) } }
     }
 
     public func retryAttachmentDraft(id: String) {
-        guard uploadTasks[id] == nil, attachmentDrafts.contains(where: { $0.id == id }) else { return }
+        guard uploadTasks[id] == nil, preparedUploads[id] != nil,
+              stagedFiles.values.contains(where: { $0.contains(where: { $0.id == id }) }) else { return }
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
             do { _ = try await uploadAttachmentDraft(id: id) }
@@ -3767,7 +3811,7 @@ public final class ChatModel {
     private func uploadAttachmentDraft(id: String) async throws -> ChatAttachment {
         let staged = stagedFiles.values.flatMap { $0 }
         guard let channelID = draftChannels[id] ?? channelID,
-              let file = (attachmentDrafts + pendingDrafts + staged).first(where: { $0.id == id }),
+              let file = (pendingDrafts + staged).first(where: { $0.id == id }),
               let prepared = preparedUploads[id] else { throw CancellationError() }
         if !file.needsUpload, let attachment = file.attachment { return attachment }
         let expected = uploadGeneration
@@ -3791,8 +3835,10 @@ public final class ChatModel {
         return attachment
     }
 
-    private func releasePendingUploads() {
-        for file in pendingDrafts { preparedUploads[file.id] = nil }
+    private func releasePendingUploads(keepingDrafts: Bool = false) {
+        if !keepingDrafts {
+            for file in pendingDrafts { preparedUploads[file.id] = nil; draftChannels[file.id] = nil }
+        }
         pendingDrafts = []; pendingNeedsUpload = false; sendUploadFailed = false
     }
 

@@ -32,6 +32,8 @@ function render(
       direct={direct}
       readOnly={readOnly}
       specialMentions
+      localPreviews={{}}
+      onSend={async () => {}}
       onReplyChange={() => {}}
       blockedIds={new Set()}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}

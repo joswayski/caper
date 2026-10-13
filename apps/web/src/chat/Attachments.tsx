@@ -310,6 +310,8 @@ export function MessageAttachments({
 
 export interface DraftAttachment extends UploadState {
   key: string;
+  /** A thread's files stay separate from the channel and other thread drafts. */
+  threadRootId?: string;
   /** Kept locally until Send, which prepares and uploads it (profile cards). */
   staged?: boolean;
   /** Local file for previewing before sending, also used by the pending row. */

@@ -2652,6 +2652,7 @@ private struct ChatView: View {
     @State private var mentionPointer = MentionPointer()
     /// Files are being dragged over the conversation.
     @State private var fileDropTargeted = false
+    @State private var fileDropTarget: ChatModel.AttachmentTarget?
 
     /// The signed-in person, also while previewing without a chat session.
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -3058,7 +3059,7 @@ private struct ChatView: View {
                                     ChatDateDivider(createdAt: pending.createdAt)
                                 }
                                 PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty, chat: chat, uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty && chat.attachmentDrafts.isEmpty, chat: chat, uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                                   retry: { Task { await chat.send() } },
                                                   edit: { _ = chat.discardRejected(edit: true) },
                                                   dismiss: { _ = chat.discardRejected() })
@@ -3290,13 +3291,17 @@ private struct ChatView: View {
             // Finder, Files, Photos and other apps (iPad split view and Slide Over).
             // addAttachments keeps the first files that fit and removes the rest.
             .dropDestination(for: DroppedAttachment.self) { items, _ in
-                guard chat.canAttach, !items.isEmpty else {
+                guard let target = fileDropTarget ?? chat.attachmentTarget(), !items.isEmpty else {
                     items.forEach { AttachmentStaging.remove($0.file.url) }
                     return false
                 }
-                chat.addAttachments(items.map(\.file))
+                chat.addAttachments(items.map(\.file), to: target)
+                fileDropTarget = nil
                 return true
-            } isTargeted: { fileDropTargeted = $0 }
+            } isTargeted: {
+                fileDropTargeted = $0
+                if $0 { fileDropTarget = chat.attachmentTarget() }
+            }
             .overlay {
                 if fileDropTargeted && chat.canAttach {
                     let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: model.selectedDirectMessageID != nil || model.visit?.direct == true,
@@ -3447,6 +3452,8 @@ private struct NativeThreadView: View {
     /// The conversation's `@` candidates, shared with the main composer.
     let mentions: MentionSource
     @StateObject private var composerAutocomplete = ComposerAutocompleteController()
+    @State private var fileDropTargeted = false
+    @State private var fileDropTarget: ChatModel.AttachmentTarget?
     @State private var reactionMessage: ChatMessage?
     @State private var showingEmojiPicker = false
     @State private var reactorsTarget: ReactorsTarget?
@@ -3570,7 +3577,7 @@ private struct NativeThreadView: View {
                         }
                         if replies.isEmpty && !chat.threadLoading && chat.threadError == nil { Text(chat.isPreview ? "No replies yet." : "No replies yet. Start the thread.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(18) }
                         if let pending = threadPending {
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty, chat: chat,
+                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error, rejected: chat.sendRejected, canEdit: chat.threadDraft.isEmpty && chat.threadAttachmentDrafts.isEmpty, chat: chat,
                                 uploadFailed: chat.sendUploadFailed, grouped: grouping.pendingGrouped,
                                 retry: { Task { await chat.send(inThread: true) } },
                                 edit: { _ = chat.discardRejected(edit: true) }, dismiss: { _ = chat.discardRejected() })
@@ -3619,27 +3626,33 @@ private struct NativeThreadView: View {
                             .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text).modifier(ControlHover())
                     }
                 }
+                if let notice = chat.threadAttachmentNotice {
+                    Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
+                }
+                AttachmentDraftsView(chat: chat, inThread: true)
                 #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
                 #endif
-                NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
-                                      mentions: mentions, submit: { Task { await chat.send(inThread: true) } })
-                    .frame(minHeight: 72, maxHeight: 174)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .bottom, spacing: 0) {
+                    AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
+                    threadComposer
+                        .frame(minHeight: 72, maxHeight: 174)
+                        .fixedSize(horizontal: false, vertical: true)
+                        #if os(iOS)
+                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        #endif
+                    ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
+                }
                     // Clipped too: the fill's square corners showed outside the rounded border.
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    #if os(iOS)
-                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                    #endif
                     #if os(macOS)
                     .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                     #endif
                 HStack {
                     Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
-                    ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                     Button("Send reply") { Task { await chat.send(inThread: true) } }.buttonStyle(CaperPrimaryButton())
-                        .disabled(chat.sending || chat.sendRejected || chat.threadLoading || chat.pendingMessage != nil || MessageValidation.error(for: chat.threadDraft) != nil)
+                        .disabled(chat.threadLoading || chat.pendingMessage != nil || !chat.canSubmit(inThread: true))
                 }
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
@@ -3651,6 +3664,24 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            .dropDestination(for: DroppedAttachment.self) { items, _ in
+                guard let target = fileDropTarget ?? chat.attachmentTarget(inThread: true), !items.isEmpty else {
+                    items.forEach { AttachmentStaging.remove($0.file.url) }
+                    return false
+                }
+                chat.addAttachments(items.map(\.file), to: target)
+                fileDropTarget = nil
+                return true
+            } isTargeted: {
+                fileDropTargeted = $0
+                if $0 { fileDropTarget = chat.attachmentTarget(inThread: true) }
+            }
+            .overlay {
+                if fileDropTargeted && chat.canAttach {
+                    let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: direct, attached: chat.threadAttachmentDrafts.count)
+                    FileDropOverlay(title: "Add files to thread", detail: text.detail)
+                }
+            }
             #if os(macOS)
             .modifier(ComposerSuggestionsOverlay<ThreadComposerAnchorKey>(controller: composerAutocomplete))
             #endif
@@ -3691,6 +3722,12 @@ private struct NativeThreadView: View {
             // identifier onto every child and a query for the panel is ambiguous.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-thread")
+    }
+
+    private var threadComposer: NativeMessageComposer {
+        let paste: (() -> Bool)? = chat.canAttach ? { chat.pasteAttachments(inThread: true) } : nil
+        return NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
+                                     mentions: mentions, submit: { Task { await chat.send(inThread: true) } }, pasteAttachments: paste)
     }
 }
 
