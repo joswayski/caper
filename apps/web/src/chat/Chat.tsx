@@ -43,6 +43,7 @@ import type { CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
+import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
 import { showStagedFiles, stagedFileChanged, stagedUrls, stashStagedFiles, takeStagedFiles } from "./drafts.ts";
 import {
   feedbackAliases,
@@ -268,6 +269,7 @@ export default function Chat({
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   // The composer owns the draft; the conversation only needs to know one exists.
   const composerRef = useRef<ComposerHandle>(null);
+  const keyboardDismiss = useTimelineKeyboardDismiss("chat-message");
   const [hasDraft, setHasDraft] = useState(false);
   const [replyTargets, setReplyTargets] = useState<Record<string, ChatReplyReference | undefined>>({});
   const setReplyTarget = (root: string, reference?: ChatReplyReference) =>
@@ -1833,7 +1835,7 @@ export default function Chat({
               {viewer}
             </PinsDialog>
           )}
-          <div className="chat-timeline" inert={showPins} aria-hidden={showPins}>
+          <div className="chat-timeline" inert={showPins} aria-hidden={showPins} {...keyboardDismiss}>
             {state.phase === "loading" && <MessageSkeleton />}
             {state.phase === "error" && (
               <div className="chat-state" role="alert">

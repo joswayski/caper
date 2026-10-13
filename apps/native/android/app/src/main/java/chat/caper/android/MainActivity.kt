@@ -41,6 +41,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -96,7 +97,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.res.painterResource
@@ -2098,6 +2101,17 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, pendingStatus: @Composable () -> Unit = {}) {
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Drag interactions exclude automatic following, paging and viewport changes.
+    LaunchedEffect(listState, focus, keyboard) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                focus.clearFocus()
+                keyboard?.hide()
+            }
+        }
+    }
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }

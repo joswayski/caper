@@ -10,6 +10,25 @@ membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 
+Mobile channel, DM and thread timelines dismiss the software keyboard when a
+vertical scroll drag starts. The unsent draft stays in its composer; tapping it
+reopens the keyboard. Automatic following/paging and scrolling within a multiline
+draft do not dismiss it. Web waits past touch slop and leaves horizontal navigation
+gestures to Browse/Members; iOS uses native immediate scroll dismissal and Android
+uses the list's drag interactions. macOS and Rust desktop hardware-keyboard focus
+are unchanged.
+
+Scroll-dismiss validation (2026-10-13): `npm run check` and 604 `npm test` tests
+pass. The browser regression's keyboard checks were run independently against
+overflowing channel, DM and thread fixture timelines: both vertical directions,
+retained drafts, refocusing, automatic scrolling and cancelled gestures pass;
+horizontal thread drags retain focus. The channel check fails on unchanged main
+because its composer retains focus. The full thread browser script stops at a
+separate 527px-vs-600px resize assertion. Chromium touch emulation does not show a
+real phone keyboard. Android compilation stops at the missing SDK; no Swift/Xcode
+toolchain is available here. Added iPhone scroll-dismiss/draft UI checks still need
+Xcode and native keyboard/device acceptance before release.
+
 Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
 desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
 after whitespace or after an opening bracket activates suggestions; URLs, times,

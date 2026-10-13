@@ -524,6 +524,15 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
+        timeline.swipeDown()
+        let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
+                       "Dragging message history must dismiss the keyboard")
+        XCTAssertEqual(composer.value as? String, short, "Scrolling must keep the unsent draft")
+        XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
+        XCTAssertTrue(focus(composer))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+
         let multiline = "\nSecond line\nThird line"
         composer.typeText(multiline)
         XCTAssertEqual(composer.value as? String, short + multiline)
@@ -633,6 +642,15 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,
                        "Thread controls must keep the same 16-point keyboard spacing as the channel composer")
         capture("thread-composer-single-line-keyboard", app: app)
+
+        let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing the visible thread timeline")
+        timeline.swipeDown()
+        let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
+                       "Dragging thread history must dismiss the keyboard, even without replies")
+        XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
+        XCTAssertTrue(focus(composer))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
 
         let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
                                        "Missing the thread's root message")
@@ -1740,6 +1758,8 @@ final class CaperParityUITests: XCTestCase {
             timeline.scroll(byDeltaX: 0, deltaY: 600)
             #else
             timeline.swipeDown()
+            // History browsing now dismisses the keyboard; reopen it to test sending with it up.
+            XCTAssertTrue(focus(composer))
             #endif
             try await holdSends(true)
             do {
