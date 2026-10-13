@@ -431,10 +431,13 @@ final class CaperParityUITests: XCTestCase {
             pill.tap()
         } else {
             #if os(macOS)
-            // Click the pill's characters within the single-line message text.
+            // Click the pill's characters within the single-line message text,
+            // which needs the timeline's width without Members beside it.
+            try hideMembers(in: app)
             let mention = "@fixture_owner"
             let text = try require(row.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", mention)).firstMatch,
                                    timeout: 5, "The message must show the @fixture_owner pill")
+            XCTAssertLessThan(text.frame.height, 25, "The click below assumes the message fits on one line")
             let value = text.value as? String ?? ""
             let range = try XCTUnwrap(value.range(of: mention), "The message text must contain the pill")
             let middle = value.distance(from: value.startIndex, to: range.lowerBound) + mention.count / 2
@@ -1049,6 +1052,17 @@ final class CaperParityUITests: XCTestCase {
         return (handle.value as? String).flatMap { Double($0.split(separator: " ").first ?? "") }.map { Int($0.rounded()) }
     }
 
+    #if os(macOS)
+    /// Wide windows open Members by default (#597). In CI's 1024-pt window it
+    /// leaves the timeline 464 pt: messages wrap and the thread's room for
+    /// widening shrinks below its 300-pt minimum, as on web. Tests about the
+    /// timeline or thread width close it first, as a person would.
+    private func hideMembers(in app: XCUIApplication) throws {
+        try require(app.buttons["Hide member list"], timeout: 30, "Wide layouts open Members by default").click()
+        try require(app.buttons["Show member list"], timeout: 3, "Members must close")
+    }
+    #endif
+
     private func outputGain(of slider: XCUIElement) -> Int? {
         #if os(macOS)
         // AppKit exposes the domain value as NSNumber, not the spoken value.
@@ -1438,6 +1452,8 @@ final class CaperParityUITests: XCTestCase {
             let row = try require(application.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
             try require(row.buttons["View thread"], timeout: 5, "Missing thread link").click()
         }
+        // Members would take the room the thread widens into; it opens again on relaunch.
+        try hideMembers(in: app)
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
         let panel = app.descendants(matching: .any)["message-thread"]
@@ -1479,6 +1495,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(sidebarWidth(of: handle), 350, "Closing does not discard the width")
         app.terminate()
         let reopened = launch()
+        try hideMembers(in: reopened)
         try openThread(reopened)
         let saved = try require(reopened.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing saved handle")
         XCTAssertEqual(sidebarWidth(of: saved), 350, "Width survives relaunch")
