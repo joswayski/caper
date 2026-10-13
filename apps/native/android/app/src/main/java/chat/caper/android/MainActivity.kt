@@ -590,11 +590,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
                             { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, Modifier.fillMaxSize()) { setNavigationOpen(true) }
-                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
+                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd), close = { membersVisible = false })
                     } else {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError,
                             { voicePermissionError = null }, joinVoice, pendingVoiceJoin, leaveVoice, Modifier.weight(1f)) { setNavigationOpen(true) }
-                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
+                        if (membersVisible && state.selectedChannel?.joined == true && state.selectedDirectId == null && state.visit == null) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight(), close = { membersVisible = false })
                     }
                 }
             }

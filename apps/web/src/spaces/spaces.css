@@ -936,6 +936,9 @@
   overflow-y: auto;
 }
 .member-presence-heading {
+  position: sticky;
+  z-index: 1;
+  top: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -944,6 +947,7 @@
   margin: 0;
   /* The name column below starts 16px in (list and row padding). */
   padding: 8px 12px 8px 16px;
+  background: var(--surface-sidebar);
   color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 700;
@@ -985,9 +989,36 @@
   width: 20px;
   height: 20px;
 }
-.member-list-backdrop,
-.member-list-close {
+.member-list-backdrop {
   display: none;
+}
+/* Members can close themselves even when a thread squeezes the channel toolbar. */
+.member-list-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.member-list-close:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .member-list-close:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+}
+.member-list-close svg {
+  width: 20px;
+  height: 20px;
 }
 .space-member-presence > div {
   padding: 8px;
@@ -2306,34 +2337,10 @@ html[data-browse-transition]::view-transition-new(browse-bar) {
     background: rgb(0 0 0 / 0.25);
     cursor: pointer;
   }
-  .member-presence-heading {
-    position: sticky;
-    z-index: 1;
-    top: 0;
-    background: var(--surface-sidebar);
-  }
   .member-list-close {
-    display: grid;
-    place-items: center;
     flex: 0 0 44px;
     width: 44px;
     height: 44px;
-    padding: 0;
-    border: 0;
-    border-radius: 8px;
-    color: var(--text-muted);
-    background: transparent;
-    cursor: pointer;
-  }
-  @media (hover: hover) {
-    .member-list-close:hover {
-      color: var(--text);
-      background: var(--surface-hover);
-    }
-  }
-  .member-list-close svg {
-    width: 20px;
-    height: 20px;
   }
   .call-room.spaces-room.navigation-open {
     grid-template: minmax(0, 1fr) auto / 60px minmax(0, 1fr);
