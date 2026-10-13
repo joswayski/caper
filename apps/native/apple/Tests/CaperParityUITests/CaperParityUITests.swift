@@ -348,6 +348,9 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                                "Missing fixture thread root")
+        // Beside Members the thread is 232 pt and "Before :tomato" wraps, growing
+        // the composer for reasons unrelated to suggestions.
+        try hideMembers(in: app)
         for inThread in [false, true] {
             if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
             let timeline = try require(app.scrollViews[inThread ? "thread-timeline" : "chat-timeline"], timeout: 5,
