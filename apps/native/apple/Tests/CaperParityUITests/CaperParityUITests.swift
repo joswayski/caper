@@ -490,7 +490,13 @@ final class CaperParityUITests: XCTestCase {
         author.tap()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Keep this profile draft")
+        #if os(macOS)
+        // Members opens by default on wide windows (#597); in a 1440-pt window the
+        // top-right corner is a member row, which opens that member's card instead.
+        app.scrollViews["chat-timeline"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).click()
+        #else
         app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.1)).tap()
+        #endif
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: card)
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 3), .completed,
                        "A backdrop tap closes the profile even with a draft")
@@ -2609,7 +2615,7 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Close pins"].tap()
         XCTAssertTrue(navigation.waitForExistence(timeout: 3))
         XCTAssertTrue(title.waitForExistence(timeout: 3), "Dismissing Pins restores the header")
-        XCTAssertEqual(composer.value as? String, "Draft survives Browse")
+        XCTAssertEqual(composer.value as? String, draft)
         chooseFromTitleMenu("Members", in: app)
         assertStaticText("Members", in: app, timeout: 2)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
