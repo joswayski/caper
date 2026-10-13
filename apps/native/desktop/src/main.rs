@@ -14425,10 +14425,25 @@ impl CaperApp {
                 egui::Sense::hover()
             },
         );
-        // A cached local copy (own uploads) shows without any source.
-        let state = self
-            .media
-            .image(&attachment.id, attachments::inline_source(attachment));
+        // A ready GIF uses its original frames, not a cached local/poster still.
+        let gif = !pending && !processing && attachment.content_type == "image/gif";
+        let state = if gif && ui.is_rect_visible(rect) {
+            static MOTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let playing =
+                *MOTION.get_or_init(reply_motion_enabled) && ui.style().animation_time > 0.0;
+            self.media.gif(
+                ui.ctx(),
+                &attachment.id,
+                attachment.url.as_deref(),
+                playing,
+                Instant::now(),
+            )
+        } else if gif {
+            attachments::ImageState::Loading
+        } else {
+            self.media
+                .image(&attachment.id, attachments::inline_source(attachment))
+        };
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 8.0, SURFACE);
         let shown = if let attachments::ImageState::Ready(texture) = state {

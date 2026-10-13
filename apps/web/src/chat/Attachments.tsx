@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
+import GifImage from "./GifImage.tsx";
 import MediaViewer from "./MediaViewer.tsx";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
@@ -223,6 +224,8 @@ export function MessageAttachments({
           );
         }
         if (view === "image") {
+          const gif = attachment.contentType === "image/gif";
+          const Image = gif ? GifImage : "img";
           return (
             <a
               key={attachment.id}
@@ -240,8 +243,8 @@ export function MessageAttachments({
                 onView(attachment.id, event.currentTarget);
               }}
             >
-              <img
-                src={attachment.previewUrl ?? attachment.url}
+              <Image
+                src={gif ? attachment.url : (attachment.previewUrl ?? attachment.url)}
                 alt={attachment.name}
                 loading="lazy"
                 decoding="async"

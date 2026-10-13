@@ -54,6 +54,8 @@ import chat.caper.android.ui.*
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.disk.DiskCache
+import coil3.gif.AnimatedImageDecoder
+import coil3.gif.GifDecoder
 import coil3.memory.MemoryCache
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
@@ -66,8 +68,7 @@ import okio.Path.Companion.toOkioPath
  * One image loader for attachments. Caches are keyed by attachment ID, so re-signed URLs reuse
  * them. OkHttp adds `Accept-Encoding: gzip` itself, so a gzip-encoded response is decoded
  * transparently. Below API 31 the platform cannot decode AVIF, so a bundled decoder handles it.
- * Only the media viewer animates GIFs (per request), so `coil-gif`'s ServiceLoader registration
- * is off and timeline images stay still.
+ * Animation decoders are selected per request so posters and reduced-motion images stay still.
  */
 internal object AttachmentImages {
     @Volatile private var loader: ImageLoader? = null
@@ -126,6 +127,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     var viewer by remember { mutableStateOf<ViewerPages?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
     val uriHandler = LocalUriHandler.current
+    val still = reducedMotion()
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
     val open: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
     val host = LocalMediaViewerHost.current
@@ -146,7 +148,12 @@ internal fun durationLabel(durationMs: Long?): String? {
                 )
                 url == null -> FileCard(attachment, null)
                 attachment.kind == "image" -> MediaFrame(attachment, view(attachment)) {
-                    AttachmentImage(attachment, attachment.previewUrl ?: url, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
+                    val gif = attachment.contentType == "image/gif"
+                    AttachmentImage(
+                        attachment, if (gif) url else attachment.previewUrl ?: url,
+                        if (gif) "gif" else "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed,
+                        animate = gif && !still,
+                    )
                 }
                 // Stored GIFs and animated images: muted, looping, inline, no controls.
                 attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, view(attachment)) {
@@ -252,9 +259,15 @@ internal fun durationLabel(durationMs: Long?): String? {
 @Composable internal fun AttachmentImage(
     attachment: ChatAttachment, data: String, variant: String, modifier: Modifier, scale: ContentScale,
     onLoadFailed: (ChatAttachment, Int?) -> Unit,
+    animate: Boolean = false,
 ) {
     val context = LocalContext.current
-    val request = remember(data, attachment.id, variant) { AttachmentImages.request(context, data, "${attachment.id}:$variant") }
+    val request = remember(data, attachment.id, variant, animate) {
+        val key = "${attachment.id}:$variant" + if (animate) ":animated" else ""
+        AttachmentImages.request(context, data, key).newBuilder().apply {
+            if (animate) decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory())
+        }.build()
+    }
     AsyncImage(
         model = request, contentDescription = attachment.name, imageLoader = AttachmentImages.loader(context),
         modifier = modifier, contentScale = scale,

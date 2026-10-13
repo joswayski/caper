@@ -2389,6 +2389,27 @@ a.chat-draft-preview:focus-visible strong {
   height: 100%;
   object-fit: cover;
 }
+.chat-gif {
+  display: block;
+  position: relative;
+  height: 100%;
+}
+.chat-gif canvas {
+  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-gif img {
+    visibility: hidden;
+  }
+  .chat-gif canvas {
+    display: block;
+  }
+}
 .chat-video {
   position: relative;
   background: #000;

@@ -64,21 +64,25 @@ final class AttachmentImageLoader: @unchecked Sendable {
 
     /// The media viewer's original: every frame of an animated GIF, WebP or
     /// PNG, or one still (cached like `load`).
-    func loadFrames(key: String, url: URL, maxPixelSize: Int) async throws -> AttachmentOriginal {
+    func loadFrames(key: String, url: URL, maxPixelSize: Int, animationByteLimit: Int? = nil) async throws -> AttachmentOriginal {
         if let hit = cached(key) { return AttachmentOriginal(images: [hit], durations: []) }
         let data = try await fetch(url)
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw AttachmentLoadError.undecodable }
         let count = CGImageSourceGetCount(source)
         if count > 1, count <= Self.maxAnimationFrames, Self.frameDelay(source, at: 0) != nil {
-            let frameOptions: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
+            let frameOptions: [CFString: Any] = [
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
             var images: [CGImage] = []
             var durations: [Double] = []
             var bytes = 0
             for index in 0..<count {
                 try Task.checkCancellation()
-                guard let image = CGImageSourceCreateImageAtIndex(source, index, frameOptions as CFDictionary) else { break }
+                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
                 bytes += image.bytesPerRow * image.height
-                guard bytes <= Self.maxAnimationBytes else { break }
+                guard bytes <= (animationByteLimit ?? Self.maxAnimationBytes) else { break }
                 images.append(image)
                 durations.append(MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: index)))
             }
@@ -162,12 +166,15 @@ private func loadAttachmentImage(_ attachment: ChatAttachment, preview: Bool, ch
 /// first when its signature is expiring, like opening a file. `refusedURL`
 /// means a fresh signature could fix the failure.
 @MainActor
-private func loadAttachmentOriginal(_ attachment: ChatAttachment, chat: ChatModel?) async -> (frames: AttachmentOriginal?, failed: Bool, refusedURL: Bool) {
+private func loadAttachmentOriginal(_ attachment: ChatAttachment, chat: ChatModel?, inline: Bool = false) async -> (frames: AttachmentOriginal?, failed: Bool, refusedURL: Bool) {
     let url: URL?
     if let chat { url = await chat.currentURL(for: attachment) } else { url = attachment.url.flatMap { URL(string: $0) } }
     guard let url else { return (nil, true, false) }
     do {
-        let frames = try await AttachmentImageLoader.shared.loadFrames(key: "\(attachment.id):original", url: url, maxPixelSize: 4096)
+        let frames = try await AttachmentImageLoader.shared.loadFrames(
+            key: "\(attachment.id):\(inline ? "inline-gif" : "original")", url: url,
+            maxPixelSize: inline ? 720 : 4096, animationByteLimit: inline ? 32 * 1024 * 1024 : nil
+        )
         return (frames, false, false)
     } catch AttachmentLoadError.status(let status) where AttachmentURLPolicy.refreshesAfterFailure(status: status) {
         return (nil, true, true)
@@ -258,8 +265,14 @@ private struct AttachmentImageView: View {
     /// Opens the media viewer; nil opens the file's URL.
     let openViewer: (() -> Void)?
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: CGImage?
+    @State private var original: AttachmentOriginal?
+    @State private var started = Date()
+    @State private var attempt = 0
     @State private var failed = false
+
+    private var gif: Bool { attachment.contentType == "image/gif" }
 
     var body: some View {
         Button {
@@ -268,7 +281,16 @@ private struct AttachmentImageView: View {
             if let openViewer { openViewer() } else { openAttachment(attachment, chat: chat, openURL: openURL) }
         } label: {
             ZStack {
-                if let image {
+                if let original, let first = original.images.first {
+                    if reduceMotion || original.images.count == 1 {
+                        Image(decorative: first, scale: 1).resizable().scaledToFill()
+                    } else {
+                        TimelineView(.animation(minimumInterval: 0.02)) { timeline in
+                            let index = MediaViewerPolicy.frameIndex(at: timeline.date.timeIntervalSince(started), durations: original.durations)
+                            Image(decorative: original.images[index], scale: 1).resizable().scaledToFill()
+                        }
+                    }
+                } else if let image {
                     Image(decorative: image, scale: 1).resizable().scaledToFill()
                 } else if failed {
                     VStack(spacing: 4) {
@@ -287,10 +309,24 @@ private struct AttachmentImageView: View {
         .accessibilityLabel("Image \(attachment.name)")
         .accessibilityHint(openViewer == nil ? "Opens the full-size image" : "Opens the image viewer")
         .accessibilityIdentifier("attachment-\(attachment.id)")
-        .task(id: attachment.previewUrl ?? attachment.url) {
+        .task(id: gif ? "gif:\(attempt)" : (attachment.previewUrl ?? attachment.url)) {
+            if gif {
+                let result = await loadAttachmentOriginal(attachment, chat: chat, inline: true)
+                guard !Task.isCancelled else { return }
+                original = result.frames
+                failed = result.failed
+                started = Date()
+                if result.refusedURL, attempt == 0 { chat?.requestFreshAttachmentURLs(ids: [attachment.id]) }
+                return
+            }
             let result = await loadAttachmentImage(attachment, preview: true, chat: chat)
             if let loaded = result.image { image = loaded; failed = false } else if image == nil { failed = result.failed }
         }
+        .onChange(of: attachment.url) { _, _ in
+            guard gif, failed, attempt == 0 else { return }
+            attempt += 1
+        }
+        .onDisappear { original = nil }
     }
 }
 
