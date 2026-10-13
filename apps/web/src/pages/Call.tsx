@@ -63,7 +63,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
-import { useBrowseLayout, useBrowseSwipe } from "../spaces/browseTransition";
+import { useBrowseSwipe } from "../spaces/browseTransition";
 import { useMembersDrawer } from "../spaces/membersDrawer";
 import "./call.css";
 
@@ -565,7 +565,6 @@ export default function Call({
   const inlineVoiceError = narrow && !navigationOpen && !!onNavigationToggle;
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
-  useBrowseLayout(roomRef, navigationOpen);
   const members = useMembersDrawer(roomRef, narrow && !navigationOpen && !!membersPanel, membersVisible, (open) => {
     if (!narrow) wideMembersVisible.current = open;
     setMembersVisible(open);

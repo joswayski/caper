@@ -345,7 +345,7 @@ try {
   browser("click", ".navigation-toggle");
   // Browse buttons slide; clicks during the view transition land on its snapshot.
   wait(
-    'document.querySelector(".call-room").classList.contains("navigation-open") && !document.documentElement.dataset.browseTransition',
+    'document.querySelector(".call-room").classList.contains("navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
   );
   checkDirectDensity(44);
   assert.equal(
@@ -356,7 +356,7 @@ try {
   if (artifacts) browser("screenshot", join(artifacts, "avatars-narrow-browse.png"));
   browser("click", '[aria-label="Close navigation"]');
   wait(
-    '!document.querySelector(".call-room").classList.contains("navigation-open") && !document.documentElement.dataset.browseTransition',
+    '!document.querySelector(".call-room").classList.contains("navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
   );
   browser("click", ".member-list-toggle");
   wait('!document.querySelector(".space-member-presence")');

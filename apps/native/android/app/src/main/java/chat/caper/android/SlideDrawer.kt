@@ -25,17 +25,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** Web `SETTLE` easing, for slides a button, Back or a channel choice starts. */
-private val SettleEasing = CubicBezierEasing(0.32f, 0.72f, 0f, 1f)
+/**
+ * Web `TAP` easing, for slides a button, Back or a channel choice starts: it leaves at once and
+ * slows steadily, rather than leaping most of the way in two frames and then crawling into place.
+ */
+private val TapEasing = CubicBezierEasing(0.33f, 1f, 0.68f, 1f)
 
 /** A released swipe's curve: it starts at the finger's speed and lands at rest without overshooting. */
 private fun releaseEasing(slope: Float) = CubicBezierEasing(0.2f, 0.2f * slope, 0.35f, 1f)
 
 /**
- * Phones show the conversation or Browse (spaces and channels), never both, and slide the member
- * list over the conversation. Each slide is one of these: a finger moves it 1:1, a release carries
- * on at the finger's speed, and buttons, Back and channel choices animate the same slide. A finger
- * that lands on a moving slide grabs it where it is.
+ * Phones show the conversation or Browse (spaces, channels and the account bar), never both, and
+ * slide the member list over the conversation. Each slide is one of these: a finger moves it 1:1,
+ * a release carries on at the finger's speed, and buttons, Back and channel choices animate the
+ * same slide. A finger that lands on a moving slide grabs it where it is.
  *
  * The position is plain state read only in layer blocks, so a moving finger redraws the layers
  * without recomposing the conversation. The one animation runs as a [Job] that a drag cancels
@@ -66,7 +69,7 @@ internal class SlideDrawer(private val scope: CoroutineScope, open: Boolean) {
         position.floatValue = to.coerceIn(0f, 1f)
     }
 
-    /** Slides open or closed: a button's [DRAWER_SETTLE_MILLIS] curve, or a released swipe's [release] timing. */
+    /** Slides open or closed: a button's [DRAWER_TAP_MILLIS] curve, or a released swipe's [release] timing. */
     fun settle(open: Boolean, release: ReleaseTiming? = null) {
         val end = if (open) 1f else 0f
         if (destination.floatValue == end && (motion?.isActive == true || position.floatValue == end)) return
@@ -75,7 +78,7 @@ internal class SlideDrawer(private val scope: CoroutineScope, open: Boolean) {
         val from = position.floatValue
         if (from == end) { motion = null; return }
         val spec = if (release != null) tween<Float>(release.durationMillis, easing = releaseEasing(release.slope))
-            else tween<Float>(drawerSettleMillis(end - from), easing = SettleEasing)
+            else tween<Float>(drawerTapMillis(end - from), easing = TapEasing)
         motion = scope.launch { animate(from, end, animationSpec = spec) { value, _ -> position.floatValue = value } }
     }
 }
@@ -96,16 +99,20 @@ internal val MEMBERS_MARGIN = MEMBERS_END + 24.dp
 /** The phone member list's widest. */
 internal val MEMBERS_MAX_WIDTH = 280.dp
 
-/** Moves the conversation over Browse at its full height. */
+/** How far past the screen's edge the conversation travels, so its shadow leaves with it (web and Apple). */
+internal val BROWSE_SHADOW = 48.dp
+
+/** Browse's travel for the container's width: off the edge, shadow and all. */
+internal fun Density.browseTravel(containerWidth: Float): Float = containerWidth + BROWSE_SHADOW.toPx()
+
+/**
+ * Moves the conversation, a layer above the whole of Browse (account bar included), fully over
+ * or off it at its full height. Browse stays still beneath it.
+ */
 internal fun Modifier.conversationLayer(drawer: SlideDrawer): Modifier = graphicsLayer {
     val uncovered = drawer.value
-    translationX = uncovered * size.width
+    translationX = uncovered * browseTravel(size.width)
     shadowElevation = if (uncovered > 0f) 16.dp.toPx() else 0f
-}
-
-/** Raises Browse's account bar from below the bottom edge as Browse is uncovered. */
-internal fun Modifier.browseBarLayer(drawer: SlideDrawer): Modifier = graphicsLayer {
-    translationY = (1f - drawer.value) * size.height
 }
 
 /**
@@ -144,7 +151,7 @@ internal fun Modifier.browseSwipeExcluded(drawer: SlideDrawer?): Modifier =
  * Tracks the finger on the unmoving container, since the layers it moves would otherwise move
  * their own touch coordinates. `direction` is the finger's way to open (right for Browse, left
  * for the member list); `travel` is the drawer's full travel for the container's width, Browse's
- * by default.
+ * ([browseTravel]) by default, so the layer follows the finger 1:1.
  *
  * Until the finger passes the touch slop sideways this watches the Main pass, after the
  * timeline, channel list, sliders and text, so their own drags win; a consumed move belongs to
@@ -165,7 +172,7 @@ internal fun Modifier.browseDrag(
             drawer.regionExcluded = false
             if (!allowed) return@awaitEachGesture
             val slop = viewConfiguration.touchSlop
-            fun width() = (travel?.invoke(density, size.width.toFloat()) ?: size.width.toFloat()).coerceAtLeast(1f)
+            fun width() = (travel?.invoke(density, size.width.toFloat()) ?: browseTravel(size.width.toFloat())).coerceAtLeast(1f)
             tracker.resetTracking()
             tracker.addPointerInputChange(down)
             var opening = true

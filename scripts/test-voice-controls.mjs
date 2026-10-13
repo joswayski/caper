@@ -43,7 +43,7 @@ const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result
 const wait = (code) => browser("wait", "--fn", `Boolean(${code})`);
 // Browse slides the conversation with a view transition; clicks and hit tests
 // during it land on its snapshot, so settle any slide before and after.
-const settleBrowse = () => wait(`!document.documentElement.dataset.browseTransition`);
+const settleBrowse = () => wait(`!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")`);
 const click = (label) => {
   settleBrowse();
   browser("click", `[aria-label="${label}"]`);

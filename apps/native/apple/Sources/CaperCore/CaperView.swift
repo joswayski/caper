@@ -315,10 +315,13 @@ struct DrawerSettle {
         let curve: UnitCurve
         /// Web `SETTLE`: cubic-bezier(0.32, 0.72, 0, 1).
         static let easing = UnitCurve.bezier(startControlPoint: UnitPoint(x: 0.32, y: 0.72), endControlPoint: UnitPoint(x: 0, y: 1))
-        /// Settling back after a cancelled drag, and the member list's buttons.
+        /// Settling back after a cancelled drag.
         static let settle = Timing(duration: 0.32, curve: easing)
-        /// Buttons, Back and channel choices: a quicker version of the finger's slide.
-        static let tap = Timing(duration: 0.22, curve: easing)
+        /// Buttons, Back and channel choices (web `TAP`), which have no finger
+        /// speed to carry on: it leaves at once and slows steadily, rather than
+        /// leaping most of the way in two frames and then crawling into place.
+        static let tap = Timing(duration: 0.30, curve: .bezier(startControlPoint: UnitPoint(x: 0.33, y: 1),
+                                                              endControlPoint: UnitPoint(x: 0.68, y: 1)))
         /// A released swipe (web `releaseTiming`).
         static func release(_ release: DrawerRelease) -> Timing {
             Timing(duration: release.duration, curve: .bezier(startControlPoint: UnitPoint(x: 0.2, y: 0.2 * release.slope),
@@ -380,9 +383,10 @@ struct DrawerRelease: Equatable {
     }
 }
 
-/// Phones show the conversation or Browse (spaces and channels), never both.
-/// The conversation slides fully off the still Browse, following a finger from
-/// anywhere on its surface. Buttons, Back and channel choices animate the same slide.
+/// Phones show the conversation or Browse (spaces, channels and the account
+/// bar), never both. The conversation, a layer above the whole of Browse, slides
+/// fully off the still Browse, following a finger from anywhere on its surface.
+/// Buttons, Back and channel choices animate the same slide.
 @Observable private final class BrowseDrawer: SlideDrawer {
     /// While a finger drags: how much of Browse is uncovered, from 0 (conversation) to 1 (Browse).
     var drag: CGFloat?
@@ -465,25 +469,21 @@ private struct DrawerPose<Drawer: SlideDrawer & Observable>: ViewModifier {
     }
 }
 
-/// Poses a layer for the slide on phones: the conversation, or the account bar
-/// that rises over it. Only this reads the drag, so a moving finger re-renders
-/// the pose rather than the layer itself.
+/// Poses the conversation for the slide on phones; Browse beneath it stays
+/// still. Only this reads the drag, so a moving finger re-renders the pose
+/// rather than the layer itself.
 private struct BrowseLayer: ViewModifier {
     let showsBrowse: Bool
-    /// Hidden once Browse is covered, as the account bar is behind a translucent keyboard.
-    var hidesCovered = false
     /// The layer's offset for how much of Browse is uncovered.
     let pose: (CGFloat) -> CGSize
 
     func body(content: Content) -> some View {
-        let hidesCovered = self.hidesCovered, pose = self.pose
+        let pose = self.pose
         // Nothing inside animates with the switch, so no control lags behind the slide.
         content.transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
-        .modifier(DrawerPose<BrowseDrawer>(rest: showsBrowse ? 1 : 0, fallback: .tap) { uncovered in
-            (pose(uncovered), hidesCovered && uncovered == 0 ? 0 : 1)
-        })
+        .modifier(DrawerPose<BrowseDrawer>(rest: showsBrowse ? 1 : 0, fallback: .tap) { (pose($0), 1) })
     }
 }
 
@@ -691,7 +691,6 @@ private struct WorkspaceView: View {
     @State private var modalDismissDisabled = false
     @State private var browseDrawer = BrowseDrawer()
     @State private var membersDrawer = MembersDrawer()
-    @State private var browseBarHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let parityFixture: String?
     private let parityMode: Bool
@@ -721,7 +720,8 @@ private struct WorkspaceView: View {
                             .disabled(model.openingSpaceID != nil)
                     }.padding(12).background(CaperTheme.surface)
                 }
-                // Phones slide the conversation fully over Browse; wider windows show both.
+                // Phones slide the conversation fully over Browse, account bar and
+                // all; wider windows show both.
                 let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil || model.visit != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
@@ -812,8 +812,9 @@ private struct WorkspaceView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        // Room for the account bar, which rises over the conversation.
-                        .padding(.bottom, narrow ? browseBarHeight : 0)
+                        // Phones keep the account bar in Browse, full width beneath the
+                        // channels: the conversation slides off to reveal it.
+                        if narrow { AccountBar(model: model, sheet: $sheet) }
                     }
                     .allowsHitTesting(showsBrowse)
                     .accessibilityElement(children: .contain)
@@ -842,18 +843,6 @@ private struct WorkspaceView: View {
                         .accessibilityElement(children: .contain)
                         .accessibilityHidden(showsBrowse)
                     }
-                    // The account bar keeps the full width: it rises from the bottom
-                    // edge over the conversation as Browse is uncovered.
-                    if narrow {
-                        AccountBar(model: model, sheet: $sheet)
-                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { browseBarHeight = $0 }
-                            .background(CaperTheme.blackout)
-                            .modifier(BrowseLayer(showsBrowse: showsBrowse, hidesCovered: true) { CGSize(width: 0, height: (1 - $0) * (browseBarHeight + geometry.safeAreaInsets.bottom)) })
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                            .allowsHitTesting(showsBrowse)
-                            .accessibilityElement(children: .contain)
-                            .accessibilityHidden(!showsBrowse)
-                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(SideClip())
@@ -878,8 +867,8 @@ private struct WorkspaceView: View {
         }
     }
 
-    /// Buttons switch with a quicker version of the finger's slide. A released
-    /// swipe keeps the curve it set to match the finger's speed.
+    /// Buttons switch with the steady tap slide. A released swipe keeps the
+    /// curve it set to match the finger's speed.
     private func slide(open: Bool) {
         if browseDrawer.releasing { model.navigationOpen = open; return }
         guard model.navigationOpen != open else { return }
@@ -893,7 +882,7 @@ private struct WorkspaceView: View {
     /// panel keeps its list in view until it has slid away.
     private func showMembers(_ visible: Bool) {
         guard membersPreference != visible else { return }
-        membersDrawer.slide(to: visible ? 1 : 0, timing: .settle, reduceMotion: reduceMotion)
+        membersDrawer.slide(to: visible ? 1 : 0, timing: .tap, reduceMotion: reduceMotion)
         membersPreference = visible
     }
 
@@ -2159,7 +2148,7 @@ private struct MembersOverlay: View {
                 // header and timeline gestures alone.
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 50)
-                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .settle) { (.zero, Double($0)) })
+                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .tap) { (.zero, Double($0)) })
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
             Group {
@@ -2179,7 +2168,7 @@ private struct MembersOverlay: View {
                 }
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .settle) { shown in
+                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .tap) { shown in
                     (CGSize(width: (1 - shown) * travel, height: 0), shown == 0 && !moving ? 0 : 1)
                 })
                 .allowsHitTesting(shows)

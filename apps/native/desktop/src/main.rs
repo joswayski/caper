@@ -194,9 +194,18 @@ fn swipe_commits(opening: bool, progress: f32, distance: f32, velocity: f32) -> 
     velocity > -300.0 && (past_half || (velocity >= 300.0 && distance >= 40.0))
 }
 
-/// Web's `SETTLE`: what buttons and state changes slide with.
-const SETTLE_SECONDS: f64 = 0.32;
-const SETTLE_CURVE: [f32; 4] = [0.32, 0.72, 0.0, 1.0];
+/// Web's `TAP`: what buttons and state changes slide with, scaled by the
+/// distance left. It leaves at once and slows steadily, rather than leaping
+/// most of the way in two frames and then crawling into place.
+const TAP_SECONDS: f64 = 0.30;
+const TAP_CURVE: [f32; 4] = [0.33, 1.0, 0.68, 1.0];
+
+/// How far the conversation moves to reveal Browse in a `width` window: past
+/// the edge, so its shadow leaves too. Finger and pose share it, so the
+/// conversation follows a finger point for point.
+fn browse_travel(width: f32) -> f32 {
+    width + 48.0
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NavigationSettle {
@@ -222,18 +231,19 @@ impl NavigationSettle {
         }
     }
 
-    /// After a button or another state change, from wherever it is. One
-    /// that turns a drawer around mid-slide starts from rest, so it eases
-    /// into the new direction instead of snapping into it at full speed.
+    /// After a button or another state change, from wherever it is, taking
+    /// the tap timing for the distance left. One that turns a drawer around
+    /// mid-slide starts from rest, so it eases into the new direction instead
+    /// of snapping into it at full speed.
     fn toggle(from: f32, to: f32, started: f64) -> Self {
         let resting = from == 0.0 || from == 1.0;
         Self {
             from,
             to,
             started,
-            duration: SETTLE_SECONDS,
+            duration: (TAP_SECONDS * f64::from((to - from).abs())).max(0.16),
             curve: if resting {
-                SETTLE_CURVE
+                TAP_CURVE
             } else {
                 [0.2, 0.0, 0.35, 1.0]
             },
@@ -1104,7 +1114,8 @@ struct CaperApp {
     navigation_swipe_bottom: f32,
     /// Browse's search editor keeps text selection, just like the composer.
     navigation_search_rect: egui::Rect,
-    /// Height of narrow Browse's account bar, which the conversation's edge stops above.
+    /// Height of narrow Browse's account bar, where touches keep the bar's own
+    /// gestures instead of starting a swipe while Browse is open.
     browse_bar: f32,
     channels_expanded: bool,
     browse_channels: bool,
@@ -8752,7 +8763,7 @@ impl CaperApp {
                         280.0_f32.min(screen.width() - 64.0).max(0.0) + 32.0,
                     )
                 } else {
-                    (browse, screen.width() + 16.0)
+                    (browse, browse_travel(screen.width()))
                 };
                 touch.grabbed = delta.x * slide.direction();
             }
@@ -8847,17 +8858,20 @@ impl CaperApp {
                 }
                 let content = ui.max_rect();
                 if narrow {
-                    // As on phones, the conversation slides fully off a still Browse;
-                    // they never share the window.
+                    // As on phones, the conversation is a layer above the whole of
+                    // Browse and slides fully over or off it; they never share the
+                    // window. Browse, account bar included, stays still beneath.
                     let uncovered = self.navigation_pose(context, false, self.navigation_open);
                     if uncovered > 0.0 {
-                        // Browse stops above the account bar, which rises over the
-                        // conversation below.
-                        let browse = egui::Rect::from_min_max(
-                            content.min,
-                            egui::pos2(content.right(), content.bottom() - self.browse_bar),
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(browse), |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+                            // The account bar keeps the full width below the rail and
+                            // sidebar.
+                            let bar = egui::TopBottomPanel::bottom("narrow-account")
+                                .show_separator_line(false)
+                                .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12))
+                                .show_inside(ui, |ui| self.account_bar(ui));
+                            self.browse_bar = bar.response.rect.height();
+                            let browse = ui.available_rect_before_wrap();
                             let rail_rect = egui::Rect::from_min_max(
                                 browse.min,
                                 egui::pos2(browse.left() + 59.0, browse.bottom()),
@@ -8874,12 +8888,19 @@ impl CaperApp {
                             });
                         });
                     }
-                    // The conversation keeps its full height as it slides aside, and
-                    // moves past the width so its shadow leaves too.
-                    let stage =
-                        content.translate(egui::vec2(uncovered * (content.width() + 16.0), 0.0));
+                    // Painted over Browse, the conversation keeps its full height as it
+                    // slides aside, and moves past the width so its shadow leaves too.
+                    let stage = content
+                        .translate(egui::vec2(uncovered * browse_travel(content.width()), 0.0));
                     if uncovered > 0.0 {
                         ui.painter().add(EDGE_SHADOW.as_shape(stage, 0));
+                        // Registered after Browse, so presses and drags on the
+                        // conversation's background never reach Browse beneath it.
+                        ui.interact(
+                            stage,
+                            egui::Id::new("narrow-stage-backdrop"),
+                            egui::Sense::click_and_drag(),
+                        );
                     }
                     ui.painter().rect_filled(stage, 0.0, SURFACE);
                     ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
@@ -8930,35 +8951,6 @@ impl CaperApp {
                             });
                         }
                     });
-                    if uncovered > 0.0 {
-                        // The account bar keeps the full width: it rises from the bottom
-                        // edge over the conversation as Browse is uncovered.
-                        let top = content.bottom() - uncovered * self.browse_bar;
-                        let bar_rect =
-                            egui::Rect::from_min_max(egui::pos2(content.left(), top), content.max);
-                        // Clicks on the bar's background stay off the conversation beneath.
-                        ui.interact(
-                            bar_rect,
-                            egui::Id::new("narrow-account-backdrop"),
-                            egui::Sense::click(),
-                        );
-                        let bar = ui.scope_builder(
-                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(
-                                egui::pos2(content.left(), top),
-                                egui::pos2(content.right(), top + content.height()),
-                            )),
-                            |ui| {
-                                egui::Frame::new()
-                                    .fill(SIDEBAR)
-                                    .inner_margin(12)
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        self.account_bar(ui);
-                                    })
-                            },
-                        );
-                        self.browse_bar = bar.inner.response.rect.height();
-                    }
                 } else {
                     let sidebar_width = self.sidebar_width.min(content.width() - 380.0).max(220.0);
                     let rail_rect = egui::Rect::from_min_max(
@@ -27481,7 +27473,7 @@ mod tests {
         use egui::TouchPhase::{End, Move, Start};
         frame(&mut app, 0.0, None);
         let rest = frame(&mut app, 0.016, None);
-        let travel = 390.0 + 16.0;
+        let travel = super::browse_travel(390.0);
         let pose = |x: f32| (x - rest) / travel;
         // Browse starts opening from a button; the next frames show it moving.
         app.navigation_open = true;
@@ -27496,11 +27488,13 @@ mod tests {
         }
         // A finger catches it mid-way: the conversation continues from where
         // it was drawn, never jumping to the end the button was heading for,
-        // nor by the touch slop the finger crossed before it took hold.
+        // nor by the touch slop the finger crossed before it took hold. The
+        // tap curve still moves at this point, so it carries on for the 16ms
+        // until the finger takes hold past the slop.
         frame(&mut app, time + 0.008, Some((Start, 195.0)));
         let caught = pose(frame(&mut app, time + 0.016, Some((Move, 175.0))));
         assert!(
-            caught >= last - 0.005 && caught - last < 0.06,
+            caught >= last - 0.005 && caught - last < 0.1,
             "caught at {caught}, drawn at {last}"
         );
         // From there it follows the finger point for point.
@@ -27521,10 +27515,11 @@ mod tests {
         assert!((pose(frame(&mut app, time + 1.1, None)) - 1.0).abs() < 1e-3);
         app.navigation_open = false;
         frame(&mut app, time + 1.15, None);
+        assert!(pose(frame(&mut app, time + 1.6, None)).abs() < 1e-3);
 
         // A state change mid-slide reverses from the drawn pose.
         app.navigation_open = true;
-        let start = time + 1.2;
+        let start = time + 1.7;
         frame(&mut app, start, None);
         let midway = pose(frame(&mut app, start + 0.04, None));
         assert!(midway > 0.1 && midway < 0.95, "{midway}");
@@ -27612,6 +27607,38 @@ mod tests {
         // With motion, a change animates and reports that it is moving.
         let (pose, moving) = drawer.pose(1.016, 0.016, 61, false, None, true);
         assert!(moving && pose < 1.0 && pose > 0.5, "{pose}");
+    }
+
+    #[test]
+    fn taps_slide_for_the_distance_left_and_leave_at_once() {
+        use super::{NavigationSettle, browse_travel};
+        // A full tapped slide takes 0.3s, leaving at once and slowing steadily
+        // rather than covering most of the way in its first quarter and then
+        // crawling into place.
+        let full = NavigationSettle::toggle(0.0, 1.0, 0.0);
+        assert!((full.duration - 0.30).abs() < 1e-9);
+        assert_eq!(full.curve, [0.33, 1.0, 0.68, 1.0]);
+        let (first_frame, _) = full.at(1.0 / 60.0);
+        let (quarter, _) = full.at(0.075);
+        assert!(first_frame > 0.1, "{first_frame}");
+        assert!(quarter > 0.5 && quarter < 0.65, "{quarter}");
+        let mut last = 0.0;
+        for step in 1..=30 {
+            let (pose, _) = full.at(f64::from(step) * 0.01);
+            assert!(pose > last && pose <= 1.0, "{pose} after {last}");
+            last = pose;
+        }
+        assert_eq!(full.at(0.30), (1.0, true));
+        // The rest of a slide takes its share, never under 0.16s.
+        let half = NavigationSettle::toggle(1.0, 0.5, 0.0);
+        assert!((half.duration - 0.15_f64.max(0.16)).abs() < 1e-9);
+        assert!((NavigationSettle::toggle(0.0, 0.8, 0.0).duration - 0.24).abs() < 1e-6);
+        // Turned around mid-slide, it eases from rest into the new direction.
+        let turned = NavigationSettle::toggle(0.6, 0.0, 0.0);
+        assert!((turned.duration - 0.18).abs() < 1e-6);
+        assert_eq!(turned.curve, [0.2, 0.0, 0.35, 1.0]);
+        // The conversation travels past the edge by the shadow's reach.
+        assert_eq!(browse_travel(390.0), 438.0);
     }
 
     #[test]

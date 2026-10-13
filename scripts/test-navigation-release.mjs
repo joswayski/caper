@@ -26,7 +26,7 @@ const settled = () =>
   browser(
     "wait",
     "--fn",
-    '!document.documentElement.dataset.browseTransition && !document.getAnimations().some(a => a.effect?.target?.matches?.(".space-member-presence"))',
+    '!document.querySelector(".spaces-room").hasAttribute("data-browse-slide") && !document.getAnimations().some(a => a.effect?.target?.matches?.(".space-member-presence"))',
   );
 const capture = (name) => {
   if (artifacts) browser("screenshot", `${artifacts}/${name}.png`);
@@ -40,7 +40,7 @@ try {
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
   browser("set", "viewport", "390", "844", "2");
-  browser("wait", "--fn", '!!document.querySelector(".chat-message") && !!document.startViewTransition');
+  browser("wait", "--fn", '!!document.querySelector(".chat-message")');
   evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
   browser("fill", "#chat-message", "Draft survives smooth navigation");
   browser("click", ".chat-heading");
@@ -96,7 +96,7 @@ try {
       const region = document.querySelector(${JSON.stringify(members && open ? ".space-member-presence" : !members && open ? ".channel-navigation" : ".chat-scroller")}).getBoundingClientRect();
       return { x: ${direction} > 0 ? region.left + 4 : region.right - 4,
         y: region.bottom - 70,
-        travel: ${members} ? Math.min(280, r.width - 64) + 8 + 48 : r.width + 48 };
+        travel: ${members} ? Math.min(280, r.width - 64) + 8 + 48 : document.documentElement.clientWidth - r.left + 48 };
     })()`);
     const dx = direction * geometry.travel * fraction;
     await touch("touchStart", geometry.x, geometry.y);
@@ -107,12 +107,11 @@ try {
     }
     // Let the last drag frame paint; hold longer than the velocity sampling window.
     if (held) await pause(150);
-    const pseudo = `::view-transition-${open ? "new" : "old"}(browse-room)`;
     evaluate(`(() => {
       const offset = () => {
         const panel = document.querySelector('.space-member-presence');
         const style = ${members} ? (panel ? getComputedStyle(panel).transform : 'none')
-          : getComputedStyle(document.documentElement, ${JSON.stringify(pseudo)}).transform;
+          : getComputedStyle(document.querySelector('.spaces-room > .stage')).transform;
         return new DOMMatrixReadOnly(style).m41;
       };
       window.releaseSamples = [];
@@ -122,7 +121,7 @@ try {
         const sample = () => {
           const ms = performance.now() - start;
           window.releaseSamples.push({ ms, x: offset() });
-          if (ms < 450 && (${members} || document.documentElement.dataset.browseTransition)) requestAnimationFrame(sample);
+          if (ms < 450 && (${members} || document.querySelector('.spaces-room').hasAttribute('data-browse-slide'))) requestAnimationFrame(sample);
         };
         requestAnimationFrame(sample);
       }, { once: true });
@@ -190,7 +189,7 @@ try {
   browser("set", "media", "reduced-motion");
   browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
   assert.equal(browsing(), true);
-  assert.equal(evaluate('document.getAnimations().some(a => a.effect?.pseudoElement?.includes("browse-room"))'), false);
+  assert.equal(evaluate('document.querySelector(".spaces-room > .stage").getAnimations().length'), 0);
   console.log(
     "PASS: smooth bidirectional held releases, snap-back, flicks, member drawer, retained draft and reduced motion.",
   );

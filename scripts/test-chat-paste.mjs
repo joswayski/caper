@@ -153,7 +153,7 @@ try {
       '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
     );
     wait(
-      '!document.documentElement.dataset.browseTransition && !!document.querySelector(".stage:not([inert]) #chat-message:not(:disabled)")',
+      '!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide") && !!document.querySelector(".stage:not([inert]) #chat-message:not(:disabled)")',
     );
     const row = `.chat-panel .chat-scroller[aria-hidden=false] [data-message-key="${root.clientMessageId}"]`;
     browser("scrollintoview", row);
@@ -195,16 +195,16 @@ try {
     if (width === 390) {
       browser("click", ".navigation-toggle");
       wait(
-        '!!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition',
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
       );
     }
     browser("click", ".direct-self");
     wait('document.querySelector("#chat-message")?.placeholder === "Message Fixture Owner"');
     if (width === 390) {
-      wait("!document.documentElement.dataset.browseTransition");
+      wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
       browser("click", ".navigation-toggle");
       wait(
-        '!!document.querySelector(".spaces-room.navigation-open") && !document.documentElement.dataset.browseTransition',
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
       );
     }
     browser("find", "role", "button", "click", "--name", "general", "--exact");

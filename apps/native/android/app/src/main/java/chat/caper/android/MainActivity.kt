@@ -608,7 +608,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     val drawer = rememberSlideDrawer(navigationOpen)
                     val latestSetNavigationOpen by rememberUpdatedState(setNavigationOpen)
                     LaunchedEffect(navigationOpen) { if (!drawer.dragging) drawer.settle(navigationOpen) }
-                    var barHeight by remember { mutableIntStateOf(0) }
                     // Browse is composed only while it shows or the conversation moves.
                     val browseUncovered by remember { derivedStateOf { drawer.value > 0f } }
                     // The member list slides over the conversation the same way, from the trailing edge.
@@ -620,8 +619,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     val membersInView by remember { derivedStateOf { members.value > 0f } }
                     CompositionLocalProvider(LocalBrowseDrawer provides drawer, LocalMembersDrawer provides members) {
                         Box(Modifier.fillMaxSize().clipToBounds().background(Blackout).browseDrag(drawer) { latestSetNavigationOpen(it) }) {
-                            // Leaves room for the account bar, which rises over the conversation.
-                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().padding(bottom = with(LocalDensity.current) { barHeight.toDp() })) {
+                            // Browse, account bar included, stays still beneath the conversation, which slides off to reveal it.
+                            if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().then(if (navigationOpen) Modifier else Modifier.clearAndSetSemantics {})) {
                                 Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
                                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
@@ -629,6 +628,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                         channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError,
                                         { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
                                 }
+                                // The full width, below the rail too.
+                                AccountBar(state, voice, viewModel, show)
                             }
                             Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
                                 .browseDrag(members, direction = -1f,
@@ -658,10 +659,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                         close = { membersVisible = false })
                                 }
                             }
-                            // The account bar keeps the full width: it rises from the bottom
-                            // edge over the conversation as Browse is uncovered.
-                            if (navigationOpen || browseUncovered) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                                .onSizeChanged { barHeight = it.height }.browseBarLayer(drawer).background(Blackout)) { AccountBar(state, voice, viewModel, show) }
                         }
                     }
                 } else Row {
