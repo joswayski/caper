@@ -7417,6 +7417,19 @@ stops at the missing SDK; Apple has no Swift/Xcode here. Neither is native-devic
 acceptance. This tuning needs only web/native client releases, independently;
 no API/gateway deployment, migration, infrastructure or configuration change.
 
+**Composer preview follow-up (October 13, 2026).** Web checks and all 606 unit
+tests pass. Focused Chromium checks at 1280px and 390px (coarse pointer verified)
+cover the author/excerpt above channel and thread inputs, two-line long text,
+URLs and emoji, attachment-only fallback, target switching/cancellation without
+losing draft text, sending the correct quote, source navigation and blocked
+identity/text masking. The separate full thread script still stops at the
+527px-versus-600px resize assertion, also reproduced on the unchanged base.
+Linux desktop previews were inspected at 2x in wide and narrow windows, including
+cancellation retaining the draft. Android compilation cannot configure without
+an Android SDK; Apple has no Swift/Xcode toolchain here. These are local fixture
+checks, not physical-device or live-account acceptance. No Docker daemon is
+available; the web image's application build stages were checked directly.
+
 **Deployment order.**
 
 1. No infrastructure apply, new secrets/configuration, database migration or

@@ -13568,7 +13568,7 @@ impl CaperApp {
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         let width =
-                            (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
+                            (ui.available_width() - 44.0 - ui.spacing().item_spacing.x).max(0.0);
                         ui.vertical(|ui| {
                             ui.set_width(width);
                             ui.spacing_mut().item_spacing.y = 3.0;
@@ -13605,7 +13605,23 @@ impl CaperApp {
                                 ui.add(egui::Label::new(job).show_tooltip_when_elided(false));
                             }
                         });
-                        if drawn_icon_button(ui, NavIcon::Close, "Cancel reply").clicked() {
+                        let cancel = ui.add(
+                            egui::Button::image(
+                                egui::Image::new(egui::include_image!("../resources/icons/x.svg"))
+                                    .tint(MUTED)
+                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                            )
+                            .min_size(egui::vec2(44.0, 44.0))
+                            .frame(false),
+                        );
+                        cancel.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                true,
+                                "Cancel reply",
+                            )
+                        });
+                        if cancel.on_hover_text("Cancel reply").clicked() {
                             self.reply_targets.remove(key);
                         }
                     });
