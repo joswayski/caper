@@ -21,6 +21,7 @@ const names = {
   lock: "Lock",
   users: "Users",
   speech: "Speech",
+  "message-square": "MessageSquare",
   mic: "Mic",
   "mic-off": "MicOff",
   headphones: "Headphones",

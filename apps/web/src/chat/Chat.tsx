@@ -324,6 +324,7 @@ export default function Chat({
   // Runs of blocked messages the reader chose to show, by their first message.
   const [revealedRuns, setRevealedRuns] = useState<ReadonlySet<string>>(() => new Set());
   const blockedIds = useBlockedIds();
+  const [pressing, setPressing] = useState<{ key: string; inThread: boolean }>();
   const press = useRef<{
     timer: ReturnType<typeof setTimeout>;
     x: number;
@@ -334,6 +335,7 @@ export default function Chat({
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
     press.current = undefined;
+    setPressing(undefined);
   };
   useEffect(() => {
     setActionTarget(undefined);
@@ -357,6 +359,7 @@ export default function Chat({
     // The drawer can appear under the held finger. Its release click must not
     // activate a newly rendered action, even though that action is in a portal.
     const resetClick = () => {
+      cancelPress();
       suppressClick.current = false;
     };
     const suppressReleaseClick = (event: MouseEvent) => {
@@ -1254,6 +1257,9 @@ export default function Chat({
             className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
+            data-pressing={
+              pressing?.key === message.clientMessageId && pressing.inThread === inThread ? true : undefined
+            }
             onPointerDown={(event) => {
               cancelPress();
               if (
@@ -1264,6 +1270,7 @@ export default function Chat({
               )
                 return;
               const anchor = event.currentTarget;
+              setPressing({ key: message.clientMessageId, inThread });
               press.current = {
                 x: event.clientX,
                 y: event.clientY,

@@ -3855,6 +3855,7 @@ private struct MessageRow: View {
     }
     @State private var editing = false
     @State private var history = false
+    @State private var pressing = false
     #if os(macOS)
     /// Room the first line leaves for the hover actions: 24pt each, 2pt apart
     /// (Reply in thread, Reply, Add reaction and ⋯), plus a gap.
@@ -3956,7 +3957,7 @@ private struct MessageRow: View {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { Image(systemName: "bubble.right"); Text("Replied to a thread · View thread") }
+                            } else { CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                     }.buttonStyle(.plain).frame(minHeight: 32)
                         #if os(macOS)
@@ -3981,6 +3982,7 @@ private struct MessageRow: View {
         // As on web, a run reads as one block: 2pt instead of 10 between its rows.
         }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
             .coordinateSpace(name: "reply-row-\(message.id)")
+            .background(CaperTheme.text.opacity(pressing ? 0.08 : 0))
             .background(rowBackground(mentionsMe: mentionsMe))
             .overlay(alignment: .leading) {
                 if mentionsMe { Rectangle().fill(CaperTheme.terracotta).frame(width: 2).accessibilityHidden(true) }
@@ -3994,7 +3996,8 @@ private struct MessageRow: View {
             .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
         #if os(iOS)
         row.contentShape(Rectangle())
-            .onLongPressGesture(perform: showReactionPicker)
+            .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { pressing = $0 })
+            .onDisappear { pressing = false }
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
         row
@@ -4002,7 +4005,7 @@ private struct MessageRow: View {
                 HStack(spacing: 2) {
                     if !inThread {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
-                            Image(systemName: "bubble.right").font(.system(size: 14, weight: .medium)).frame(width: 24, height: 24)
+                            CaperIcon(name: "message-square", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
@@ -5228,7 +5231,8 @@ private struct MessageActionsSheet: View {
             if let reply {
                 Divider()
                 Button(action: reply) {
-                    Label("Reply in thread", systemImage: "bubble.right").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    Label { Text("Reply in thread") } icon: { CaperIcon(name: "message-square") }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
             if canForward {

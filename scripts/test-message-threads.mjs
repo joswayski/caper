@@ -997,6 +997,24 @@ try {
     `(() => { const rect = document.querySelector('${thread(broadcast.clientMessageId)} p').getBoundingClientRect(); return { x: rect.x + 10, y: rect.y + 10 }; })()`,
   );
   await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
+  const held = await cdp(
+    "Runtime.evaluate",
+    {
+      expression: `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+      thread: document.querySelector('${thread(broadcast.clientMessageId)}').dataset.pressing,
+      channel: document.querySelector('${channel(broadcast.clientMessageId)}').dataset.pressing ?? null,
+      wash: getComputedStyle(document.querySelector('${thread(broadcast.clientMessageId)}')).backgroundImage,
+      menuOpen: !!document.querySelector('.chat-message-actions'),
+    }))))`,
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  assert.equal(held.result.value.thread, "true", "The held reply must highlight before its menu opens");
+  assert.equal(held.result.value.channel, null, "The broadcast copy in the channel must not highlight");
+  assert.notEqual(held.result.value.wash, "none");
+  assert.equal(held.result.value.menuOpen, false);
   await new Promise((resolve) => setTimeout(resolve, 650));
   await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }, sessionId);
   assertReplyAction(false);

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MessageSquare } from "lucide-react";
 import { test } from "vitest";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url));
@@ -14,6 +17,28 @@ const pngSize = (bytes) => {
 
 test("Linux installed icon uses the canonical main SVG", () => {
   assert.deepEqual(read(`${desktop}caper.svg`), read("apps/web/public/caper-face.svg"));
+});
+
+test("native thread icons use the web's square message bubble", () => {
+  const svg = `${renderToStaticMarkup(createElement(MessageSquare, { color: "#ffffff", size: 24 }))}\n`;
+  assert.equal(read(`${desktop}icons/message-square.svg`).toString(), svg);
+  assert.equal(
+    read("apps/native/apple/Resources/CaperIcons.xcassets/caper-message-square.imageset/message-square.svg").toString(),
+    svg,
+  );
+  const android = read("apps/native/android/app/src/main/res/drawable/lucide_message_square.xml").toString();
+  assert.deepEqual(
+    [...android.matchAll(/android:pathData="([^"]+)"/g)].map(([, path]) => path),
+    [...svg.matchAll(/ d="([^"]+)"/g)].map(([, path]) => path),
+  );
+  for (const [attribute, value] of Object.entries({
+    viewportWidth: "24",
+    viewportHeight: "24",
+    strokeWidth: "2",
+    strokeLineCap: "round",
+    strokeLineJoin: "round",
+  }))
+    assert.ok(android.includes(`android:${attribute}="${value}"`), attribute);
 });
 
 test("Android default and legacy launcher identities all use the original mascot", () => {

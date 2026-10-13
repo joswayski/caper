@@ -44,6 +44,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -2643,16 +2644,22 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
+    val interaction = remember(message.id) { MutableInteractionSource() }
+    val pressing by interaction.collectIsPressedAsState()
     // A message that mentions you: terracotta wash with a 2dp leading edge.
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
     val replyWash = message.replyTo != null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
-    Column(if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+    Column((if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
+    }).drawBehind {
+        if (pressing) drawRect(Text.copy(alpha = 0.08f))
     }) {
         message.replyTo?.let { reference -> ReplyContext(reference, state, message.clientMessageId, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
+            interactionSource = interaction,
+            indication = null,
             onClick = {},
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
@@ -2742,7 +2749,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Column {
                     // Web's order: replies, forward, edit, history, reactions, pin, then copy and block.
                     onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
-                    onReply?.let { SheetAction("Reply in thread", onClick = it); HorizontalDivider(color = Border) }
+                    onReply?.let { SheetAction("Reply in thread", icon = R.drawable.lucide_message_square, onClick = it); HorizontalDivider(color = Border) }
                     if (state.account != null && (message.forward == null || message.forward.message != null)) {
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
@@ -2773,10 +2780,13 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
  * One item of the message actions list: neutral like its siblings, and pressed edge to edge (the
  * list's rounded corners clip it) rather than as a pill inside the row.
  */
-@Composable private fun SheetAction(label: String, color: Color = Text, enabled: Boolean = true, onClick: () -> Unit) = TextButton(
+@Composable private fun SheetAction(label: String, color: Color = Text, enabled: Boolean = true, icon: Int? = null, onClick: () -> Unit) = TextButton(
     onClick, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = enabled, shape = RectangleShape,
     colors = ButtonDefaults.textButtonColors(contentColor = color),
-) { Text(label, Modifier.fillMaxWidth()) }
+) {
+    icon?.let { Icon(painterResource(it), contentDescription = null, Modifier.size(16.dp)); Spacer(Modifier.width(8.dp)) }
+    Text(label, Modifier.fillMaxWidth())
+}
 
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, close: () -> Unit) {
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
