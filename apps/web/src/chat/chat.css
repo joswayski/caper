@@ -752,6 +752,8 @@
 }
 @media (hover: hover) {
   .chat-link:hover {
+    color: var(--action-hover);
+    background: rgb(182 77 50 / 12%);
     text-decoration-thickness: 2px;
   }
 }
