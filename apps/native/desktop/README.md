@@ -66,7 +66,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   reactions. Signed URLs are
   refreshed (`POST /api/assets/urls`) before they expire and once after a
   403/404 image load, so a window left open for days keeps working.
-- Sending up to 10 files per message from the + attachment picker (Win32 on
+- Sending up to 10 files per message in channel, DM and thread composers,
+  including attachment-only thread replies. Staged files and text belong to
+  their conversation/thread and survive closing a thread or switching conversations;
+  a file picker that finishes later keeps its original destination. Failed and
+  expired uploads use the same retry/renewal flow in each composer.
+  Use the attachment picker (Win32 on
   Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
   such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
   window, which shows the drop overlay while they hover. Files are compressed on the device, off the UI thread, with the
@@ -402,6 +407,11 @@ even when the account has an existing conversation.
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
+`parity-thread-attachments` previews the same chips inside a thread;
+`parity-thread-attachments-ready` previews an attachment-only reply, and
+`parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.
+Append `-narrow` to these thread fixtures for a 390px-wide window. These are
+labelled local previews, not live storage or upload validation.
 `parity-requests` previews an open incoming request and the requests list;
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the

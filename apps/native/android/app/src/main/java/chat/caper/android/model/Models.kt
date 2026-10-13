@@ -527,8 +527,9 @@ data class AppUiState(
     val uploadsEnabled: Boolean = false,
     /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
     val uploadsChecked: Boolean = false,
-    val drafts: List<DraftAttachmentUi> = emptyList(),
-    val attachmentError: String? = null,
+    /** Files stay with their channel/DM and, for replies, their thread, even while closed. */
+    val attachmentDrafts: Map<AttachmentDraftTarget, List<DraftAttachmentUi>> = emptyMap(),
+    val attachmentErrors: Map<AttachmentDraftTarget, String> = emptyMap(),
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
     val freshAttachmentUrls: Map<String, AttachmentUrls> = emptyMap(),
     /** Latest server processing percent (`attachment.progress`), keyed by attachment ID. */
@@ -546,6 +547,9 @@ data class AppUiState(
     val busy: Boolean = false,
     val error: String? = null,
 ) {
+    val drafts: List<DraftAttachmentUi> get() = selectedChannel?.id?.let { attachmentDrafts[AttachmentDraftTarget(it)] }.orEmpty()
+    val attachmentError: String? get() = selectedChannel?.id?.let { attachmentErrors[AttachmentDraftTarget(it)] }
+
     /** Resolve retained identity snapshots from the account without touching conversation state. */
     fun withAccountProfile(): AppUiState {
         val own = account ?: return this
@@ -663,6 +667,9 @@ data class PendingMessageUi(
     val attachments: List<ChatAttachment> = emptyList(),
     val replyTo: MessageReply? = null,
 )
+
+/** A regular composer and each of its threads own independent files and upload errors. */
+data class AttachmentDraftTarget(val channelId: String, val threadRootId: String? = null)
 
 /** A file in the composer: preparing (compressing), uploading, ready to send, or failed. */
 data class DraftAttachmentUi(

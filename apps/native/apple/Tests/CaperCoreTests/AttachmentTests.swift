@@ -1469,27 +1469,45 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 429, message: "x")), "Uploading too quickly. Try again shortly.")
     }
 
-    private func composerHandler() -> (URLRequest, Data?) throws -> (Int, Data) {
-        { request, body in
-            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+    private func composerHandler(uniqueAssets: Bool = false) -> (URLRequest, Data?) throws -> (Int, Data) {
+        let lock = NSLock()
+        var assets: [String: [String: Any]] = [:]
+        return { request, body in
+            lock.lock()
+            defer { lock.unlock() }
+            let path = request.url?.path ?? ""
+            let components = path.split(separator: "/").map(String.init)
+            let channel = components.count > 3 ? components[3] : channelID
+            switch (request.httpMethod ?? "GET", path) {
             case ("POST", "/api/chat/session"): return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
-            case ("GET", "/api/chat/channels/\(channelID)/messages"):
-                return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\#(channelID)","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case ("GET", _) where path.hasSuffix("/thread"):
+                let root: [String: Any] = ["id": components[5], "channelId": channel, "seq": "1", "createdAt": "now", "clientMessageId": "root",
+                    "author": ["id": "self", "name": "Me", "isGuest": false], "content": ["version": 1, "type": "text", "text": "Root"]]
+                return (200, try JSONSerialization.data(withJSONObject: ["root": root, "messages": [], "cursor": "1", "hasMore": false]))
+            case ("GET", _) where path.hasSuffix("/messages"):
+                return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\#(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
             case ("GET", "/api/assets/usage"):
                 return (200, Data(#"{"used":0,"limit":1000000,"compression":{"imageQuality":90,"imageMaxEdge":4096,"paletteColors":256,"previewEdge":640,"videoMaxHeight":1080,"videoBitrateKbps":6000,"audioBitrateKbps":128}}"#.utf8))
             case ("POST", "/api/assets"):
-                return (201, Data(#"{"id":"Asset0000009","kind":"file","upload":{"method":"PUT","url":"https://r2.invalid/original/Asset0000009","headers":{"content-type":"text/plain","content-disposition":"attachment; filename=\"notes.txt\""}}}"#.utf8))
-            case ("PUT", _): return (200, Data())
-            case ("POST", "/api/assets/Asset0000009/complete"):
-                return (200, Data(#"{"id":"Asset0000009","kind":"file","contentType":"text/plain","name":"notes.txt","size":5}"#.utf8))
-            case ("POST", "/api/chat/channels/\(channelID)/messages"):
+                let id = uniqueAssets ? String(format: "Asset%07d", assets.count + 1) : "Asset0000009"
                 let input = json(body) ?? [:]
-                let response: [String: Any] = [
-                    "id": "Message0000001", "channelId": channelID, "seq": "1", "createdAt": "2026-10-03T00:00:00Z",
+                assets[id] = ["id": id, "kind": "file", "contentType": input["contentType"] as? String ?? "text/plain",
+                    "name": input["filename"] as? String ?? "notes.txt", "size": input["byteSize"] as? Int ?? 5]
+                return (201, Data(#"{"id":"\#(id)","kind":"file","upload":{"method":"PUT","url":"https://r2.invalid/original/\#(id)","headers":{"content-type":"text/plain"}}}"#.utf8))
+            case ("PUT", _): return (200, Data())
+            case ("POST", _) where path.hasSuffix("/complete"):
+                return (200, try JSONSerialization.data(withJSONObject: assets[components[2]] ?? [:]))
+            case ("POST", _) where path.hasSuffix("/cancel"): return (204, Data())
+            case ("POST", _) where path.hasSuffix("/messages"):
+                let input = json(body) ?? [:]
+                var response: [String: Any] = [
+                    "id": "Message0000001", "channelId": channel, "seq": uniqueAssets ? "2" : "1", "createdAt": "2026-10-03T00:00:00Z",
                     "clientMessageId": input["clientMessageId"] as? String ?? "", "author": ["id": "self", "name": "Me", "isGuest": false],
                     "content": ["version": 1, "type": "text", "text": input["text"] as? String ?? "",
-                                "attachments": [["id": "Asset0000009", "kind": "file", "contentType": "text/plain", "name": "notes.txt", "size": 5]]],
+                                "attachments": (input["attachmentIds"] as? [String] ?? []).compactMap { assets[uniqueAssets ? $0 : "Asset0000009"] }],
                 ]
+                response["threadRootId"] = input["threadRootId"]
+                response["broadcast"] = input["broadcast"]
                 return (200, try JSONSerialization.data(withJSONObject: response))
             default: throw URLError(.badURL)
             }
@@ -1531,6 +1549,197 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(chat.messages.first?.content.attachments?.first?.id, "Asset0000009")
         await chat.stop()
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path), "staged files are removed when the conversation closes")
+    }
+
+    @MainActor
+    func testThreadFileOnlySendKeepsChannelAndOtherThreadDrafts() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        chat.draft = "channel draft"
+        chat.addAttachments([try AttachmentStaging.stage(data: Data("channel".utf8), filename: "channel.txt")])
+        await waitUntil("channel upload") { chat.attachmentDrafts.first?.attachment != nil }
+        let channelFiles = chat.attachmentDrafts
+        await chat.openThread("Root00000002")
+        chat.threadDraft = "other thread draft"
+        chat.addAttachments([try AttachmentStaging.stage(data: Data("other".utf8), filename: "other.txt")], inThread: true)
+        await waitUntil("other thread upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
+        let otherFiles = chat.threadAttachmentDrafts
+
+        await chat.openThread("Root00000001")
+        XCTAssertFalse(chat.canSubmit(inThread: true), "another composer's files cannot enable Send reply")
+        let file = try AttachmentStaging.stage(data: Data("reply".utf8), filename: "reply.txt")
+        chat.addAttachments([file], inThread: true)
+        XCTAssertFalse(chat.canSubmit(inThread: true), "preparation/upload must finish first")
+        await waitUntil("thread upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
+        let assetID = try XCTUnwrap(chat.threadAttachmentDrafts.first?.attachment?.id)
+        XCTAssertTrue(chat.canSubmit(inThread: true), "ready files need no text")
+        chat.threadBroadcast = true
+        await chat.send(inThread: true)
+        XCTAssertNil(chat.error)
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+        XCTAssertFalse(chat.threadBroadcast)
+        let send = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path.hasSuffix("/messages") })
+        let body = try XCTUnwrap(json(send.body))
+        XCTAssertEqual(body["text"] as? String, "")
+        XCTAssertEqual(body["attachmentIds"] as? [String], [assetID])
+        XCTAssertEqual(body["threadRootId"] as? String, "Root00000001")
+        XCTAssertEqual(body["broadcast"] as? Bool, true)
+        XCTAssertEqual(chat.displayedThreadMessages.first?.content.attachments?.first?.name, "reply.txt")
+        await chat.send(retryPending: true)
+        XCTAssertEqual(chat.attachmentDrafts, channelFiles)
+        XCTAssertEqual(chat.draft, "channel draft")
+        await chat.openThread("Root00000002")
+        XCTAssertEqual(chat.threadDraft, "other thread draft")
+        XCTAssertEqual(chat.threadAttachmentDrafts, otherFiles)
+        await chat.stop(discardingDrafts: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        for draft in channelFiles + otherFiles { XCTAssertFalse(FileManager.default.fileExists(atPath: draft.localURL.path)) }
+    }
+
+    @MainActor
+    func testLatePickerTargetsKeepFilesAcrossThreadsAndConversationsAndInvalidateOnSignOut() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let channelTarget = try XCTUnwrap(chat.attachmentTarget())
+        await chat.openThread("Root00000001")
+        let threadTarget = try XCTUnwrap(chat.attachmentTarget(inThread: true))
+        chat.closeThread()
+        await chat.open(channelID: "Chan12345679", displayName: "Me")
+        await chat.openThread("Root00000001")
+        let channelFile = try AttachmentStaging.stage(data: Data("channel".utf8), filename: "channel.txt")
+        let threadFile = try AttachmentStaging.stage(data: Data("thread".utf8), filename: "thread.txt")
+        chat.addAttachments([channelFile], to: channelTarget)
+        chat.addAttachments([threadFile], to: threadTarget)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty, "same root in another channel is a different composer")
+        await waitUntil("original conversation uploads") {
+            AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/complete") }.count == 2
+        }
+        let reservations = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" }
+        XCTAssertEqual(reservations.compactMap { json($0.body)?["channelId"] as? String }, [channelID, channelID])
+        await chat.open(channelID: channelID, displayName: "Me")
+        XCTAssertEqual(chat.attachmentDrafts.first?.name, "channel.txt")
+        await chat.openThread("Root00000001")
+        await waitUntil("restored thread ready") { chat.threadAttachmentDrafts.first?.attachment != nil }
+        XCTAssertEqual(chat.threadAttachmentDrafts.first?.name, "thread.txt")
+        chat.closeThread()
+        await chat.openThread("Root00000001")
+        XCTAssertEqual(chat.threadAttachmentDrafts.first?.localURL, threadFile.url)
+        chat.removeAttachmentDraft(id: try XCTUnwrap(chat.threadAttachmentDrafts.first?.id))
+        XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+        XCTAssertEqual(chat.attachmentDrafts.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: threadFile.url.path))
+
+        let overflow = try (0..<11).map { try AttachmentStaging.stage(data: Data("file".utf8), filename: "file\($0).txt") }
+        chat.addAttachments(overflow, inThread: true)
+        XCTAssertEqual(chat.threadAttachmentDrafts.count, 10, "the channel's file does not use the thread's allowance")
+        XCTAssertEqual(chat.attachmentDrafts.count, 1)
+        XCTAssertNotNil(chat.threadAttachmentNotice)
+        XCTAssertNil(chat.attachmentNotice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: overflow[10].url.path))
+        await chat.stop(discardingDrafts: true)
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        await chat.openThread("Root00000001")
+        _ = chat.attachmentTarget(inThread: true)
+        let late = try AttachmentStaging.stage(data: Data("stale".utf8), filename: "late.txt")
+        chat.addAttachments([late], to: threadTarget)
+        XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: late.url.path), "a prior account's picker cannot resurrect its drafts")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: channelFile.url.path))
+        await chat.stop(discardingDrafts: true)
+    }
+
+    @MainActor
+    func testThreadPendingRejectedAndUnavailableRecoveryKeepsOriginalFilesAndNextDrafts() async throws {
+        for refusal in [503, 400, 409] {
+            AttachmentURLProtocol.reset()
+            let base = composerHandler(uniqueAssets: true)
+            var sends: [[String: Any]] = []
+            var failedInitial = false
+            var failedRenewal = false
+            AttachmentURLProtocol.handler = { request, body in
+                if request.httpMethod == "POST", request.url?.path.hasSuffix("/messages") == true {
+                    sends.append(try XCTUnwrap(json(body)))
+                    if sends.count == 1 {
+                        return (refusal, Data((refusal == 409 ? #"{"code":"attachment_unavailable","error":"expired"}"# : #"{"error":"controlled refusal"}"#).utf8))
+                    }
+                }
+                if refusal == 409, sends.count == 1, request.httpMethod == "PUT", !failedRenewal {
+                    failedRenewal = true
+                    return (503, Data())
+                }
+                if refusal == 409, sends.isEmpty, request.httpMethod == "PUT", !failedInitial {
+                    failedInitial = true
+                    return (503, Data())
+                }
+                return try base(request, body)
+            }
+            let chat = ChatModel(api: client())
+            await chat.open(channelID: channelID, displayName: "Me")
+            await chat.checkUploadAvailability()
+            await chat.openThread("Root00000001")
+            chat.threadDraft = "original reply"
+            chat.threadBroadcast = true
+            let file = try AttachmentStaging.stage(data: Data("original".utf8), filename: "original.txt")
+            chat.addAttachments([file], inThread: true)
+            if refusal == 409 {
+                await waitUntil("failed initial upload") { chat.threadAttachmentDrafts.first?.error != nil }
+                XCTAssertFalse(chat.canSubmit(inThread: true))
+                chat.retryAttachmentDraft(id: try XCTUnwrap(chat.threadAttachmentDrafts.first?.id))
+            }
+            await waitUntil("original upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
+            await chat.send(inThread: true)
+            XCTAssertNotNil(chat.pendingMessage)
+            XCTAssertEqual(chat.sendRejected, refusal == 400)
+            XCTAssertEqual(chat.sendUploadFailed, refusal == 409)
+            let pendingID = try XCTUnwrap(chat.pendingMessage?.id)
+            await chat.openThread("Root00000002")
+            chat.threadDraft = "next reply"
+            chat.addAttachments([try AttachmentStaging.stage(data: Data("next".utf8), filename: "next.txt")], inThread: true)
+            await waitUntil("next upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
+            let nextFiles = chat.threadAttachmentDrafts
+            await chat.send(inThread: true)
+            XCTAssertEqual(sends.count, 1, "another thread's submit cannot retry or replace the original pending message")
+            XCTAssertEqual(chat.pendingMessage?.id, pendingID)
+            if refusal == 400 {
+                XCTAssertTrue(chat.discardRejected(edit: true))
+                XCTAssertEqual(chat.threadDraft, "next reply", "editing restores the original root, not the selected root")
+                await chat.openThread("Root00000001")
+                XCTAssertEqual(chat.threadAttachmentDrafts.first?.localURL, file.url)
+                XCTAssertEqual(chat.threadDraft, "original reply")
+                XCTAssertTrue(chat.threadBroadcast)
+                await chat.send(inThread: true)
+            } else if refusal == 503 {
+                chat.closeThread()
+                await chat.send(inThread: true, retryPending: true)
+            } else {
+                chat.refreshDraftUploads()
+                await waitUntil("pending renewal") { chat.pendingMessage == nil }
+            }
+            XCTAssertNil(chat.error)
+            XCTAssertNil(chat.pendingMessage)
+            XCTAssertEqual(sends.count, 2)
+            XCTAssertEqual(sends.last?["threadRootId"] as? String, "Root00000001")
+            XCTAssertEqual(sends.last?["text"] as? String, "original reply")
+            XCTAssertEqual(sends.last?["broadcast"] as? Bool, true)
+            if refusal == 503 {
+                XCTAssertEqual(sends.last?["clientMessageId"] as? String, pendingID, "unknown outcome must reuse the same command")
+                XCTAssertEqual(sends.first?["attachmentIds"] as? [String], sends.last?["attachmentIds"] as? [String])
+            } else {
+                XCTAssertNotEqual(sends.first?["clientMessageId"] as? String, sends.last?["clientMessageId"] as? String)
+            }
+            if refusal == 409 { XCTAssertNotEqual(sends.first?["attachmentIds"] as? [String], sends.last?["attachmentIds"] as? [String]) }
+            await chat.openThread("Root00000002")
+            XCTAssertEqual(chat.threadDraft, "next reply")
+            XCTAssertEqual(chat.threadAttachmentDrafts, nextFiles)
+            await chat.stop(discardingDrafts: true)
+        }
     }
 
     @MainActor

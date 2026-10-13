@@ -770,6 +770,8 @@ struct NavigationTarget {
 struct DraftUpload {
     key: u64,
     channel: String,
+    /// None belongs to the conversation composer, Some to this thread only.
+    thread_root_id: Option<String>,
     name: String,
     kind: model::AttachmentKind,
     /// The selected original, available for preview before upload completes.
@@ -806,6 +808,13 @@ impl DraftUpload {
                 .uploaded_at
                 .is_some_and(|at| at.elapsed() >= Duration::from_secs(23 * 60 * 60))
     }
+}
+
+/// The native dialog may finish after its conversation or thread closes.
+struct FilePicker {
+    channel: String,
+    thread_root_id: Option<String>,
+    receiver: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1034,6 +1043,8 @@ struct CaperApp {
     profile_send_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     profile_navigation: Option<u64>,
     thread_view: Option<ThreadView>,
+    /// Last rendered thread bounds, for routing native file drops by pointer.
+    thread_drop_rect: Option<egui::Rect>,
     thread_request: u64,
     thread_pages: BTreeMap<String, ThreadView>,
     thread_drafts: BTreeMap<String, (String, bool)>,
@@ -1162,7 +1173,7 @@ struct CaperApp {
     viewer: Option<viewer::Viewer>,
     /// Loopback streaming for the viewer's player, started on first use.
     media_proxy: Option<media_proxy::MediaProxy>,
-    file_picker: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    file_picker: Option<FilePicker>,
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
     open_after_refresh: Option<String>,
@@ -1298,6 +1309,7 @@ impl CaperApp {
             profile_send_cancel: None,
             profile_navigation: None,
             thread_view: None,
+            thread_drop_rect: None,
             thread_request: 0,
             thread_pages: BTreeMap::new(),
             thread_drafts: BTreeMap::new(),
@@ -1561,9 +1573,33 @@ impl CaperApp {
                         has_newer: false,
                     };
                     if !loading {
-                        app.thread_pages.insert(root, thread.clone());
+                        app.thread_pages.insert(root.clone(), thread.clone());
                     }
                     app.thread_view = Some(thread);
+                    if name.contains("attachments") {
+                        app.install_attachments_fixture();
+                        for draft in &mut app.draft_files {
+                            draft.thread_root_id = Some(root.clone());
+                        }
+                        if name.contains("ready") || name.contains("rejected") {
+                            app.draft_files.retain(|file| file.attachment.is_some());
+                        }
+                        if name.contains("rejected") {
+                            let mut pending = PendingSend::prepare(
+                                None,
+                                "",
+                                app.draft_files
+                                    .iter()
+                                    .filter_map(|file| file.attachment.clone())
+                                    .collect(),
+                            );
+                            pending.thread_root_id = Some(root);
+                            pending.sending = false;
+                            pending.rejection = Some("TEST FIXTURE — Reply rejected.".into());
+                            app.pending = Some(pending);
+                            app.pending_files = std::mem::take(&mut app.draft_files);
+                        }
+                    }
                 } else if name == "parity-mentions" {
                     // Labelled sample entries as the server would resolve them:
                     // you (Fixture Owner) are named once and by Alex's @everyone.
@@ -2566,6 +2602,7 @@ impl CaperApp {
         let draft = |key, name: &str, size, progress, error: Option<&str>| DraftUpload {
             key,
             channel: channel.clone(),
+            thread_root_id: None,
             name: name.into(),
             kind: model::AttachmentKind::Image,
             local_path: None,
@@ -5304,6 +5341,13 @@ impl CaperApp {
     /// Gives up staged files that can no longer be sent: on sign-out, or for
     /// a conversation whose access ended.
     fn discard_staged_files(&mut self, channel: Option<&str>) {
+        if self
+            .file_picker
+            .as_ref()
+            .is_some_and(|picker| channel.is_none_or(|channel| picker.channel == channel))
+        {
+            self.file_picker = None;
+        }
         let files: Vec<_> = match channel {
             Some(channel) => self.staged_files.remove(channel).unwrap_or_default(),
             None => std::mem::take(&mut self.staged_files)
@@ -6159,6 +6203,15 @@ impl CaperApp {
         {
             return;
         }
+        let renew: Vec<_> = self
+            .draft_files
+            .iter()
+            .filter(|file| file.thread_root_id.as_deref() == Some(&root) && file.needs_upload())
+            .map(|file| file.key)
+            .collect();
+        for key in renew {
+            self.retry_upload(key);
+        }
         self.thread_request += 1;
         if let Some(cached) = self.thread_pages.get(&root) {
             self.thread_view = Some(cached.clone());
@@ -6239,15 +6292,11 @@ impl CaperApp {
         );
         let attachments = if let Some(pending) = &self.pending {
             pending.attachments.clone()
-        } else if root.is_some() {
-            // The thread composer has no attach control; channel drafts'
-            // files stay with the channel composer.
-            Vec::new()
         } else {
             let drafts: Vec<_> = self
                 .draft_files
                 .iter()
-                .filter(|draft| draft.channel == channel)
+                .filter(|draft| draft.channel == channel && draft.thread_root_id == root)
                 .collect();
             if drafts.iter().any(|draft| draft.attachment.is_none()) {
                 let retry: Vec<_> = drafts
@@ -6311,10 +6360,12 @@ impl CaperApp {
             }
             // The pending row now owns the sent files.
             let (sent, kept) = self.draft_files.drain(..).partition(|draft| {
-                draft
-                    .attachment
-                    .as_ref()
-                    .is_some_and(|file| attachment_ids.contains(&file.id))
+                draft.channel == channel
+                    && draft.thread_root_id == root
+                    && draft
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|file| attachment_ids.contains(&file.id))
             });
             self.pending_files = sent;
             self.draft_files = kept;
@@ -6369,10 +6420,13 @@ impl CaperApp {
         }
     }
 
-    fn pick_files(&mut self, context: &egui::Context) {
-        if self.file_picker.is_some() {
+    fn pick_files(&mut self, context: &egui::Context, root: Option<String>) {
+        if self.file_picker.is_some() || !self.can_attach() {
             return;
         }
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
         let (sender, receiver) = std::sync::mpsc::channel();
         let context = context.clone();
         // The native dialog blocks its own thread, never the UI.
@@ -6384,26 +6438,68 @@ impl CaperApp {
             let _ = sender.send(files);
             context.request_repaint();
         });
-        self.file_picker = Some(receiver);
+        self.file_picker = Some(FilePicker {
+            channel,
+            thread_root_id: root,
+            receiver,
+        });
     }
 
     /// Start preparing and uploading picked or dropped files (at most 10).
-    fn add_files(&mut self, paths: Vec<std::path::PathBuf>) {
-        self.add_attachment_files(paths.into_iter().map(profile_dm::File::picked).collect());
+    fn add_files(&mut self, paths: Vec<std::path::PathBuf>, root: Option<String>) {
+        self.add_attachment_files(
+            paths.into_iter().map(profile_dm::File::picked).collect(),
+            root,
+        );
     }
 
-    fn add_attachment_files(&mut self, files: Vec<profile_dm::File>) {
+    fn add_attachment_files(&mut self, files: Vec<profile_dm::File>, root: Option<String>) {
         if files.is_empty() || !self.can_attach() {
             return;
         }
-        let (Some(settings), Some(token), Some(channel)) = (
-            self.uploads.clone(),
-            self.token.clone(),
-            self.selected_channel.clone(),
-        ) else {
+        if let Some(channel) = self.selected_channel.clone() {
+            self.add_attachment_files_to(files, channel, root);
+        }
+    }
+
+    fn draft_file_count(&self, root: Option<&str>) -> usize {
+        self.draft_files
+            .iter()
+            .filter(|file| {
+                Some(&file.channel) == self.selected_channel.as_ref()
+                    && file.thread_root_id.as_deref() == root
+            })
+            .count()
+    }
+
+    /// Picker results keep the destination captured when the dialog opened.
+    fn add_attachment_files_to(
+        &mut self,
+        files: Vec<profile_dm::File>,
+        channel: String,
+        root: Option<String>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        let (Some(settings), Some(token)) = (self.uploads.clone(), self.token.clone()) else {
             return;
         };
-        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
+        let open = self.selected_channel.as_ref() == Some(&channel);
+        let count = if open {
+            self.draft_files
+                .iter()
+                .filter(|file| file.thread_root_id == root)
+                .count()
+        } else {
+            self.staged_files.get(&channel).map_or(0, |files| {
+                files
+                    .iter()
+                    .filter(|file| file.thread_root_id == root)
+                    .count()
+            })
+        };
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(count);
         if room == 0 {
             self.error = Some(format!(
                 "You can attach up to {} files.",
@@ -6420,9 +6516,10 @@ impl CaperApp {
         for file in files.into_iter().take(room) {
             self.draft_keys += 1;
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            self.draft_files.push(DraftUpload {
+            let draft = DraftUpload {
                 key: self.draft_keys,
                 channel: channel.clone(),
+                thread_root_id: root.clone(),
                 name: file.name(),
                 kind: model::AttachmentKind::File,
                 local_path: Some(file.path.clone()),
@@ -6440,7 +6537,15 @@ impl CaperApp {
                 thumbnail_image: None,
                 thumbnail: None,
                 cancel: cancel.clone(),
-            });
+            };
+            if open {
+                self.draft_files.push(draft);
+            } else {
+                self.staged_files
+                    .entry(channel.clone())
+                    .or_default()
+                    .push(draft);
+            }
             self.worker.send(Command::Upload {
                 key: self.draft_keys,
                 token: token.clone(),
@@ -6455,11 +6560,11 @@ impl CaperApp {
     }
 
     /// Editing a rejected message returns its uploaded files to the composer.
-    fn restore_drafts(&mut self, attachments: Vec<model::Attachment>) {
+    fn restore_drafts(&mut self, attachments: Vec<model::Attachment>, root: Option<String>) {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_files.len());
+        let room = uploads::MAX_ATTACHMENTS.saturating_sub(self.draft_file_count(root.as_deref()));
         self.cancel_assets(
             attachments
                 .iter()
@@ -6480,6 +6585,7 @@ impl CaperApp {
             self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
                 channel: channel.clone(),
+                thread_root_id: root.clone(),
                 name: attachment.name.clone(),
                 kind: attachment.kind,
                 local_path: None,
@@ -6609,6 +6715,7 @@ impl CaperApp {
             .draft_files
             .iter_mut()
             .chain(&mut self.pending_files)
+            .chain(self.staged_files.values_mut().flatten())
             .find(|file| file.key == key)
         else {
             return;
@@ -7760,8 +7867,29 @@ impl CaperApp {
         .paint_at(ui, rect);
     }
 
-    /// Covers the conversation while the window has files dragged over it.
-    fn file_drop_overlay(&mut self, context: &egui::Context, conversation: egui::Rect) {
+    fn attachment_drop_root(&self, context: &egui::Context) -> Option<String> {
+        self.thread_view
+            .as_ref()
+            .filter(|_| {
+                self.thread_drop_rect.is_some_and(|rect| {
+                    context.input(|input| {
+                        input
+                            .pointer
+                            .latest_pos()
+                            .is_none_or(|pos| rect.contains(pos))
+                    })
+                })
+            })
+            .map(|thread| thread.root.clone())
+    }
+
+    /// Covers the destination pane while the window has files dragged over it.
+    fn file_drop_overlay(
+        &mut self,
+        context: &egui::Context,
+        conversation: egui::Rect,
+        root: Option<&str>,
+    ) {
         let now = context.input(|input| input.time);
         let hovering =
             self.file_drop_fixture || context.input(|input| !input.raw.hovered_files.is_empty());
@@ -7769,12 +7897,18 @@ impl CaperApp {
             self.file_drop_since = None;
             return;
         }
+        if self.attachment_drop_root(context).as_deref() != root {
+            return;
+        }
         let since = *self.file_drop_since.get_or_insert(now);
-        let (title, detail) = file_drop::text(
+        let (mut title, detail) = file_drop::text(
             self.channel_name(),
             self.selected_direct.is_some(),
-            self.draft_files.len(),
+            self.draft_file_count(root),
         );
+        if root.is_some() {
+            title = "Attach to thread".into();
+        }
         let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
         file_drop::paint(
             context,
@@ -12181,6 +12315,8 @@ impl CaperApp {
         let Some(thread) = &self.thread_view else {
             return;
         };
+        let drop_area = ui.max_rect();
+        self.thread_drop_rect = Some(drop_area);
         let root = thread.root.clone();
         let loading = thread.loading;
         let has_more = thread.has_more;
@@ -12279,13 +12415,16 @@ impl CaperApp {
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
+                if let Some(error) = &self.error
+                    && self.pending.as_ref().is_none_or(|pending| pending.thread_root_id.as_deref() == Some(&root)) { ui.colored_label(ERROR, error); }
                 self.reply_draft(ui, &root);
                 let pending = self.pending.clone().filter(|pending| pending.thread_root_id.as_deref() == Some(&root));
                 if let Some(pending) = &pending {
                     let arrival = self.arrival(ui.ctx(), &pending.id);
                     motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
                         if let Some(reference) = &pending.reply_to { self.reply_context(ui, reference, &pending.id); }
-                        ui.label(&pending.text);
+                        if !pending.text.is_empty() { ui.label(&pending.text); }
+                        self.attachment_list(ui, &pending.attachments, true);
                     });
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
@@ -12293,21 +12432,39 @@ impl CaperApp {
                             if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
                                 && let Some(rejected) = self.take_rejected() {
                                     self.thread_drafts.entry(root.clone()).or_default().0 = rejected.text;
+                                    self.thread_drafts.entry(root.clone()).or_default().1 = rejected.broadcast;
                                     if let Some(reference) = rejected.reply_to { self.reply_targets.insert(root.clone(), reference); }
+                                    self.restore_drafts(rejected.attachments, Some(root.clone()));
                                 }
                             if ui.button("Dismiss").clicked() { self.discard_rejected(); }
                         });
                     } else if !pending.sending {
-                        if let Some(error) = &self.error { ui.colored_label(ERROR, error); }
-                        if ui.button("Retry send").clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
+                        ui.colored_label(ERROR, if pending.upload_failed { "Failed to upload." } else { "Not confirmed yet." });
+                        if ui.button(if pending.upload_failed { "Retry" } else { "Retry send" }).clicked() { self.send_message_to(Some(root.clone()), pending.broadcast); }
                     }
                 }
                 let blocked = self.pending.is_some();
-                if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.rejection.is_some() || self.error.is_some())) {
+                if pending.is_none() && self.pending.as_ref().is_some_and(|pending| !pending.sending && (pending.upload_failed || pending.rejection.is_some() || self.error.is_some())) {
                     ui.label("Confirm or dismiss the pending message first.");
                 }
                 // The channel composer's `:`/`@` suggestions, with their own state.
                 let composer_id = egui::Id::new(("thread-draft", &root));
+                let attach = self.can_attach() && !loading;
+                if self.draft_file_count(Some(&root)) > 0 {
+                    self.draft_chips(ui, Some(&root));
+                    ui.add_space(8.0);
+                }
+                if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
+                    && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Paste(_)))) {
+                    match profile_dm::paste_files() {
+                        Ok(files) if !files.is_empty() => {
+                            ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Paste(_))));
+                            self.add_attachment_files(files, Some(root.clone()));
+                        }
+                        Err(error) => self.error = Some(error),
+                        _ => {}
+                    }
+                }
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let (people, specials) = self.mention_people();
@@ -12323,12 +12480,23 @@ impl CaperApp {
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 ui.add_space(8.0);
-                // Web's send row: the broadcast choice, then Send at the end.
+                let files = self.draft_file_count(Some(&root));
+                let full = files >= uploads::MAX_ATTACHMENTS;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                        .inner.on_disabled_hover_text(if !attach { self.attach_unavailable_reason().to_owned() }
+                            else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
+                            else { "Attach files".to_owned() }).clicked() {
+                        self.pick_files(ui.ctx(), Some(root.clone()));
+                    }
+                    let draft = self.thread_drafts.entry(root.clone()).or_default();
+                    ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
+                });
+                // Keep Send on its own row so the broadcast label fits narrow threads.
                 let send = ui
                     .horizontal(|ui| {
                         let draft = self.thread_drafts.entry(root.clone()).or_default();
-                        ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, &broadcast_label));
-                        let empty = draft.0.trim().is_empty();
+                        let empty = draft.0.trim().is_empty() && files == 0;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let send = primary_button(ui, "Send reply", !blocked && !loading && !empty).clicked();
                             let emoji = ui
@@ -12435,6 +12603,7 @@ impl CaperApp {
                 }
             });
         self.emoji_picker(ui.ctx());
+        self.file_drop_overlay(ui.ctx(), drop_area, Some(&root));
     }
 
     fn channel_conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
@@ -12541,9 +12710,9 @@ impl CaperApp {
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
             ).size().y);
-            let chip_rows = if attach && !self.draft_files.is_empty() {
+            let chip_rows = if attach && self.draft_file_count(None) > 0 {
                 let per_row = (((ui.available_width() - 36.0 + 8.0) / 244.0).floor() as usize).max(1);
-                self.draft_files.len().div_ceil(per_row) as f32
+                self.draft_file_count(None).div_ceil(per_row) as f32
             } else {
                 0.0
             };
@@ -12606,7 +12775,7 @@ impl CaperApp {
                     }
                     // Web: the conversation stays; only sending waits on a new session.
                     if let Some(pending) = self.pending.as_ref()
-                        && !pending.sending && (pending.rejection.is_some() || self.error.is_some())
+                        && !pending.sending && (pending.upload_failed || pending.rejection.is_some() || self.error.is_some())
                         && let Some(root) = pending.thread_root_id.clone()
                         && self.thread_view.as_ref().is_none_or(|thread| thread.root != root) {
                         let rejected = pending.rejection.is_some();
@@ -12670,8 +12839,8 @@ impl CaperApp {
                         });
                         ui.add_space(4.0);
                     }
-                    if attach && !self.draft_files.is_empty() {
-                        self.draft_chips(ui);
+                    if attach && self.draft_file_count(None) > 0 {
+                        self.draft_chips(ui, None);
                         ui.add_space(8.0);
                     }
                     self.reply_draft(ui, "channel");
@@ -12687,7 +12856,7 @@ impl CaperApp {
                         match profile_dm::paste_files() {
                             Ok(files) if !files.is_empty() => {
                                 ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Paste(_))));
-                                self.add_attachment_files(files);
+                                self.add_attachment_files(files, None);
                             }
                             Err(error) => self.error = Some(error),
                             _ => {}
@@ -12724,7 +12893,7 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(egui::Margin { left: 4, ..Default::default() })
                         .show(ui, |ui| {
-                            let full = self.draft_files.len() >= uploads::MAX_ATTACHMENTS;
+                            let full = self.draft_file_count(None) >= uploads::MAX_ATTACHMENTS;
                             let mut pick = false;
                             let mut choose_emoji = false;
                             let editor = ui.horizontal_top(|ui| {
@@ -12758,7 +12927,7 @@ impl CaperApp {
                                 editor
                             }).inner;
                             if pick {
-                                self.pick_files(ui.ctx());
+                                self.pick_files(ui.ctx(), None);
                             }
                             (editor, choose_emoji)
                         });
@@ -12963,7 +13132,7 @@ impl CaperApp {
                                             && let Some(rejected) = self.take_rejected() {
                                             self.draft = rejected.text;
                                             if let Some(reference) = rejected.reply_to { self.reply_targets.insert("channel".into(), reference); }
-                                            self.restore_drafts(rejected.attachments);
+                                            self.restore_drafts(rejected.attachments, None);
                                             ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
                                         }
                                         if toned(ui, QUIET_TONE, true, button("Dismiss")).clicked() { self.discard_rejected(); }
@@ -12998,7 +13167,7 @@ impl CaperApp {
                         });
                     }
                 });
-            self.file_drop_overlay(ui.ctx(), conversation);
+            self.file_drop_overlay(ui.ctx(), conversation, None);
             self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -14553,13 +14722,16 @@ impl CaperApp {
     }
 
     /// File chips above the composer: name, size saving, progress, remove.
-    fn draft_chips(&mut self, ui: &mut egui::Ui) {
+    fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
         let mut retry = None;
+        let channel = self.selected_channel.clone();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            for draft in &mut self.draft_files {
+            for draft in self.draft_files.iter_mut().filter(|file| {
+                Some(&file.channel) == channel.as_ref() && file.thread_root_id.as_deref() == root
+            }) {
                 let entering = motion::entrance(
                     ui.ctx(),
                     egui::Id::new(("draft-chip", draft.key)),
@@ -14776,11 +14948,15 @@ impl CaperApp {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if let Some(receiver) = &self.file_picker {
-            match receiver.try_recv() {
+        if let Some(picker) = &self.file_picker {
+            match picker.receiver.try_recv() {
                 Ok(files) => {
-                    self.file_picker = None;
-                    self.add_files(files);
+                    let picker = self.file_picker.take().unwrap();
+                    self.add_attachment_files_to(
+                        files.into_iter().map(profile_dm::File::picked).collect(),
+                        picker.channel,
+                        picker.thread_root_id,
+                    );
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.file_picker = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -14830,7 +15006,7 @@ impl CaperApp {
                     .or_default()
                     .add_files(dropped.into_iter().map(profile_dm::File::picked).collect());
             } else {
-                self.add_files(dropped);
+                self.add_files(dropped, self.attachment_drop_root(context));
             }
         }
     }
@@ -21842,6 +22018,9 @@ fn main() -> eframe::Result {
                 | "parity-update-narrow"
                 | "parity-update-download"
                 | "parity-file-drop-narrow"
+                | "parity-thread-attachments-narrow"
+                | "parity-thread-attachments-ready-narrow"
+                | "parity-thread-attachments-rejected-narrow"
         )
     }) {
         [390.0, 844.0]
@@ -30654,22 +30833,25 @@ mod tests {
             );
             app.token = Some("account-token".into());
             app.draft = "Keep my channel draft".into();
-            app.restore_drafts(vec![model::Attachment {
-                id: "channel-file".into(),
-                kind: model::AttachmentKind::File,
-                content_type: "text/plain".into(),
-                name: "channel.txt".into(),
-                size: 4,
-                width: None,
-                height: None,
-                duration_ms: None,
-                preview: false,
-                url: None,
-                preview_url: None,
-                unavailable: false,
-                status: model::AttachmentStatus::Ready,
-                animated: false,
-            }]);
+            app.restore_drafts(
+                vec![model::Attachment {
+                    id: "channel-file".into(),
+                    kind: model::AttachmentKind::File,
+                    content_type: "text/plain".into(),
+                    name: "channel.txt".into(),
+                    size: 4,
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    preview: false,
+                    url: None,
+                    preview_url: None,
+                    unavailable: false,
+                    status: model::AttachmentStatus::Ready,
+                    animated: false,
+                }],
+                None,
+            );
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
             click_at(
@@ -30766,22 +30948,25 @@ mod tests {
         // New egui areas spend their first pass measuring, invisibly.
         render(&mut app, &context, vec![]);
         app.draft = "Keep my channel draft".into();
-        app.restore_drafts(vec![model::Attachment {
-            id: "channel-file".into(),
-            kind: model::AttachmentKind::File,
-            content_type: "text/plain".into(),
-            name: "channel.txt".into(),
-            size: 4,
-            width: None,
-            height: None,
-            duration_ms: None,
-            preview: false,
-            url: None,
-            preview_url: None,
-            unavailable: false,
-            status: model::AttachmentStatus::Ready,
-            animated: false,
-        }]);
+        app.restore_drafts(
+            vec![model::Attachment {
+                id: "channel-file".into(),
+                kind: model::AttachmentKind::File,
+                content_type: "text/plain".into(),
+                name: "channel.txt".into(),
+                size: 4,
+                width: None,
+                height: None,
+                duration_ms: None,
+                preview: false,
+                url: None,
+                preview_url: None,
+                unavailable: false,
+                status: model::AttachmentStatus::Ready,
+                animated: false,
+            }],
+            None,
+        );
         app.profile_drafts.get_mut("fixture-alex").unwrap().text = "Hello Alex".into();
         let output = render(&mut app, &context, vec![]);
         click_at(&mut app, &context, text_center(&output, "Send"));
@@ -33566,6 +33751,296 @@ mod tests {
             "Unsent in the second conversation"
         );
         assert_eq!(app.thread_drafts["root-message"].0, "Unsent reply");
+    }
+
+    #[test]
+    fn attachment_only_thread_reply_owns_its_files_through_retry_renewal_and_edit() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-thread-attachments-ready"),
+        );
+        let root = app.thread_view.as_ref().unwrap().root.clone();
+        let attachment = app.draft_files[0].attachment.clone().unwrap();
+        let thread_key = app.draft_files[0].key;
+        // Neither another thread's failed upload nor the channel's files/text
+        // can block or be consumed by this attachment-only reply.
+        app.restore_drafts(vec![attachment.clone()], None);
+        app.restore_drafts(vec![attachment.clone()], Some("other-root".into()));
+        app.draft_files.last_mut().unwrap().attachment = None;
+        app.draft_files.last_mut().unwrap().error = Some("Failed to upload.".into());
+        app.draft = "Keep the channel draft".into();
+        app.thread_drafts
+            .insert("other-root".into(), ("Keep the other reply".into(), true));
+        app.thread_drafts.entry(root.clone()).or_default().1 = true;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Send reply"));
+        let first = app.pending.clone().expect("attachment-only replies send");
+        assert_eq!(first.text, "");
+        assert_eq!(first.attachments, vec![attachment]);
+        assert_eq!(first.thread_root_id.as_deref(), Some(root.as_str()));
+        assert!(first.broadcast);
+        assert_eq!(app.pending_files.len(), 1);
+        assert_eq!(app.pending_files[0].key, thread_key);
+        assert_eq!(app.draft_file_count(None), 1);
+        assert_eq!(app.draft_file_count(Some("other-root")), 1);
+        assert_eq!(app.thread_drafts[&root], ("".into(), false));
+
+        app.sent(Err(crate::worker::SendFailure {
+            status: None,
+            message: "offline".into(),
+            code: None,
+        }));
+        app.send_message_to(Some(root.clone()), false);
+        assert_eq!(app.pending.as_ref().unwrap().id, first.id);
+        assert_eq!(app.pending.as_ref().unwrap().attachments, first.attachments);
+        assert!(
+            app.pending.as_ref().unwrap().broadcast,
+            "retries keep the original destination choices"
+        );
+
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(409),
+            message: "expired".into(),
+            code: Some("attachment_unavailable".into()),
+        }));
+        app.upload_update(
+            thread_key,
+            crate::worker::UploadUpdate::Finished(Err(crate::uploads::UploadError::new(
+                "storage offline",
+            ))),
+        );
+        app.close_thread();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Review reply"));
+        assert_eq!(app.thread_view.as_ref().unwrap().root, root);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Retry"));
+        let mut renewed = first.attachments[0].clone();
+        renewed.id = "renewed-thread-upload".into();
+        app.upload_update(
+            thread_key,
+            crate::worker::UploadUpdate::Finished(Ok(renewed.clone())),
+        );
+        let pending = app.pending.as_ref().unwrap();
+        assert_ne!(
+            pending.id, first.id,
+            "definitive expiry starts a new command after renewal"
+        );
+        assert_eq!(pending.attachments, vec![renewed.clone()]);
+        assert_eq!(pending.thread_root_id, first.thread_root_id);
+        assert!(pending.broadcast && pending.sending && !pending.upload_failed);
+
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(422),
+            message: "Rejected fixture".into(),
+            code: None,
+        }));
+        app.thread_drafts.entry(root.clone()).or_default().0 = "New unsent reply".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Edit"));
+        assert!(
+            app.pending.is_some(),
+            "Edit never overwrites new thread text"
+        );
+        app.thread_drafts.entry(root.clone()).or_default().0.clear();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Edit"));
+        assert!(app.pending.is_none());
+        assert_eq!(app.thread_drafts[&root], ("".into(), true));
+        assert_eq!(app.draft_file_count(Some(&root)), 1);
+        let restored = app
+            .draft_files
+            .iter()
+            .find(|file| file.key == thread_key)
+            .unwrap();
+        assert_eq!(restored.attachment, Some(renewed));
+        assert_eq!(restored.thread_root_id.as_deref(), Some(root.as_str()));
+        assert_eq!(app.draft, "Keep the channel draft");
+        assert_eq!(
+            app.thread_drafts["other-root"],
+            ("Keep the other reply".into(), true)
+        );
+        assert_eq!(app.draft_file_count(None), 1);
+        assert_eq!(app.draft_file_count(Some("other-root")), 1);
+    }
+
+    #[test]
+    fn thread_picker_and_uploads_keep_the_original_destination_after_navigation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-thread-attachments-ready"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        let root = app.thread_view.as_ref().unwrap().root.clone();
+        let attachment = app.draft_files[0].attachment.clone().unwrap();
+        app.draft_files[0].upload_expired = true;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.file_picker = Some(super::FilePicker {
+            channel: channel.clone(),
+            thread_root_id: Some(root.clone()),
+            receiver,
+        });
+        app.close_thread();
+        app.reload_selected_channel("chan00000002".into(), false);
+        app.draft = "Keep the second channel".into();
+        sender
+            .send(vec!["picked-for-original-thread.txt".into()])
+            .unwrap();
+        app.attachment_housekeeping(&context);
+        assert!(app.draft_files.is_empty());
+        let files = &app.staged_files[&channel];
+        assert_eq!(files.len(), 2);
+        assert!(
+            files
+                .iter()
+                .all(|file| file.thread_root_id.as_deref() == Some(&root))
+        );
+        let picked_key = files[1].key;
+        app.upload_update(
+            picked_key,
+            crate::worker::UploadUpdate::Finished(Ok(attachment)),
+        );
+        app.reload_selected_channel(channel.clone(), false);
+        app.open_thread(root.clone());
+        assert_eq!(app.draft_file_count(None), 0);
+        assert_eq!(app.draft_file_count(Some(&root)), 2);
+        assert!(
+            app.draft_files[0].uploading && app.draft_files[0].attachment.is_none(),
+            "expired files renew on return"
+        );
+        assert!(
+            app.draft_files[1].attachment.is_some(),
+            "closed destinations still receive upload results"
+        );
+        app.close_thread();
+        app.open_thread(root.clone());
+        assert_eq!(app.draft_file_count(Some(&root)), 2);
+        assert_eq!(app.drafts["chan00000002"], "Keep the second channel");
+
+        // A picker completed in the same channel still belongs to the original
+        // thread, even when another thread is now open.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.file_picker = Some(super::FilePicker {
+            channel,
+            thread_root_id: Some(root.clone()),
+            receiver,
+        });
+        app.open_thread("other-root".into());
+        sender
+            .send(vec!["another-original-thread.txt".into()])
+            .unwrap();
+        app.attachment_housekeeping(&context);
+        assert_eq!(app.draft_file_count(Some(&root)), 3);
+        assert_eq!(app.draft_file_count(Some("other-root")), 0);
+        assert_eq!(app.draft_file_count(None), 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.file_picker = Some(super::FilePicker {
+            channel: app.selected_channel.clone().unwrap(),
+            thread_root_id: Some(root),
+            receiver,
+        });
+        let cancels: Vec<_> = app
+            .draft_files
+            .iter()
+            .map(|file| file.cancel.clone())
+            .collect();
+        app.logout();
+        assert!(app.file_picker.is_none());
+        assert!(sender.send(vec!["after-signout.txt".into()]).is_err());
+        assert!(app.draft_files.is_empty() && app.staged_files.is_empty());
+        assert!(
+            cancels
+                .iter()
+                .all(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        );
+    }
+
+    #[test]
+    fn thread_and_channel_attachment_limits_and_drop_destinations_are_independent() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-thread-attachments-ready"),
+        );
+        let root = app.thread_view.as_ref().unwrap().root.clone();
+        let attachment = app.draft_files[0].attachment.clone().unwrap();
+        app.restore_drafts(
+            vec![attachment.clone(); crate::uploads::MAX_ATTACHMENTS],
+            None,
+        );
+        app.restore_drafts(
+            vec![attachment; crate::uploads::MAX_ATTACHMENTS],
+            Some("other-root".into()),
+        );
+        render(&mut app, &context, vec![]);
+        for pos in [
+            app.thread_drop_rect.unwrap().center(),
+            egui::pos2(700.0, 300.0),
+        ] {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events: vec![egui::Event::PointerMoved(pos)],
+                    dropped_files: vec![egui::DroppedFile {
+                        path: Some("dropped.txt".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                |context| {
+                    app.attachment_housekeeping(context);
+                    app.page(context);
+                },
+            );
+        }
+        assert_eq!(
+            app.draft_file_count(Some(&root)),
+            2,
+            "a full channel or other thread cannot block a thread drop"
+        );
+        assert_eq!(app.draft_file_count(None), crate::uploads::MAX_ATTACHMENTS);
+        assert_eq!(
+            app.draft_file_count(Some("other-root")),
+            crate::uploads::MAX_ATTACHMENTS
+        );
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Attach files") && !node.is_disabled()),
+            "thread Attach stays enabled independently of the channel limit"
+        );
+        app.add_files(
+            vec!["extra.txt".into(); crate::uploads::MAX_ATTACHMENTS],
+            Some(root.clone()),
+        );
+        assert_eq!(
+            app.draft_file_count(Some(&root)),
+            crate::uploads::MAX_ATTACHMENTS
+        );
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Only 8 more files can be attached.")
+        );
     }
 
     #[test]

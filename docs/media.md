@@ -1744,9 +1744,9 @@ from the middle with a 420 ms overshoot, the character rising, then a 1.6 s hop
 and a 2.4 s card sway. Reduced motion (web `prefers-reduced-motion`, Apple
 Reduce Motion, Android "Remove animations") shows the resting pose.
 
-- Web: `DropOverlay.tsx` over `.chat-panel`. A file dropped elsewhere in the app
-  is refused instead of the browser navigating to it. Thread panels do not
-  accept drops (they have no attachments).
+- Web: `DropOverlay.tsx` over `.chat-panel` or `.chat-thread-panel`. A file
+  dropped elsewhere in the app is refused instead of the browser navigating
+  to it. Thread drops attach to that thread, not the channel composer.
 - Rust desktop: `file_drop.rs`, painted from egui's hovered files over the
   conversation. `--fixture parity-file-drop` (and `-narrow`) hold it open for
   rendering checks.
@@ -2513,6 +2513,26 @@ with its reply in the thread; the channel offers **Review reply** only when that
 thread is closed or another thread is open. Sending still allows one outstanding
 command per channel, and retries keep the original ID, text, root and broadcast
 choice so an uncertain outcome cannot become a duplicate or a channel message.
+
+Thread composers accept the same files, photos and videos as ordinary messages,
+including attachment-only replies. Each client reuses its regular picker,
+clipboard/drop entry points, preparation, uploads, previews, removal and Retry.
+Files belong to their channel and optional thread root: closing/reopening a
+thread or switching conversations retains them, and sending in one composer
+does not consume another's files. The 10-file limit applies to each composer.
+**Also send to channel** shares the reply and its attachments in both places.
+This is client-only; the existing API already accepts `attachmentIds` together
+with `threadRootId`, so no service, schema, infrastructure or secret change is
+needed. Native clients can release independently against the current API.
+
+Thread-attachment validation (October 13, 2026):
+
+| Client | Checked | Still requires acceptance |
+| --- | --- | --- |
+| Web | `npm run check`, `npm test`, and `scripts/test-chat-paste.mjs` against the disposable parity fixture at 1280px/390px pass. Additional Chromium checks exercised real MP4 selection/playback, native image clipboard, synthetic drop, pending file-only replies, failed-upload Retry, per-composer limits and disabled uploads; rendered states inspected. | Live storage, Safari and physical devices. The fixture is not production upload acceptance. |
+| Android | `testDebugUnitTest lintDebug compileDebugAndroidTestKotlin` pass (380 JVM tests). Shared native-support tests pass (27). A temporary real-ViewModel/HTTP harness covered thread-only files, unfinished-upload blocking, close persistence, frozen retries and rejected Edit/removal isolation. | Phone/tablet rendering, real picker return/navigation, clipboard/drop and media handling; no APK/native DSP assembly or device run. |
+| Apple iOS/macOS | Swift 6.1.2 parsing for iOS 17/macOS 14 and four SDK-free model harness groups pass. Three XCTest regression cases added. | Xcode/Apple SDK typechecking, XCTest, iPhone/macOS rendering and real Files/Photos/paste/drop. Linux harnesses do not validate platform APIs. |
+| Rust desktop | Earlier full suite: 489 passed, 12 device/audio ignored. Final thread tests: 21 passed; application-package Clippy and formatting pass. Inspected wide/narrow Linux fixtures include upload/error, file-only ready and rejected replies. | Live storage and real OS picker/clipboard/drop, Windows/macOS and device/media acceptance. Local fixture screenshots are not live upload proof. |
 
 `POST /api/chat/channels/{channel}/messages` adds optional `threadRootId` and
 default-false `broadcast`. The root must be a same-channel, top-level message.
@@ -7257,8 +7277,8 @@ Follow-ups to full-surface swipes and swipe release timing:
 The original stays in place; quoting it does not change its sequence or thread
 count. A reply can itself be replied to, edited, reacted to, pinned, forwarded,
 or have its own thread. **Reply in thread** remains a separate action. Channel
-composers retain their normal attachment support; thread composers remain
-text-only. Replying does not implicitly mention or ping the source author.
+and thread composers support the same attachments. Replying does not implicitly
+mention or ping the source author.
 
 The quoted original sits in a separate neutral card, with clear spacing before
 the current reply and a visible **View original** affordance. Small shaded

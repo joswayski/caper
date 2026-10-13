@@ -1502,13 +1502,15 @@ private struct MediaViewerAspect: ViewModifier {
 /// Draft files above the composer: thumbnail, name, size, upload progress, remove.
 struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
+    var inThread = false
     @State private var previewID: String?
+    private var files: [AttachmentDraft] { chat.attachmentFiles(inThread: inThread) }
 
     var body: some View {
-        if !chat.attachmentDrafts.isEmpty {
+        if !files.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(chat.attachmentDrafts) { draft in
+                    ForEach(files) { draft in
                         AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
                             chat.removeAttachmentDraft(id: draft.id)
                         }
@@ -1518,7 +1520,7 @@ struct AttachmentDraftsView: View {
             }
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
-                get: { chat.attachmentDrafts.first(where: { $0.id == previewID })?.localURL },
+                get: { files.first(where: { $0.id == previewID })?.localURL },
                 set: { if $0 == nil { previewID = nil } }
             ))
         }
@@ -1815,11 +1817,13 @@ private struct DropFileCard: View {
 /// Photos and files remain disabled until the conversation accepts uploads.
 struct AttachmentPickerButton: View {
     @Bindable var chat: ChatModel
+    var inThread = false
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var selectionTarget: ChatModel.AttachmentTarget?
 
-    private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentDrafts.count) }
+    private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentFiles(inThread: inThread).count) }
     /// Why the control is disabled, worded as on every client.
     private var disabledReason: String? {
         !chat.canAttach ? chat.attachUnavailableReason : remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
@@ -1827,8 +1831,14 @@ struct AttachmentPickerButton: View {
 
     var body: some View {
         Menu {
-            Button { showPhotos = true } label: { Label("Photos and videos", systemImage: "photo.on.rectangle") }
-            Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
+            Button {
+                selectionTarget = chat.attachmentTarget(inThread: inThread)
+                showPhotos = selectionTarget != nil
+            } label: { Label("Photos and videos", systemImage: "photo.on.rectangle") }
+            Button {
+                selectionTarget = chat.attachmentTarget(inThread: inThread)
+                showFiles = selectionTarget != nil
+            } label: { Label("Files", systemImage: "doc") }
         } label: {
             Image(systemName: "paperclip").font(.system(size: 16, weight: .semibold)).foregroundStyle(CaperTheme.muted)
                 .frame(width: 42, height: 42)
@@ -1847,23 +1857,25 @@ struct AttachmentPickerButton: View {
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
         .onChange(of: photoItems) { _, items in
-            guard !items.isEmpty else { return }
+            guard !items.isEmpty, let target = selectionTarget else { return }
             photoItems = []
             Task { @MainActor in
                 var files: [LocalAttachmentFile] = []
                 for item in items {
                     if let picked = try? await item.loadTransferable(type: PickedAttachmentMedia.self) { files.append(picked.file) }
                 }
-                chat.addAttachments(files)
-                if files.count < items.count && chat.attachmentNotice == nil { chat.attachmentNotice = "Some items couldn’t be added." }
+                chat.addAttachments(files, to: target)
+                if files.count < items.count && chat.attachmentNotice(target: target) == nil {
+                    chat.setAttachmentNotice("Some items couldn’t be added.", target: target)
+                }
             }
         }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            guard case .success(let urls) = result else { return }
+            guard case .success(let urls) = result, let target = selectionTarget else { return }
             let files = urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
-            chat.addAttachments(files)
-            if files.count < min(urls.count, AttachmentPolicy.maxAttachments) && chat.attachmentNotice == nil {
-                chat.attachmentNotice = "Some files couldn’t be added."
+            chat.addAttachments(files, to: target)
+            if files.count < min(urls.count, AttachmentPolicy.maxAttachments) && chat.attachmentNotice(target: target) == nil {
+                chat.setAttachmentNotice("Some files couldn’t be added.", target: target)
             }
         }
     }

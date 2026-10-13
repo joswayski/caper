@@ -559,7 +559,11 @@ export default function Chat({
     return () => clearTimeout(timer);
   }, [state.author?.id, readOnly]);
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
-  const [attachError, setAttachError] = useState<string>();
+  const [attachErrors, setAttachErrors] = useState<Record<string, string | undefined>>({});
+  const channelDrafts = drafts.filter((draft) => !draft.threadRootId);
+  const threadDrafts = drafts.filter((draft) => draft.threadRootId === state.thread?.rootId && !!draft.threadRootId);
+  const setAttachError = (error: string | undefined, root?: string) =>
+    setAttachErrors((current) => ({ ...current, [root ?? "channel"]: error }));
   const uploads = useRef(new Map<string, AttachmentUpload>());
   const abandonUpload = useCallback((key: string) => {
     uploads.current.get(key)?.release(true);
@@ -811,16 +815,19 @@ export default function Chat({
     };
   }, [state.sendUploadFailed, state.pendingSend]);
 
-  const addFiles = (files: File[]) => {
+  const addFiles = (files: File[], threadRootId?: string) => {
     const channel = state.channelId;
     const settings = compression;
     if (!signedIn || !settings || !channel || !files.length) return;
-    const room = MAX_ATTACHMENTS - drafts.length;
+    const room = MAX_ATTACHMENTS - drafts.filter((draft) => draft.threadRootId === threadRootId).length;
     if (room <= 0) {
-      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files.`, threadRootId);
       return;
     }
-    setAttachError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
+    setAttachError(
+      files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined,
+      threadRootId,
+    );
     for (const file of files.slice(0, room)) {
       const key = crypto.randomUUID();
       const localKind =
@@ -847,6 +854,7 @@ export default function Chat({
         ...current,
         {
           key,
+          threadRootId,
           name: file.name,
           localUrl,
           localKind,
@@ -1074,10 +1082,11 @@ export default function Chat({
     if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
       scroller.scrollTop = scroller.scrollHeight;
   }, [displayedTypingLabel]);
-  const sendDraft = async (text: string) => {
+  const sendDraft = async (text: string, threadRootId?: string, broadcast = false) => {
     const client = clientRef.current;
-    const sources = !state.pendingSend ? drafts.map((draft) => uploads.current.get(draft.key)!) : [];
-    setAttachError(undefined);
+    const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
+    const sources = !state.pendingSend ? files.map((draft) => uploads.current.get(draft.key)!) : [];
+    setAttachError(undefined, threadRootId);
     let attachments: ChatAttachment[];
     try {
       attachments = await Promise.all(sources.map((upload) => upload.ensure()));
@@ -1088,20 +1097,25 @@ export default function Chat({
       return;
     // Sent files show the sender's local copies until processing finishes.
     const local = Object.fromEntries(
-      drafts.flatMap((item) =>
+      files.flatMap((item) =>
         item.attachment && item.localUrl && item.localKind
           ? [[item.attachment.id, { url: item.localUrl, video: item.localKind === "video" }] as const]
           : [],
       ),
     );
     if (Object.keys(local).length) setLocalPreviews((current) => ({ ...current, ...local }));
-    if (
-      (await client?.send(text, { attachments, uploads: sources, replyTo: replyTargets.channel })) &&
-      state.hasNewer
-    ) {
+    const sent = await client?.send(text, {
+      attachments,
+      uploads: sources,
+      threadRootId,
+      broadcast,
+      replyTo: replyTargets[threadRootId ?? "channel"],
+    });
+    if (sent && !threadRootId && state.hasNewer) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
     }
+    return sent;
   };
 
   // Share the formatter across visible rows, but refresh locale/timezone on render.
@@ -1626,7 +1640,9 @@ export default function Chat({
           addFiles([...event.dataTransfer.files]);
         }}
       >
-        {dropping && canAttach && <DropOverlay channelName={channelName} direct={direct} attached={drafts.length} />}
+        {dropping && canAttach && (
+          <DropOverlay channelName={channelName} direct={direct} attached={channelDrafts.length} />
+        )}
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
@@ -2150,7 +2166,7 @@ export default function Chat({
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
               attachments={
-                signedIn || drafts.length
+                signedIn || channelDrafts.length
                   ? {
                       enabled: canAttach,
                       // Like every client: checking while settings or the conversation load, else unavailable.
@@ -2158,8 +2174,8 @@ export default function Chat({
                         compression === null || state.phase === "error" || readOnly || !signedIn
                           ? "File uploads are unavailable"
                           : "Checking file uploads…",
-                      drafts,
-                      error: attachError,
+                      drafts: channelDrafts,
+                      error: attachErrors.channel,
                       onAdd: addFiles,
                       onRemove: removeDraft,
                       onRetry: retryUpload,
@@ -2179,6 +2195,24 @@ export default function Chat({
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
+        onSend={(text, broadcast) => sendDraft(text, state.thread?.rootId, broadcast)}
+        localPreviews={localPreviews}
+        attachments={
+          signedIn || threadDrafts.length
+            ? {
+                enabled: canAttach && !state.thread?.loading,
+                disabledReason:
+                  compression === null || state.phase === "error" || readOnly || !signedIn
+                    ? "File uploads are unavailable"
+                    : "Checking file uploads…",
+                drafts: threadDrafts,
+                error: state.thread ? attachErrors[state.thread.rootId] : undefined,
+                onAdd: (files) => addFiles(files, state.thread?.rootId),
+                onRemove: removeDraft,
+                onRetry: retryUpload,
+              }
+            : undefined
+        }
         onReplyChange={(reference) => {
           if (state.thread) setReplyTarget(state.thread.rootId, reference);
         }}
