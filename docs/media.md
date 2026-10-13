@@ -7493,3 +7493,35 @@ Before native distribution, verify on physical devices: a horizontal swipe from 
 image, link, avatar and reaction opens Browse or the member list without opening
 it; grabbing a slide mid-flight continues from where it is; vertical and slightly
 diagonal timeline scrolls still scroll; and swipe-down closes the media viewer.
+
+## Drawer releases no longer bounce off the far side on iOS (October 12, 2026)
+
+On iPhone, letting go of a Browse or member-list swipe could briefly draw the
+drawer past where it rests, on the opposite side, before it eased back. For
+example, closing Browse moved the conversation left of the screen edge, showing
+Browse on its right. SwiftUI animated the drawer's pose from separate state
+changes (the finger's drag ending, the navigation change, the recorded slide).
+Since #570 those use bezier curves, which add up where they overlap instead of
+merging like the earlier springs.
+
+- **Apple:** a `DrawerPose` modifier draws each drawer layer (the conversation,
+  the account bar, the member panel and its backdrop) from one value per frame:
+  under the finger, along the recorded `DrawerSettle` curve with a
+  `TimelineView`, or at rest. No SwiftUI animation touches the pose, so a release
+  continues from the finger to its rest and can't pass either end. A model change
+  that records no slide of its own (a channel that finished opening) slides from
+  where the drawer was drawn. Reduce Motion still switches at once.
+- **Rust desktop:** a drag that takes a drawer no longer jumps it by the 12pt touch
+  slop. It follows from where the finger took hold, as on web, Android and Apple.
+- Web and Android keep one position per drawer and were reviewed. They have no
+  counterpart to this bug.
+
+| Client | Validation |
+| --- | --- |
+| Apple iOS/macOS | Swift 6.1 on Linux parses `CaperView.swift` and `DrawerMotionTests.swift`. The drawer position logic and all of `DrawerMotionTests` (including new release, model-change, mid-slide reversal and Reduce Motion cases) compile and pass on Linux against a bezier `UnitCurve` stand-in. `DrawerPose`/`BrowseLayer` type-check against a stub with SwiftUI's signatures. No Xcode build, simulator or device run here. |
+| Rust desktop | `cargo fmt --check`, `cargo test` (485 passed) and `cargo clippy --package caper-desktop --all-targets --no-deps -D warnings` pass on Linux with clang 21. The narrow swipe tests now check that taking a drawer past the slop doesn't move it, and that it then follows the finger point for point. |
+
+Before native distribution, verify on an iPhone: a slow and a fast release in each
+direction for Browse and the member list continue smoothly to their rest with no
+bounce past it; Back and channel choices still slide; and a finger still catches
+a drawer mid-slide.

@@ -257,7 +257,7 @@ private struct CaperIcon: View {
 }
 
 /// A view that slides open on phones, following a finger.
-private protocol SlideDrawer: AnyObject {
+protocol SlideDrawer: AnyObject {
     /// While a finger drags: how far it is open, from 0 (closed) to 1 (open).
     var drag: CGFloat? { get set }
     /// How far it moves between closed and open.
@@ -265,6 +265,8 @@ private protocol SlideDrawer: AnyObject {
     /// The slide to rest under way, so a finger that lands during it picks the
     /// view up where it is on screen instead of where it is headed.
     var settle: DrawerSettle? { get set }
+    /// The resting place it was last drawn for, 0 or 1.
+    var rest: CGFloat? { get set }
     /// The finger's direction to open it: right (1) or left (-1).
     static var opening: CGFloat { get }
 }
@@ -275,17 +277,31 @@ extension SlideDrawer {
         guard let settle, !settle.finished() else { return nil }
         return settle.value()
     }
-    /// Records a slide that a model change or button starts (a swipe records
-    /// its own release), from wherever the view is now.
+    /// Records a slide that a button starts (a swipe records its own release),
+    /// from wherever the view is now.
     func slide(to target: CGFloat, timing: DrawerSettle.Timing, reduceMotion: Bool) {
         guard drag == nil, settle?.to != target else { return }
         settle = reduceMotion ? nil : DrawerSettle(from: inFlight ?? 1 - target, to: target, timing: timing)
     }
+    /// Where it is drawn at `date`, from 0 (closed) to 1 (open): under the
+    /// finger, along its slide, or at `rest`. A rest that changed with no slide
+    /// recorded for it (a model change) slides there from where it was.
+    func position(rest: CGFloat, fallback: DrawerSettle.Timing, reduceMotion: Bool, at date: Date = Date()) -> CGFloat {
+        if let drag { return drag }
+        if let previous = self.rest, previous != rest, settle?.to != rest {
+            let from = settle.flatMap { $0.finished(at: date) ? nil : $0.value(at: date) } ?? previous
+            settle = reduceMotion ? nil : DrawerSettle(from: from, to: rest, start: date, timing: fallback)
+        }
+        self.rest = rest
+        guard let settle, settle.to == rest, !settle.finished(at: date) else { return rest }
+        return settle.value(at: date)
+    }
 }
 
 /// A drawer slide's path and timing. Slides use one cubic curve with the web's
-/// `SETTLE` easing, which SwiftUI animates and this evaluates, so a finger
-/// catching a moving view starts exactly where it is drawn.
+/// `SETTLE` easing. Each frame draws the drawer where this curve is
+/// (`DrawerPose`), so a finger catching a moving view starts exactly where it
+/// is drawn, and no two slides can add up past either end.
 struct DrawerSettle {
     struct Timing {
         let duration: Double
@@ -366,6 +382,7 @@ struct DrawerRelease: Equatable {
     /// How far the conversation moves: the full width and its edge shadow.
     var travel: CGFloat = 1
     @ObservationIgnored var settle: DrawerSettle?
+    @ObservationIgnored var rest: CGFloat?
     static let opening: CGFloat = 1
     /// While a released swipe navigates, which already set its speed-matched curve.
     @ObservationIgnored var releasing = false
@@ -390,6 +407,7 @@ private extension Transaction {
     /// How far the panel moves: its width and margin, plus room for its shadow.
     var travel: CGFloat = 1
     @ObservationIgnored var settle: DrawerSettle?
+    @ObservationIgnored var rest: CGFloat?
     static let opening: CGFloat = -1
 }
 
@@ -399,13 +417,45 @@ private struct SideClip: Shape {
     func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: 0, dy: -rect.height)) }
 }
 
-/// The animation for a drawer layer's pose: none while a finger drags, the
-/// recorded slide while one runs, and otherwise `fallback` for a change that
-/// brought no animation of its own.
-private func drawerAnimation(_ transaction: inout Transaction, drag: CGFloat?, settle: DrawerSettle?, reduceMotion: Bool, fallback: DrawerSettle.Timing) {
-    if drag != nil || reduceMotion { transaction.animation = nil }
-    else if let settle, !settle.finished() { transaction.animation = settle.timing.animation }
-    else if transaction.animation == nil { transaction.animation = fallback.animation }
+/// Draws a drawer's layer where it is on each frame: under the finger, along
+/// its recorded slide, or at rest. SwiftUI's own curves add up where they
+/// overlap: a release's drag and navigation changes each animated the layer,
+/// which could draw it past its rest, on the far side, before it eased back.
+/// One recorded curve, evaluated per frame, stays between its ends.
+private struct DrawerPose<Drawer: SlideDrawer & Observable>: ViewModifier {
+    /// Where it rests: 1 open, 0 closed.
+    let rest: CGFloat
+    /// The slide for a model change, which records none of its own.
+    let fallback: DrawerSettle.Timing
+    /// The layer's offset and opacity at a position.
+    let pose: (CGFloat) -> (offset: CGSize, opacity: Double)
+    @Environment(Drawer.self) private var drawer: Drawer?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Bumped as a slide ends, which stops the frame clock.
+    @State private var settled = 0
+
+    func body(content: Content) -> some View {
+        let now = Date()
+        let current = position(at: now)
+        let settle = drawer?.drag == nil ? drawer?.settle : nil
+        let remaining = settle.map { $0.timing.duration - now.timeIntervalSince($0.start) } ?? 0
+        let sliding = remaining > 0
+        let _ = settled
+        TimelineView(.animation(paused: !sliding)) { context in
+            let drawn = pose(sliding ? position(at: context.date) : current)
+            // Nothing else animates the pose: it is already where it belongs this frame.
+            content.transaction { $0.animation = nil } body: { $0.offset(drawn.offset).opacity(drawn.opacity) }
+        }
+        .task(id: sliding ? settle?.start : nil) {
+            guard sliding else { return }
+            try? await Task.sleep(for: .seconds(remaining))
+            if !Task.isCancelled { settled += 1 }
+        }
+    }
+
+    private func position(at date: Date) -> CGFloat {
+        drawer?.position(rest: rest, fallback: fallback, reduceMotion: reduceMotion, at: date) ?? rest
+    }
 }
 
 /// Poses a layer for the slide on phones: the conversation, or the account bar
@@ -417,24 +467,16 @@ private struct BrowseLayer: ViewModifier {
     var hidesCovered = false
     /// The layer's offset for how much of Browse is uncovered.
     let pose: (CGFloat) -> CGSize
-    @Environment(BrowseDrawer.self) private var drawer: BrowseDrawer?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let drag = drawer?.drag
-        let settle = drawer?.settle
-        let uncovered = drag ?? (showsBrowse ? 1 : 0)
-        let reduceMotion = self.reduceMotion
-        // Follow the finger while dragged and slide into place otherwise,
-        // keeping a release's own timing.
+        let hidesCovered = self.hidesCovered, pose = self.pose
+        // Nothing inside animates with the switch, so no control lags behind the slide.
         content.transaction { transaction in
             if transaction.browseSlide { transaction.animation = nil }
         }
-        .transaction { transaction in
-            drawerAnimation(&transaction, drag: drag, settle: settle, reduceMotion: reduceMotion, fallback: .tap)
-        } body: { layer in
-            layer.offset(pose(uncovered)).opacity(hidesCovered && uncovered == 0 ? 0 : 1)
-        }
+        .modifier(DrawerPose<BrowseDrawer>(rest: showsBrowse ? 1 : 0, fallback: .tap) { uncovered in
+            (pose(uncovered), hidesCovered && uncovered == 0 ? 0 : 1)
+        })
     }
 }
 
@@ -518,9 +560,9 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     if sameStart, let endedAt = gesture?.endedAt, Date().timeIntervalSince(endedAt) < 0.3 { return }
                     if !sameStart || gesture?.endedAt != nil {
                         // An abandoned slide of an earlier gesture settles back first.
-                        if tracking == true, let drawer, drawer.drag != nil {
-                            drawer.settle = nil
-                            withAnimation(reduceMotion ? nil : DrawerSettle.Timing.settle.animation) { drawer.drag = nil }
+                        if tracking == true, let drawer, let position = drawer.drag {
+                            drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: .settle)
+                            drawer.drag = nil
                         }
                         gesture = (value.startLocation, nil)
                         tracking = nil
@@ -813,12 +855,9 @@ private struct WorkspaceView: View {
                 .clipShape(SideClip())
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: narrow, initial: true) { _, narrow in model.narrowLayout = narrow }
-                .onChange(of: showsBrowse) { _, shows in
-                    // A model change (a channel that finished opening) slides too:
-                    // record it so a finger can catch the conversation mid-slide.
-                    if narrow { browseDrawer.slide(to: shows ? 1 : 0, timing: .tap, reduceMotion: reduceMotion) }
-                    endEditing()
-                }
+                // A model change (a channel that finished opening) slides too:
+                // `DrawerPose` records it, so a finger can catch the conversation mid-slide.
+                .onChange(of: showsBrowse) { endEditing() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
@@ -2042,7 +2081,6 @@ private struct MembersOverlay: View {
     let width: CGFloat
     let close: () -> Void
     @Environment(MembersDrawer.self) private var drawer: MembersDrawer?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Bumped once a closing slide ends, to drop the list it kept in view.
     @State private var settled = 0
 
@@ -2054,12 +2092,7 @@ private struct MembersOverlay: View {
         let moving = settled >= 0 && settle.map { !$0.finished() } == true
         // Past the screen's edge, so the panel's shadow leaves with it.
         let travel = width + 8 + 48
-        let reduceMotion = self.reduceMotion
-        // As in BrowseLayer: follow the finger while dragged and slide into
-        // place otherwise, keeping a release's own timing.
-        let animate: (inout Transaction) -> Void = { transaction in
-            drawerAnimation(&transaction, drag: drag, settle: settle, reduceMotion: reduceMotion, fallback: .settle)
-        }
+        let rest: CGFloat = shows ? 1 : 0
         ZStack(alignment: .trailing) {
             Color.black.opacity(0.25)
                 .contentShape(Rectangle())
@@ -2069,7 +2102,7 @@ private struct MembersOverlay: View {
                 // header and timeline gestures alone.
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 50)
-                .transaction(animate) { $0.opacity(shown) }
+                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .settle) { (.zero, Double($0)) })
                 .allowsHitTesting(shows)
                 .accessibilityHidden(true)
             Group {
@@ -2089,15 +2122,16 @@ private struct MembersOverlay: View {
                 }
                 .modifier(MembersSwipe(open: true, enabled: shows, navigate: close))
                 .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
-                .transaction(animate) { $0.offset(x: (1 - shown) * travel).opacity(shown == 0 && !moving ? 0 : 1) }
+                .modifier(DrawerPose<MembersDrawer>(rest: rest, fallback: .settle) { shown in
+                    (CGSize(width: (1 - shown) * travel, height: 0), shown == 0 && !moving ? 0 : 1)
+                })
                 .allowsHitTesting(shows)
                 .accessibilityElement(children: .contain)
                 .accessibilityHidden(!shows)
         }
         .onChange(of: travel, initial: true) { _, travel in drawer?.travel = travel }
         .onChange(of: shown == 0) { _, closed in
-            // Model changes slide too; buttons and swipes recorded theirs first.
-            if drag == nil { drawer?.slide(to: shows ? 1 : 0, timing: .settle, reduceMotion: reduceMotion) }
+            // Buttons and swipes record their slide first; `DrawerPose` records a model change's.
             guard closed, let settle = drawer?.settle, !settle.finished() else { return }
             let remaining = settle.timing.duration - Date().timeIntervalSince(settle.start)
             DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.02) { settled += 1 }
