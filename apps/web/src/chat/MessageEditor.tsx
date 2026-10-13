@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { dialogKeyDown } from "../components/dialogKeyboard";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
 
@@ -65,6 +66,7 @@ export default function MessageEditor({
       ref={dialog}
       className="chat-edit-dialog"
       aria-labelledby="chat-edit-heading"
+      onKeyDown={dialogKeyDown}
       onCancel={(event) => {
         event.preventDefault();
         if (!saving) onClose();

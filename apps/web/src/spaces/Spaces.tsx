@@ -45,6 +45,7 @@ import type { FocusTarget } from "../chat/Chat";
 import Wordmark from "../components/Wordmark";
 import Avatar, { initial } from "../components/Avatar";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
+import { dialogKeyDown } from "../components/dialogKeyboard";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -223,6 +224,7 @@ function Dialog({
       ref={ref}
       className={`space-dialog ${width === "wide" ? "space-dialog-wide" : ""}`}
       aria-labelledby={titleId}
+      onKeyDown={dialogKeyDown}
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();

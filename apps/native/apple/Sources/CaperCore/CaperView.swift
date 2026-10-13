@@ -6675,6 +6675,7 @@ private struct SheetHeader: View {
             }
             Spacer()
             Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).disabled(closeDisabled).accessibilityLabel(closeLabel)
+                .keyboardShortcut(.cancelAction)
                 // Centred on the title's line: laid out at that line's height, while
                 // the 44pt iPhone target extends evenly into the header's padding.
                 .frame(height: titleIcon == nil ? 27 : 32)

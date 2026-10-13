@@ -217,6 +217,16 @@ direct-message dialogs dismiss on outside click/tap; nested delete confirmation
 dismissal leaves settings open. Rust desktop also dismisses new direct messages
 on outside clicks; Apple keeps platform sheet dismissal, and Android keeps its
 existing outside-tap behavior.
+Web dialogs handle Escape on key-down as well as native cancellation; child-owned
+Escape (suggestions or a native select popup) closes that layer first, and IME
+composition Escape leaves the editor open. In-flight write guards remain in place.
+Apple's shared dialog close button has the standard cancel shortcut on macOS and
+iOS hardware keyboards; Android and Rust desktop retain their existing Escape handling.
+Run `KEYBOARD_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
+for desktop/narrow Escape, nested dismissal, Tab/Shift+Tab, initial/opener focus,
+pending writes, and synthetic IME/child-owned Escape checks with mocked APIs.
+Apple shortcut compilation and physical-keyboard behavior require an Apple toolchain/device;
+Chromium checks do not validate Safari or native clients.
 Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
 against Vite for desktop, narrow and short-viewport geometry, overflow reachability
 and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
