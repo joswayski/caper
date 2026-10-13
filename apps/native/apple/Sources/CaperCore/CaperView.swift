@@ -537,11 +537,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     /// Where the drawer was and the finger's offset (toward open) when it started following.
     @State private var grab: (position: CGFloat, offset: CGFloat)?
     /// The gesture this state belongs to, by where it started, and when it
-    /// ended. A move from another start, or from the same start once the last
-    /// gesture has been over for a moment, is a new gesture decided afresh, so
-    /// no earlier gesture can leave a stale slide. Moves that trail an end at
-    /// its own start are that gesture's tail: following them reopened the
-    /// slide it had just finished.
+    /// ended. After an end, or from another start, a move begins a new gesture
+    /// decided afresh, so no earlier gesture can leave a stale slide; but only
+    /// a move just past the minimum distance, as every real gesture's first is.
+    /// Moves that start far along trail an ended gesture: following them
+    /// reopened the slide it had just finished.
     @State private var gesture: (start: CGPoint, endedAt: Date?)?
     @GestureState private var dragging = false
 
@@ -556,9 +556,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
             .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
                 .updating($dragging) { _, active, _ in active = true }
                 .onChanged { value in
-                    let sameStart = gesture?.start == value.startLocation
-                    if sameStart, let endedAt = gesture?.endedAt, Date().timeIntervalSince(endedAt) < 0.3 { return }
-                    if !sameStart || gesture?.endedAt != nil {
+                    if gesture?.start != value.startLocation || gesture?.endedAt != nil {
+                        // A gesture's first move is just past the minimum distance;
+                        // moves that start far along trail one that has already ended.
+                        guard hypot(value.translation.width, value.translation.height) < 60 else { return }
                         // An abandoned slide of an earlier gesture settles back first.
                         if tracking == true, let drawer, let position = drawer.drag {
                             drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: .settle)

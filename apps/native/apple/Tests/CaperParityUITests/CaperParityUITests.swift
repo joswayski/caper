@@ -630,8 +630,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 12, accuracy: 2,
-                       "Thread controls must keep the same 12-point keyboard spacing")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,
+                       "Thread controls must keep the same 16-point keyboard spacing as the channel composer")
         capture("thread-composer-single-line-keyboard", app: app)
 
         let threadRoot = try XCTUnwrap(visible(app.descendants(matching: .any).matching(identifier: "message-row-chan00000001m01")),
