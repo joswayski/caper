@@ -1322,7 +1322,7 @@ impl CaperApp {
             typing_pulse: now,
             presence: BTreeMap::new(),
             member_page: 0,
-            members_visible: false,
+            members_visible: true,
             narrow_members_visible: false,
             navigation_touch: None,
             browse_motion: DrawerMotion::default(),
@@ -25612,12 +25612,13 @@ mod tests {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
             })
         };
-        assert!(!app.members_visible);
+        assert!(app.members_visible);
         assert!(!app.narrow_members_visible);
         render(&mut app, &context, vec![]);
+        assert!(has_members(&render(&mut app, &context, vec![])));
+        app.members_visible = false;
         assert!(!has_members(&render(&mut app, &context, vec![])));
         app.members_visible = true;
-        assert!(has_members(&render(&mut app, &context, vec![])));
         let narrow = |app: &mut CaperApp| {
             context.run(
                 egui::RawInput {
@@ -26887,6 +26888,8 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-desktop"),
             );
+            // These responsive header widths assume the member column is hidden.
+            app.members_visible = false;
             app.token = Some("fixture-only".into());
             app.detail.as_mut().unwrap().channels[0].name = name.into();
             app.channel_rosters

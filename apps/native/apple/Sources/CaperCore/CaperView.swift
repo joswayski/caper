@@ -637,7 +637,7 @@ private struct WorkspaceView: View {
     @State private var sidebarDragWidth: Double?
     private var liveSidebarWidth: Double { sidebarDragWidth ?? sidebarWidth }
     @FocusState private var sidebarFocused: Bool
-    @State private var membersPreference = false
+    @State private var membersPreference: Bool?
     @State private var modalDismissDisabled = false
     @State private var browseDrawer = BrowseDrawer()
     @State private var membersDrawer = MembersDrawer()
@@ -661,7 +661,7 @@ private struct WorkspaceView: View {
     private var workspaceContent: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
-            let membersVisible = membersPreference
+            let membersVisible = membersPreference ?? !narrow
             VStack(spacing: 0) {
                 if let error = model.navigationError {
                     HStack {

@@ -1048,9 +1048,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
-        XCTAssertTrue(app.buttons["Show member list"].exists)
-        #endif
+        XCTAssertTrue(app.buttons["Hide member list"].exists)
+        assertStaticText("Members", in: app)
+        #else
         XCTAssertEqual(staticTexts("Members", in: app).count, 0, "Chat opens with the members list closed")
+        #endif
         capture("populated", app: app)
     }
 
@@ -1527,11 +1529,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["account-profile"].isHittable)
     }
 
-    func testMembersStartClosedAndCanBeToggledWithoutChangingConversation() {
+    func testMembersStartOpenAndCanBeToggledWithoutChangingConversation() {
         let app = launch()
-        let toggle = app.buttons["Show member list"]
+        let toggle = app.buttons["Hide member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
-        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        assertStaticText("Members", in: app)
         // Wide headers: the name, then the channel's voice, then Pins and Members apart from it.
         let name = app.descendants(matching: .any)["selected-channel-name"]
         let join = app.buttons["join-voice-button"]
@@ -1543,8 +1545,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["channel-title-menu"].exists, "Wide headers keep separate Pins and Members buttons")
         XCTAssertFalse(app.buttons["header-mute"].exists, "Wide layouts keep the microphone in the account bar")
         XCTAssertFalse(app.buttons["header-deafen"].exists, "Wide layouts keep deafen in the account bar")
-        capture("members-hidden", app: app)
         toggle.tap()
+        XCTAssertTrue(app.buttons["Show member list"].waitForExistence(timeout: 2))
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        capture("members-hidden", app: app)
+        app.buttons["Show member list"].tap()
         assertStaticText("Members", in: app, timeout: 2)
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
         app.buttons["Hide member list"].tap()

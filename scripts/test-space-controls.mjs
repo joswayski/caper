@@ -538,10 +538,9 @@ try {
         assert.deepEqual(f.geometry, frames.at(-1).geometry, "Loading shell moved");
       }
     }
-    // The member list starts closed on every client (#414); open it here.
-    assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "false");
-    assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
-    toggleMembers();
+    // Wide layouts show members without requiring a toggle.
+    assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");
+    assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), true);
     wait(
       'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")',
     );
