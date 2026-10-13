@@ -1002,7 +1002,7 @@ try {
     {
       expression: `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
       thread: document.querySelector('${thread(broadcast.clientMessageId)}').dataset.pressing,
-      channel: document.querySelector('${channel(broadcast.clientMessageId)}').dataset.pressing ?? null,
+      channel: document.querySelector('${channel(broadcast.clientMessageId)}')?.dataset.pressing ?? null,
       wash: getComputedStyle(document.querySelector('${thread(broadcast.clientMessageId)}')).backgroundImage,
       menuOpen: !!document.querySelector('.chat-message-actions'),
     }))))`,
