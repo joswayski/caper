@@ -120,6 +120,8 @@ impl Options {
 struct CheckResult<'a> {
     update: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     build: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<&'a str>,
@@ -140,6 +142,7 @@ fn check(options: &Options) -> Result<()> {
     let (Some(key), Some(platform)) = (PUBLIC_KEY, manifest::current_platform()) else {
         return print_json(&CheckResult {
             update: false,
+            last_error: None,
             build: None,
             version: None,
             notes: None,
@@ -155,6 +158,10 @@ fn check(options: &Options) -> Result<()> {
     match manifest.update_for(platform, current) {
         Some(_) => print_json(&CheckResult {
             update: true,
+            last_error: options
+                .install
+                .as_deref()
+                .and_then(|path| last_failure(path, current)),
             build: Some(manifest.build),
             version: Some(&manifest.version),
             notes: Some(&manifest.notes),
@@ -164,6 +171,7 @@ fn check(options: &Options) -> Result<()> {
         }),
         None => print_json(&CheckResult {
             update: false,
+            last_error: None,
             build: None,
             version: None,
             notes: None,
@@ -195,18 +203,34 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         .into());
     }
 
-    // Windows cannot rename a folder while a program inside it runs, so run the
-    // update from a copy outside the install.
-    if !options.relocated && env::current_exe()?.starts_with(&install) {
-        relocate_command(args)?.spawn()?;
+    // Always relocate, even if the executable appears to be outside the install:
+    // Windows current_exe() and canonicalize() can use different path prefixes,
+    // and an external updater can still inherit a working directory inside it.
+    if !options.relocated {
+        record_failure(
+            &install,
+            current,
+            "The last update did not finish. Try again or download the installer.",
+        );
+        if let Err(error) = relocate_command(args).and_then(|mut command| Ok(command.spawn()?)) {
+            record_failure(
+                &install,
+                current,
+                &format!("Could not start the update: {error}"),
+            );
+            return Err(error);
+        }
         return Ok(());
     }
     log(&format!(
         "updating {} from build {current}",
         install.display()
     ));
-    if let Some(pid) = options.wait_pid {
-        wait_for_exit(pid, EXIT_WAIT)?;
+    if let Some(pid) = options.wait_pid
+        && let Err(error) = wait_for_exit(pid, EXIT_WAIT)
+    {
+        record_failure(&install, current, &error.to_string());
+        return Err(error);
     }
 
     // The app has already quit. A failed download, verification or swap must
@@ -232,7 +256,8 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         if layout == Layout::MacBundle {
             install::check_mac_signature(&install, &replacement)?;
         }
-        let old = install::swap(&install, &replacement)?;
+        let old = install::swap(&install, &replacement)
+            .map_err(|error| format!("Could not replace the installed app: {error}"))?;
         log(&format!("installed build {}", manifest.build));
         install::remove_if_present(&stage).ok();
         install::remove_if_present(&old).ok();
@@ -241,9 +266,38 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     })();
     if let Err(error) = &result {
         log(&format!("update failed: {error}; reopening installed app"));
+        record_failure(&install, current, &error.to_string());
+    } else if let Ok(path) = install::sibling(&install, "update-error") {
+        fs::remove_file(path).ok();
     }
     relaunch(layout, &install)?;
     result
+}
+
+// Operational feedback lives beside the replaceable app, not in it. Bind it to
+// the old build so a manual install cannot inherit an obsolete failure notice.
+#[derive(Serialize, Deserialize)]
+struct Failure {
+    current_build: u64,
+    message: String,
+}
+
+fn record_failure(install: &Path, current_build: u64, message: &str) {
+    if let Ok(path) = install::sibling(install, "update-error")
+        && let Ok(bytes) = serde_json::to_vec(&Failure {
+            current_build,
+            message: message.into(),
+        })
+        && let Err(error) = fs::write(path, bytes)
+    {
+        log(&format!("could not save update failure: {error}"));
+    }
+}
+
+fn last_failure(install: &Path, current_build: u64) -> Option<String> {
+    let file = fs::File::open(install::sibling(install, "update-error").ok()?).ok()?;
+    let failure: Failure = serde_json::from_reader(file.take(16 * 1024)).ok()?;
+    (failure.current_build == current_build).then_some(failure.message)
 }
 
 fn relocate_command(args: &[OsString]) -> Result<Command> {
@@ -616,8 +670,28 @@ mod tests {
     #[test]
     fn relocated_updater_runs_from_its_temporary_folder() {
         const REPORT: &str = "CAPER_TEST_RELOCATION_REPORT";
+        const INSTALL: &str = "CAPER_TEST_RELOCATION_INSTALL";
+        let args = [
+            "--exact",
+            "tests::relocated_updater_runs_from_its_temporary_folder",
+            "--",
+        ]
+        .map(OsString::from);
         if let Some(report) = env::var_os(REPORT) {
-            assert!(env::args_os().any(|arg| arg == RELOCATED_FLAG));
+            if !env::args_os().any(|arg| arg == RELOCATED_FLAG) {
+                // Exercise apply's real handoff decision, not just the copying
+                // helper. On Windows current_exe may omit canonicalize's \\?\.
+                apply(
+                    &Options {
+                        current_build: Some(1),
+                        install: Some(PathBuf::from(env::var_os(INSTALL).unwrap())),
+                        ..Options::default()
+                    },
+                    &args,
+                )
+                .unwrap();
+                return;
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::{
@@ -637,49 +711,72 @@ mod tests {
                     assert_eq!(metadata.rdev(), null.rdev());
                 }
             }
+            let report = PathBuf::from(report);
             fs::write(
-                report,
+                report.with_extension("tmp"),
                 serde_json::to_vec(&env::current_dir().unwrap().canonicalize().unwrap()).unwrap(),
             )
             .unwrap();
+            fs::rename(report.with_extension("tmp"), report).unwrap();
             return;
         }
 
         let report_folder = tempfile::tempdir().unwrap();
         let report = report_folder.path().join("cwd.json");
+        let install = report_folder.path().join("Caper with spaces");
+        let layout = Layout::for_platform(manifest::current_platform().unwrap()).unwrap();
+        let (app, updater) = match layout {
+            Layout::MacBundle => ("Contents/Info.plist", "Contents/MacOS/caper-updater"),
+            Layout::WindowsFolder => ("Caper.exe", "caper-updater.exe"),
+            Layout::LinuxTarball => ("caper-desktop", "caper-updater"),
+        };
+        let updater = install.join(updater);
+        fs::create_dir_all(updater.parent().unwrap()).unwrap();
+        fs::write(install.join(app), "untouched app").unwrap();
+        fs::copy(env::current_exe().unwrap(), &updater).unwrap();
         // Run only this test in the copied executable. After `--`, libtest
         // accepts the updater's --relocated flag as an additional test filter.
-        let args = [
-            "--exact",
-            "tests::relocated_updater_runs_from_its_temporary_folder",
-            "--",
-        ]
-        .map(OsString::from);
-        let mut command = relocate_command(&args).unwrap();
-        let relocated_folder = Path::new(command.get_program())
-            .parent()
-            .unwrap()
-            .canonicalize()
-            .unwrap();
-        // Do not use output(): that would replace the null streams under test.
-        let status = command
+        // Use the canonical path too: this is exactly how the Windows app starts
+        // its updater, and does not guarantee current_exe uses the same prefix.
+        let mut child = Command::new(updater.canonicalize().unwrap())
+            .args(&args)
+            .current_dir(&install)
             .env(REPORT, &report)
+            .env(INSTALL, &install)
             .spawn()
-            .unwrap()
-            .wait()
             .unwrap();
-        install::remove_if_present(&relocated_folder).unwrap();
+        let relocated_folder = env::temp_dir().join(format!("caper-updater-{}", child.id()));
+        let status = child.wait().unwrap();
         assert!(status.success(), "relocated updater failed: {status}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !report.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "relocated updater did not report"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         let working_folder: PathBuf = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         // Check the actual child process, not only Command's configuration.
-        assert_eq!(working_folder, relocated_folder);
-        let original_folder = env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .canonicalize()
-            .unwrap();
-        assert!(!working_folder.starts_with(original_folder));
+        assert_eq!(working_folder, relocated_folder.canonicalize().unwrap());
+        assert!(!working_folder.starts_with(install.canonicalize().unwrap()));
+        assert_eq!(
+            fs::read_to_string(install.join(app)).unwrap(),
+            "untouched app"
+        );
+        // A handoff interrupted before install leaves actionable feedback. A
+        // manually installed newer build must not inherit the old failure.
+        assert!(
+            last_failure(&install, 1)
+                .unwrap()
+                .contains("did not finish")
+        );
+        assert!(last_failure(&install, 2).is_none());
+        // The reporting child can still be exiting (Windows locks its exe).
+        while install::remove_if_present(&relocated_folder).is_err() {
+            assert!(Instant::now() < deadline, "relocated updater did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[cfg(target_os = "linux")]
