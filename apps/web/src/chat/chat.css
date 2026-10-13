@@ -359,8 +359,8 @@
 }
 /* Before the scrolling list mounts: anchored to the bottom and at least full
    height, so a long history shows its newest messages (like the list will)
-   and a short one stays beside the composer. Match Virtuoso's alignToBottom:
-   the history header stays at the top, with spare space above the rows. */
+   and a short one stays beside the composer. Match the list below: spare
+   space goes above the history header, which stays on the first message. */
 .chat-initial-messages {
   position: absolute;
   inset: auto 0 0;

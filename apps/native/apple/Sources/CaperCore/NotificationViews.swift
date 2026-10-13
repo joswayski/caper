@@ -120,8 +120,9 @@ struct MutedBell: View {
     var size: CGFloat = 12
 
     var body: some View {
-        Image(systemName: "bell.slash")
-            .font(.system(size: size, weight: .medium))
+        // Web's Lucide BellOff; a little larger than the font size it replaces,
+        // since Lucide's 24-unit grid keeps a margin around the glyph.
+        CaperIcon(name: "bell-off", size: size + 2)
             .foregroundStyle(CaperTheme.muted)
             .accessibilityHidden(true)
     }

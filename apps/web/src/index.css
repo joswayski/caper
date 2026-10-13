@@ -56,14 +56,8 @@
 
 @layer base {
   html {
-    /* Keep centered headers still while scrollable pages grow and shrink. */
+    /* Keep centered headers still when moving between scrollable home and fitted Spaces. */
     scrollbar-gutter: stable;
-  }
-  /* The fitted app never scrolls the page. A reserved gutter there is an empty
-     strip beside the app on classic-scrollbar browsers (Windows, Linux) that
-     pushes the frame off-centre and is left undimmed by modal backdrops. */
-  html:has(> body main.call-page) {
-    scrollbar-gutter: auto;
   }
 
   body {

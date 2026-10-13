@@ -42,7 +42,7 @@ struct ForwardCardView: View {
     var body: some View {
         if let forward = message.forward {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Forwarded", systemImage: "arrowshape.turn.up.right").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                CaperLabel("Forwarded", icon: "forward", size: 12).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 if let original = forward.message {
                     SharedOriginalView(message: original)
                     Button("\(original.thread.flatMap { $0.replyCount > 0 ? "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " : nil } ?? "")View conversation", action: open)
