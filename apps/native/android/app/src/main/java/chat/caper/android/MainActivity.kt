@@ -3013,9 +3013,17 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
 
 @Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
-    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
-        Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        TextButton(onCancel, shape = MaterialTheme.shapes.small) { Text("Cancel reply") }
+    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.drawBehind {
+        drawLine(Terracotta, Offset(1.dp.toPx(), 0f), Offset(1.dp.toPx(), size.height), strokeWidth = 2.dp.toPx())
+    }.padding(start = 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Top) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!hidden) Text((reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" },
+                color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onCancel, Modifier.size(48.dp)) {
+            Icon(painterResource(R.drawable.lucide_x), "Cancel reply", Modifier.size(16.dp), tint = TextMuted)
+        }
     }
 }
 

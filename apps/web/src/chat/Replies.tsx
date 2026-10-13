@@ -247,14 +247,16 @@ export function ReplyDraft({
   return (
     <div className="chat-reply-draft" role="status">
       <Reply size={14} aria-hidden="true" />
-      <span>
-        Replying to <strong>{hidden ? "blocked message" : reference.author.name}</strong>
-      </span>
-      {!hidden && (
-        <span className="chat-reply-draft-excerpt">
-          {reference.text || (reference.hasAttachments ? "Attachment" : "Message")}
+      <div className="chat-reply-draft-content">
+        <span className="chat-reply-draft-heading">
+          Replying to <strong>{hidden ? "blocked message" : reference.author.name}</strong>
         </span>
-      )}
+        {!hidden && (
+          <span className="chat-reply-draft-excerpt">
+            {(reference.fullText ?? reference.text) || (reference.hasAttachments ? "Attachment" : "Message")}
+          </span>
+        )}
+      </div>
       <button type="button" aria-label="Cancel reply" onClick={onCancel}>
         <X size={16} />
       </button>

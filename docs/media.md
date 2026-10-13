@@ -7312,6 +7312,14 @@ or have its own thread. **Reply in thread** remains a separate action. Channel
 and thread composers support the same attachments. Replying does not implicitly
 mention or ping the source author.
 
+While composing, all clients show **Replying to [author]** followed by up to two
+lines of the original text above the input, including narrow/mobile layouts.
+The preview uses the complete local snapshot when available so a wide composer
+does not stop arbitrarily at 200 characters. Attachment-only messages show
+**Attachment**; blocked sources expose neither identity nor text. The X removes
+the reply target without clearing the text being written. This October 13
+composer refinement does not change the sent quote, source navigation or API.
+
 The quoted original sits in a separate neutral card, with clear spacing before
 the current reply and a visible **View original** affordance. Small shaded
 pewter cup sockets touch the left edges of the original and replying avatars,
@@ -7408,6 +7416,19 @@ Linux desktop's linked debug build, application Clippy and 485 tests pass
 stops at the missing SDK; Apple has no Swift/Xcode here. Neither is native-device
 acceptance. This tuning needs only web/native client releases, independently;
 no API/gateway deployment, migration, infrastructure or configuration change.
+
+**Composer preview follow-up (October 13, 2026).** Web checks and all 607 unit
+tests pass. Focused Chromium checks at 1280px and 390px (coarse pointer verified)
+cover the author/excerpt above channel and thread inputs, two-line long text,
+URLs and emoji, attachment-only fallback, target switching/cancellation without
+losing draft text, sending the correct quote, source navigation and blocked
+identity/text masking. The separate full thread script still stops at the
+527px-versus-600px resize assertion, also reproduced on the unchanged base.
+Linux desktop previews were inspected at 2x in wide and narrow windows, including
+cancellation retaining the draft. Android compilation cannot configure without
+an Android SDK; Apple has no Swift/Xcode toolchain here. These are local fixture
+checks, not physical-device or live-account acceptance. No Docker daemon is
+available; the web image's application build stages were checked directly.
 
 **Deployment order.**
 

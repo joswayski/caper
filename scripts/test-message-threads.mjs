@@ -32,6 +32,32 @@ const screenshot = (name) => {
 const row = (id) => `[data-message-key="${id}"]`;
 const channel = (id) => `.chat-panel ${row(id)}`;
 const thread = (id) => `.chat-thread-panel ${row(id)}`;
+const assertReplyDraft = (composer, message) => {
+  const preview = evaluate(`(() => {
+    const composer = document.querySelector(${JSON.stringify(composer)});
+    const draft = composer.querySelector('.chat-reply-draft');
+    const excerpt = draft.querySelector('.chat-reply-draft-excerpt');
+    const heading = draft.querySelector('.chat-reply-draft-heading');
+    const cancel = draft.querySelector('button[aria-label="Cancel reply"]').getBoundingClientRect();
+    const rect = excerpt.getBoundingClientRect();
+    const input = composer.querySelector('textarea').getBoundingClientRect();
+    return { text: excerpt.textContent, name: heading.textContent, visible: excerpt.checkVisibility(),
+      aboveInput: rect.bottom <= input.top, belowHeading: rect.top >= heading.getBoundingClientRect().bottom,
+      bounded: rect.height > 0 && rect.height <= parseFloat(getComputedStyle(excerpt).lineHeight) * 2 + 1,
+      fits: rect.right <= cancel.left && cancel.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth,
+      cancel: [cancel.width, cancel.height] };
+  })()`);
+  assert.equal(preview.text, message.content.text || (message.content.attachments?.length ? "Attachment" : "Message"));
+  assert.equal(preview.name, `Replying to ${message.author.name}`);
+  assert.equal(preview.visible, true, "The source excerpt stays visible on mobile as well as desktop");
+  assert.equal(preview.aboveInput && preview.belowHeading, true, "The source sits below its author, above the input");
+  assert.equal(preview.bounded && preview.fits, true, "Long quotes stay within two lines without covering Cancel");
+  if (evaluate("innerWidth <= 760 || matchMedia('(pointer: coarse)').matches"))
+    assert.ok(
+      preview.cancel.every((size) => size >= 44),
+      "Cancel reply retains its touch target",
+    );
+};
 const alignedHeaders = (width) => {
   evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
   const geometry = evaluate(`(() => {
@@ -355,6 +381,25 @@ const checkLongQuotePreview = async (layout) => {
     return response.json();
   };
   const source = await send(peer, fullText);
+  wait(
+    '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
+  );
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
+  wait(`!!document.querySelector('${channel(source.clientMessageId)}')`);
+  actions(channel(source.clientMessageId), true);
+  browser("find", "role", "button", "click", "--name", "Reply", "--exact");
+  wait('!!document.querySelector(".chat-composer .chat-reply-draft")');
+  assertReplyDraft(".chat-composer", source);
+  browser("fill", ".chat-composer textarea", "TEST FIXTURE — Keep this unsent text.");
+  screenshot(`reply-draft-${layout}`);
+  browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
+  assert.equal(
+    evaluate('document.querySelector(".chat-composer textarea").value'),
+    "TEST FIXTURE — Keep this unsent text.",
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-composer .chat-reply-draft")'), false);
+  browser("fill", ".chat-composer textarea", "");
   const sibling = await send(
     own,
     "TEST FIXTURE — Following up on this message, with the full original available in the quote.",
@@ -606,6 +651,7 @@ try {
   }
   browser("click", `${channel(root.clientMessageId)} .chat-reply-message`);
   wait('!!document.querySelector(".chat-composer .chat-reply-draft")');
+  assertReplyDraft(".chat-composer", root);
   assert.equal(evaluate('document.activeElement === document.querySelector(".chat-composer textarea")'), true);
   assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), false, "Reply does not open a thread");
   browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
@@ -641,6 +687,8 @@ try {
   dismissActions();
   browser("click", `${thread(root.clientMessageId)} .chat-reply-message`);
   wait('!!document.querySelector(".chat-thread-panel .chat-reply-draft")');
+  assertReplyDraft(".chat-thread-panel", root);
+  screenshot("reply-draft-thread-desktop");
   assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   reply("TEST FIXTURE — Keep the layout discussion here. 🙂");
   const quoted = (
@@ -957,6 +1005,8 @@ try {
   wait(
     '!document.querySelector(".chat-message-actions") && !!document.querySelector(".chat-thread-panel .chat-reply-draft")',
   );
+  assertReplyDraft(".chat-thread-panel", broadcast);
+  screenshot("reply-draft-thread-mobile");
   assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   evaluate("history.back()");
