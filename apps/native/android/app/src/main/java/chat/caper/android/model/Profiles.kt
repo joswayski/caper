@@ -36,6 +36,52 @@ sealed interface ProfileEvent {
 
 fun Account.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
 
+// Server lists (members, invitations, DM peers, people, blocks) return each person's current profile.
+fun Member.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
+fun DirectPeer.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
+fun Person.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
+fun BlockedAccount.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
+
+/** Every author [ChatMessage.withPerson] rewrites: its own, the pinner, thread participants, the reply reference's and the forwarded original's. */
+fun ChatMessage.authors(): Sequence<ChatAuthor> = sequence {
+    yield(author)
+    pin?.let { yield(it.author) }
+    thread?.let { yieldAll(it.participants) }
+    replyTo?.let { yield(it.author) }
+    forward?.message?.let { yieldAll(it.authors()) }
+}
+
+/**
+ * Of [fetched] (current profiles a server list just returned), the people a retained copy in this
+ * state or in [cached] conversations still shows with another name, username or picture: a
+ * `profile.updated` missed while the gateway was away, since there is no replay. Your own copies
+ * follow the account instead ([withAccountProfile]).
+ */
+fun AppUiState.staleProfiles(fetched: List<ProfilePerson>, cached: Collection<ChatHistory> = emptyList()): List<ProfilePerson> {
+    val current = fetched.filter { it.id != account?.id }.associateBy { it.id }
+    if (current.isEmpty()) return emptyList()
+    val stale = linkedMapOf<String, ProfilePerson>()
+    fun compare(id: String, username: String?, name: String, avatarId: Int?, asset: String?) {
+        val person = current[id] ?: return
+        if (id in stale) return
+        if (username != null && person.username != null && username != person.username ||
+            person.displayName != null && name != person.displayName ||
+            person.avatarId != null && avatarId != person.avatarId || asset != person.avatarAsset) stale[id] = person
+    }
+    fun member(value: Member) = compare(value.id, value.username, value.displayName, value.avatarId, value.avatarAsset)
+    fun message(value: ChatMessage) = value.authors().forEach { compare(it.id, null, it.name, it.avatarId, it.avatarAsset) }
+    selectedSpace?.members?.forEach(::member)
+    (channelGrants + pendingChannelInvitations + pendingSpaceInvitations).forEach(::member)
+    directConversations.forEach { val peer = it.peer; compare(peer.id, peer.username, peer.displayName, peer.avatarId, peer.avatarAsset) }
+    people?.forEach { compare(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset) }
+    blocks.forEach { compare(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset) }
+    messages.forEach(::message)
+    pinnedMessages.forEach(::message)
+    cached.forEach { history -> history.messages.forEach(::message); history.pinnedMessages.forEach(::message) }
+    return stale.values.toList()
+}
+
+
 /**
  * Every retained copy of [person] by account ID: the signed-in account, space and channel
  * members and invitations, DM peers (and the open DM's title), people suggestions, blocked
@@ -146,9 +192,9 @@ fun FeedbackReporter.withPerson(person: ProfilePerson, keepSignedUrls: Boolean =
 }
 
 /** A loaded or cached conversation page with [person]'s current name and picture. */
-fun ChatHistory.withPerson(person: ProfilePerson): ChatHistory = copy(
-    messages = messages.map { it.withPerson(person) },
-    pinnedMessages = pinnedMessages.map { it.withPerson(person) },
+fun ChatHistory.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false): ChatHistory = copy(
+    messages = messages.map { it.withPerson(person, keepSignedUrls) },
+    pinnedMessages = pinnedMessages.map { it.withPerson(person, keepSignedUrls) },
 )
 
 /**

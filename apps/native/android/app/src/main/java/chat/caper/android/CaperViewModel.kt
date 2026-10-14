@@ -126,6 +126,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val urlQueue = linkedSetOf<String>()
     private var urlBatch: Job? = null
     private var threadRequest = 0L
+    /** `profile.updated` events received so far, and each person's latest with its count (see [repairProfiles]). */
+    private var profileEventCount = 0L
+    private val profileEvents = mutableMapOf<String, Pair<Long, ProfilePerson>>()
     private val uploadRoot = File(application.cacheDir, "attachment-uploads")
     private val uploadSession = File(uploadRoot, UUID.randomUUID().toString())
     private val threadPages = mutableMapOf<String, ThreadUi>()
@@ -166,6 +169,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         homeRouting = routing
         notificationEdits = null
         lastChannelBySpace.clear()
+        profileEvents.clear()
         cancelConversationOpening()
         conversationHistories.clear()
         mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
@@ -495,12 +499,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList(), inviteLinks = emptyList())
         viewModelScope.launch {
             try {
+                val since = profileEventCount
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
                 // While restoring, the loading screen waits for the landing conversation too.
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0,
                     restoring = mutable.value.restoring && landing != null)
+                // Before a cached conversation of this space opens.
+                repairProfiles(detail.members.map { it.profile() }, since)
                 landing?.let(::selectChannel)
                 notice?.let { mutable.value = mutable.value.copy(error = it) }
             } catch (error: Throwable) {
@@ -921,8 +928,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         peopleRefresh?.cancel()
         peopleRefresh = viewModelScope.launch {
+            val since = profileEventCount
             runCatching { api.people(token) }.onSuccess { result ->
-                if (request == accountGeneration) mutable.value = mutable.value.copy(people = result.people)
+                if (request == accountGeneration) {
+                    mutable.value = mutable.value.copy(people = result.people)
+                    repairProfiles(result.people.map { it.profile() }, since)
+                }
             }
         }
     }
@@ -931,9 +942,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken ?: return
         val request = accountGeneration
         viewModelScope.launch {
+            val since = profileEventCount
             runCatching { api.directConversations(token) }.onSuccess { result ->
                 if (request == accountGeneration) {
                     mutable.value = mutable.value.copy(directConversations = result.conversations)
+                    repairProfiles(result.conversations.map { it.peer.profile() }, since)
                     pendingDirectIntent?.let { id -> result.conversations.firstOrNull { it.id == id } }?.let {
                         pendingDirectIntent = null
                         selectDirect(it)
@@ -978,8 +991,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         viewModelScope.launch {
             try {
+                val since = profileEventCount
                 val blocks = api.blocks(token).blocks
-                if (request == accountGeneration) mutable.value = mutable.value.copy(blocks = blocks, blocksError = null, blocksLoaded = true)
+                if (request == accountGeneration) {
+                    mutable.value = mutable.value.copy(blocks = blocks, blocksError = null, blocksLoaded = true)
+                    repairProfiles(blocks.map { it.profile() }, since)
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) { if (request == accountGeneration) mutable.value = mutable.value.copy(blocksError = message(error)) }
         }
@@ -1210,11 +1227,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (known.selectedDirectId != null || known.visit != null || known.feedbackShown) return@launch
                 val navigation = generation
+                val since = profileEventCount
                 val detail = api.space(token, open)
                 val current = mutable.value
                 if (!unchanged() || navigation != generation || current.busy || current.selectedSpace?.space?.id != open || current.selectedDirectId != null ||
                     current.visit != null || current.feedbackShown || detail == current.selectedSpace) return@launch
                 replaceDetail(detail)
+                repairProfiles(detail.members.map { it.profile() }, since)
                 val selected = current.selectedChannel
                 val retained = selected?.let { channel -> detail.channels.firstOrNull { it.id == channel.id } }
                 if (selected != null && retained != null) {
@@ -2685,6 +2704,33 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.withSpace(changed)
     }
 
+    /** [person]'s name and picture in every retained copy: the state and this view model's caches. */
+    private fun applyPerson(person: ProfilePerson, keepSignedUrls: Boolean = false) {
+        val current = mutable.value.withPerson(person, keepSignedUrls)
+        mutable.value = current.copy(profileRevision = current.profileRevision + 1)
+        conversationHistories.replaceAll { _, history -> history.withPerson(person, keepSignedUrls) }
+        reactorCache.update { it.withPerson(person) }
+        typers.replaceAll { _, typing -> typing.copy(author = typing.author.withPerson(person, keepSignedUrls)) }
+        listOf(authoritativeReactionMessages, pinSnapshots, forwardSnapshots, editSnapshots).forEach { snapshots ->
+            snapshots.replaceAll { _, message -> message.withPerson(person, keepSignedUrls) }
+        }
+        chatAuthor = chatAuthor?.withPerson(person, keepSignedUrls)
+    }
+
+    /**
+     * [fetched]: current profiles from a server list requested after [since] `profile.updated`
+     * events, already installed. The `profiles` feed has no replay, so a copy still showing an
+     * older name or picture (a loaded or cached message, another list) takes the fetched one, as
+     * on web and Apple. Someone whose event arrived while the request was in flight keeps that
+     * event, also where the list just put the older profile back.
+     */
+    private fun repairProfiles(fetched: List<ProfilePerson>, since: Long) {
+        val newer = fetched.mapNotNull { person -> profileEvents[person.id]?.takeIf { it.first > since }?.second }
+        val newerIds = newer.mapTo(HashSet()) { it.id }
+        val stale = mutable.value.staleProfiles(fetched.filter { it.id !in newerIds }, conversationHistories.values)
+        (newer + stale).forEach { applyPerson(it, keepSignedUrls = true) }
+    }
+
     /**
      * A live `profiles` event. A person's new name or picture reaches every retained copy by
      * account ID, including this view model's caches (cached conversations, who reacted, typing,
@@ -2696,15 +2742,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             is ProfileEvent.Person -> {
                 val person = event.person
                 val before = mutable.value.account
-                val current = mutable.value.withPerson(person)
-                mutable.value = current.copy(profileRevision = current.profileRevision + 1)
-                conversationHistories.replaceAll { _, history -> history.withPerson(person) }
-                reactorCache.update { it.withPerson(person) }
-                typers.replaceAll { _, typing -> typing.copy(author = typing.author.withPerson(person)) }
-                listOf(authoritativeReactionMessages, pinSnapshots, forwardSnapshots, editSnapshots).forEach { snapshots ->
-                    snapshots.replaceAll { _, message -> message.withPerson(person) }
-                }
-                chatAuthor = chatAuthor?.withPerson(person)
+                profileEvents[person.id] = ++profileEventCount to person
+                applyPerson(person)
                 // Renamed on another device: like a profile save here, the chat session takes the new name.
                 if (before != null && person.id == before.id && person.displayName != null && person.displayName != before.displayName) {
                     chatToken = null
@@ -2988,12 +3027,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun refreshSpace(spaceId: String, preferredChannelId: String?) {
         val account = accountGeneration
         val navigation = generation
+        val since = profileEventCount
         val detail = api.space(requireAccountToken(), spaceId)
         if (accountGeneration != account || generation != navigation || mutable.value.selectedSpace?.space?.id != spaceId) return
         ++spaceAccessGeneration
         val preferred = detail.channels.firstOrNull { it.id == preferredChannelId }
         val fallback = detail.channels.firstOrNull { it.joined }
         replaceDetail(detail)
+        repairProfiles(detail.members.map { it.profile() }, since)
         (preferred ?: fallback)?.let(::selectChannel) ?: closeChannel(clearPending = true)
     }
 

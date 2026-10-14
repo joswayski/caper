@@ -121,6 +121,27 @@ class ProfileUpdatesTest {
         assertEquals("unknown people keep the card they opened with", stranger, refreshedCard(stranger, before.withPerson(update)))
     }
 
+    @Test fun `a refreshed list finds the copies a missed update left behind`() {
+        val before = state()
+        assertEquals("loaded messages and other lists still show the old profile", listOf(update), before.staleProfiles(listOf(update)))
+        assertEquals("once applied nothing is left to repair", emptyList<ProfilePerson>(),
+            before.withPerson(update, keepSignedUrls = true).staleProfiles(listOf(update)))
+
+        val current = ProfilePerson(maya, "maya", "Maya", 312, oldAsset, "https://cdn.caper.chat/assets/$oldAsset?sig=fresh")
+        assertEquals("a newly signed URL for the same picture is not a change", emptyList<ProfilePerson>(),
+            before.copy(blocks = emptyList()).staleProfiles(listOf(current)))
+        assertEquals("your own copies follow the account", emptyList<ProfilePerson>(),
+            before.staleProfiles(listOf(ProfilePerson(self, "me_too", "Me Too", 1))))
+
+        // A conversation cached before the update counts too, nested authors included.
+        val cached = ChatHistory(before.messages, "7", false)
+        val elsewhere = AppUiState(account = before.account)
+        assertEquals(listOf(update), elsewhere.staleProfiles(listOf(update), listOf(cached)))
+        assertEquals(emptyList<ProfilePerson>(), elsewhere.staleProfiles(listOf(update), listOf(cached.withPerson(update, keepSignedUrls = true))))
+        assertEquals("people nobody here shows are ignored", emptyList<ProfilePerson>(),
+            elsewhere.staleProfiles(listOf(update.copy(id = "zed000000001")), listOf(cached)))
+    }
+
     @Test fun `a space update renames and re-icons that space everywhere, and ignores others`() {
         val icon = "https://cdn.caper.chat/assets/$newAsset?sig=i"
         val studio = Space("space0000001", "Studio", self, iconAsset = oldAsset, iconUrl = "x")
