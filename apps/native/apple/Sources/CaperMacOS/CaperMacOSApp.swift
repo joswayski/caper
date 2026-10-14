@@ -14,8 +14,8 @@ struct CaperMacOSApp: App {
         WindowGroup(id: "caper-main") {
             CaperWindow(parity: parity, updater: updater, ready: $ready, whatsNew: $whatsNew)
                 .environment(\.desktopUpdates, updater.controls)
-                .onChange(of: updater.offeredUpdate) { _, update in
-                    if update != nil { bringReviewForward() }
+                .onChange(of: updater.reviewRequest) { _, _ in
+                    bringReviewForward()
                 }
         }
         // Keep system window controls in their own title bar, outside the space rail.
@@ -33,8 +33,8 @@ struct CaperMacOSApp: App {
                     .environment(\.desktopUpdates, updater.controls)
                     // Settings can outlive the main window. Bring back the real
                     // account window so the review uses its actual voice state.
-                    .onChange(of: updater.offeredUpdate) { _, update in
-                        if update != nil { bringReviewForward() }
+                    .onChange(of: updater.reviewRequest) { _, _ in
+                        bringReviewForward()
                     }
             }
         }

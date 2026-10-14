@@ -21,6 +21,7 @@ import Observation
     private(set) var checking = false
     private var availableUpdate: Update?
     private(set) var offeredUpdate: Update?
+    private(set) var reviewRequest = 0
     private var manualCheck = false
 
     static let firstCheckDelay: TimeInterval = 20
@@ -191,6 +192,7 @@ import Observation
 
     private func offer(_ update: Update) {
         offeredUpdate = update
+        reviewRequest += 1
         NSApp?.activate(ignoringOtherApps: true)
     }
 
