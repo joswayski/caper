@@ -3042,6 +3042,7 @@ impl CaperApp {
         }
         self.chime_roster_changes();
         let events: Vec<_> = self.worker.events.try_iter().collect();
+        let identities = events.iter().any(carries_identities);
         for event in events {
             match event {
                 Event::Picture {
@@ -3798,13 +3799,17 @@ impl CaperApp {
                 }
                 _ => {}
             }
+        }
+        // Once per batch: it walks every retained message.
+        if identities {
             self.refresh_profile_snapshots();
         }
     }
 
     /// The signed-in account's saved profile on every retained identity. It
-    /// runs after every event, so it leaves the saved mascot (`avatarId`,
-    /// unchanged by profile saves and pictures) as each copy has it.
+    /// runs after each batch of events that may carry identities, so it
+    /// leaves the saved mascot (`avatarId`, unchanged by profile saves and
+    /// pictures) as each copy has it.
     fn refresh_profile_snapshots(&mut self) {
         if let Some(account) = &self.account {
             let update = model::PersonUpdate {
@@ -21067,6 +21072,37 @@ fn join_glow_color(time: f64) -> Color32 {
     let phase = (time % JOIN_GLOW_PERIOD) / JOIN_GLOW_PERIOD;
     let strength = (1.0 - (std::f64::consts::TAU * phase).cos()) / 2.0;
     Color32::from_rgba_unmultiplied(219, 104, 73, (0.45 * 255.0 * strength).round() as u8)
+}
+
+/// Whether a worker event may bring people (authors, members, peers, the
+/// account) whose copy of your own profile needs refreshing. Frequent
+/// status, progress and bookkeeping events never do.
+fn carries_identities(event: &Event) -> bool {
+    !matches!(
+        event,
+        Event::ProfileStatus { .. }
+            | Event::WhatsNew(_)
+            | Event::NotificationActivity { .. }
+            | Event::NotificationError { .. }
+            | Event::UnreadLoaded { .. }
+            | Event::ChannelRead { .. }
+            | Event::CodeRequested { .. }
+            | Event::MediaStatus { .. }
+            | Event::VoiceChecked { .. }
+            | Event::AssetUsage { .. }
+            | Event::AttachmentUrls { .. }
+            | Event::Upload { .. }
+            | Event::Gateway(
+                GatewayEvent::Status { .. }
+                    | GatewayEvent::Attachments { .. }
+                    | GatewayEvent::AttachmentProgress { .. }
+                    | GatewayEvent::Presence { .. }
+                    | GatewayEvent::VoiceUnavailable { .. }
+                    | GatewayEvent::VoiceReset { .. }
+                    | GatewayEvent::Resync { .. }
+                    | GatewayEvent::AccessDenied { .. }
+            )
+    )
 }
 
 /// Whether looping decorations (the Join glow, typing dots) may animate:
