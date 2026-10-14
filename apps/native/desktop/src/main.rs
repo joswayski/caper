@@ -16777,21 +16777,8 @@ impl CaperApp {
                     .color(MUTED),
                 );
                 ui.add_space(6.0);
-                let mut choices: Vec<_> = emoji::catalog()
-                    .iter()
-                    .filter(|entry| {
-                        entry.selectable
-                            && (if query.is_empty() {
-                                entry.category == category
-                            } else {
-                                entry.name.to_lowercase().contains(&query)
-                                    || entry.keywords.to_lowercase().contains(&query)
-                                    || entry.category.replace('_', " ").contains(&query)
-                            })
-                    })
-                    .collect();
                 // Web's order: smileys and people first, flags last.
-                choices.sort_by_key(|entry| emoji::picker_order(entry));
+                let choices = emoji::picker_choices(category, &query);
                 if choices.is_empty() {
                     ui.label(RichText::new("No results. Try another search.").color(MUTED));
                 }

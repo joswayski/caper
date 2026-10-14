@@ -1,7 +1,7 @@
 use eframe::egui;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +51,52 @@ pub fn picker_order(entry: &Entry) -> (usize, usize) {
         2
     };
     (picker_rank(&entry.category), face)
+}
+
+/// The picker's choices in web's order: `category`'s entries while `query`
+/// (trimmed and lowercased) is empty, else every entry whose name, keywords
+/// or category contain it. The last answer is kept, so a picker left open
+/// does no catalog work each frame.
+pub fn picker_choices(category: &str, query: &str) -> Arc<Vec<&'static Entry>> {
+    type Choices = (String, String, Arc<Vec<&'static Entry>>);
+    static LAST: Mutex<Option<Choices>> = Mutex::new(None);
+    static SEARCHABLE: OnceLock<Vec<(String, String, String)>> = OnceLock::new();
+    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((cached_category, cached_query, choices)) = last.as_ref()
+        && cached_category == category
+        && cached_query == query
+    {
+        return choices.clone();
+    }
+    let searchable = SEARCHABLE.get_or_init(|| {
+        catalog()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.to_lowercase(),
+                    entry.keywords.to_lowercase(),
+                    entry.category.replace('_', " "),
+                )
+            })
+            .collect()
+    });
+    let mut choices: Vec<_> = catalog()
+        .iter()
+        .zip(searchable)
+        .filter(|(entry, (name, keywords, words))| {
+            entry.selectable
+                && (if query.is_empty() {
+                    entry.category == category
+                } else {
+                    name.contains(query) || keywords.contains(query) || words.contains(query)
+                })
+        })
+        .map(|(entry, _)| entry)
+        .collect();
+    choices.sort_by_key(|entry| picker_order(entry));
+    let choices = Arc::new(choices);
+    *last = Some((category.to_owned(), query.to_owned(), choices.clone()));
+    choices
 }
 
 /// A category's place in the emoji picker, as on web: smileys and people
@@ -462,6 +508,24 @@ mod tests {
             .map(|(range, _)| &text[range])
             .collect();
         assert_eq!(found, vec!["❤️", "☕"]);
+    }
+
+    #[test]
+    fn picker_choices_search_in_order_and_reuse_an_unchanged_answer() {
+        let smileys = picker_choices("smileys_people", "");
+        assert_eq!(smileys[0].emoji, "😀");
+        assert!(
+            smileys
+                .iter()
+                .all(|entry| entry.category == "smileys_people")
+        );
+        let found = picker_choices("smileys_people", "thumbs");
+        assert!(found.iter().any(|entry| entry.id == "1f44d"));
+        assert!(Arc::ptr_eq(
+            &found,
+            &picker_choices("smileys_people", "thumbs")
+        ));
+        assert!(picker_choices("flags", "zzzz-no-such-emoji").is_empty());
     }
 
     #[test]
