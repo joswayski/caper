@@ -2327,6 +2327,7 @@ export default function Chat({
         onReplyChange={(reference) => {
           if (state.thread) setReplyTarget(state.thread.rootId, reference);
         }}
+        onOpenReference={(reference) => void goToMessage({ ...reference, channelId: state.channelId! })}
         blockedIds={blockedIds}
         renderMessage={renderMessage}
         arrivals={arrivals.current}

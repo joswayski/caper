@@ -38,6 +38,7 @@ export default function ThreadPanel({
   localPreviews,
   onSend,
   onReplyChange,
+  onOpenReference,
   blockedIds,
   renderMessage,
   arrivals,
@@ -56,6 +57,8 @@ export default function ThreadPanel({
   localPreviews: Record<string, LocalPreview>;
   onSend: (text: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
+  /** Jumps to a pending reply's original, like the replies rendered by `renderMessage`. */
+  onOpenReference: (reference: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
   renderMessage: (
     index: number,
@@ -525,7 +528,7 @@ export default function ThreadPanel({
                 motionKey={pending.clientMessageId}
                 reference={pending.replyTo}
                 hidden={blockedIds.has(pending.replyTo.author.id) && pending.replyTo.author.id !== state.author?.id}
-                onOpen={() => void client?.loadMessageContext({ ...pending.replyTo!, channelId: state.channelId! })}
+                onOpen={() => onOpenReference(pending.replyTo!)}
               />
             )}
             <div className="chat-avatar">

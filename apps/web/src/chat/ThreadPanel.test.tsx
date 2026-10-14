@@ -35,6 +35,7 @@ function render(
       localPreviews={{}}
       onSend={async () => {}}
       onReplyChange={() => {}}
+      onOpenReference={() => {}}
       blockedIds={new Set()}
       renderMessage={(_index, message) => <p>{message.content.text}</p>}
       arrivals={new Arrivals()}
