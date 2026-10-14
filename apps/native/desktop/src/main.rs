@@ -17420,6 +17420,7 @@ impl CaperApp {
         }
         let mut block_action = false;
         let mut toggle_spaces = false;
+        let mut edit_profile = false;
         let mut invitation = None;
         let mut close = false;
         let mut open_conversation = false;
@@ -17552,6 +17553,16 @@ impl CaperApp {
                                 ui.spacing_mut().item_spacing.y = 12.0;
                                 if profile.me {
                                     ui.label(RichText::new("You").size(12.0).color(MUTED));
+                                    // As on Android and Apple: your own card edits your profile.
+                                    edit_profile = self.account.is_some()
+                                        && toned(
+                                            ui,
+                                            PRIMARY_TONE,
+                                            !busy,
+                                            egui::Button::new(bold("Edit profile").size(12.0))
+                                                .min_size(egui::vec2(286.0, 36.0)),
+                                        )
+                                        .clicked();
                                     return;
                                 }
                                 let invite = !blocked
@@ -17659,6 +17670,12 @@ impl CaperApp {
                     })
                 })
         });
+        if edit_profile {
+            self.mention_card = None;
+            self.composer_emoji = None;
+            self.open_profile_dialog();
+            return;
+        }
         if !busy
             && !child_open
             && !menu_open
@@ -33888,6 +33905,7 @@ mod tests {
         assert!(shows(&output, "Fixture Owner") && shows(&output, "You"));
         assert!(!shows_control(&output, "Send"), "no Send for yourself");
         assert!(!shows(&output, "Block") && !shows(&output, "Invite to space"));
+        assert!(shows_control(&output, "Edit profile"));
 
         let outside = text_center(&output, "Beginning of conversation");
         click_at(&mut app, &context, outside);
@@ -33902,6 +33920,22 @@ mod tests {
         assert!(
             app.mention_card.is_none(),
             "@everyone stays non-interactive"
+        );
+
+        // Your own card opens Edit profile, seeded from the saved profile.
+        app.username = "stale".into();
+        let output = render(&mut app, &context, vec![]);
+        let owner = pill_center(&output, OWNER_MESSAGE, "@fixture_owner");
+        click_at(&mut app, &context, owner);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_center(&output, "Edit profile"));
+        assert!(app.mention_card.is_none());
+        assert!(matches!(app.dialog, Some(Dialog::Profile)));
+        assert_eq!(
+            Some(app.username.as_str()),
+            app.account
+                .as_ref()
+                .and_then(|account| account.username.as_deref())
         );
     }
 
