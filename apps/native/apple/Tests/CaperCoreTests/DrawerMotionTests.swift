@@ -12,6 +12,33 @@ final class DrawerMotionTests: XCTestCase {
         XCTAssertEqual(release.slope, 0)
     }
 
+    func testSlowReleaseSwitchesByTheFingersTravelWhenTheViewLags() {
+        // The finger moved 220 of 400 points; the view, picking up 21 points
+        // late, is drawn only 0.4975 open. Past halfway by the finger switches.
+        let opening = DrawerRelease(open: false, position: 0.4975, velocity: 250, distance: 220, travel: 400)
+        XCTAssertTrue(opening.commit)
+        XCTAssertEqual(opening.target, 1)
+        let closing = DrawerRelease(open: true, position: 0.5025, velocity: -250, distance: -220, travel: 400)
+        XCTAssertTrue(closing.commit)
+        XCTAssertEqual(closing.target, 0)
+        // Short of halfway by both measures, it still settles back.
+        XCTAssertFalse(DrawerRelease(open: false, position: 0.44, velocity: 250, distance: 190, travel: 400).commit)
+        // A finger that went back past its start counts for nothing.
+        XCTAssertFalse(DrawerRelease(open: true, position: 0.9, velocity: 0, distance: 220, travel: 400).commit)
+    }
+
+    func testHalfwayIsAcrossWhatIsSeenNotTheShadowsRoom() {
+        // A 402-point phone: Browse travels 450 points with the shadow's room.
+        // A slow 221-point swipe back is past the screen's middle.
+        let back = DrawerRelease(open: true, position: 0.5548, velocity: -213, distance: -221, travel: 450, shadow: 48)
+        XCTAssertTrue(back.commit)
+        XCTAssertEqual(back.target, 0)
+        // Without the shadow's room it would have counted as short of halfway.
+        XCTAssertFalse(DrawerRelease(open: true, position: 0.5548, velocity: -213, distance: -221, travel: 450).commit)
+        // Short of the screen's middle still settles back.
+        XCTAssertFalse(DrawerRelease(open: true, position: 0.6, velocity: -213, distance: -180, travel: 450, shadow: 48).commit)
+    }
+
     func testShortHeldDragSettlesBack() {
         let release = DrawerRelease(open: false, position: 0.3, velocity: 0, distance: 120, travel: 400)
         XCTAssertFalse(release.commit)
