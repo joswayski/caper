@@ -336,6 +336,10 @@ public actor APIClient {
                           body: InviteLinkInput(channelId: try channelID.map { try pathID($0) }, maxAge: maxAge, maxUses: maxUses))
     }
 
+    public func defaultInviteLink(spaceID: String) async throws -> InviteLink {
+        try await request("api/spaces/\(try pathID(spaceID))/invite-links/default", method: "POST")
+    }
+
     public func revokeInviteLink(spaceID: String, code: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invite-links/\(try inviteCodePath(code))", method: "DELETE")
     }

@@ -126,7 +126,9 @@ final class InviteLinksTests: XCTestCase {
         func seconds(_ number: String, _ unit: InviteExpiryUnit) -> Result<Int?, InviteOptionError> {
             InviteLinks.expirySeconds(number, unit: unit)
         }
-        XCTAssertEqual(InviteLinks.defaultExpiryNumber, "7")
+        XCTAssertEqual(InviteLinks.defaultExpiryNumber, "16")
+        XCTAssertEqual(seconds(InviteLinks.defaultExpiryNumber, InviteLinks.defaultExpiryUnit), .success(1_382_400))
+        XCTAssertEqual(InviteLinks.maxUses(InviteLinks.defaultMaxUses), .success(100))
         XCTAssertEqual(InviteLinks.defaultExpiryUnit, .days)
         XCTAssertEqual(InviteExpiryUnit.allCases.map(\.label), ["minutes", "hours", "days", "Never"])
         XCTAssertEqual(seconds("7", .days), .success(604_800))

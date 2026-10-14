@@ -719,9 +719,11 @@ function MemberManager({
   pending,
   loading = false,
   suggestions,
+  inviteOnly = false,
 }: {
   members: Member[];
   invitations?: Member[];
+  inviteOnly?: boolean;
   /** A private channel's grants rather than the space's members. */
   channel?: boolean;
   onCancel?: (member: Member) => Promise<void>;
@@ -764,8 +766,8 @@ function MemberManager({
   return (
     <section className="member-manager">
       <div className="dialog-section-heading">
-        <h3>Members</h3>
-        {!loading && <span>{members.length}</span>}
+        <h3>{inviteOnly ? "Or invite by username" : "Members"}</h3>
+        {!loading && !inviteOnly && <span>{members.length}</span>}
       </div>
       <form
         className="member-add"
@@ -842,28 +844,30 @@ function MemberManager({
           Loading members…
         </p>
       )}
-      <ul>
-        {members.map((member) => (
-          <li key={member.id}>
-            {/* TODO show status indicator */}
-            <span className="member-avatar" aria-hidden="true">
-              <Avatar person={member} name={member.displayName} />
-            </span>
-            <span>
-              <strong>{member.displayName}</strong>
-              <small>
-                @{member.username}
-                {member.owner ? " · Owner" : ""}
-              </small>
-            </span>
-            {!member.owner && (
-              <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
-                Remove
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
+      {!inviteOnly && (
+        <ul>
+          {members.map((member) => (
+            <li key={member.id}>
+              {/* TODO show status indicator */}
+              <span className="member-avatar" aria-hidden="true">
+                <Avatar person={member} name={member.displayName} />
+              </span>
+              <span>
+                <strong>{member.displayName}</strong>
+                <small>
+                  @{member.username}
+                  {member.owner ? " · Owner" : ""}
+                </small>
+              </span>
+              {!member.owner && (
+                <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       {removing && (
         <RemoveMemberDialog
           {...removalCopy(removing)}
@@ -909,14 +913,14 @@ function MemberManager({
 
 function ManageSpaceDialog({
   detail,
-  channelId,
+  inviteOnly = false,
   people,
   onClose,
   onChanged,
   onDeleted,
 }: {
   detail: SpaceDetail;
-  channelId?: string;
+  inviteOnly?: boolean;
   /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
   people?: Person[];
   onClose: () => void;
@@ -953,55 +957,64 @@ function ManageSpaceDialog({
   };
   return (
     <Dialog
-      title="Manage space"
-      description="Only the owner can change this space and its membership."
+      title={inviteOnly ? `Invite people to ${detail.space.name}` : "Manage space"}
+      description={
+        inviteOnly
+          ? "Share a link or invite someone by username."
+          : "Only the owner can change this space and its membership."
+      }
       onClose={onClose}
       width="wide"
       // A stray click outside must not throw away an unsaved name.
       dismissOnBackdrop={!pending && name === detail.space.name}
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          const invalid = spaceNameError(name);
-          if (invalid) return setError(invalid);
-          void run(async () => {
-            const space = await updateSpace(detail.space.id, name);
-            setName(space.name);
-            onChanged({ ...detail, space, members });
-          }).catch((reason) => setError(errorMessage(reason)));
-        }}
-      >
-        <fieldset disabled={pending}>
-          <NameField
-            label="Space name"
-            focus={false}
-            value={name}
-            onChange={(value) => {
-              setName(value);
-              setError(undefined);
-            }}
-          />
-          <div className="inline-save">
-            <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
-              Save name
-            </button>
-          </div>
-        </fieldset>
-      </form>
+      {!inviteOnly && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const invalid = spaceNameError(name);
+            if (invalid) return setError(invalid);
+            void run(async () => {
+              const space = await updateSpace(detail.space.id, name);
+              setName(space.name);
+              onChanged({ ...detail, space, members });
+            }).catch((reason) => setError(errorMessage(reason)));
+          }}
+        >
+          <fieldset disabled={pending}>
+            <NameField
+              label="Space name"
+              focus={false}
+              value={name}
+              onChange={(value) => {
+                setName(value);
+                setError(undefined);
+              }}
+            />
+            <div className="inline-save">
+              <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
+                Save name
+              </button>
+            </div>
+          </fieldset>
+        </form>
+      )}
       {error && (
         <p className="space-form-error" role="alert">
           {error}
         </p>
       )}
-      <div className="space-icon-section">
-        <SpaceIconSettings
-          space={detail.space}
-          onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
-        />
-      </div>
-      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
+      {!inviteOnly && (
+        <div className="space-icon-section">
+          <SpaceIconSettings
+            space={detail.space}
+            onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
+          />
+        </div>
+      )}
+      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} prepareDefault={inviteOnly} />
       <MemberManager
+        inviteOnly={inviteOnly}
         members={members}
         invitations={invitations}
         suggestions={withInvited(excludePeople(people ?? [], members, invitations), invitations)}
@@ -1031,13 +1044,15 @@ function ManageSpaceDialog({
           })
         }
       />
-      <section className="danger-zone">
-        <h3>Delete space</h3>
-        <p>Delete this space and all its channels for every member.</p>
-        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
-          Delete space
-        </button>
-      </section>
+      {!inviteOnly && (
+        <section className="danger-zone">
+          <h3>Delete space</h3>
+          <p>Delete this space and all its channels for every member.</p>
+          <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+            Delete space
+          </button>
+        </section>
+      )}
       {confirmDelete && (
         <DeleteConfirmation
           kind="space"
@@ -1802,14 +1817,16 @@ export default function Spaces({
     const cache = directCache.current;
     return () => cache.clear();
   }, [account?.id]);
-  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
+  const [dialog, setDialog] = useState<
+    "space" | "channel" | "manage-space" | "invite-people" | "leave-space" | "direct"
+  >();
   // DM `@` suggestions, mention profile cards, and the invite and new-DM
   // username fields; the previous list stays while a refresh is in flight.
   // Loaded once signed in and again whenever a DM or one of those dialogs opens.
   const [peopleSnapshot, setPeople] = useState<Person[]>();
   const people = peopleSnapshot?.map((person) => withLatestProfile(person, account, profiles));
   const directId = directView?.conversation.id;
-  const peopleDialog = dialog === "manage-space" || dialog === "direct";
+  const peopleDialog = dialog === "manage-space" || dialog === "invite-people" || dialog === "direct";
   useEffect(() => {
     if (!account?.id) return;
     let current = true;
@@ -2811,7 +2828,7 @@ export default function Spaces({
       <button
         type="button"
         className="channel-select direct-action"
-        onClick={() => setDialog(owner ? "manage-space" : "direct")}
+        onClick={() => setDialog(owner ? "invite-people" : "direct")}
       >
         <Plus aria-hidden="true" />
         <span>{owner ? "Invite people" : "New message"}</span>
@@ -3651,10 +3668,11 @@ export default function Spaces({
           }}
         />
       )}
-      {dialog === "manage-space" && (
+      {(dialog === "manage-space" || dialog === "invite-people") && (
         <ManageSpaceDialog
+          key={`${detail.space.id}-${dialog}`}
           detail={detail}
-          channelId={selected.channelId}
+          inviteOnly={dialog === "invite-people"}
           people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}

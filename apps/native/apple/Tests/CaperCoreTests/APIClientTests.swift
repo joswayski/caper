@@ -447,6 +447,25 @@ final class APIClientTests: XCTestCase {
         ])
     }
 
+    func testDefaultInviteLinkPostsNoBodyAndDecodesExistingLink() async throws {
+        let json = #"{"code":"aB3dE5gH9k","channel":null,"createdBy":{"username":"owner","displayName":"Owner"},"uses":12,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/default")
+            XCTAssertNil(try requestBodyData(request))
+            return (200, Data(json.utf8))
+        }
+        let api = client()
+        let first = try await api.defaultInviteLink(spaceID: "Space1234567")
+        let reopened = try await api.defaultInviteLink(spaceID: "Space1234567")
+        XCTAssertEqual(first, reopened)
+        XCTAssertNil(first.channel)
+        XCTAssertEqual(first.uses, 12)
+        XCTAssertEqual(first.maxUses, 100)
+        XCTAssertEqual(first.createdAt, "2026-10-11T12:00:00Z")
+        XCTAssertEqual(first.expiresAt, "2026-10-27T12:00:00Z")
+    }
+
     func testInviteLinkEndpoints() async throws {
         let spaceID = "Space1234567"
         let code = "aB3dE5gH9k"

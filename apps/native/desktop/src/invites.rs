@@ -24,8 +24,8 @@ pub const EXPIRY_UNITS: [(ExpiryUnit, &str); 4] = [
     (ExpiryUnit::Days, "days"),
     (ExpiryUnit::Never, "Never"),
 ];
-/// Seven days, like web.
-pub const DEFAULT_EXPIRY: (&str, ExpiryUnit) = ("7", ExpiryUnit::Days);
+/// Sixteen days from creation.
+pub const DEFAULT_EXPIRY: (&str, ExpiryUnit) = ("16", ExpiryUnit::Days);
 /// The API's bounds: one minute to a year, and at most 10,000 uses.
 const MAX_AGE_SECONDS: std::ops::RangeInclusive<u64> = 60..=31_536_000;
 const MAX_USES: std::ops::RangeInclusive<u64> = 1..=10_000;
@@ -410,7 +410,7 @@ mod tests {
     fn expiry_and_max_uses_are_free_form_within_the_api_bounds() {
         assert_eq!(
             expiry_seconds(DEFAULT_EXPIRY.0, DEFAULT_EXPIRY.1),
-            Ok(Some(604_800))
+            Ok(Some(1_382_400))
         );
         assert_eq!(expiry_seconds(" 90 ", ExpiryUnit::Minutes), Ok(Some(5_400)));
         assert_eq!(expiry_seconds("1", ExpiryUnit::Minutes), Ok(Some(60)));

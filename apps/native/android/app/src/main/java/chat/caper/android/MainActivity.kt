@@ -281,6 +281,7 @@ private sealed interface Overlay {
     data class OpenedInviteLink(val request: InviteLinkRequest) : Overlay
     data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
+    data object InvitePeople : Overlay
     data object CreateChannel : Overlay
     data object StartDirect : Overlay
     data class ManageChannel(val channel: Channel) : Overlay
@@ -356,7 +357,7 @@ internal data class VoiceJoinIntent(
     }
     // Web: a space removed elsewhere closes its dialogs; an invitation answered elsewhere closes its prompt.
     LaunchedEffect(state.selectedSpace?.space?.id) {
-        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
+        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.InvitePeople || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
     }
     LaunchedEffect(state.invitations) { (overlay as? Overlay.Invitation)?.let { shown -> if (state.invitations.none { it.id == shown.space.id }) overlay = null } }
     var navigationOpen by remember { mutableStateOf(false) }
@@ -434,6 +435,7 @@ internal data class VoiceJoinIntent(
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
+        Overlay.InvitePeople -> state.selectedSpace?.let { detail -> InvitePeopleDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, state.error, viewModel::clearError, { overlay = null }) { name, private ->
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
@@ -1049,7 +1051,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
-                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                    show(if (invitePeople) Overlay.InvitePeople else Overlay.StartDirect)
                 }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
                     Spacer(Modifier.width(9.dp))
@@ -3776,6 +3778,18 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
+@Composable private fun InvitePeopleDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
+    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
+    CaperDialog("Invite people", close, wide = true, description = "Invite people to ${detail.space.name}.", busy = state.busy) {
+        state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        DefaultInviteLinkSection(state, detail, viewModel)
+        HorizontalDivider(color = Border)
+        InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
+            {}, viewModel::cancelSpaceInvitation, channel = false,
+            suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations), inviteOnly = true)
+    }
+}
+
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var nameError by remember(detail.space.id) { mutableStateOf<String?>(null) }
@@ -3795,7 +3809,7 @@ internal fun counterTone(count: Int): Color = when {
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Button(::rename, enabled = canRename, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
-        InviteLinkSection(state, detail, viewModel)
+        InviteLinkSettingsDisclosure(state, detail, viewModel)
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
@@ -3832,12 +3846,13 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun InviteManager(
+@Composable internal fun InviteManager(
     members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit,
     remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean, suggestions: List<MentionCandidate>,
+    inviteOnly: Boolean = false,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
+    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite", inviteOnly = inviteOnly)
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
@@ -3896,11 +3911,12 @@ internal fun counterTone(count: Int): Color = when {
 @Composable private fun MemberManager(
     members: List<Member>, invitations: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit, remove: (Member) -> Unit,
     channel: Boolean, suggestions: List<MentionCandidate>, heading: String = "Members", action: String = "Add",
+    inviteOnly: Boolean = false,
 ) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var success by remember { mutableStateOf<String?>(null) }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (!inviteOnly) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
@@ -3920,7 +3936,7 @@ internal fun counterTone(count: Int): Color = when {
     }
     success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-    members.forEach { member ->
+    if (!inviteOnly) members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {

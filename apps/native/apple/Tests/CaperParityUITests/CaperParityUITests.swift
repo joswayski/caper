@@ -45,6 +45,23 @@ final class CaperParityUITests: XCTestCase {
         return app
     }
 
+    func testInvitePeopleOpensInviteOnlyInsteadOfSpaceManagement() {
+        let app = launch()
+        let invite = app.buttons["invite-people"]
+        if !invite.isHittable {
+            let navigation = app.buttons["Back to Browse"]
+            if navigation.waitForExistence(timeout: 10) { navigation.tap() }
+        }
+        XCTAssertTrue(invite.waitForExistence(timeout: 10))
+        invite.tap()
+        XCTAssertTrue(app.staticTexts["Invite by username"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["Exact username"].exists)
+        XCTAssertFalse(app.textFields["Space name"].exists)
+        XCTAssertFalse(app.buttons["Save name"].exists)
+        XCTAssertFalse(app.buttons["Delete space"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
+    }
+
     #if os(iOS)
     /// On a freshly booted simulator the automation session can report an
     /// empty accessibility tree for about a minute while the app is already on

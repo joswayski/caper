@@ -103,8 +103,9 @@ public enum InviteLinks {
     public static let codeLength = 10
     static let invalid = "This invite link is invalid or has expired."
 
-    /// "Expire after" starts at 7 days.
-    public static let defaultExpiryNumber = "7"
+    /// Custom links start with the same limits as the ready-to-copy link.
+    public static let defaultExpiryNumber = "16"
+    public static let defaultMaxUses = "100"
     public static let defaultExpiryUnit = InviteExpiryUnit.days
     /// The API's `maxAge` range: 1 minute to 365 days.
     public static let expiryRange = 60...31_536_000

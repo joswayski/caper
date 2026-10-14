@@ -4,6 +4,9 @@ import { androidAssetLinks, appleAppSiteAssociation } from "./app-links.ts";
 import {
   appInviteUrl,
   createInviteLink,
+  ensureDefaultInviteLink,
+  DEFAULT_INVITE_EXPIRY,
+  DEFAULT_INVITE_MAX_USES,
   inviteExpirySeconds,
   inviteMaxUses,
   inviteCode,
@@ -83,6 +86,7 @@ test("invite requests use the documented endpoints and reject malformed codes lo
     return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
   });
   await createInviteLink("space1234567", { channelId: null, maxAge: 604800, maxUses: null });
+  await ensureDefaultInviteLink("space1234567");
   await previewInvite("AbCdE12345");
   await joinInvite("AbCdE12345");
   assert.deepEqual(calls, [
@@ -91,6 +95,7 @@ test("invite requests use the documented endpoints and reject malformed codes lo
       method: "POST",
       body: JSON.stringify({ channelId: null, maxAge: 604800, maxUses: null }),
     },
+    { path: "/api/spaces/space1234567/invite-links/default", method: "POST", body: undefined },
     { path: "/api/invites/AbCdE12345", method: undefined, body: undefined },
     { path: "/api/invites/AbCdE12345/join", method: "POST", body: undefined },
   ]);
@@ -110,6 +115,8 @@ test("native apps verify caper.chat invite links and open caper:// links", async
 });
 
 test("expiry and max uses are free-form within the API's bounds", () => {
+  assert.deepEqual(inviteExpirySeconds(DEFAULT_INVITE_EXPIRY.amount, DEFAULT_INVITE_EXPIRY.unit), { value: 1_382_400 });
+  assert.deepEqual(inviteMaxUses(DEFAULT_INVITE_MAX_USES), { value: 100 });
   assert.deepEqual(inviteExpirySeconds("7", "days"), { value: 604_800 });
   assert.deepEqual(inviteExpirySeconds(" 90 ", "minutes"), { value: 5_400 });
   assert.deepEqual(inviteExpirySeconds("1", "minutes"), { value: 60 });
