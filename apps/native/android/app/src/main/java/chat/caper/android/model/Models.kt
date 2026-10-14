@@ -389,8 +389,10 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 /** [visitor]: read by a feedback team member who is not in the conversation (see [ChatHistory.visitor]). */
 @Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false, val visitor: Boolean = false)
+/** [failedOlder]/[failedNewer]: which page [error] is about, so Retry repeats that page (web). */
 data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,
-    val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null)
+    val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null,
+    val failedOlder: Boolean = false, val failedNewer: Boolean = false)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,

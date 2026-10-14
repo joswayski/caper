@@ -1761,7 +1761,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != threadRequest || channelRequest != generation || mutable.value.thread?.rootId != thread.rootId) return@launch
                 val rows = listOf(page.root) + page.messages
                 val loaded = mutable.value.messages.map { it.id }.toSet()
-                val pageState = thread.copy(loading = false, error = null,
+                val pageState = thread.copy(loading = false, error = null, failedOlder = false, failedNewer = false,
                     hasMore = if (newer) thread.hasMore else page.hasMore,
                     before = if (newer) thread.before else page.messages.firstOrNull()?.seq ?: if (older) thread.before else null,
                     hasNewer = if (older) thread.hasNewer else page.hasNewer,
@@ -1777,7 +1777,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request != threadRequest || channelRequest != generation) return@launch
                 if (error is ApiException && error.status in listOf(401, 403, 404)) { closeThread(); resyncChannel(channel) }
-                else mutable.value = mutable.value.copy(thread = thread.copy(loading = false, error = message(error)))
+                else mutable.value = mutable.value.copy(thread = thread.copy(loading = false, error = message(error), failedOlder = older, failedNewer = newer))
             }
         }
     }

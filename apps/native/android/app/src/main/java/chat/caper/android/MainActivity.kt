@@ -1723,7 +1723,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text(if (direct) "Back to conversation" else "Back to channel") }
             }
             HorizontalDivider(color = Border)
-            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread() }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
             if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
             // Remembered: every keystroke in the reply draft recomposes this panel.
             val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
