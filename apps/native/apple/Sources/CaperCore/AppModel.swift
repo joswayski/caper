@@ -2876,13 +2876,16 @@ public final class ChatModel {
             else { history = try await api.history(channelID: channelID) }
             // Web keeps the conversation when only the session fails, with Retry session.
             let chatSession: ChatSession?
+            var sessionFailure: String?
             do { chatSession = try await sessionRequest } catch {
                 if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) { throw error }
                 chatSession = nil
-                sessionError = error.localizedDescription
+                sessionFailure = error.localizedDescription
             }
             let signedIn = await api.isSignedIn
+            // A late failure from a channel opened earlier never reaches the current one.
             guard self.channelID == channelID, generation == requestGeneration else { return }
+            sessionError = sessionFailure
             canForward = signedIn
             let resolvedChannelID = history.channel?.id
             spaceID = history.space?.id
