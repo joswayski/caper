@@ -556,6 +556,8 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
             // A snapshot's signature for the same picture may be newer.
             var result = own
             if value.avatarAsset == own.avatarAsset, let url = value.avatarUrl { result.avatarUrl = url }
+            // The admin badge is stamped per message by the server; the profile has none.
+            result.admin = value.admin
             return result
         }
         var result = self

@@ -124,6 +124,21 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(ProfileDirectory().apply(message), message)
     }
 
+    func testYourOwnMessagesTakeYourProfileAndKeepTheirAdminBadge() {
+        let stamped = ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarId: 31, admin: true)
+        let own = ChatAuthor(id: maya.id, name: "Maya R", isGuest: false, avatarId: 31)
+        var message = ChatMessage(id: "Message00000001", channelId: "Chan12345678", seq: "9", author: stamped,
+                                  content: ChatContent(version: 1, type: "text", text: "Answered"), createdAt: "now", clientMessageId: "c9")
+        message.pin = MessagePin(author: stamped, createdAt: "now")
+        let updated = message.withProfile(own)
+        XCTAssertEqual(updated.author.name, "Maya R")
+        XCTAssertEqual(updated.author.admin, true, "the server's admin stamp survives your own profile")
+        XCTAssertEqual(updated.pin?.author.admin, true)
+        let plain = ChatMessage(id: "Message00000002", channelId: "Chan12345678", seq: "10", author: own,
+                                content: ChatContent(version: 1, type: "text", text: "Hi"), createdAt: "now", clientMessageId: "c10")
+        XCTAssertNil(plain.withProfile(own).author.admin)
+    }
+
     func testYourOwnAccountTakesAnUpdateFromAnotherDevice() {
         let account = Account(id: maya.id, username: "maya", displayName: "Maya", avatarId: 31, avatarAsset: "Pic0000000000000old1", avatarUrl: oldURL)
         let updated = account.applying(maya)
