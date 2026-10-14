@@ -767,6 +767,16 @@ impl Api {
         .map(|value| value.links)
     }
 
+    pub fn default_invite_link(&self, token: &str, space: &str) -> Result<InviteLink, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/invite-links/default"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     /// `max_age` in seconds (1 minute to 365 days) and `max_uses` (1 to 10,000);
     /// `None` never expires or allows unlimited joins.
     pub fn create_invite_link(
@@ -1581,6 +1591,13 @@ mod tests {
         let link = r#"{"code":"AbC123xYz9","channel":{"id":"chan00000002","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner","avatarId":3},"uses":0,"maxUses":10,"expiresAt":"2026-10-18T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#;
         let exchanges = [
             (
+                "POST /api/spaces/space0000001/invite-links/default",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
                 "POST /api/spaces/space0000001/invite-links",
                 Some(r#"{"channelId":"chan00000002","maxAge":604800,"maxUses":10}"#),
                 true,
@@ -1674,6 +1691,12 @@ mod tests {
                 .unwrap();
             }
         });
+        assert_eq!(
+            api.default_invite_link("account", "space0000001")
+                .unwrap()
+                .code,
+            "AbC123xYz9"
+        );
         let created = api
             .create_invite_link(
                 "account",

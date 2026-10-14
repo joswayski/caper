@@ -681,6 +681,7 @@ struct MentionCard {
 /// Manage space's "Invite link" section: the open space's live links and the
 /// next link's choices.
 struct InviteLinkPanel {
+    default_link: Option<invites::InviteLink>,
     /// The space these links belong to; answers for another are dropped.
     space: Option<String>,
     links: Vec<invites::InviteLink>,
@@ -704,6 +705,7 @@ struct InviteLinkPanel {
 impl Default for InviteLinkPanel {
     fn default() -> Self {
         Self {
+            default_link: None,
             space: None,
             links: Vec::new(),
             loading: false,
@@ -711,7 +713,7 @@ impl Default for InviteLinkPanel {
             revoking: BTreeSet::new(),
             expiry_amount: invites::DEFAULT_EXPIRY.0.into(),
             expiry_unit: invites::DEFAULT_EXPIRY.1,
-            max_uses: String::new(),
+            max_uses: "100".into(),
             channel: None,
             error: None,
             copy: None,
@@ -743,6 +745,7 @@ enum Dialog {
     Diagnostics,
     CreateSpace,
     ManageSpace,
+    InvitePeople,
     /// Paste an invite link, preview its space and join.
     JoinInvite,
     Invitation(model::Space),
@@ -2072,7 +2075,10 @@ impl CaperApp {
                         app.browse_channels = true;
                         app.navigation_open = name.ends_with("-narrow");
                     }
-                } else if matches!(name, "parity-admin" | "parity-admin-invitations") {
+                } else if matches!(
+                    name,
+                    "parity-admin" | "parity-admin-invitations" | "parity-invite-people"
+                ) {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
                         .detail
@@ -2111,6 +2117,17 @@ impl CaperApp {
                         .into(),
                     );
                     app.dialog = Some(Dialog::ManageSpace);
+                    if name == "parity-invite-people" {
+                        let mut link = app.fixture_invite_links().remove(0);
+                        link.channel = None;
+                        link.max_uses = Some(100);
+                        link.created_at = chrono::Utc::now().to_rfc3339();
+                        link.expires_at =
+                            Some((chrono::Utc::now() + chrono::TimeDelta::days(16)).to_rfc3339());
+                        app.invite_links.links[0] = link.clone();
+                        app.invite_links.default_link = Some(link);
+                        app.dialog = Some(Dialog::InvitePeople);
+                    }
                 } else if matches!(
                     name,
                     "parity-invite-join" | "parity-invite-preview" | "parity-invite-member"
@@ -4514,8 +4531,23 @@ impl CaperApp {
             AccountResult::NotificationsSaved { scope, result } => {
                 self.notifications.finish_save(&scope, result);
             }
+            AccountResult::DefaultInviteLink {
+                space,
+                request,
+                result,
+            } if self.selected_space.as_ref() == Some(&space)
+                && self.invite_links.space.as_ref() == Some(&space)
+                && matches!(self.dialog, Some(Dialog::InvitePeople))
+                && request == self.invite_join.request =>
+            {
+                self.invite_links.creating = false;
+                match result {
+                    Ok(link) => self.invite_links.default_link = Some(link),
+                    Err(error) => self.invite_links.error = Some(error),
+                }
+            }
             AccountResult::InviteLinks { space, result }
-                if self.invite_links.space.as_ref() == Some(&space) =>
+                if self.invite_panel_is_current(&space) =>
             {
                 let panel = &mut self.invite_links;
                 panel.loading = false;
@@ -4525,7 +4557,7 @@ impl CaperApp {
                 }
             }
             AccountResult::InviteLinkCreated { space, result }
-                if self.invite_links.space.as_ref() == Some(&space) =>
+                if self.invite_panel_is_current(&space) =>
             {
                 let panel = &mut self.invite_links;
                 panel.creating = false;
@@ -4545,10 +4577,20 @@ impl CaperApp {
                 space,
                 code,
                 result,
-            } if self.invite_links.space.as_ref() == Some(&space) => {
+            } if self.invite_panel_is_current(&space) => {
                 self.invite_links.revoking.remove(&code);
                 match result {
-                    Ok(()) => self.invite_links.links.retain(|item| item.code != code),
+                    Ok(()) => {
+                        self.invite_links.links.retain(|item| item.code != code);
+                        if self
+                            .invite_links
+                            .default_link
+                            .as_ref()
+                            .is_some_and(|link| link.code == code)
+                        {
+                            self.invite_links.default_link = None;
+                        }
+                    }
                     Err(error) => {
                         // It may have expired or been revoked elsewhere: reload.
                         self.invite_links.error = Some(error);
@@ -4580,7 +4622,8 @@ impl CaperApp {
                     Err(error) => self.invite_join.error = Some(error),
                 }
             }
-            AccountResult::InviteLinks { .. }
+            AccountResult::DefaultInviteLink { .. }
+            | AccountResult::InviteLinks { .. }
             | AccountResult::InviteLinkCreated { .. }
             | AccountResult::InviteLinkRevoked { .. }
             | AccountResult::InvitePreview { .. }
@@ -4875,8 +4918,34 @@ impl CaperApp {
         self.dialog = Some(Dialog::ManageSpace);
     }
 
-    /// Fresh invite link choices for the open space: seven days, no use
-    /// limit, opening in the selected channel when it is public.
+    fn invite_panel_is_current(&self, space: &str) -> bool {
+        self.selected_space.as_deref() == Some(space)
+            && self.invite_links.space.as_deref() == Some(space)
+            && matches!(
+                self.dialog,
+                Some(Dialog::ManageSpace | Dialog::InvitePeople)
+            )
+    }
+
+    fn open_invite_people(&mut self) {
+        self.open_manage_space();
+        self.dialog = Some(Dialog::InvitePeople);
+        self.ensure_default_invite_link();
+    }
+
+    fn ensure_default_invite_link(&mut self) {
+        self.invite_join.request = self.invite_join.request.wrapping_add(1);
+        if let Some(space) = self.selected_space.clone() {
+            self.invite_links.creating = true;
+            self.invite_links.error = None;
+            self.account_op(AccountOperation::EnsureDefaultInviteLink {
+                space,
+                request: self.invite_join.request,
+            });
+        }
+    }
+
+    /// Fresh custom link choices: sixteen days, 100 joins, selected public channel.
     fn reset_invite_links(&mut self) {
         let channel = self
             .detail
@@ -4989,7 +5058,7 @@ impl CaperApp {
 
     fn open_direct_action(&mut self) {
         if self.owner() {
-            self.open_manage_space();
+            self.open_invite_people();
         } else {
             self.open_start_direct();
         }
@@ -18143,6 +18212,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
+            Dialog::InvitePeople => "Invite people",
             Dialog::JoinInvite => {
                 if self
                     .invite_join
@@ -18184,7 +18254,10 @@ impl CaperApp {
                 format!("Remove {name}?")
             }),
         };
-        let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
+        let wide = matches!(
+            dialog,
+            Dialog::ManageSpace | Dialog::InvitePeople | Dialog::ManageChannel(_)
+        );
         let whats_new = matches!(dialog, Dialog::WhatsNew);
         let settings = matches!(dialog, Dialog::Settings | Dialog::WhatsNew);
         let width: f32 = if matches!(dialog, Dialog::Audio) {
@@ -18199,7 +18272,7 @@ impl CaperApp {
         // Profile and Manage space open with their picture row.
         let dialog_height: f32 = if matches!(dialog, Dialog::ManageSpace) {
             744.0
-        } else if matches!(dialog, Dialog::ManageChannel(_)) {
+        } else if matches!(dialog, Dialog::InvitePeople | Dialog::ManageChannel(_)) {
             618.0
         } else if matches!(dialog, Dialog::Audio) {
             700.0
@@ -18364,6 +18437,7 @@ impl CaperApp {
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
+                                            Dialog::InvitePeople => self.invite_people_dialog(ui),
                                             Dialog::JoinInvite => self.join_invite_dialog(ui, &mut close),
                                             Dialog::Invitation(invitation) => {
                                                 ui.heading(format!("Join {}?", invitation.name));
@@ -19344,6 +19418,51 @@ impl CaperApp {
         }
     }
 
+    fn invite_people_dialog(&mut self, ui: &mut egui::Ui) {
+        ui.label("Anyone with this link can join. 100 total joins, 16 days from creation, default channel.");
+        if let Some(link) = self.invite_links.default_link.clone() {
+            let url = invites::invite_url(&self.api_base, &link.code);
+            ui.label(RichText::new(&url).monospace());
+            ui.label(invites::link_meta(&link, chrono::Utc::now()));
+            ui.horizontal(|ui| {
+                if secondary_button(ui, "Copy link", true).clicked() {
+                    ui.ctx().copy_text(url);
+                }
+                if secondary_button(
+                    ui,
+                    "Deactivate link",
+                    !self.invite_links.revoking.contains(&link.code),
+                )
+                .clicked()
+                    && let Some(space) = self.selected_space.clone()
+                {
+                    self.invite_links.revoking.insert(link.code.clone());
+                    self.account_op(AccountOperation::RevokeInviteLink {
+                        space,
+                        code: link.code,
+                    });
+                }
+            });
+        } else if self.invite_links.creating {
+            ui.label("Preparing invite link…");
+        } else {
+            ui.label("Opening this dialog again prepares a new link. Existing members remain.");
+            if primary_button(ui, "Create another link", true).clicked() {
+                self.ensure_default_invite_link();
+            }
+        }
+        if let Some(error) = &self.invite_links.error {
+            ui.label(RichText::new(error).color(ERROR));
+        }
+        ui.collapsing("Link settings", |ui| {
+            ui.label("These settings create a separate link; they do not edit the existing link.");
+            self.invite_link_section(ui);
+        });
+        ui.separator();
+        ui.label(bold("Invite by username"));
+        self.members_dialog(ui, None);
+    }
+
     /// Manage space's "Invite link": the next link's choices, Create link, and
     /// the space's live links with Copy and Revoke.
     fn invite_link_section(&mut self, ui: &mut egui::Ui) {
@@ -20032,6 +20151,9 @@ impl CaperApp {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
         } else if let Some(status) = self.member_status {
             ui.label(RichText::new(status).size(12.0).color(MUTED));
+        }
+        if matches!(self.dialog, Some(Dialog::InvitePeople)) {
+            return;
         }
         ui.separator();
         let members = self.managed_members.clone();
@@ -36413,7 +36535,7 @@ mod tests {
         let mut owner = CaperApp::new(&context, api(), Some("parity-desktop"));
         let expected_members = owner.detail.as_ref().unwrap().members.len();
         owner.open_direct_action();
-        assert!(matches!(owner.dialog, Some(Dialog::ManageSpace)));
+        assert!(matches!(owner.dialog, Some(Dialog::InvitePeople)));
         assert_eq!(owner.managed_members.len(), expected_members);
 
         let mut member = CaperApp::new(&context, api(), Some("parity-desktop"));
@@ -36424,6 +36546,58 @@ mod tests {
         let mut no_spaces = CaperApp::new(&context, api(), Some("parity-direct-no-spaces"));
         no_spaces.open_direct_action();
         assert!(matches!(no_spaces.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
+    fn default_invite_answers_are_fenced_and_never_copy_on_open_or_revoke() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.open_invite_people();
+        let space = app.selected_space.clone().unwrap();
+        let request = app.invite_join.request;
+        let link = app.fixture_invite_links().remove(0);
+        let answer = |request, space: String| crate::worker::AccountResult::DefaultInviteLink {
+            space,
+            request,
+            result: Ok(link.clone()),
+        };
+        app.account_result(answer(request.wrapping_sub(1), space.clone()));
+        assert!(app.invite_links.default_link.is_none());
+        app.account_result(answer(request, "other-space".into()));
+        assert!(app.invite_links.default_link.is_none());
+        app.dialog = None;
+        app.account_result(answer(request, space.clone()));
+        assert!(app.invite_links.default_link.is_none());
+        app.dialog = Some(Dialog::InvitePeople);
+        app.account_result(answer(request, space.clone()));
+        assert!(app.invite_links.default_link.is_some());
+        assert!(app.invite_links.copy.is_none());
+        app.account_result(crate::worker::AccountResult::InviteLinkRevoked {
+            space,
+            code: link.code,
+            result: Ok(()),
+        });
+        assert!(app.invite_links.default_link.is_none());
+        assert!(!app.invite_links.creating);
+        assert_eq!(app.invite_join.request, request);
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.invite_people_dialog(ui));
+        });
+        let texts = texts(&output);
+        assert!(texts.contains(&"Invite by username"), "{texts:?}");
+        for forbidden in [
+            "Space name",
+            "Save name",
+            "Delete space",
+            "Members",
+            "Remove",
+        ] {
+            assert!(!texts.contains(&forbidden), "{forbidden}");
+        }
     }
 
     #[test]

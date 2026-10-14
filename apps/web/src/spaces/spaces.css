@@ -1890,6 +1890,58 @@
 .invite-links > .channel-name-guidance {
   margin: 6px 0 0;
 }
+.invite-link-share {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 0 8px;
+}
+.invite-link-share input {
+  min-width: 0;
+  flex: 1;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-composer);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+}
+.invite-link-share button {
+  flex-shrink: 0;
+}
+.invite-link-settings {
+  margin-top: 16px;
+}
+.invite-link-settings summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.invite-link-settings[open] summary {
+  margin-bottom: 16px;
+}
+.invite-link-settings summary:focus-visible,
+.invite-link-share input:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.invite-link-deactivate {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.invite-link-deactivate p {
+  flex: 1 1 240px;
+  margin: 0;
+}
 .invite-link-options {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) auto;

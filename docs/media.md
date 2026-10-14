@@ -960,10 +960,24 @@ paths check membership and channel visibility, including replay and live deliver
 
 Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
 random alphanumeric characters (about 59 bits), so the unauthenticated preview
-cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
-any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
-Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
-spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
+cannot be enumerated. **Invite people** opens an invitation-only dialog on web,
+Android, Apple and Rust desktop; renaming, icons, member removal and deletion
+remain in **Manage space**. Opening prepares a ready-to-copy link for **100 total
+joins within 16 days of creation**, landing in the default channel. The server
+reuses the oldest live link with those settings under the space lock, so reopening
+or opening on multiple devices does not reset its use count or expiry. Expired,
+exhausted or deactivated links are not reused. Deactivating stops new joins, not
+existing memberships; it leaves the dialog without a default link until the owner
+creates another or reopens Invite people. No QR code is generated.
+
+**Link settings** in the invitation dialog retains custom creation and management
+of other links. These settings create a separate link, not an edit to an existing
+one. Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds) or choose Never, and optionally type max
+uses (1 to 10,000; empty is unlimited; spaces have no member cap). Custom forms
+also start at 16 days and 100 joins. The existing custom-create API still treats
+omitted/null limits as unlimited for compatibility. A link can also land joiners
+in a public channel; a landing channel deleted or made private later
 falls back to the starter channel and is no longer named in previews. Links are
 retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
 recorded in `space_invite_link_uses`.
@@ -971,13 +985,23 @@ recorded in `space_invite_link_uses`.
 | Operation | Route | Result |
 | --- | --- | --- |
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner prepares/reuses default link | `POST /api/spaces/{space}/invite-links/default` (no body) | 200 link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
 | Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
 
 Creating links shares the owner's invitation attempt budget below; a space can
-have at most 100 live links. Joining checks the membership quota under the same
+have at most 100 live links. Reusing the default link does not consume that
+budget. Deploy the API before these clients; no database migration is required.
+The browser regression scenario runs with the disposable native parity fixture
+and Vite: `node scripts/test-invite-people.mjs <loopback-web-url>`. It checks
+invitation-only controls, copy, reuse, custom links, deactivation, username
+invitations, narrow-layout scrolling and failed-request retry. This is mock-backed
+UI validation, not live join validation; the Rust invite-link Postgres integration
+test covers the server lifecycle and concurrent opens.
+
+Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block

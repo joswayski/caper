@@ -395,6 +395,8 @@ class CaperApi(
     suspend fun invitePreview(code: String, token: String? = null): InvitePreview = get("/api/invites/${code.invitePathCode()}", token)
     suspend fun joinInvite(token: String, code: String): InviteJoin = post("/api/invites/${code.invitePathCode()}/join", token = token)
     suspend fun inviteLinks(token: String, space: String): InviteLinkList = get("/api/spaces/${space.pathId()}/invite-links", token)
+    suspend fun ensureDefaultInviteLink(token: String, space: String): InviteLink =
+        request("/api/spaces/${space.pathId()}/invite-links/default", "POST", token, body = "")
     /** Null [channelId] lands in the space's default channel; null [maxAge] (seconds) never expires; null [maxUses] has no limit. */
     suspend fun createInviteLink(token: String, space: String, channelId: String?, maxAge: Int?, maxUses: Int?): InviteLink = post(
         "/api/spaces/${space.pathId()}/invite-links",

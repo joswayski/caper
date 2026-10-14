@@ -1,4 +1,4 @@
-use super::invite_links::{accept, create_link, list_links, preview, revoke_link};
+use super::invite_links::{accept, create_link, default_link, list_links, preview, revoke_link};
 use super::*;
 use crate::{Cloudflare, Config, accounts::User};
 use axum::http::HeaderMap;
@@ -455,6 +455,100 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         .unwrap();
     // newcomer, late, leaver (twice), blocked, invited.
     assert_eq!(recorded, 6);
+
+    let prepare = |who: &Principal| {
+        let state = state.clone();
+        let who = who.clone();
+        let space = space.clone();
+        async move {
+            default_link(State(state), Extension(who), Path(space))
+                .await
+                .map(|Json(link)| serde_json::to_value(link).unwrap())
+        }
+    };
+    assert_eq!(
+        prepare(member).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    // More simultaneous opens than pool connections must still create one link.
+    let mut opens = tokio::task::JoinSet::new();
+    for _ in 0..12 {
+        opens.spawn(prepare(owner));
+    }
+    let prepared = tokio::time::timeout(std::time::Duration::from_secs(10), opens.join_all())
+        .await
+        .unwrap();
+    let first = prepared[0].as_ref().unwrap();
+    for result in &prepared {
+        assert_eq!(result.as_ref().unwrap(), first);
+    }
+    assert_eq!(first["maxUses"], 100);
+    assert_eq!(first["channel"], Value::Null);
+    let created =
+        chrono::DateTime::parse_from_rfc3339(first["createdAt"].as_str().unwrap()).unwrap();
+    let expires =
+        chrono::DateTime::parse_from_rfc3339(first["expiresAt"].as_str().unwrap()).unwrap();
+    assert_eq!(expires - created, chrono::Duration::days(16));
+    let code = first["code"].as_str().unwrap();
+    // Creating a separate link with identical settings must not switch the
+    // ready-to-copy link on the next open.
+    let (_, separate) = create(owner, json!({"maxAge":1_382_400,"maxUses":100}))
+        .await
+        .unwrap();
+    assert_eq!(prepare(owner).await.unwrap()["code"], code);
+    revoke_link(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path((space.clone(), separate["code"].as_str().unwrap().to_owned())),
+    )
+    .await
+    .unwrap();
+    // Reopening doesn't reset a partially used link or its expiry.
+    sqlx::query("UPDATE public.space_invite_links SET uses=99 WHERE code=$1")
+        .bind(code)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reused = prepare(owner).await.unwrap();
+    assert_eq!(reused["code"], code);
+    assert_eq!(reused["uses"], 99);
+    assert_eq!(reused["expiresAt"], first["expiresAt"]);
+    sqlx::query("UPDATE public.space_invite_links SET uses=100 WHERE code=$1")
+        .bind(code)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(view(code).await.unwrap_err().status, StatusCode::NOT_FOUND);
+    let next = prepare(owner).await.unwrap();
+    assert_ne!(next["code"], code);
+    // Expiration also replaces instead of extending the old record.
+    sqlx::query("UPDATE public.space_invite_links SET created_at=created_at-interval '17 days', expires_at=expires_at-interval '17 days' WHERE code=$1")
+        .bind(next["code"].as_str().unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(
+        view(next["code"].as_str().unwrap())
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let next = prepare(owner).await.unwrap();
+    let code = next["code"].as_str().unwrap();
+    revoke_link(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path((space.clone(), code.to_owned())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(view(code).await.unwrap_err().status, StatusCode::NOT_FOUND);
+    assert_ne!(prepare(owner).await.unwrap()["code"], code);
+    // Reusing is allowed even when the owner's new-invitation budget is spent.
+    sqlx::query("UPDATE public.space_invite_limits SET attempts=20 WHERE user_id=$1")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(prepare(owner).await.is_ok());
 
     pool.close().await;
     admin

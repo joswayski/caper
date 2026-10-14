@@ -37,9 +37,10 @@ enum class InviteExpiryUnit(val label: String, val seconds: Long?) {
     Minutes("minutes", 60), Hours("hours", 3_600), Days("days", 86_400), Never("Never", null),
 }
 
-/** Web's default expiry, 7 days. */
-const val DEFAULT_INVITE_EXPIRY_NUMBER = "7"
+/** Default expiry measured from creation, not from reopening. */
+const val DEFAULT_INVITE_EXPIRY_NUMBER = "16"
 val DEFAULT_INVITE_EXPIRY_UNIT = InviteExpiryUnit.Days
+const val DEFAULT_INVITE_MAX_USES = "100"
 
 /** The API's range for `maxAge`: 1 minute to 365 days, in seconds. */
 const val MIN_INVITE_MAX_AGE = 60L

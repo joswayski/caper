@@ -2789,7 +2789,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun loadInviteLinks(loaded: () -> Unit, failed: (String) -> Unit) {
         val detail = mutable.value.selectedSpace ?: return
         val context = AdminMutationContext(accountGeneration, detail.space.id)
-        mutable.value = mutable.value.copy(inviteLinks = emptyList())
         viewModelScope.launch {
             try {
                 val links = api.inviteLinks(requireAccountToken(), detail.space.id).links
@@ -2798,7 +2797,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) { if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error)) }
         }
     }
-    /** Creates a link for the open space; [done] gets it (now first in the list) to copy. */
+    /** Reuses or prepares the default link without touching the clipboard. */
+    fun ensureDefaultInviteLink(done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        val detail = mutable.value.selectedSpace ?: return@launchAction
+        val context = AdminMutationContext(request, detail.space.id)
+        val link = try { api.ensureDefaultInviteLink(requireAccountToken(), detail.space.id) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) {
+            if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error))
+            return@launchAction
+        }
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
+        done(link)
+    }
+    /** Creates a link for the open space; [done] gets it (now first in the list). */
     fun createInviteLink(channelId: String?, maxAge: Int?, maxUses: Int?, done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)

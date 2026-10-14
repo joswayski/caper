@@ -1596,6 +1596,14 @@ public final class AppModel {
         return links
     }
 
+    public func defaultInviteLink() async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.defaultInviteLink(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
     public func createInviteLink(channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
         guard let id = detail?.space.id, isOwner else { throw CancellationError() }
         let attempt = generation

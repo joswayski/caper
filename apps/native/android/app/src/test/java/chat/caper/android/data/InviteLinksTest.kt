@@ -87,10 +87,11 @@ class InviteLinksTest {
     }
 
     @Test fun `expiry is a number of minutes, hours or days, or never, with web's default`() {
-        assertEquals("7", DEFAULT_INVITE_EXPIRY_NUMBER)
+        assertEquals("16", DEFAULT_INVITE_EXPIRY_NUMBER)
         assertEquals(InviteExpiryUnit.Days, DEFAULT_INVITE_EXPIRY_UNIT)
+        assertEquals(InviteOption.Valid(100), inviteMaxUses(DEFAULT_INVITE_MAX_USES))
         assertEquals(listOf("minutes", "hours", "days", "Never"), InviteExpiryUnit.entries.map { it.label })
-        assertEquals(InviteOption.Valid(604_800), inviteExpirySeconds(DEFAULT_INVITE_EXPIRY_NUMBER, DEFAULT_INVITE_EXPIRY_UNIT))
+        assertEquals(InviteOption.Valid(1_382_400), inviteExpirySeconds(DEFAULT_INVITE_EXPIRY_NUMBER, DEFAULT_INVITE_EXPIRY_UNIT))
         assertEquals(InviteOption.Valid(60), inviteExpirySeconds("1", InviteExpiryUnit.Minutes))
         assertEquals(InviteOption.Valid(5_400), inviteExpirySeconds(" 90 ", InviteExpiryUnit.Minutes))
         assertEquals(InviteOption.Valid(3_600), inviteExpirySeconds("1", InviteExpiryUnit.Hours))
@@ -133,6 +134,25 @@ class InviteLinksTest {
             "You can't join this space with a link. Ask the owner to invite you.",
             friendlyError(ApiException(403, "you can't join this space with a link; ask the owner to invite you")),
         )
+    }
+
+    @Test fun `default link preparation uses a bodyless authenticated POST and preserves server values on reopening`() = runTest {
+        val link = """{"code":"aB3dE5fG7h","channel":null,"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":7,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"""
+        repeat(2) { server.enqueue(MockResponse().setBody(link)) }
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val first = api.ensureDefaultInviteLink("account-secret", "space0000001")
+        assertEquals(first, api.ensureDefaultInviteLink("account-secret", "space0000001"))
+        assertNull(first.channel)
+        assertEquals(100, first.maxUses)
+        assertEquals(7, first.uses)
+        assertEquals(16 * 86_400L, java.time.Duration.between(Instant.parse(first.createdAt), Instant.parse(first.expiresAt)).seconds)
+        repeat(2) {
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/spaces/space0000001/invite-links/default", request.path)
+            assertEquals("Bearer account-secret", request.headers["Authorization"])
+            assertEquals("", request.body.readUtf8())
+        }
     }
 
     @Test fun `invite link requests use the spec's routes and bodies`() = runTest {

@@ -7,6 +7,8 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
+const DEFAULT_MAX_AGE: i64 = 16 * 24 * 60 * 60;
+const DEFAULT_MAX_USES: i32 = 100;
 /// Expiry from one minute to a year, in seconds; `None` never expires.
 const MAX_AGE: std::ops::RangeInclusive<i64> = 60..=31_536_000;
 /// Spaces have no member cap, so this bound is a practical one.
@@ -147,6 +149,51 @@ pub(super) async fn list_links(
     Ok(Json(json!({"links":links})))
 }
 
+/// Preparing an invitation is idempotent across tabs and devices. The space
+/// lock serializes this with creation, revocation and joins; reopening never
+/// extends expiry or resets uses. Existing custom links are left alone.
+pub(super) async fn default_link(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<Json<InviteLink>, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let existing = sqlx::query_as::<_, LinkRow>(&format!(
+        "{LINK_SELECT} WHERE l.space_id=$1 AND {LIVE}
+         AND l.channel_id IS NULL AND l.max_uses=$2
+         AND l.expires_at=l.created_at+make_interval(secs=>$3::double precision)
+         ORDER BY l.created_at,l.id LIMIT 1"
+    ))
+    .bind(space_id)
+    .bind(DEFAULT_MAX_USES)
+    .bind(DEFAULT_MAX_AGE as f64)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    let result = match existing {
+        Some(row) => link(row),
+        None => {
+            // Reusing a link doesn't consume the owner's creation budget.
+            invite_rate_limit(&mut *tx, principal.user.id).await?;
+            insert_link(
+                &mut tx,
+                space_id,
+                principal.user.id,
+                None,
+                &LinkInput {
+                    channel_id: None,
+                    max_age: Some(DEFAULT_MAX_AGE),
+                    max_uses: Some(DEFAULT_MAX_USES),
+                },
+            )
+            .await?
+        }
+    };
+    tx.commit().await.map_err(database_error)?;
+    Ok(Json(result))
+}
+
 pub(super) async fn create_link(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -175,11 +222,23 @@ pub(super) async fn create_link(
             Some(id)
         }
     };
+    let created = insert_link(&mut tx, space_id, principal.user.id, channel_id, &input).await?;
+    tx.commit().await.map_err(database_error)?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn insert_link(
+    tx: &mut Transaction<'_, Postgres>,
+    space_id: i64,
+    user: i64,
+    channel_id: Option<i64>,
+    input: &LinkInput,
+) -> Result<InviteLink, ApiError> {
     let active: i64 = sqlx::query_scalar(&format!(
         "SELECT count(*) FROM public.space_invite_links l WHERE l.space_id=$1 AND {LIVE}"
     ))
     .bind(space_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(database_error)?;
     if active >= ACTIVE_LINKS_PER_SPACE {
@@ -193,19 +252,18 @@ pub(super) async fn create_link(
     .bind(&code)
     .bind(space_id)
     .bind(channel_id)
-    .bind(principal.user.id)
+    .bind(user)
     .bind(input.max_uses)
     .bind(input.max_age.map(|age| age as f64))
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|error| constraint_or_database(error, "invite link code collision; try again"))?;
     let created = sqlx::query_as::<_, LinkRow>(&format!("{LINK_SELECT} WHERE l.code=$1"))
         .bind(&code)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(database_error)?;
-    tx.commit().await.map_err(database_error)?;
-    Ok((StatusCode::CREATED, Json(link(created))))
+    Ok(link(created))
 }
 
 pub(super) async fn revoke_link(

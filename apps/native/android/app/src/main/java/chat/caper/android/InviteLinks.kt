@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.DEFAULT_INVITE_EXPIRY_NUMBER
 import chat.caper.android.data.DEFAULT_INVITE_EXPIRY_UNIT
+import chat.caper.android.data.DEFAULT_INVITE_MAX_USES
 import chat.caper.android.data.INVALID_INVITE_LINK
 import chat.caper.android.data.InviteExpiryUnit
 import chat.caper.android.data.InviteOption
@@ -44,9 +45,51 @@ import chat.caper.android.ui.*
 import java.time.Instant
 import kotlinx.coroutines.delay
 
+/** Opening prepares a default once; revocation never silently replaces it in this dialog. */
+@Composable internal fun DefaultInviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
+    val context = LocalContext.current
+    var code by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    var preparing by remember(detail.space.id) { mutableStateOf(true) }
+    var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
+    var copied by remember(detail.space.id) { mutableStateOf(false) }
+    fun prepare() {
+        preparing = true; error = null; copied = false
+        viewModel.ensureDefaultInviteLink({ code = it.code; preparing = false }) { error = it; preparing = false }
+    }
+    LaunchedEffect(detail.space.id) { prepare() }
+    LaunchedEffect(copied) { if (copied) { delay(2_000); copied = false } }
+    val link = state.inviteLinks.firstOrNull { it.code == code }
+    Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Text("100 total joins · Expires 16 days from creation · Default channel", color = TextMuted, fontSize = 11.sp)
+    Text("Reopening keeps the same live link and its original expiry. Deactivating stops new joins; existing members remain. Opening again prepares a new link.", color = TextMuted, fontSize = 11.sp)
+    if (preparing) Text("Preparing link…", color = TextMuted, fontSize = 12.sp)
+    else if (link != null) {
+        Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        Text(inviteLinkMeta(link, Instant.now()), color = TextMuted, fontSize = 11.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button({
+                context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(link.code)))
+                copied = true
+            }, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy link") }
+            TextButton({ viewModel.revokeInviteLink(link) { error = it } }, enabled = !state.busy, colors = neutralTextButtonColors()) { Text("Deactivate") }
+        }
+    } else {
+        Text("No active default link.", color = TextMuted, fontSize = 12.sp)
+        Button({ prepare() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Create another link") }
+    }
+    error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+    InviteLinkSettingsDisclosure(state, detail, viewModel, enabled = !preparing && !state.busy)
+}
+
+@Composable internal fun InviteLinkSettingsDisclosure(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, enabled: Boolean = !state.busy) {
+    var settings by remember(detail.space.id) { mutableStateOf(false) }
+    TextButton({ settings = !settings }, enabled = enabled, colors = neutralTextButtonColors()) { Text(if (settings) "Hide link settings" else "Link settings") }
+    if (settings) InviteLinkSection(state, detail, viewModel)
+}
+
 /**
  * Manage space's "Invite link" section (web's InviteLinkManager): expiry, use limit and landing
- * channel, Create link (copied at once), then the live links with Copy and Revoke.
+ * channel, Create link, then the live links with Copy and Revoke.
  */
 @Composable internal fun InviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
     val context = LocalContext.current
@@ -56,11 +99,11 @@ import kotlinx.coroutines.delay
     // Typed text; parsed and checked on Create link.
     var expiryNumber by remember(detail.space.id) { mutableStateOf(DEFAULT_INVITE_EXPIRY_NUMBER) }
     var expiryUnit by remember(detail.space.id) { mutableStateOf(DEFAULT_INVITE_EXPIRY_UNIT) }
-    var maxUsesText by remember(detail.space.id) { mutableStateOf("") }
+    var maxUsesText by remember(detail.space.id) { mutableStateOf(DEFAULT_INVITE_MAX_USES) }
     var expiryError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var maxUsesError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var channelId by remember(detail.space.id) {
-        mutableStateOf(state.selectedChannel?.takeIf { it.spaceId == detail.space.id && !it.private && !it.direct }?.id)
+        mutableStateOf<String?>(null)
     }
     var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var loaded by remember(detail.space.id) { mutableStateOf(false) }
@@ -85,7 +128,7 @@ import kotlinx.coroutines.delay
         maxUsesError = (uses as? InviteOption.Invalid)?.error
         if (expiry !is InviteOption.Valid || uses !is InviteOption.Valid) return
         error = null; creating = true
-        viewModel.createInviteLink(landing?.id, expiry.value, uses.value, { copy(it.code) }) { error = it }
+        viewModel.createInviteLink(landing?.id, expiry.value, uses.value, {}) { error = it }
     }
 
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
