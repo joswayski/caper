@@ -681,7 +681,7 @@ async fn reactor_list(
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     let rows: Vec<ReactorRow> = sqlx::query_as(
         "SELECT r.emoji,u.external_id,u.username,u.display_name,u.avatar_id,u.avatar_asset
-         FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id
+         FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id AND u.deleted_at IS NULL
          WHERE r.message_id=$1 AND r.deleted_at IS NULL ORDER BY r.emoji,r.created_at,r.id",
     )
     .bind(message_id)
@@ -1359,7 +1359,7 @@ async fn persist_reaction(
     }
 
     let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
-        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id WHERE r.message_id=$1 AND r.deleted_at IS NULL GROUP BY r.emoji ORDER BY r.emoji")
+        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id AND u.deleted_at IS NULL WHERE r.message_id=$1 AND r.deleted_at IS NULL GROUP BY r.emoji ORDER BY r.emoji")
         .bind(message_id).fetch_all(&mut *tx).await.map_err(database_error)?;
     let reactions: Vec<Value> = rows
         .into_iter()
