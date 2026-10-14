@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type FocusEvent,
   type FormEvent,
   type ReactNode,
   type RefObject,
@@ -163,6 +164,14 @@ function unlessSame<T>(next: T) {
 function closeMenu(menu: HTMLDetailsElement) {
   menu.open = false;
   menu.querySelector("summary")?.focus();
+}
+
+/** Closes a disclosure menu when keyboard focus moves somewhere else. Safari
+ * blurs a focused summary without focusing the clicked or tapped item, so a
+ * blur to nowhere keeps the item mounted until its click; outside presses
+ * close menus through the page's pointer handler instead. */
+function leaveMenu(event: FocusEvent<HTMLDetailsElement>) {
+  if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
 }
 
 /** Row menus open upward when the scrolling sidebar has no room below them. */
@@ -2882,9 +2891,7 @@ export default function Spaces({
                         event.currentTarget.querySelector("summary")?.focus();
                       }
                     }}
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                    }}
+                    onBlur={leaveMenu}
                   >
                     <summary
                       className="channel-manage"
@@ -3219,9 +3226,7 @@ export default function Spaces({
                   event.currentTarget.querySelector("summary")?.focus();
                 }
               }}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-              }}
+              onBlur={leaveMenu}
             >
               <summary aria-label={`${detail.space.name} actions${spaceMuted ? ", muted" : ""}`}>
                 <h1 title={detail.space.name}>{detail.space.name}</h1>
@@ -3327,9 +3332,7 @@ export default function Spaces({
                     event.currentTarget.querySelector("summary")?.focus();
                   }
                 }}
-                onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                }}
+                onBlur={leaveMenu}
               >
                 <summary aria-label="Channel options" title="Channel options">
                   <MoreHorizontal aria-hidden="true" />
@@ -3409,9 +3412,7 @@ export default function Spaces({
                         event.currentTarget.querySelector("summary")?.focus();
                       }
                     }}
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                    }}
+                    onBlur={leaveMenu}
                   >
                     <summary
                       className="channel-manage"
