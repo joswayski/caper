@@ -92,6 +92,22 @@ fn index() -> &'static HashMap<String, usize> {
     })
 }
 
+/// Catalog emoji that are one character (no U+FE0F), by that character: a
+/// single-character grapheme can only be one of these.
+fn singles() -> &'static HashMap<char, usize> {
+    static SINGLES: OnceLock<HashMap<char, usize>> = OnceLock::new();
+    SINGLES.get_or_init(|| {
+        let mut singles = HashMap::new();
+        for (position, entry) in catalog().iter().enumerate() {
+            let mut characters = entry.emoji.chars();
+            if let (Some(character), None) = (characters.next(), characters.next()) {
+                singles.entry(character).or_insert(position);
+            }
+        }
+        singles
+    })
+}
+
 /// Byte ranges of the emoji graphemes in message text, with their artwork,
 /// so text can draw them in color like the other clients. Plain ASCII
 /// (digits, `#`, `*`) is never an emoji without its keycap or variation mark,
@@ -106,12 +122,18 @@ pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
         if grapheme.is_ascii() {
             continue;
         }
-        let single = grapheme.chars().nth(1).is_none();
-        let entry = index()
-            .get(&unicode_id(grapheme))
-            .or_else(|| index().get(&grapheme.replace('\u{fe0f}', "")))
-            .map(|&position| &catalog()[position])
-            .filter(|entry| !(single && entry.emoji.contains('\u{fe0f}')));
+        // Most non-ASCII text (accents, dashes) is single characters: one
+        // lookup, without formatting code points. These never match an
+        // emoji that needs U+FE0F.
+        let mut characters = grapheme.chars();
+        let entry = if let (Some(character), None) = (characters.next(), characters.next()) {
+            singles().get(&character)
+        } else {
+            index()
+                .get(&unicode_id(grapheme))
+                .or_else(|| index().get(&grapheme.replace('\u{fe0f}', "")))
+        }
+        .map(|&position| &catalog()[position]);
         if let Some(entry) = entry {
             found.push((start..start + grapheme.len(), entry));
         }
