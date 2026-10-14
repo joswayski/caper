@@ -1520,11 +1520,12 @@ build was validated directly.
 Memory-budget follow-up (October 14, 2026): a generated 720×400, 60-frame GIF
 reproduced the freeze in both the real Mac attachment view and Rust's decoder:
 only one frame survived. The Rust regression now verifies all 60 frames within
-32 MiB, the last frame, looping and reduced motion; desktop tests pass (507
+32 MiB, the last frame, looping and reduced motion; desktop tests pass (510
 passed, 12 existing ignored), as do formatting and Clippy. The rebuilt Linux
 client against the loopback chat/media fixture changes 9,308 GIF pixels between
-captures while the adjacent photo changes zero. This is local fixture evidence,
-not a production-upload or Windows-device check. The published Linux package
+captures while the adjacent photo changes zero; playback resumes after switching
+channels and back. This is local fixture evidence, not a production-upload or
+Windows-device check. The published Linux package
 could not run in this orb because it requires glibc 2.39; the local source build
 was used instead. No web, Android, upload, API or schema change is required for
 this follow-up; only Apple and Rust desktop need the corrected native release.
@@ -1534,8 +1535,10 @@ Deployment order:
 1. Infrastructure, secrets/configuration, migrations, API, gateway and CDN:
    **no changes or deployment required**. Keep the current signed delivery and
    private R2 bucket; do not publish a bucket or rewrite stored assets.
-2. Deploy the web build through its normal image/release process. Merging alone
-   does not deploy it. In a real channel and DM, send a GIF large enough to have
+2. The original web playback fix uses the normal image/release process; current
+   main pushes build changed web code and dispatch Ship after image publication.
+   This native memory-budget follow-up needs no web deployment.
+   In a real channel and DM, send a GIF large enough to have
    a preview; verify playback before clicking and after reloading, narrow layout,
    viewer opening, reduced motion and an unchanged still-photo control.
 3. Release Android, iOS/macOS and Rust desktop through their normal client
