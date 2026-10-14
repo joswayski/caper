@@ -121,6 +121,28 @@ class ProfileUpdatesTest {
         assertEquals("unknown people keep the card they opened with", stranger, refreshedCard(stranger, before.withPerson(update)))
     }
 
+    @Test fun `resolving a profile that changes nothing keeps the same instances`() {
+        fun message(id: String, author: ChatAuthor) = ChatMessage(id, "channel00001", "1", author, ChatContent(1, "text", "hi"), "now", "client-$id")
+        val state = AppUiState(
+            account = Account(self, "me", "Me", avatarId = 1),
+            selectedSpace = SpaceDetail(Space("space0000001", "Studio", self), emptyList(), listOf(Member(self, "me", "Me", true, 1), member())),
+            messages = listOf(message("message00001", ChatAuthor(self, "Me", false, 1)), message("message00002", author())),
+            replyTargets = mapOf("channel" to MessageReply("message00002", author(), "hi", false)),
+        )
+        val resolved = state.withAccountProfile()
+        assertSame(state.account, resolved.account)
+        assertSame(state.selectedSpace, resolved.selectedSpace)
+        assertSame(state.messages, resolved.messages)
+        assertSame(state.replyTargets, resolved.replyTargets)
+
+        // A real change rebuilds only what holds that person.
+        val renamed = state.withPerson(update)
+        assertSame(state.messages[0], renamed.messages[0])
+        assertEquals("Maya New", renamed.messages[1].author.name)
+        assertSame(state.selectedSpace!!.members[0], renamed.selectedSpace!!.members[0])
+        assertEquals("Maya New", renamed.replyTargets.getValue("channel").author.name)
+    }
+
     @Test fun `a refreshed list finds the copies a missed update left behind`() {
         val before = state()
         assertEquals("loaded messages and other lists still show the old profile", listOf(update), before.staleProfiles(listOf(update)))

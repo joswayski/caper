@@ -81,7 +81,6 @@ fun AppUiState.staleProfiles(fetched: List<ProfilePerson>, cached: Collection<Ch
     return stale.values.toList()
 }
 
-
 /**
  * Every retained copy of [person] by account ID: the signed-in account, space and channel
  * members and invitations, DM peers (and the open DM's title), people suggestions, blocked
@@ -96,56 +95,65 @@ fun AppUiState.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false
     fun member(value: Member) = if (value.id != id) value else {
         val (asset, url) = picture(value.avatarAsset, value.avatarUrl)
         value.copy(username = person.username ?: value.username, displayName = person.displayName ?: value.displayName,
-            avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url)
+            avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url).retaining(value)
     }
-    val directs = directConversations.map { conversation ->
+    val directs = directConversations.mapRetaining { conversation ->
         val peer = conversation.peer
         if (peer.id != id) conversation else {
             val (asset, url) = picture(peer.avatarAsset, peer.avatarUrl)
             conversation.copy(peer = peer.copy(username = person.username ?: peer.username, displayName = person.displayName ?: peer.displayName,
-                avatarId = person.avatarId ?: peer.avatarId, avatarAsset = asset, avatarUrl = url))
+                avatarId = person.avatarId ?: peer.avatarId, avatarAsset = asset, avatarUrl = url)).retaining(conversation)
         }
     }
     // A DM is titled with its peer's display name.
     val open = selectedChannel
     val name = person.displayName
-    val channel = if (open != null && open.direct && name != null && selectedDirect?.peer?.id == id) open.copy(name = name) else open
+    val channel = if (open != null && open.direct && name != null && selectedDirect?.peer?.id == id) open.copy(name = name).retaining(open) else open
     return copy(
         account = account?.let { own ->
             if (own.id != id) own else {
                 val (asset, url) = picture(own.avatarAsset, own.avatarUrl)
                 own.copy(username = person.username ?: own.username, displayName = person.displayName ?: own.displayName,
-                    avatarId = person.avatarId ?: own.avatarId, avatarAsset = asset, avatarUrl = url)
+                    avatarId = person.avatarId ?: own.avatarId, avatarAsset = asset, avatarUrl = url).retaining(own)
             }
         },
-        selectedSpace = selectedSpace?.let { detail -> detail.copy(members = detail.members.map(::member)) },
-        channelGrants = channelGrants.map(::member),
-        pendingChannelInvitations = pendingChannelInvitations.map(::member),
-        pendingSpaceInvitations = pendingSpaceInvitations.map(::member),
+        selectedSpace = selectedSpace?.let { detail ->
+            val members = detail.members.mapRetaining(::member)
+            if (members === detail.members) detail else detail.copy(members = members)
+        },
+        channelGrants = channelGrants.mapRetaining(::member),
+        pendingChannelInvitations = pendingChannelInvitations.mapRetaining(::member),
+        pendingSpaceInvitations = pendingSpaceInvitations.mapRetaining(::member),
         directConversations = directs,
         selectedChannel = channel,
-        people = people?.map { value ->
+        people = people?.mapRetaining { value ->
             if (value.id != id) value else {
                 val (asset, url) = picture(value.avatarAsset, value.avatarUrl)
                 value.copy(username = person.username ?: value.username, displayName = person.displayName ?: value.displayName,
-                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url)
+                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url).retaining(value)
             }
         },
-        blocks = blocks.map { value ->
+        blocks = blocks.mapRetaining { value ->
             if (value.id != id) value else {
                 val (asset, url) = picture(value.avatarAsset, value.avatarUrl)
                 value.copy(username = person.username ?: value.username, displayName = person.displayName ?: value.displayName,
-                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url)
+                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url).retaining(value)
             }
         },
-        messages = messages.map { it.withPerson(person, keepSignedUrls) },
-        pinnedMessages = pinnedMessages.map { it.withPerson(person, keepSignedUrls) },
-        pendingMessage = pendingMessage?.let { pending -> pending.copy(author = pending.author?.withPerson(person, keepSignedUrls)) },
-        pinIntents = pinIntents.mapValues { (_, intent) ->
-            intent.copy(message = intent.message.withPerson(person, keepSignedUrls), pin = intent.pin?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) })
+        messages = messages.mapRetaining { it.withPerson(person, keepSignedUrls) },
+        pinnedMessages = pinnedMessages.mapRetaining { it.withPerson(person, keepSignedUrls) },
+        pendingMessage = pendingMessage?.let { pending ->
+            val author = pending.author?.withPerson(person, keepSignedUrls)
+            if (author === pending.author) pending else pending.copy(author = author)
         },
-        replyTargets = replyTargets.mapValues { (_, reply) -> reply.copy(author = reply.author.withPerson(person, keepSignedUrls)) },
-        typingAuthors = typingAuthors.map { it.withPerson(person, keepSignedUrls) },
+        pinIntents = pinIntents.mapValuesRetaining { intent ->
+            intent.copy(message = intent.message.withPerson(person, keepSignedUrls), pin = intent.pin?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) }).retaining(intent)
+        },
+        replyTargets = replyTargets.mapValuesRetaining { reply ->
+            val author = reply.author.withPerson(person, keepSignedUrls)
+            if (author === reply.author) reply else reply.copy(author = author)
+        },
+        typingAuthors = typingAuthors.mapRetaining { it.withPerson(person, keepSignedUrls) },
         feedback = if (feedback.reports.none { it.reporter.id == id }) feedback else feedback.copy(reports = feedback.reports.map { report ->
             if (report.reporter.id != id) report else report.copy(reporter = report.reporter.withPerson(person, keepSignedUrls))
         }),
@@ -156,21 +164,48 @@ fun AppUiState.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false
     )
 }
 
+/**
+ * The view model resolves your own profile ([AppUiState.withAccountProfile]) on every state
+ * emission, so copies that end up equal stay the same instances: equality checks stay cheap,
+ * and lists in which nobody changed are not rebuilt.
+ */
+private fun <T> T.retaining(previous: T): T = if (this == previous) previous else this
+
+/** [transform] applied to each item, or this same list when it returned every item unchanged. */
+internal inline fun <T> List<T>.mapRetaining(transform: (T) -> T): List<T> {
+    var changed: ArrayList<T>? = null
+    for (index in indices) {
+        val item = this[index]
+        val next = transform(item)
+        if (changed == null && next !== item) changed = ArrayList<T>(size).also { list -> for (before in 0 until index) list.add(this[before]) }
+        changed?.add(next)
+    }
+    return changed ?: this
+}
+
+private inline fun <K, V> Map<K, V>.mapValuesRetaining(transform: (V) -> V): Map<K, V> {
+    val next = mapValues { (_, value) -> transform(value) }
+    return if (next.all { (key, value) -> value === getValue(key) }) this else next
+}
+
 /** [person]'s name and picture on this author; other authors are returned unchanged. */
 fun ChatAuthor.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false): ChatAuthor {
     if (id != person.id) return this
     val (asset, url) = person.picture(avatarAsset, avatarUrl, keepSignedUrls)
-    return copy(name = person.displayName ?: name, avatarId = person.avatarId ?: avatarId, avatarAsset = asset, avatarUrl = url)
+    return copy(name = person.displayName ?: name, avatarId = person.avatarId ?: avatarId, avatarAsset = asset, avatarUrl = url).retaining(this)
 }
 
-/** The message's author, pinner, thread participants, reply reference and forwarded original. */
-fun ChatMessage.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false): ChatMessage = copy(
-    author = author.withPerson(person, keepSignedUrls),
-    pin = pin?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) },
-    thread = thread?.let { summary -> summary.copy(participants = summary.participants.map { it.withPerson(person, keepSignedUrls) }) },
-    forward = forward?.let { it.copy(message = it.message?.withPerson(person, keepSignedUrls)) },
-    replyTo = replyTo?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) },
-)
+/** The message's author, pinner, thread participants, reply reference and forwarded original; this message when none is [person]. */
+fun ChatMessage.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false): ChatMessage {
+    if (authors().none { it.id == person.id }) return this
+    return copy(
+        author = author.withPerson(person, keepSignedUrls),
+        pin = pin?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) },
+        thread = thread?.let { summary -> summary.copy(participants = summary.participants.map { it.withPerson(person, keepSignedUrls) }) },
+        forward = forward?.let { it.copy(message = it.message?.withPerson(person, keepSignedUrls)) },
+        replyTo = replyTo?.let { it.copy(author = it.author.withPerson(person, keepSignedUrls)) },
+    ).retaining(this)
+}
 
 fun Reactor.withPerson(person: ProfilePerson): Reactor {
     if (id != person.id) return this
