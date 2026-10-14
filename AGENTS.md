@@ -84,15 +84,17 @@ Push and deploy:
   again is harmless:
   `gh workflow run ship.yml --repo joswayski/infrastructure --ref main -f repository=caper`.
   Don't run the per-app `deploy-caper-*.yml` workflows for routine changes.
-- Native clients: if native client code changed, run
-  `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$SHA"`.
-  It takes 20-40 minutes and you need not wait. The Intel Mac build finishes on
-  its own and never blocks the release. `Native development builds` runs
-  nightly and on demand; don't start it for routine changes.
+- Native clients release by themselves: a push that changes the native apps
+  starts `Native release` (`release.yml`, 20-40 minutes). It hands builds to
+  testers and publishes the desktop update only after the API image and Ship
+  for caper have rolled out the servers it needs. Don't dispatch it yourself
+  for routine changes. The Intel Mac build finishes on its own and never blocks
+  the release. `Native development builds` runs nightly and on demand; don't
+  start it for routine changes.
 - Infrastructure or secrets the change needs go to `joswayski/infrastructure`
   first, following that repository's guidance.
 - Watch it land. `SHA` is your pushed commit:
-  - its runs: `gh run list --repo joswayski/caper --commit "$SHA"`, then
+  - its runs (CI, images, `Native release`): `gh run list --repo joswayski/caper --commit "$SHA"`, then
     `gh run watch <id> --repo joswayski/caper --exit-status`;
   - Ship runs: `gh run list --repo joswayski/infrastructure --workflow ship.yml --limit 3`.
     Each run's summary says what shipped and what waits.

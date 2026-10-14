@@ -11,12 +11,37 @@ name: Native release
 # themselves from latest.json (signed with the caper_update key) using
 # apps/native/updater; each release's build number is this workflow's run number.
 #
-# Started from the "Deploy Caper apps" button that native-ready.yml posts to
-# Discord (Godis dispatches this workflow with the exact commit and message), or
-# by hand from the Actions tab.
+# Runs by itself on every push to main that changes the native apps: main is
+# production. One release runs at a time and GitHub keeps only the newest waiting
+# one, which includes everything before it. Builds start at once; handing builds
+# to testers and publishing the self-update wait for the servers they need
+# (.github/actions/wait-for-servers: the API image and Ship for caper), so apps
+# never reach people before their API and gateway changes. It can also be started
+# by hand from the Actions tab or by Godis's "Deploy Caper apps" button.
 # Signing material comes from AWS Secrets Manager (joswayski/infrastructure,
 # docs/release-signing.md); none is stored in this repository.
 on:
+  push:
+    branches: [main]
+    paths:
+      - apps/native/**
+      - '!apps/native/**/*.md'
+      - apps/web/public/caper-face.svg
+      - shared/design.css
+      - shared/emoji/**
+      - shared/fonts/**
+      - scripts/generate-favicons.mjs
+      - scripts/native-emoji.mjs
+      - scripts/native_fonts.py
+      - scripts/native_artifacts.py
+      - scripts/native_changelog.py
+      - scripts/play-upload.py
+      - scripts/testflight-distribute.py
+      - scripts/vectorize-avatars.py
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/release.yml
+      - .github/actions/wait-for-servers/**
   workflow_dispatch:
     inputs:
       git_sha:
@@ -240,6 +265,7 @@ jobs:
     # Includes waiting for Apple to process the build before handing it to testers.
     timeout-minutes: 110
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -289,6 +315,13 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           working-directory: ${{ runner.temp }}/python-tooling
+      - name: Wait for the servers these apps need
+        uses: ./.github/actions/wait-for-servers
+        with:
+          sha: ${{ needs.resolve.outputs.sha }}
+          github-token: ${{ github.token }}
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
       - name: Give the build to every TestFlight tester group
         env:
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
@@ -308,6 +341,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -419,6 +453,13 @@ jobs:
       # Internal testing reaches the owner within minutes; closed testing
       # ("alpha") is the public beta behind the homepage's Android button, and
       # Google reviews each of its releases first.
+      - name: Wait for the servers these apps need
+        uses: ./.github/actions/wait-for-servers
+        with:
+          sha: ${{ needs.resolve.outputs.sha }}
+          github-token: ${{ github.token }}
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
       - name: Roll out to Google Play internal and closed testers
         if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
         env:
@@ -536,12 +577,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Wait for the servers these apps need
+        uses: ./.github/actions/wait-for-servers
+        with:
+          sha: ${{ needs.resolve.outputs.sha }}
+          github-token: ${{ github.token }}
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*

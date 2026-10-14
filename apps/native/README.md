@@ -193,16 +193,19 @@ in their software installer, then launch Caper from the application menu without
 a terminal. This is not a universal Linux package. ZIP/tar archives remain for
 self-updates and advanced portable use, not the default install experience.
 
-**Releasing.** Agents dispatch `release.yml` for the pushed commit after native
-changes, once any server changes the apps depend on are deployed. When the
-nightly **Native development builds** run passes on `main`,
-`native-ready.yml` posts a "Caper apps build is ready" notification with a
-**Deploy Caper apps** button to the production deploys channel. This is the same
-channel and webhook the web app, API and gateway notifications use. Godis
-dispatches `release.yml` for that exact commit, and the run edits the same
-message with the result (`scripts/update-discord-release.sh`). Deploy any server
-changes the apps depend on first. The workflow can also be run by hand from the
-Actions tab; a blank `git_sha` releases the newest `main` commit.
+**Releasing.** Every push to `main` that changes the native apps starts
+`release.yml` for that commit. It builds Mac, iPhone (TestFlight), Android,
+Windows and Linux in 20-40 minutes, one release at a time; the newest waiting
+push replaces older waiting ones. Builds start at once. Handing the iPhone build
+to testers, the Play rollout, and publishing the desktop self-update wait for
+the servers they need (`.github/actions/wait-for-servers`): the newest API image
+at or before the commit must have published, and the Ship for caper that
+followed it must have rolled the API and gateway out. If either failed, the
+release fails without reaching anyone; fix forward and the next native change
+releases again. A `git revert` of a native change releases the previous
+behavior the same way. The workflow can also be run by hand from the Actions tab
+(a blank `git_sha` releases the newest `main` commit) or from Godis's
+**Deploy Caper apps** button, though nothing posts that button any more.
 
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure.

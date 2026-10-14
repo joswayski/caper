@@ -5154,12 +5154,10 @@ available; it does not mean the installed app contains the latest merged code.
 The release manifest's build/version/commit identifies what is available, not
 what is running on a particular user's machine.
 
-If the **Deploy Caper apps** notification is missing, inspect **Native development
-builds**, not just **CI**. The notification requires a successful native push run
-on main. A failed job currently cancels the rest of its run, so a `cancelled`
-workflow can contain a real failed test step, not just a replaced queued run.
-Inspect that run's jobs and logs; do not bypass the native tests or release an
-untested revision to restore the notification.
+Native releases run by themselves on pushes that change the apps (see
+`apps/native/README.md`, Releasing). If one did not reach testers, inspect that
+**Native release** run: its "Wait for the servers these apps need" step names
+the API image or Ship run that held it.
 
 Deploy the API before publishing the native release to use the cache immediately;
 either component can roll back independently because GitHub remains a fallback.
@@ -5168,9 +5166,8 @@ verifiable envelope; then test **Check for Updates…** on a packaged Mac build 
 the manual and automatic checks on Windows/Linux. The one-minute polling/manual
 action change is client-only: if the cache is already deployed, no API, web,
 gateway, configuration, infrastructure, or database rollout is needed. Publish
-the merged commit with the existing **Deploy Caper apps** action (or
-`gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha=MERGED_COMMIT_SHA`),
-then update installed clients once. Merging does not publish a native release.
+the commit with `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha=MERGED_COMMIT_SHA`
+if no native change has released it yet, then update installed clients once.
 
 **Desktop restart recovery:** the shared updater runs outside the install, with
 null standard streams and, on Unix, its own process group. Successful swaps reopen

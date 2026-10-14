@@ -1,0 +1,123 @@
+name: Wait for the servers
+description: >-
+  Holds a native release until the servers it needs are live. Waits for the
+  newest API image build at or before the release commit to publish, then for
+  every Ship run for caper started after it to finish in
+  joswayski/infrastructure, and fails if either did not succeed. Apps then never
+  reach people before the API (and gateway) changes they depend on.
+inputs:
+  sha:
+    description: Release commit
+    required: true
+  github-token:
+    description: This repository's token (actions read)
+    required: true
+  app-id:
+    description: secrets.DEPLOY_APP_ID, to read Ship runs in joswayski/infrastructure
+    required: false
+    default: ""
+  private-key:
+    description: secrets.DEPLOY_APP_PRIVATE_KEY
+    required: false
+    default: ""
+  timeout-minutes:
+    description: Give up after this long
+    required: false
+    default: "30"
+runs:
+  using: composite
+  steps:
+    - id: token
+      if: inputs.app-id != '' && inputs.private-key != ''
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: joswayski
+        repositories: infrastructure
+        permission-actions: read
+    - shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        CAPER_TOKEN: ${{ inputs.github-token }}
+        INFRA_TOKEN: ${{ steps.token.outputs.token }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+      run: |
+        set -euo pipefail
+        deadline=$((SECONDS + TIMEOUT_MINUTES * 60))
+        caper() {
+          local path=$1
+          shift
+          GH_TOKEN="$CAPER_TOKEN" gh api "repos/$GITHUB_REPOSITORY/$path" "$@"
+        }
+        wait_or_fail() {
+          if ((SECONDS >= deadline)); then
+            echo "::error::Gave up after $TIMEOUT_MINUTES minutes: $1"
+            exit 1
+          fi
+          echo "$1; checking again in 20 seconds."
+          sleep 20
+        }
+
+        # The newest API image build for a commit at or before the release.
+        while true; do
+          api_run=""
+          runs="$(caper "actions/workflows/api-image.yml/runs?branch=main&event=push&per_page=30" \
+            --jq '.workflow_runs[] | [.head_sha, .status, (.conclusion // "none"), .run_started_at] | @tsv')"
+          while IFS=$'\t' read -r head status conclusion started; do
+            [[ -n "$head" ]] || continue
+            relation="$(caper "compare/$head...$SHA" --jq .status)"
+            if [[ "$relation" == ahead || "$relation" == identical ]]; then
+              api_run="$head $status $conclusion $started"
+              break
+            fi
+          done <<<"$runs"
+          if [[ -z "$api_run" ]]; then
+            echo "No recent API image build at or before ${SHA:0:7}; the API is already live."
+            exit 0
+          fi
+          read -r api_head api_status api_conclusion api_started <<<"$api_run"
+          if [[ "$api_status" != completed ]]; then
+            wait_or_fail "API image for ${api_head:0:7} is still building"
+            continue
+          fi
+          if [[ "$api_conclusion" != success ]]; then
+            echo "::error::API image for ${api_head:0:7} ended $api_conclusion, so the API these apps may need never shipped. Fix it forward; the next native change releases again."
+            exit 1
+          fi
+          echo "API image for ${api_head:0:7} published."
+          break
+        done
+
+        if [[ -z "$INFRA_TOKEN" ]]; then
+          echo "::warning::DEPLOY_APP_ID is not set, so Ship cannot be checked; releasing after the API image published."
+          exit 0
+        fi
+
+        # Every Ship for caper started after that build, newest first.
+        while true; do
+          all_ships="$(GH_TOKEN="$INFRA_TOKEN" gh api \
+            "repos/joswayski/infrastructure/actions/workflows/ship.yml/runs?per_page=30")"
+          ships="$(jq --arg since "$api_started" \
+            '[.workflow_runs[] | select(.display_title == "Ship caper" and .created_at >= $since)]' <<<"$all_ships")"
+          if [[ "$(jq 'length' <<<"$ships")" == 0 ]]; then
+            if jq -en --arg since "$api_started" '($since | fromdateiso8601) < (now - 3600)' >/dev/null; then
+              echo "API image for ${api_head:0:7} is over an hour old and no Ship has run since; the API is live."
+              exit 0
+            fi
+            wait_or_fail "No Ship for caper has started since the API image for ${api_head:0:7}"
+            continue
+          fi
+          if [[ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$ships")" != 0 ]]; then
+            wait_or_fail "Ship for caper is still rolling out"
+            continue
+          fi
+          conclusion="$(jq -r '.[0].conclusion' <<<"$ships")"
+          url="$(jq -r '.[0].html_url' <<<"$ships")"
+          if [[ "$conclusion" != success ]]; then
+            echo "::error::The latest Ship for caper ended $conclusion ($url). Fix production first; the next native change releases again."
+            exit 1
+          fi
+          echo "Servers are live: $url"
+          exit 0
+        done
