@@ -5113,6 +5113,20 @@ healthy running clients normally detect a new manifest within about one to two
 minutes of publication, not of starting the release workflow. Sleep, offline
 clients, upstream outages, and download/install time can delay delivery.
 
+Windows/Linux Settings and the Mac's up-to-date result identify the installed
+version, build number and short source revision. Development builds are labelled
+separately on Windows/Linux. "Up to date" means no newer **published release** is
+available; it does not mean the installed app contains the latest merged code.
+The release manifest's build/version/commit identifies what is available, not
+what is running on a particular user's machine.
+
+If the **Deploy Caper apps** notification is missing, inspect **Native development
+builds**, not just **CI**. The notification requires a successful native push run
+on main. A failed job currently cancels the rest of its run, so a `cancelled`
+workflow can contain a real failed test step, not just a replaced queued run.
+Inspect that run's jobs and logs; do not bypass the native tests or release an
+untested revision to restore the notification.
+
 Deploy the API before publishing the native release to use the cache immediately;
 either component can roll back independently because GitHub remains a fallback.
 Verify the deployed endpoint returns `200`, the documented cache headers, and a
