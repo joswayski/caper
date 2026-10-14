@@ -72,8 +72,8 @@ test("each homepage offers only its own platform: direct links except for the Li
       "android",
       [
         "https://groups.google.com/g/caper-testers",
-        repository,
         "https://play.google.com/apps/testing/chat.caper.android",
+        repository,
       ],
     ],
     ["linux", [repository]],
