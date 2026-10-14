@@ -3562,6 +3562,11 @@ export default function Spaces({
                 <MemberPresence
                   spaceId={detail.space.id}
                   members={detail.members}
+                  channel={
+                    channel.private && detail.channelMembers?.[channel.id]
+                      ? { name: channel.name, memberIds: detail.channelMembers[channel.id] }
+                      : undefined
+                  }
                   demo={detail.space.demo}
                   accountId={account?.id}
                   onMessagePerson={messagePerson}
