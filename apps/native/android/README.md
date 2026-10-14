@@ -101,6 +101,7 @@ Release tasks fail when signing is absent instead of producing an unsigned or de
 
 ## Implemented
 
+- Your own name, avatar or resolved mention in a conversation opens a profile card with **Edit profile**, which opens the existing picture, username and display-name editor. Closing or saving returns to the conversation. This entry point still needs Android UI/device validation.
 - Signed-out first launch opens the web-equivalent account entry, verification (with "Resend code" after a 60-second wait, at most twice per email), and profile onboarding, with no Guest/General fallback. Session restoration failures stay on sign-in with an error; valid saved sessions open account spaces, and logout returns to sign-in.
 - Account bearer token encrypted with AES-GCM; the non-exportable AES-256 key lives in Android Keystore. Chat and media capabilities stay in process memory.
 - Adaptive space rail, channel navigation, toggleable member panel, owner space/channel/member/private-grant management (removing a member asks for confirmation), paginated presence, typing, grouped messages (same author within five minutes), `http(s)://` and `www.` links in message text that open in the browser (shared cases in `shared/messages/link-cases.json`), history pagination, and narrow-layout Browse navigation. Colors, dimensions, and bundled Satoshi typography follow the working web client.

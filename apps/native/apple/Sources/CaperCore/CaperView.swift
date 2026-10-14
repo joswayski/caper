@@ -4712,6 +4712,7 @@ private struct MentionCardView: View {
     /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
     @State private var invited: [String: String] = [:]
     @State private var blockRequested = false
+    @State private var editingProfile = false
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
     private var ownedSpaces: [Space] {
         // Don't offer the open space to someone who is already in it.
@@ -4729,6 +4730,24 @@ private struct MentionCardView: View {
     }
 
     var body: some View {
+        if editingProfile {
+            // Replace the card inside its presentation, so opening the editor
+            // does not race the profile sheet's dismissal on iPhone.
+            ProfileSheet(model: model, close: close)
+                #if os(macOS)
+                .frame(width: 520, height: 620)
+                #else
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(CaperTheme.surface)
+                #endif
+        } else {
+            profileCard
+        }
+    }
+
+    private var profileCard: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
@@ -4780,6 +4799,11 @@ private struct MentionCardView: View {
                 if person.isSelf {
                     Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("mention-card-you")
+                    if model.account?.id == person.id {
+                        Button("Edit profile") { editingProfile = true }
+                            .buttonStyle(CaperPrimaryButton())
+                            .accessibilityIdentifier("mention-card-edit-profile")
+                    }
                 } else {
                     if !blocked, person.username != nil, !ownedSpaces.isEmpty {
                         Button("Invite to space") { choosingSpace.toggle() }
