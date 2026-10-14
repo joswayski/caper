@@ -405,6 +405,28 @@ test("pointer movement reports throttled activity without focus state", (t) => {
   assert.equal(typeof activity[0].activityAgeMs, "number");
 });
 
+test("resubscribing during the idle grace period still closes the socket once idle again", (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = setup(t);
+  const listen = () => {
+    const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general" }, { event: () => undefined });
+    void subscription.ready.catch(() => undefined);
+    return subscription;
+  };
+  const first = listen();
+  f.hello(0);
+  // A channel switch: the old conversation leaves just before the new one subscribes.
+  first.unsubscribe();
+  const second = listen();
+  vi.advanceTimersByTime(1_000);
+  assert.equal(f.sockets[0].closed, false, "a live subscription keeps the socket");
+  second.unsubscribe();
+  vi.advanceTimersByTime(999);
+  assert.equal(f.sockets[0].closed, false);
+  vi.advanceTimersByTime(1);
+  assert.equal(f.sockets[0].closed, true, "the idle socket closes after its grace period");
+});
+
 test("a command is stamped once from the first server clock and preserves that stamp on retry", (t) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_700_000_000_000 });
   const f = setup(t);
