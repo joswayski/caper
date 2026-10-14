@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { blockedLabel, blockedRuns } from "../chat/blocked.ts";
+import { blockedAuthor, blockedLabel, blockedRuns } from "../chat/blocked.ts";
 import {
   SpacesApiError,
   acceptDirectRequest,
@@ -100,4 +100,11 @@ test("consecutive blocked messages collapse into runs; guests and you never do",
   assert.equal(blockedRuns(list, new Set(), "me").size, 0);
   assert.equal(blockedLabel(1), "1 blocked message");
   assert.equal(blockedLabel(2), "2 blocked messages");
+  // The live announcement uses the same rule, so a hidden message is never read aloud.
+  const blocked = new Set(["maya", "me"]);
+  assert.equal(blockedAuthor({ id: "maya", isGuest: false }, blocked, "me"), true);
+  assert.equal(blockedAuthor({ id: "maya", isGuest: true }, blocked, "me"), false);
+  assert.equal(blockedAuthor({ id: "me", isGuest: false }, blocked, "me"), false);
+  assert.equal(blockedAuthor({ id: "alex", isGuest: false }, blocked, "me"), false);
+  assert.equal(blockedAuthor(undefined, blocked, "me"), false);
 });

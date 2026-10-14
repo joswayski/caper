@@ -57,7 +57,7 @@ import {
 } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import AdminBadge from "./AdminBadge.tsx";
-import { blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
+import { blockedAuthor, blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import type { Space } from "../spaces/client.ts";
 import "./chat.css";
@@ -605,7 +605,12 @@ export default function Chat({
   const latestMessage = state.messages.at(-1);
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
-    if (state.phase === "ready" && latestMessage) {
+    // A blocked person's message stays collapsed for screen readers too.
+    if (
+      state.phase === "ready" &&
+      latestMessage &&
+      !blockedAuthor(latestMessage.author, blockedIds, state.author?.id)
+    ) {
       const files = attachmentsOf(latestMessage).length;
       setAnnouncement(
         `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${files === 1 ? "a file" : `${files} files`}`}`,
