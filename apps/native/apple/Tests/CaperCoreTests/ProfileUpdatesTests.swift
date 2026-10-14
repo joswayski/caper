@@ -215,6 +215,26 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(detail.applying(update).channelMembers, ["Priv12345678": ["Owner0000001"]])
     }
 
+    func testSpaceAndProfileUpdatesKeepPrivateChannelMembers() {
+        let studio = Space(id: "Space1234567", name: "Studio", ownerId: maya.id)
+        let secret = Channel(id: "Chan12345678", spaceId: studio.id, name: "secret", private: true)
+        let member = Member(id: maya.id, username: "maya", displayName: "Maya", owner: true)
+        let other = Member(id: "Other0000001", username: "other", displayName: "Other", owner: false)
+        let invitation = ChannelInvitation(channel: secret, inviter: Inviter(username: "maya", displayName: "Maya"))
+        let detail = SpaceDetail(space: studio, channels: [secret], members: [member, other], channelInvitations: [invitation],
+                                 channelMembers: [secret.id: [maya.id]])
+        let update = Space(id: studio.id, name: "Friends", ownerId: maya.id)
+
+        for rebuilt in [detail.applying(update), directory.apply(detail), detail.with(space: update), detail.withProfile(nil)] {
+            XCTAssertEqual(rebuilt.channelMembers, [secret.id: [maya.id]])
+            XCTAssertEqual(rebuilt.channelInvitations, [invitation])
+            XCTAssertEqual(rebuilt.memberGroups(channelID: secret.id)?.inChannel.map(\.id), [maya.id])
+            XCTAssertEqual(rebuilt.memberGroups(channelID: secret.id)?.others.map(\.id), [other.id])
+        }
+        XCTAssertEqual(directory.apply(detail).members.first?.displayName, "Maya R")
+        XCTAssertEqual(detail.with(members: [other]).channelMembers, detail.channelMembers)
+    }
+
     func testCustomPicturesAreRoundedSquares() {
         XCTAssertEqual(ProfilePicturePolicy.cornerRadius(side: 40), 12, accuracy: 0.0001)
         XCTAssertEqual(ProfilePicturePolicy.cornerRadius(side: 72), 21.6, accuracy: 0.0001)

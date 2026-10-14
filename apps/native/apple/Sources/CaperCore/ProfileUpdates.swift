@@ -105,9 +105,7 @@ public struct ProfileDirectory: Equatable, Sendable {
 
     public func apply(_ detail: SpaceDetail) -> SpaceDetail {
         guard !isEmpty else { return detail }
-        // Private channels' readers keep leading their member lists.
-        return SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.map { apply($0) },
-                           channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers)
+        return detail.with(members: detail.members.map { apply($0) })
     }
 
     public func apply(_ report: FeedbackReport) -> FeedbackReport {
@@ -263,7 +261,6 @@ extension Space {
 extension SpaceDetail {
     func applying(_ update: Space) -> SpaceDetail {
         guard space.id == update.id else { return self }
-        return SpaceDetail(space: space.applying(update), channels: channels, members: members, channelInvitations: channelInvitations,
-                           channelMembers: channelMembers)
+        return with(space: space.applying(update))
     }
 }

@@ -244,8 +244,16 @@ public struct SpaceDetail: Codable, Sendable {
     /// Private channels you can read: who can read each (owner and grants).
     public let channelMembers: [String: [String]]
 
+    /// A copy with the given parts replaced and every other field kept, so a
+    /// new field can't be dropped by a partial rebuild.
+    func with(space: Space? = nil, channels: [Channel]? = nil, members: [Member]? = nil,
+              channelInvitations: [ChannelInvitation]? = nil, channelMembers: [String: [String]]? = nil) -> SpaceDetail {
+        SpaceDetail(space: space ?? self.space, channels: channels ?? self.channels, members: members ?? self.members,
+                    channelInvitations: channelInvitations ?? self.channelInvitations, channelMembers: channelMembers ?? self.channelMembers)
+    }
+
     func withProfile(_ account: Account?) -> SpaceDetail {
-        SpaceDetail(space: space, channels: channels, members: members.map { $0.withProfile(account) }, channelInvitations: channelInvitations, channelMembers: channelMembers)
+        with(members: members.map { $0.withProfile(account) })
     }
 
     /// The member list for a channel: a private channel's readers first, then

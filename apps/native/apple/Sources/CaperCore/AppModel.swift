@@ -1436,7 +1436,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateSpace(id: detail.space.id, name: name)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers))
+        replace(detail: detail.with(space: updated))
     }
 
     /// Owner only: uploads a prepared picture as the open space's icon,
@@ -1471,8 +1471,7 @@ public final class AppModel {
             return space
         }
         if let current = self.detail, current.space.id == updated.id {
-            replace(detail: SpaceDetail(space: merged(current.space), channels: current.channels, members: current.members,
-                                        channelInvitations: current.channelInvitations, channelMembers: current.channelMembers))
+            replace(detail: current.with(space: merged(current.space)))
         } else {
             spaces = spaces.map { $0.id == updated.id ? merged($0) : $0 }
         }
@@ -1639,7 +1638,7 @@ public final class AppModel {
         let attempt = generation
         try await api.removeSpaceMember(spaceID: detail.space.id, memberID: member.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id }, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers)
+        detail = detail.with(members: detail.members.filter { $0.id != member.id })
         replace(detail: detail)
     }
 
@@ -1653,7 +1652,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let channel = try await api.createChannel(spaceID: detail.space.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers)
+        detail = detail.with(channels: detail.channels + [channel])
         replace(detail: detail)
         await select(channel: channel)
         return channel
@@ -1668,7 +1667,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateChannel(spaceID: detail.space.id, channelID: channel.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.map { $0.id == updated.id ? updated : $0 }, members: detail.members, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers)
+        detail = detail.with(channels: detail.channels.map { $0.id == updated.id ? updated : $0 })
         replace(detail: detail)
         return updated
     }
@@ -1682,7 +1681,7 @@ public final class AppModel {
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
         if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
         voicePresence.revoke(channelID: channel.id)
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers)
+        detail = detail.with(channels: detail.channels.filter { $0.id != channel.id })
         replace(detail: detail)
         if selectedChannelID == channel.id {
             if let first = detail.channels.first(where: \.joined) { await select(channel: first) }
@@ -1751,7 +1750,7 @@ public final class AppModel {
                 if item.private && !isOwner { return nil }
                 return Channel(id: item.id, spaceId: item.spaceId, name: item.name, private: item.private, joined: false)
             }
-            replace(detail: SpaceDetail(space: current.space, channels: channels, members: current.members, channelInvitations: current.channelInvitations, channelMembers: current.channelMembers))
+            replace(detail: current.with(channels: channels))
         }
         if selectedChannelID == channel.id { selectedChannelID = nil; await chat.stop() }
         guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
