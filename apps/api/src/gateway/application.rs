@@ -33,6 +33,11 @@ struct NotificationFeed {
     head: watch::Sender<i64>,
 }
 
+/// Profile and space changes for one signed-in account's sockets on this pod.
+struct ProfileFeed {
+    events: broadcast::Sender<Value>,
+}
+
 #[derive(Default)]
 pub(super) struct Application {
     state: Option<AppState>,
@@ -44,6 +49,7 @@ pub(super) struct Application {
     channels: Mutex<HashMap<String, Arc<ChannelFeed>>>,
     people: Mutex<HashMap<String, Arc<PersonFeed>>>,
     notifications: Mutex<HashMap<i64, Arc<NotificationFeed>>>,
+    profiles: Mutex<HashMap<i64, Arc<ProfileFeed>>>,
     pub(super) interests: tokio::sync::Notify,
 }
 
@@ -151,6 +157,33 @@ impl Application {
                 })
             })
             .clone()
+    }
+
+    fn profiles(&self, user: i64) -> Arc<ProfileFeed> {
+        let mut feeds = self.profiles.lock().unwrap();
+        feeds.retain(|_, feed| Arc::strong_count(feed) > 1);
+        feeds
+            .entry(user)
+            .or_insert_with(|| {
+                Arc::new(ProfileFeed {
+                    events: broadcast::channel(64).0,
+                })
+            })
+            .clone()
+    }
+
+    /// One published change to the local sockets of the accounts allowed to
+    /// see it (`profiles::account_audience`, or a space's members).
+    pub(super) fn dispatch_profiles(&self, update: &Value) {
+        let Some(audience) = update["audience"].as_array() else {
+            return;
+        };
+        let feeds = self.profiles.lock().unwrap();
+        for user in audience.iter().filter_map(Value::as_i64) {
+            if let Some(feed) = feeds.get(&user) {
+                let _ = feed.events.send(update["event"].clone());
+            }
+        }
     }
 
     fn update_people(&self, values: Vec<Value>) {
@@ -505,6 +538,7 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
                                 "media" => media_subscription(&state, &identity, &subscription, &out).await,
                                 "presence" => presence_subscription(&state, &identity, &subscription, &out).await,
                                 "notifications" => notification_subscription(&state, &identity, &subscription, &out).await,
+                                "profiles" => profile_subscription(&state, &identity, &subscription, &out).await,
                                 _ => Err(invalid()),
                             };
                             if let Err(error) = result {
@@ -549,6 +583,40 @@ async fn subscribed(out: &mpsc::Sender<Value>, id: &str) -> Result<(), ApiError>
     send(out, json!({"type":"subscribed","id":id}))
         .await
         .map_err(|_| chat::unavailable())
+}
+
+/// Live `profile.updated` and `space.updated` events for the signed-in
+/// account. No replay: clients reload what they show after reconnecting.
+async fn profile_subscription(
+    state: &Gateway,
+    identity: &Identity,
+    sub: &Subscribe,
+    out: &mpsc::Sender<Value>,
+) -> Result<(), ApiError> {
+    if sub.channel_id.is_some()
+        || sub.space_id.is_some()
+        || sub.token.is_some()
+        || sub.after.is_some()
+        || !sub.user_ids.is_empty()
+    {
+        return Err(invalid());
+    }
+    identity.check(state).await?;
+    let user = identity.user.ok_or_else(unauthorized)?;
+    let feed = state.application.profiles(user);
+    let mut events = feed.events.subscribe();
+    subscribed(out, &sub.id).await?;
+    let mut check = tokio::time::interval(Duration::from_secs(10));
+    loop {
+        tokio::select! {
+            received = events.recv() => match received {
+                Ok(update) => event(out, &sub.id, update).await?,
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            _ = check.tick() => identity.check(state).await?,
+        }
+    }
 }
 
 async fn notification_subscription(

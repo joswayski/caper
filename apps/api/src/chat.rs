@@ -37,6 +37,8 @@ mod forwarding;
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
+/// Profile and space changes, each with the account IDs allowed to see it.
+pub(crate) const PROFILE_TOPIC: &str = "caper:profiles:v1";
 const PAGE: i64 = 50;
 const BROKER_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -123,6 +125,25 @@ impl Chat {
     /// Never replays the failed command; only the next caller reconnects.
     async fn discard_broker_connection(&self) {
         *self.connection.lock().await = None;
+    }
+
+    /// Best-effort publication with no outbox, for updates that the next
+    /// load repairs anyway.
+    pub(crate) async fn publish(&self, topic: &str, payload: &Value) -> bool {
+        let published = tokio::time::timeout(BROKER_TIMEOUT, async {
+            let mut connection = self.broker_connection().await?;
+            redis::cmd("PUBLISH")
+                .arg(topic)
+                .arg(payload.to_string())
+                .query_async::<()>(&mut connection)
+                .await
+        })
+        .await;
+        let ok = matches!(published, Ok(Ok(())));
+        if !ok {
+            self.discard_broker_connection().await;
+        }
+        ok
     }
 }
 

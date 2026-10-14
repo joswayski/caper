@@ -1032,6 +1032,13 @@ async fn complete(
         return Err(crate::spaces::not_found());
     }
     tx.commit().await.map_err(database_error)?;
+    if first {
+        match (purpose, row.space_id) {
+            (Purpose::Avatar, _) => crate::profiles::account_changed(&state, principal.user.id),
+            (Purpose::SpaceIcon, Some(space)) => crate::profiles::space_changed(&state, space),
+            _ => {}
+        }
+    }
     if !first {
         // Completed by a concurrent request, or cancelled meanwhile.
         let live: bool =

@@ -281,6 +281,7 @@ pub(crate) async fn remove_avatar(
     .execute(pool)
     .await
     .map_err(|_| crate::assets::unavailable())?;
+    crate::profiles::account_changed(&state, principal.user.id);
     let user = crate::accounts::load(pool, principal.user.id)
         .await
         .map_err(|_| crate::assets::unavailable())?
@@ -303,6 +304,7 @@ pub(crate) async fn remove_icon(
     .await
     .map_err(|_| crate::assets::unavailable())?
     .ok_or_else(crate::spaces::not_found)?;
+    crate::profiles::space_changed(&state, id);
     Ok(Json(crate::spaces::summary(pool, id).await?))
 }
 

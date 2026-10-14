@@ -754,3 +754,141 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
     drop(replay);
     server.abort();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn profile_and_space_changes_reach_only_people_who_can_see_them(pool: sqlx::PgPool) {
+    let mut users = Vec::new();
+    for name in ["changer", "member", "stranger"] {
+        let external = crate::auth::random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$2,$2,317) RETURNING id")
+            .bind(&external).bind(name).fetch_one(&pool).await.unwrap();
+        let token = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')")
+            .bind(Sha256::digest(token.as_bytes()).to_vec()).bind(id).execute(&pool).await.unwrap();
+        users.push((id, external, token));
+    }
+    let (changer, member) = (users[0].0, users[1].0);
+    let space_external = crate::auth::random_id(12);
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Studio',$2) RETURNING id",
+    )
+    .bind(&space_external)
+    .bind(changer)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for user in [changer, member] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let picture = crate::auth::random_id(crate::pictures::ID_LENGTH);
+    sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at) VALUES($1,$2,'avatar','image','image/gif','avatar.gif',10,now())")
+        .bind(&picture).bind(changer).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE public.users SET avatar_asset=$1, display_name='Renamed' WHERE id=$2")
+        .bind(&picture)
+        .bind(changer)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let broker = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap();
+    let mut chat = Chat::new(pool.clone(), broker.clone());
+    let signer = Arc::new(crate::assets::CdnSigner::new(
+        "https://cdn.test".into(),
+        vec![5; 32],
+    ));
+    chat.cdn = Some(signer.clone());
+    let mut state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.chat = Some(chat.clone());
+    let mut gateway = Gateway::new(chat.clone());
+    gateway.application = Arc::new(Application {
+        state: Some(state.clone()),
+        presence: Some(
+            Presence::new(&broker, Duration::from_secs(600))
+                .await
+                .unwrap(),
+        ),
+        broker: Mutex::new(Some(Application::connect(&chat).await.unwrap())),
+        idle_seconds: 600,
+        ..Application::default()
+    });
+    gateway.start();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, super::super::router(gateway)).into_future());
+
+    let mut sockets = Vec::new();
+    for (_, _, token) in &users[1..] {
+        let mut socket = connect(address, token).await;
+        transmit(
+            &mut socket,
+            json!({"type":"subscribe","kind":"profiles","id":"profiles"}),
+        )
+        .await;
+        next(&mut socket, "subscribed", Some("profiles")).await;
+        sockets.push(socket);
+    }
+    let [mut watcher, mut stranger] = <[Socket; 2]>::try_from(sockets).ok().unwrap();
+    transmit(
+        &mut watcher,
+        json!({"type":"subscribe","kind":"profiles","id":"bad","after":"1"}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut watcher, "error", Some("bad")).await["status"],
+        400
+    );
+
+    // Retry until the gateway's broker subscription is up; delivery is best effort.
+    let mut update = None;
+    for _ in 0..10 {
+        crate::profiles::publish_account(&state, changer)
+            .await
+            .unwrap();
+        if let Ok(event) = tokio::time::timeout(
+            Duration::from_millis(500),
+            next(&mut watcher, "event", Some("profiles")),
+        )
+        .await
+        {
+            update = Some(event["event"].clone());
+            break;
+        }
+    }
+    let update = update.expect("profile update delivered");
+    let signed = signer.url(
+        &crate::assets::original_key(&picture),
+        chrono::Utc::now().timestamp(),
+    );
+    assert_eq!(
+        update,
+        json!({"type":"profile.updated","person":{"id":users[0].1,"username":"changer",
+            "displayName":"Renamed","avatarId":317,"avatarAsset":picture,"avatarUrl":signed}})
+    );
+    crate::profiles::publish_space(&state, space).await.unwrap();
+    let space_update = next(&mut watcher, "event", Some("profiles")).await["event"].clone();
+    assert_eq!(space_update["type"], "space.updated");
+    assert_eq!(space_update["space"]["id"], space_external);
+    assert_eq!(space_update["space"]["name"], "Studio");
+    assert!(space_update["space"].get("iconAsset").is_none());
+
+    // Someone sharing no space or DM hears about neither.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            next(&mut stranger, "event", Some("profiles"))
+        )
+        .await
+        .is_err()
+    );
+    server.abort();
+}

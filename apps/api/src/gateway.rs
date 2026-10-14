@@ -104,7 +104,11 @@ impl Gateway {
                     && matches!(
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            pubsub.subscribe(&[chat::TOPIC, chat::TYPING_TOPIC])
+                            pubsub.subscribe(&[
+                                chat::TOPIC,
+                                chat::TYPING_TOPIC,
+                                chat::PROFILE_TOPIC
+                            ])
                         )
                         .await,
                         Ok(Ok(()))
@@ -118,7 +122,12 @@ impl Gateway {
                         tokio::select! {
                             message = stream.next() => {
                                 let Some(message) = message else { break; };
-                                if let Ok(text) = message.get_payload::<String>()
+                                if message.get_channel_name() == chat::PROFILE_TOPIC {
+                                    if let Ok(text) = message.get_payload::<String>()
+                                        && let Ok(update) = serde_json::from_str::<Value>(&text) {
+                                        state.application.dispatch_profiles(&update);
+                                    }
+                                } else if let Ok(text) = message.get_payload::<String>()
                                     && let Ok(event) = serde_json::from_str::<Value>(&text) {
                                     state.application.dispatch(&event);
                                     let sender = if chat::ephemeral(&event) { &state.typing } else { &state.events };

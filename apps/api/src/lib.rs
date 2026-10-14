@@ -72,6 +72,7 @@ mod mentions;
 mod notifications;
 mod pictures;
 mod presence;
+mod profiles;
 mod push;
 mod spaces;
 mod updates;
@@ -1458,7 +1459,10 @@ async fn account_profile(
         )
     })?;
     match accounts::set_profile(pool, principal.user.id, &username, display_name).await {
-        Ok(Some(user)) => Ok(Json(own_account(&state, &user).await)),
+        Ok(Some(user)) => {
+            profiles::account_changed(&state, user.id);
+            Ok(Json(own_account(&state, &user).await))
+        }
         Ok(None) => Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")),
         Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {
             Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"))

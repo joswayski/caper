@@ -527,8 +527,8 @@ async fn rename_space(
     Json(input): Json<NameInput>,
 ) -> Result<Json<Space>, ApiError> {
     let name = space_name(&input.name)?;
-    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING external_id,(SELECT external_id FROM public.users WHERE id=$2),icon_asset",
+    let row: Option<(i64, String, String, Option<String>)> = sqlx::query_as(
+        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING id,external_id,(SELECT external_id FROM public.users WHERE id=$2),icon_asset",
     )
     .bind(&space)
     .bind(principal.user.id)
@@ -536,7 +536,8 @@ async fn rename_space(
     .fetch_optional(pool(&state)?)
     .await
     .map_err(database_error)?;
-    let (id, owner_id, icon_asset) = row.ok_or_else(not_found)?;
+    let (internal, id, owner_id, icon_asset) = row.ok_or_else(not_found)?;
+    crate::profiles::space_changed(&state, internal);
     Ok(Json(Space {
         id,
         name,

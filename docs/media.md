@@ -8127,10 +8127,35 @@ Message payloads never store a picture. Wherever messages leave (history, thread
 pins, edits, forwards, send responses, the outbox and gateway replay) one batched
 lookup sets each person's current picture by account ID, including nested people
 (thread participants, reply and forward authors), so a changed or removed picture
-is never shown from an old snapshot. Voice participants carry the picture they
-joined with until they rejoin, as display names do. Other people see a change on
-their next load of that data (members, spaces, DMs) or immediately on new
-messages; there is no realtime profile event (see [own profile refresh](#own-profile-refresh-october-11-2026)).
+is never shown from an old snapshot.
+
+### Live changes
+
+A saved picture, display name or username, and a space's icon or name, reach
+other open clients at once (`profiles.rs`). The API publishes each change once to
+the broker topic `caper:profiles:v1` with its audience: for a person, everyone who
+shares an active space or a DM with them plus their own other sessions; for a
+space, its members. Each gateway delivers it to the sockets of those accounts that
+opened a `profiles` subscription (`{"type":"subscribe","kind":"profiles"}`), signing
+picture URLs on the way out:
+
+```json
+{"type":"profile.updated","person":{"id","username","displayName","avatarId","avatarAsset"?,"avatarUrl"?}}
+{"type":"space.updated","space":{"id","name","ownerId","iconAsset"?,"iconUrl"?}}
+```
+
+Absent picture fields mean the picture or icon was removed. Clients apply a
+`profile.updated` to every retained copy of that account (members, invitations, DM
+peers, suggestions, message authors including nested ones, reactors, cards), the
+same way the [own profile refresh](#own-profile-refresh-october-11-2026) treats the
+signed-in account, and a `space.updated` to the rail, lists and open space.
+Delivery is best effort with no replay: what clients reload after reconnecting
+repairs anything missed. Older gateways answer the unknown subscription with an
+error, which clients treat as "not available".
+
+Calls in progress update too: the same change rewrites the name and picture of
+that account's participants in every active voice room, so the room's next
+snapshot (a new revision) carries it to everyone watching the call.
 
 **Old pictures are kept.** Replacing or removing a picture leaves its row and R2
 object in place (rows were already retained; objects are small and changes are
@@ -8166,8 +8191,11 @@ unchanged so it keeps its animation, and is refused locally above 5 MB or 1024 Ã
 1024; anything else the platform decodes is turned upright, center-cropped to a
 square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
-aspect-filled in the existing circle or tile, over the mascot or initial, which
-stays visible while loading or if a URL fails. Decoded pictures are cached by asset
+aspect-filled in a rounded square (corner radius 30% of the side, the
+`--radius-avatar` token; squares show more of a picture than circles), and
+speaking rings around them follow that shape. Space icons fill their existing
+tile. The mascot or initial underneath stays visible while loading or if a URL
+fails. Decoded pictures are cached by asset
 ID, since URLs re-sign daily. **Change picture**/**Remove picture** live in the
 profile settings and **Change icon**/**Remove icon** in **Manage space** (owners
 only); a successful change updates the signed-in client everywhere through the
