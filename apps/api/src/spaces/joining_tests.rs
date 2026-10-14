@@ -16,6 +16,7 @@ fn principal(id: i64, name: &str) -> Principal {
             id,
             external_id: format!("{name:0<12}"),
             avatar_id: 0,
+            avatar_asset: None,
             email: None,
             username: Some(name.into()),
             display_name: Some(name.into()),

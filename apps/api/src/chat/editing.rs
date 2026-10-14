@@ -27,7 +27,10 @@ pub(super) async fn edit(
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(assets::sign_attachments(result, chat.cdn.as_deref())))
+    Ok(Json(assets::sign_attachments(
+        crate::chat::with_pictures(&chat.pool, result).await,
+        chat.cdn.as_deref(),
+    )))
 }
 
 /// Membership changes lock space before channel. Check access in a fresh
@@ -107,7 +110,7 @@ async fn persist_edit(
         ));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (_, _, name, user, avatar) = authorize_sender(&mut tx, token).await?;
+    let (_, _, name, user, avatar, _) = authorize_sender(&mut tx, token).await?;
     // The editor is the author, so their session already carries the current name.
     let current_name = user.map(|_| name.as_str());
     let (channel_id, head, direct) = locked_channel(&mut tx, channel, user, true).await?;

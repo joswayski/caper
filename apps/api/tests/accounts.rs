@@ -96,6 +96,12 @@ async fn avatar_migration_backfills_existing_profiles(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    // Profile saves also return the custom picture column added much later
+    // (with the assets table it references, which this schema predates).
+    sqlx::raw_sql("ALTER TABLE users ADD COLUMN avatar_asset text")
+        .execute(&pool)
+        .await
+        .unwrap();
     let assignments: Vec<(i64, i16)> = sqlx::query_as("SELECT id,avatar_id FROM users ORDER BY id")
         .fetch_all(&pool)
         .await

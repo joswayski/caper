@@ -16,6 +16,7 @@ fn principal(id: i64, external_id: &str, username: &str) -> Principal {
             id,
             external_id: external_id.to_owned(),
             avatar_id: 7,
+            avatar_asset: None,
             email: None,
             username: Some(username.to_owned()),
             display_name: Some(username.to_owned()),

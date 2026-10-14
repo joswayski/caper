@@ -172,6 +172,7 @@ pub(super) async fn add_channel_member(
         Json(Member {
             id: member.1,
             avatar_id: member.2,
+            avatar_asset: member.5,
             username: member.3,
             display_name: member.4,
             owner: false,

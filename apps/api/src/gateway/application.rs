@@ -428,8 +428,11 @@ async fn send(out: &mpsc::Sender<Value>, value: Value) -> Result<(), ()> {
 async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
     let (mut sink, mut source) = socket.split();
     let (out, mut queue) = mpsc::channel::<Value>(256);
+    // Custom pictures leave every frame with freshly signed URLs.
+    let signer = state.chat.cdn.clone();
     let writer = tokio::spawn(async move {
         while let Some(event) = queue.recv().await {
+            let event = crate::pictures::sign_frame(event, signer.as_deref());
             if !matches!(
                 tokio::time::timeout(
                     SEND_TIMEOUT,
@@ -653,7 +656,19 @@ async fn replay(
         if rows.is_empty() {
             return Err(chat::unavailable());
         }
-        for (seq, payload, avatar_id, name) in rows {
+        let (seqs, mut payloads): (Vec<i64>, Vec<Value>) = rows
+            .into_iter()
+            .map(|(seq, payload, avatar_id, name)| {
+                (
+                    seq,
+                    chat::enrich_author(payload, avatar_id, name.as_deref()),
+                )
+            })
+            .unzip();
+        crate::pictures::enrich_people(&state.chat.pool, &mut payloads)
+            .await
+            .map_err(|_| chat::unavailable())?;
+        for (seq, payload) in seqs.into_iter().zip(payloads) {
             if seq != *after + 1 {
                 event(out, &sub.id, json!({"type":"resync_required"})).await?;
                 return Err(invalid());
@@ -661,10 +676,7 @@ async fn replay(
             event(
                 out,
                 &sub.id,
-                crate::assets::sign_attachments(
-                    chat::enrich_author(payload, avatar_id, name.as_deref()),
-                    state.chat.cdn.as_deref(),
-                ),
+                crate::assets::sign_attachments(payload, state.chat.cdn.as_deref()),
             )
             .await?;
             *after = seq;

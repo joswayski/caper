@@ -187,14 +187,14 @@ pub(crate) async fn page(
                 'text', left(COALESCE(m.payload->'content'->>'text', ''), 280),
                 'attachments', COALESCE(jsonb_array_length(m.payload->'content'->'attachments'), 0),
                 'reporter', jsonb_build_object('id', u.external_id, 'username', u.username,
-                    'displayName', u.display_name, 'avatarId', u.avatar_id),
+                    'displayName', u.display_name, 'avatarId', u.avatar_id, 'avatarAsset', u.avatar_asset),
                 'channel', jsonb_build_object('id', c.external_id, 'direct', c.space_id IS NULL,
                     'name', CASE WHEN c.space_id IS NOT NULL THEN lower(c.name)
                                  WHEN d.low_user_id=d.high_user_id THEN lo.display_name
                                  WHEN lo.team_account THEN hi.display_name || ' → ' || lo.display_name
                                  WHEN hi.team_account THEN lo.display_name || ' → ' || hi.display_name
                                  ELSE lo.display_name || ' & ' || hi.display_name END),
-                'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name) END,
+                'space', CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object('id', s.external_id, 'name', s.name, 'iconAsset', s.icon_asset) END,
                 'replyCount', COALESCE((root.payload->'thread'->>'replyCount')::bigint, 0),
                 'archived', z.archived,
                 -- Answered while the newest message in its thread (in the

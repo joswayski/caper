@@ -70,7 +70,7 @@ async fn send_forward(
     let chat = enabled(&state)?;
     let payload = persist_forward(&chat.pool, &channel, sender_token(&headers)?, input).await?;
     chat.wake.notify_one();
-    Ok(Json(payload))
+    Ok(Json(crate::chat::with_pictures(&chat.pool, payload).await))
 }
 
 // Match membership mutations' space -> channel order. Opposite-direction
@@ -93,7 +93,7 @@ async fn persist_forward(
         prepare_text(&input.text)?
     };
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (session, author_id, name, user, avatar_id) = authorize_sender(&mut tx, token).await?;
+    let (session, author_id, name, user, avatar_id, _) = authorize_sender(&mut tx, token).await?;
     // Include the canonical original in the lock set when re-forwarding. This
     // closes the create/update race even if the sender cannot browse its space.
     let source: (i64, i64) = sqlx::query_as("SELECT original.id,original.channel_id FROM public.messages selected JOIN public.channels c ON c.id=selected.channel_id JOIN public.messages original ON original.id=COALESCE(selected.forward_source_id,selected.id) WHERE c.external_id=$1 AND selected.external_id=$2")
@@ -341,9 +341,13 @@ async fn thread(
     replies.truncate(PAGE as usize);
     replies.reverse();
     hydrate(&mut tx, &mut replies).await?;
-    Ok(Json(
-        json!({"root":root,"messages":replies,"cursor":head,"hasMore":more,"source":source}),
-    ))
+    let mut body =
+        [json!({"root":root,"messages":replies,"cursor":head,"hasMore":more,"source":source})];
+    crate::pictures::enrich_people(&mut *tx, &mut body)
+        .await
+        .map_err(|_| crate::chat::unavailable())?;
+    let [body] = body;
+    Ok(Json(body))
 }
 
 /// Project source edits, reactions and replies into destination replay logs.

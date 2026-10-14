@@ -132,6 +132,7 @@ struct VerifiedUser {
     id: i64,
     external_id: String,
     avatar_id: i16,
+    avatar_asset: Option<String>,
     email: Option<String>,
     username: Option<String>,
     display_name: Option<String>,
@@ -379,7 +380,7 @@ impl AuthVerifier {
             "UPDATE public.users SET
                 email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
              WHERE email = $1 AND deleted_at IS NULL
-             RETURNING id, external_id, avatar_id, email, username, display_name, false AS created",
+             RETURNING id, external_id, avatar_id, avatar_asset, email, username, display_name, false AS created",
         )
         .bind(&challenge.email)
         .fetch_optional(&mut *transaction)
@@ -401,7 +402,7 @@ impl AuthVerifier {
                     sqlx::query_as(
                         "INSERT INTO public.users (external_id, email, email_verified_at)
                          VALUES ($1, $2, now())
-                         RETURNING id, external_id, avatar_id, email, username, display_name, true AS created",
+                         RETURNING id, external_id, avatar_id, avatar_asset, email, username, display_name, true AS created",
                     )
                     .bind(random_external_id())
                     .bind(&challenge.email)
@@ -434,6 +435,7 @@ impl AuthVerifier {
                 id: user.id,
                 external_id: user.external_id,
                 avatar_id: user.avatar_id,
+                avatar_asset: user.avatar_asset,
                 email: user.email,
                 username: user.username,
                 display_name: user.display_name,
@@ -455,6 +457,7 @@ impl AuthVerifier {
                     id: 1,
                     external_id: "V1StGXR8_Z5jdHi6B-myT".into(),
                     avatar_id: 42,
+                    avatar_asset: None,
                     email: None,
                     username: Some("test".into()),
                     display_name: Some("Test User".into()),
@@ -468,7 +471,7 @@ impl AuthVerifier {
         let pool = pool.ok_or_else(unavailable)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
         let user = sqlx::query_as(
-            "SELECT u.id, u.external_id, u.avatar_id, u.email, u.username, u.display_name
+            "SELECT u.id, u.external_id, u.avatar_id, u.avatar_asset, u.email, u.username, u.display_name
              FROM public.account_sessions s
              JOIN public.users u ON u.id = s.user_id
              WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()

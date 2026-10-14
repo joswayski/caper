@@ -101,6 +101,8 @@ pub struct User {
     pub id: i64,
     pub external_id: String,
     pub avatar_id: i16,
+    /// Custom picture shown instead of the saved mascot, if any.
+    pub avatar_asset: Option<String>,
     pub email: Option<String>,
     pub username: Option<String>,
     pub display_name: Option<String>,
@@ -111,6 +113,8 @@ pub struct User {
 pub struct PublicAccount<'a> {
     pub id: &'a str,
     pub avatar_id: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_asset: Option<&'a str>,
     pub username: Option<&'a str>,
     pub display_name: Option<&'a str>,
 }
@@ -128,6 +132,7 @@ impl User {
         PublicAccount {
             id: &self.external_id,
             avatar_id: self.avatar_id,
+            avatar_asset: self.avatar_asset.as_deref(),
             username: self.username.as_deref(),
             display_name: self.display_name.as_deref(),
         }
@@ -154,11 +159,21 @@ pub async fn set_profile(
     sqlx::query_as(
         "UPDATE public.users SET username = $2, display_name = $3, updated_at = now()
          WHERE id = $1 AND deleted_at IS NULL
-         RETURNING id, external_id, avatar_id, email, username, display_name",
+         RETURNING id, external_id, avatar_id, avatar_asset, email, username, display_name",
     )
     .bind(user_id)
     .bind(username.trim().to_ascii_lowercase())
     .bind(display_name.trim())
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn load(pool: &PgPool, user_id: i64) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, external_id, avatar_id, avatar_asset, email, username, display_name
+         FROM public.users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
     .fetch_optional(pool)
     .await
 }
@@ -245,6 +260,7 @@ mod tests {
             id: 1,
             external_id: "public-id".into(),
             avatar_id: 42,
+            avatar_asset: None,
             email: None,
             username: Some("alice".into()),
             display_name: Some("Alice".into()),

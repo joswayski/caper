@@ -70,6 +70,7 @@ pub mod gateway;
 mod media_store;
 mod mentions;
 mod notifications;
+mod pictures;
 mod presence;
 mod push;
 mod spaces;
@@ -915,6 +916,9 @@ struct Participant {
     /// Stable saved account avatar. Absent for guests and older stored state.
     #[serde(default)]
     avatar_id: Option<i16>,
+    /// Custom picture when the participant joined; absent shows the mascot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    avatar_asset: Option<String>,
     name: String,
     session: String,
     /// A second, receive-only provider session holding every subscription once
@@ -1114,6 +1118,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .route("/api/auth/logout", post(auth_logout))
         .merge(spaces::routes())
         .merge(assets::routes())
+        .merge(pictures::routes())
         .merge(direct::routes())
         .merge(feedback::routes())
         .merge(push::routes());
@@ -1136,6 +1141,10 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(channel_media::routes())
         .merge(chat::routes())
         .merge(test_only_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            sign_picture_urls,
+        ))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(
@@ -1367,16 +1376,54 @@ async fn account_me(
     State(state): State<AppState>,
     Extension(principal): Extension<auth::Principal>,
 ) -> Json<Value> {
+    Json(own_account(&state, &principal.user).await)
+}
+
+/// The signed-in account as `/api/account/me` and account changes return it.
+pub(crate) async fn own_account(state: &AppState, user: &accounts::User) -> Value {
     let mut account =
-        serde_json::to_value(principal.user.own(&state.debug_users)).expect("account serializes");
+        serde_json::to_value(user.own(&state.debug_users)).expect("account serializes");
     // Team members get the feedback inbox. A database outage only hides it.
     if let Some(pool) = &state.database
         && let Ok(mut connection) = pool.acquire().await
-        && let Ok(true) = feedback::team_member(&mut connection, Some(principal.user.id)).await
+        && let Ok(true) = feedback::team_member(&mut connection, Some(user.id)).await
     {
         account["feedbackTeam"] = json!(true);
     }
-    Json(account)
+    account
+}
+
+/// Custom pictures leave as asset IDs and gain fresh signed URLs here, the way
+/// message attachments are signed as they leave: nothing stores a URL.
+async fn sign_picture_urls(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let response = next.run(request).await;
+    let Some(signer) = state.chat.as_ref().and_then(|chat| chat.cdn.clone()) else {
+        return response;
+    };
+    let json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"application/json"));
+    if !json {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    if !pictures::mentioned(&bytes) {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    pictures::sign(&mut value, &signer, chrono::Utc::now().timestamp());
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(value.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -1411,9 +1458,7 @@ async fn account_profile(
         )
     })?;
     match accounts::set_profile(pool, principal.user.id, &username, display_name).await {
-        Ok(Some(user)) => Ok(Json(
-            serde_json::to_value(user.own(&state.debug_users)).expect("account serializes"),
-        )),
+        Ok(Some(user)) => Ok(Json(own_account(&state, &user).await)),
         Ok(None) => Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")),
         Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {
             Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"))
@@ -1822,7 +1867,7 @@ async fn join(
         match s.auth.authenticate(token, s.database.as_ref()).await {
             Ok(principal) => Some((
                 principal.user.display_name,
-                principal.user.avatar_id,
+                (principal.user.avatar_id, principal.user.avatar_asset),
                 Sha256::digest(token.as_bytes()).to_vec(),
                 principal.user.id,
             )),
@@ -1840,7 +1885,10 @@ async fn join(
         .and_then(|(name, _, _, _)| name.as_deref())
         .unwrap_or(submitted_name)
         .trim();
-    let avatar_id = account.as_ref().map(|(_, avatar_id, _, _)| *avatar_id);
+    let avatar_id = account.as_ref().map(|(_, (avatar_id, _), _, _)| *avatar_id);
+    let avatar_asset = account
+        .as_ref()
+        .and_then(|(_, (_, asset), _, _)| asset.clone());
     let user_id = account.as_ref().map(|(_, _, _, user)| *user);
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
@@ -2094,6 +2142,7 @@ async fn join(
         account_session: s.media_session.clone(),
         user_id,
         avatar_id,
+        avatar_asset,
         name: name.into(),
         session,
         // Later pulls go to a warm receive session from the start.
@@ -2956,6 +3005,8 @@ struct View<'a> {
     id: Uuid,
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
+    #[serde(rename = "avatarAsset", skip_serializing_if = "Option::is_none")]
+    avatar_asset: Option<&'a str>,
     name: &'a str,
     muted: bool,
     deafened: bool,
@@ -2998,6 +3049,7 @@ fn public_snapshot(r: &Registry) -> Value {
             View {
                 id: p.id,
                 avatar_id: p.avatar_id,
+                avatar_asset: p.avatar_asset.as_deref(),
                 name: &p.name,
                 muted: p.muted,
                 deafened: p.deafened,
@@ -3012,6 +3064,8 @@ struct PresenceView<'a> {
     id: Uuid,
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
+    #[serde(rename = "avatarAsset", skip_serializing_if = "Option::is_none")]
+    avatar_asset: Option<&'a str>,
     name: &'a str,
     muted: bool,
     deafened: bool,
@@ -3028,6 +3082,7 @@ fn presence_snapshot(r: &Registry) -> Value {
         .map(|p| PresenceView {
             id: p.id,
             avatar_id: p.avatar_id,
+            avatar_asset: p.avatar_asset.as_deref(),
             name: &p.name,
             muted: p.muted,
             deafened: p.deafened,

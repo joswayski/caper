@@ -323,6 +323,9 @@ async fn deliver(
     messages: &mut [Value],
 ) -> Result<(), ApiError> {
     assets::mark_deleted(pool, messages).await?;
+    crate::pictures::enrich_people(pool, messages)
+        .await
+        .map_err(database_error)?;
     for message in messages.iter_mut() {
         *message = assets::sign_attachments(std::mem::take(message), cdn);
     }
@@ -555,7 +558,7 @@ async fn session(
         .execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok(Json(
-        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"avatarId":account.avatar_id}}),
+        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"avatarId":account.avatar_id,"avatarAsset":account.avatar_asset}}),
     ))
 }
 
@@ -627,7 +630,14 @@ async fn reactors(
 }
 
 /// Emoji, then the reactor's public ID, username, display name and avatar.
-type ReactorRow = (String, String, Option<String>, Option<String>, i16);
+type ReactorRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i16,
+    Option<String>,
+);
 
 /// Who reacted, for hover text and long-press sheets. Snapshots carry only
 /// public IDs; names and avatars load on demand with the same read access as
@@ -649,7 +659,7 @@ async fn reactor_list(
     .map_err(database_error)?
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     let rows: Vec<ReactorRow> = sqlx::query_as(
-        "SELECT r.emoji,u.external_id,u.username,u.display_name,u.avatar_id
+        "SELECT r.emoji,u.external_id,u.username,u.display_name,u.avatar_id,u.avatar_asset
          FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id
          WHERE r.message_id=$1 AND r.deleted_at IS NULL ORDER BY r.emoji,r.created_at,r.id",
     )
@@ -658,9 +668,12 @@ async fn reactor_list(
     .await
     .map_err(database_error)?;
     let mut reactions: Vec<Value> = Vec::new();
-    for (emoji, id, username, display_name, avatar_id) in rows {
-        let author =
+    for (emoji, id, username, display_name, avatar_id, avatar_asset) in rows {
+        let mut author =
             json!({"id":id,"username":username,"displayName":display_name,"avatarId":avatar_id});
+        if let Some(asset) = avatar_asset {
+            author["avatarAsset"] = json!(asset);
+        }
         match reactions.last_mut() {
             Some(last) if last["emoji"] == emoji.as_str() => last["authors"]
                 .as_array_mut()
@@ -742,7 +755,20 @@ async fn send(
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(assets::sign_attachments(payload, chat.cdn.as_deref())))
+    Ok(Json(assets::sign_attachments(
+        with_pictures(&chat.pool, payload).await,
+        chat.cdn.as_deref(),
+    )))
+}
+
+/// Current pictures for a response that follows a committed change. Best
+/// effort: the change already happened, so a failed lookup only leaves the
+/// mascot until the next refresh.
+pub(crate) async fn with_pictures(pool: &PgPool, payload: Value) -> Value {
+    let mut payload = [payload];
+    let _ = crate::pictures::enrich_people(pool, &mut payload).await;
+    let [payload] = payload;
+    payload
 }
 
 fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -756,9 +782,19 @@ fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
 async fn authorize_sender(
     connection: &mut sqlx::PgConnection,
     token: &str,
-) -> Result<(i64, String, String, Option<i64>, Option<i16>), ApiError> {
+) -> Result<
+    (
+        i64,
+        String,
+        String,
+        Option<i64>,
+        Option<i16>,
+        Option<String>,
+    ),
+    ApiError,
+> {
     sqlx::query_as(
-        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id, u.avatar_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
+        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id, u.avatar_id, u.avatar_asset FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
         .bind(Sha256::digest(token.as_bytes()).as_slice()).fetch_optional(connection).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session expired"))
 }
@@ -809,7 +845,7 @@ async fn publish_typing(
     token: &str,
     typing: bool,
 ) -> Result<(), ApiError> {
-    let (_, author_id, name, user_id, avatar_id) = {
+    let (_, author_id, name, user_id, avatar_id, avatar_asset) = {
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
@@ -818,7 +854,10 @@ async fn publish_typing(
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         crate::direct::authorize_interaction(&mut connection, access.id, user_id).await?;
     }
-    let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
+    let mut event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
+    if let Some(asset) = avatar_asset {
+        event["author"]["avatarAsset"] = json!(asset);
+    }
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
     // keep microseconds as a string rather than rounding through Lua/JS numbers.
@@ -925,7 +964,7 @@ pub(crate) async fn send_message(
         ));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (session_id, author_id, name, user_id, avatar_id) =
+    let (session_id, author_id, name, user_id, avatar_id, _) =
         authorize_sender(&mut tx, token).await?;
     let space_id: Option<i64> =
         sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
@@ -1200,7 +1239,7 @@ async fn persist_reaction(
     active: bool,
 ) -> Result<Value, ApiError> {
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (_, _, _, user_id, _) = authorize_sender(&mut tx, token).await?;
+    let (_, _, _, user_id, _, _) = authorize_sender(&mut tx, token).await?;
     // Match message creation's space -> channel lock order. In particular, a
     // membership revocation which won the space lock cannot be bypassed using
     // a snapshot taken while this request was waiting.
@@ -1346,7 +1385,7 @@ async fn persist_pin(
     active: bool,
 ) -> Result<Value, ApiError> {
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (_, author_id, name, user_id, avatar_id) = authorize_sender(&mut tx, token).await?;
+    let (_, author_id, name, user_id, avatar_id, _) = authorize_sender(&mut tx, token).await?;
     // Match the space -> channel lock order of membership edits/reactions.
     // Read permissions after waiting, never from a pre-revocation snapshot.
     let space_id: Option<i64> =
@@ -1518,16 +1557,22 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let count = rows.len();
     let mut publishes = redis::pipe();
     let (mut channels, mut seqs) = (Vec::with_capacity(count), Vec::with_capacity(count));
+    let mut events = Vec::with_capacity(count);
     for (channel, seq, event, avatar_id, name) in rows {
-        let event = enrich_author(event, avatar_id, name.as_deref());
+        events.push(enrich_author(event, avatar_id, name.as_deref()));
+        channels.push(channel);
+        seqs.push(seq);
+    }
+    crate::pictures::enrich_people(&mut *tx, &mut events)
+        .await
+        .map_err(|_| ())?;
+    for event in events {
         let topic = format!("{TOPIC}:{}", event["channelId"].as_str().ok_or(())?);
         publishes
             .cmd("PUBLISH")
             .arg(topic)
             .arg(event.to_string())
             .ignore();
-        channels.push(channel);
-        seqs.push(seq);
     }
     // One pipelined round trip in claim order, then one UPDATE. Any failure
     // rolls the whole claim back, exactly as a failure mid-loop did before.

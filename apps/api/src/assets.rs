@@ -2,7 +2,10 @@
 //! reserves quota, presigns one exact upload, verifies the stored object, and
 //! signs short-lived delivery URLs that the CDN Worker checks.
 use crate::{
-    ApiError, AppState, RuntimeEnvironment, auth::Principal, auth::random_id,
+    ApiError, AppState, RuntimeEnvironment,
+    auth::Principal,
+    auth::random_id,
+    pictures::{self, Purpose},
     spaces::channel_access,
 };
 use axum::{
@@ -36,7 +39,7 @@ const DAY: i64 = 24 * 60 * 60;
 
 type HmacSha256 = Hmac<Sha256>;
 
-fn unavailable() -> ApiError {
+pub(crate) fn unavailable() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "uploads unavailable")
 }
 fn database_error(_: sqlx::Error) -> ApiError {
@@ -45,7 +48,7 @@ fn database_error(_: sqlx::Error) -> ApiError {
 fn invalid(message: &'static str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, message)
 }
-fn not_found() -> ApiError {
+pub(crate) fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "file not found")
 }
 
@@ -298,11 +301,11 @@ impl R2 {
         }
     }
 
-    async fn head_bytes(&self, key: &str) -> Result<Vec<u8>, ApiError> {
+    async fn head_bytes(&self, key: &str, length: u64) -> Result<Vec<u8>, ApiError> {
         let response = self
             .http
             .get(self.presign("GET", key, 60, &[]))
-            .header("range", "bytes=0-63")
+            .header("range", format!("bytes=0-{}", length - 1))
             .send()
             .await
             .map_err(|_| unavailable())?;
@@ -310,7 +313,11 @@ impl R2 {
             return Err(unavailable());
         }
         let bytes = response.bytes().await.map_err(|_| unavailable())?;
-        Ok(bytes.iter().take(64).copied().collect())
+        Ok(bytes
+            .iter()
+            .take(usize::try_from(length).unwrap_or(usize::MAX))
+            .copied()
+            .collect())
     }
 
     async fn delete(&self, key: &str) -> Result<(), ()> {
@@ -637,7 +644,10 @@ struct PreviewInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateInput {
-    channel_id: String,
+    /// `attachment` (default), `avatar` or `spaceIcon`.
+    purpose: Option<String>,
+    channel_id: Option<String>,
+    space_id: Option<String>,
     filename: String,
     content_type: String,
     byte_size: i64,
@@ -717,6 +727,8 @@ fn upload(url: String, headers: &[(&str, &str)]) -> Value {
 #[derive(sqlx::FromRow)]
 struct Row {
     external_id: String,
+    purpose: String,
+    space_id: Option<i64>,
     kind: String,
     content_type: String,
     filename: String,
@@ -728,7 +740,7 @@ struct Row {
     preview_byte_size: Option<i64>,
     uploaded_at: Option<DateTime<Utc>>,
 }
-const COLUMNS: &str = "external_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at";
+const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at";
 
 /// The attachment shape embedded in message content (without URLs).
 fn describe(row: &Row) -> Value {
@@ -759,7 +771,8 @@ async fn stored_bytes(
     user: i64,
 ) -> Result<(i64, i64, i64), ApiError> {
     sqlx::query_as(
-        "SELECT COALESCE(sum(byte_size + COALESCE(preview_byte_size,0)) FILTER (WHERE purged_at IS NULL),0)::bigint,
+        // Pictures are kept after replacement and stay out of the file quota.
+        "SELECT COALESCE(sum(byte_size + COALESCE(preview_byte_size,0)) FILTER (WHERE purged_at IS NULL AND purpose='attachment'),0)::bigint,
                 count(*) FILTER (WHERE created_at > now() - interval '1 minute'),
                 count(*) FILTER (WHERE uploaded_at IS NULL AND deleted_at IS NULL)
          FROM public.assets WHERE owner_id=$1",
@@ -776,6 +789,7 @@ async fn create(
     Json(input): Json<CreateInput>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let assets = enabled(&state)?;
+    let purpose = Purpose::parse(input.purpose.as_deref())?;
     let name = filename(&input.filename)?;
     let content_type = content_type(&input.content_type)?;
     let kind = kind(&content_type);
@@ -789,7 +803,8 @@ async fn create(
         None => None,
         Some(preview) => {
             let preview_type = content_type_for_preview(&preview.content_type)?;
-            if !matches!(kind, "image" | "video")
+            if purpose.is_picture()
+                || !matches!(kind, "image" | "video")
                 || !(1..=PREVIEW_MAX_BYTES).contains(&preview.byte_size)
             {
                 return Err(invalid("invalid preview"));
@@ -798,9 +813,50 @@ async fn create(
         }
     };
     let total = input.byte_size + preview.as_ref().map_or(0, |(_, size)| *size);
-    let access = channel_access(&assets.pool, &input.channel_id, Some(principal.user.id)).await?;
+    let (channel, space) = match purpose {
+        Purpose::Attachment => {
+            if input.space_id.is_some() {
+                return Err(invalid("invalid upload target"));
+            }
+            let channel = input
+                .channel_id
+                .as_deref()
+                .ok_or_else(|| invalid("invalid upload target"))?;
+            let access = channel_access(&assets.pool, channel, Some(principal.user.id)).await?;
+            (Some(access.id), None)
+        }
+        Purpose::Avatar | Purpose::SpaceIcon => {
+            if input.channel_id.is_some()
+                || input.duration_ms.is_some()
+                || input.source_byte_size.is_some()
+                || (purpose == Purpose::Avatar) != input.space_id.is_none()
+            {
+                return Err(invalid("invalid upload target"));
+            }
+            pictures::check_reservation(&content_type, input.byte_size, width, height)?;
+            let space = match &input.space_id {
+                None => None,
+                Some(space) => Some(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo",
+                    )
+                    .bind(space)
+                    .bind(principal.user.id)
+                    .fetch_optional(&assets.pool)
+                    .await
+                    .map_err(database_error)?
+                    .ok_or_else(crate::spaces::not_found)?,
+                ),
+            };
+            (None, space)
+        }
+    };
 
-    let id = random_id(16);
+    let id = random_id(if purpose.is_picture() {
+        pictures::ID_LENGTH
+    } else {
+        16
+    });
     let mut tx = assets.pool.begin().await.map_err(database_error)?;
     // Serialize one person's reservations so parallel uploads cannot overshoot.
     sqlx::query("SELECT 1 FROM public.users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE")
@@ -816,19 +872,36 @@ async fn create(
             "uploading too quickly; try again shortly",
         ));
     }
-    if used + total > assets.quota_bytes {
+    if purpose.is_picture() {
+        let today: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM public.assets WHERE owner_id=$1 AND purpose<>'attachment' AND created_at > now() - interval '1 day'",
+        )
+        .bind(principal.user.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if today >= pictures::PER_DAY {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many picture changes today; try again tomorrow",
+            )
+            .with_code("picture_rate_limited"));
+        }
+    } else if used + total > assets.quota_bytes {
         return Err(
             ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "storage limit reached")
                 .with_code("storage_full"),
         );
     }
     sqlx::query(
-        "INSERT INTO public.assets (external_id,owner_id,purpose,channel_id,kind,content_type,filename,byte_size,source_byte_size,width,height,duration_ms,preview_content_type,preview_byte_size)
-         VALUES ($1,$2,'attachment',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        "INSERT INTO public.assets (external_id,owner_id,purpose,channel_id,space_id,kind,content_type,filename,byte_size,source_byte_size,width,height,duration_ms,preview_content_type,preview_byte_size)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
     .bind(&id)
     .bind(principal.user.id)
-    .bind(access.id)
+    .bind(purpose.column())
+    .bind(channel)
+    .bind(space)
     .bind(kind)
     .bind(&content_type)
     .bind(&name)
@@ -855,8 +928,10 @@ async fn create(
         "id": id,
         "kind": kind,
         "upload": upload(assets.r2.presign("PUT", &original_key(&id), UPLOAD_URL_SECONDS, &headers), &headers[..1]),
-        "storage": {"used": used + total, "limit": assets.quota_bytes},
     });
+    if !purpose.is_picture() {
+        body["storage"] = json!({"used": used + total, "limit": assets.quota_bytes});
+    }
     // Browsers set Content-Length themselves; clients send only the listed headers.
     body["upload"]["headers"]["content-disposition"] = json!(disposition);
     if let Some((preview_type, preview_size)) = &preview {
@@ -899,8 +974,9 @@ async fn complete(
     .await
     .map_err(database_error)?
     .ok_or_else(not_found)?;
+    let purpose = Purpose::from_column(&row.purpose);
     if row.uploaded_at.is_some() {
-        return Ok(Json(describe(&row)));
+        return completed(&state, assets, &row, principal.user.id).await;
     }
     let mut checks = vec![(
         original_key(&asset),
@@ -915,27 +991,83 @@ async fn complete(
             None => {
                 return Err(ApiError::new(StatusCode::CONFLICT, "upload not finished"));
             }
-            Some(size) if size != *expected => return reject(assets, &asset).await,
+            Some(size) if size != *expected => return reject(assets, &asset, purpose).await,
             Some(_) => {}
         }
-        if opens_in_browser(content_type) && !sniff(content_type, &assets.r2.head_bytes(key).await?)
+        if purpose.is_picture() {
+            // Pictures also prove their real pixel size from the stored bytes.
+            let head = assets.r2.head_bytes(key, pictures::HEAD_BYTES).await?;
+            if !sniff(content_type, &head) || !pictures::fits(content_type, &head) {
+                return reject(assets, &asset, purpose).await;
+            }
+        } else if opens_in_browser(content_type)
+            && !sniff(content_type, &assets.r2.head_bytes(key, 64).await?)
         {
-            return reject(assets, &asset).await;
+            return reject(assets, &asset, purpose).await;
         }
     }
-    let completed = sqlx::query("UPDATE public.assets SET uploaded_at=COALESCE(uploaded_at,now()) WHERE external_id=$1 AND deleted_at IS NULL")
+    let mut tx = assets.pool.begin().await.map_err(database_error)?;
+    let first = sqlx::query("UPDATE public.assets SET uploaded_at=now() WHERE external_id=$1 AND deleted_at IS NULL AND uploaded_at IS NULL")
         .bind(&asset)
-        .execute(&assets.pool)
+        .execute(&mut *tx)
         .await
-        .map_err(database_error)?;
-    if completed.rows_affected() == 0 {
-        return Err(not_found());
+        .map_err(database_error)?
+        .rows_affected()
+        == 1;
+    // Only the first completion applies a picture, so a late retry can never
+    // undo a newer change.
+    if first
+        && purpose.is_picture()
+        && !pictures::apply(&mut tx, purpose, &asset, principal.user.id, row.space_id)
+            .await
+            .map_err(database_error)?
+    {
+        // The space was deleted or changed hands while this was uploading.
+        sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=$1")
+            .bind(&asset)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        return Err(crate::spaces::not_found());
     }
-    Ok(Json(describe(&row)))
+    tx.commit().await.map_err(database_error)?;
+    if !first {
+        // Completed by a concurrent request, or cancelled meanwhile.
+        let live: bool =
+            sqlx::query_scalar("SELECT deleted_at IS NULL FROM public.assets WHERE external_id=$1")
+                .bind(&asset)
+                .fetch_one(&assets.pool)
+                .await
+                .map_err(database_error)?;
+        if !live {
+            return Err(not_found());
+        }
+    }
+    completed(&state, assets, &row, principal.user.id).await
+}
+
+/// A completed upload's description; pictures add the account or space they
+/// now belong to, as it is at this moment.
+async fn completed(
+    state: &AppState,
+    assets: &Assets,
+    row: &Row,
+    owner: i64,
+) -> Result<Json<Value>, ApiError> {
+    let mut body = describe(row);
+    let purpose = Purpose::from_column(&row.purpose);
+    if let Some((key, value)) =
+        pictures::applied_body(state, &assets.pool, purpose, owner, row.space_id).await?
+    {
+        body[key] = value;
+    }
+    Ok(Json(body))
 }
 
 /// Cancellation races safely with Send's row lock: only an unlinked file can
 /// be abandoned. Repeating it does not postpone cleanup or erase message files.
+/// A completed picture is already applied and can only be replaced or removed.
 async fn cancel(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -943,8 +1075,8 @@ async fn cancel(
 ) -> Result<StatusCode, ApiError> {
     let assets = enabled(&state)?;
     let mut tx = assets.pool.begin().await.map_err(database_error)?;
-    let message: Option<i64> = sqlx::query_scalar(
-        "SELECT message_id FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
+    let (message, purpose, uploaded): (Option<i64>, String, bool) = sqlx::query_as(
+        "SELECT message_id, purpose, uploaded_at IS NOT NULL FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
     )
     .bind(&asset)
     .bind(principal.user.id)
@@ -954,6 +1086,12 @@ async fn cancel(
     .ok_or_else(not_found)?;
     if message.is_some() {
         return Err(ApiError::new(StatusCode::CONFLICT, "file already sent"));
+    }
+    if uploaded && Purpose::from_column(&purpose).is_picture() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "picture already applied",
+        ));
     }
     sqlx::query(
         "UPDATE public.assets SET deleted_at=COALESCE(deleted_at,now()) WHERE external_id=$1",
@@ -968,7 +1106,7 @@ async fn cancel(
 
 /// Refuse an upload whose bytes do not match what was reserved. The purge loop
 /// removes its objects and releases the quota.
-async fn reject(assets: &Assets, asset: &str) -> Result<Json<Value>, ApiError> {
+async fn reject(assets: &Assets, asset: &str, purpose: Purpose) -> Result<Json<Value>, ApiError> {
     sqlx::query(
         "UPDATE public.assets SET deleted_at=now() WHERE external_id=$1 AND deleted_at IS NULL",
     )
@@ -976,6 +1114,9 @@ async fn reject(assets: &Assets, asset: &str) -> Result<Json<Value>, ApiError> {
     .execute(&assets.pool)
     .await
     .map_err(database_error)?;
+    if purpose.is_picture() {
+        return Err(pictures::rejected());
+    }
     Err(ApiError::new(
         StatusCode::UNPROCESSABLE_ENTITY,
         "file does not match its declared size or type",
@@ -1204,7 +1345,8 @@ pub(crate) async fn notification_content(
 }
 
 /// Abandoned and rejected uploads lose their objects immediately; files
-/// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain.
+/// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain, and so do
+/// applied pictures, including ones since replaced or removed.
 pub(crate) fn spawn_purger(assets: Assets) {
     tokio::spawn(async move {
         let mut sweep = PurgeSweep::default();
@@ -1268,10 +1410,12 @@ impl PurgeSweep {
 
 pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     sqlx::query(
+        // Abandoned reservations of any kind; completed pictures were applied
+        // when they completed and are kept.
         "UPDATE public.assets SET deleted_at=now()
          WHERE deleted_at IS NULL AND message_id IS NULL
            AND ((uploaded_at IS NULL AND created_at < now() - interval '1 hour')
-             OR uploaded_at < now() - interval '24 hours')",
+             OR (purpose='attachment' AND uploaded_at < now() - interval '24 hours'))",
     )
     .execute(&assets.pool)
     .await

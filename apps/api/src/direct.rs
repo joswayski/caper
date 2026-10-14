@@ -53,7 +53,7 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
 /// recipient only; the sender keeps seeing theirs as waiting.
 pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
-        "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'team',u.team_account),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
+        "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset,'team',u.team_account),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
                 'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id
@@ -70,7 +70,7 @@ pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>
 /// Composers suggest them after `@` in DMs; it is not a directory search.
 pub(crate) async fn people(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
-        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id)
+        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset)
          FROM public.users u
          WHERE u.id<>$1 AND u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL
            AND (EXISTS(SELECT 1 FROM public.space_members mine
@@ -346,7 +346,7 @@ async fn list_blocks(
 /// Accounts `user` has blocked, newest first. Clients hide their messages.
 pub(crate) async fn blocks(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
-        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id)
+        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset)
          FROM public.user_blocks b JOIN public.users u ON u.id=b.blocked_id
          WHERE b.blocker_id=$1 AND b.deleted_at IS NULL AND u.deleted_at IS NULL
          ORDER BY b.created_at DESC,b.id DESC",

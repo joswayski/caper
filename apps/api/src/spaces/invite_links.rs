@@ -41,6 +41,8 @@ struct Person {
     username: String,
     display_name: String,
     avatar_id: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avatar_asset: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -62,6 +64,7 @@ type LinkRow = (
     String,
     String,
     i16,
+    Option<String>,
     i32,
     Option<i32>,
     Option<DateTime<Utc>>,
@@ -76,6 +79,7 @@ fn link(
         username,
         display_name,
         avatar_id,
+        avatar_asset,
         uses,
         max_uses,
         expires_at,
@@ -91,6 +95,7 @@ fn link(
             username,
             display_name,
             avatar_id,
+            avatar_asset,
         },
         uses,
         max_uses,
@@ -102,7 +107,7 @@ fn link(
 // Landing channels are shown only while still public; otherwise joins use the
 // starter channel, so a link never reveals a private channel's name.
 const LINK_SELECT: &str =
-    "SELECT l.code,c.external_id,c.name,u.username,u.display_name,u.avatar_id,
+    "SELECT l.code,c.external_id,c.name,u.username,u.display_name,u.avatar_id,u.avatar_asset,
         l.uses,l.max_uses,l.expires_at,l.created_at
      FROM public.space_invite_links l JOIN public.users u ON u.id=l.created_by
      LEFT JOIN public.channels c ON c.id=l.channel_id AND c.deleted_at IS NULL AND NOT c.private";
@@ -229,9 +234,11 @@ pub(super) async fn revoke_link(
 type PreviewRow = (
     String,
     Option<String>,
+    Option<String>,
     String,
     String,
     i16,
+    Option<String>,
     i64,
     Option<DateTime<Utc>>,
     bool,
@@ -261,7 +268,7 @@ pub(crate) async fn preview(
     };
     let row: Option<PreviewRow> =
         sqlx::query_as(&format!(
-            "SELECT s.name,c.name,u.username,u.display_name,u.avatar_id,
+            "SELECT s.name,s.icon_asset,c.name,u.username,u.display_name,u.avatar_id,u.avatar_asset,
                 (SELECT count(*) FROM public.space_members sm JOIN public.users mu ON mu.id=sm.user_id
                  WHERE sm.space_id=s.id AND sm.deleted_at IS NULL AND mu.deleted_at IS NULL),
                 l.expires_at,sm.user_id IS NOT NULL
@@ -276,13 +283,27 @@ pub(crate) async fn preview(
         .fetch_optional(pool(&state)?)
         .await
         .map_err(database_error)?;
-    let (space, channel, username, display_name, avatar_id, members, expires_at, already_member) =
-        row.ok_or_else(invalid_link)?;
+    let (
+        space,
+        icon_asset,
+        channel,
+        username,
+        display_name,
+        avatar_id,
+        avatar_asset,
+        members,
+        expires_at,
+        already_member,
+    ) = row.ok_or_else(invalid_link)?;
+    let mut space = json!({"name": space});
+    if let Some(icon) = icon_asset {
+        space["iconAsset"] = json!(icon);
+    }
     Ok(Json(json!({
         "code": code,
-        "space": {"name": space},
+        "space": space,
         "channel": channel.map(|name| json!({"name": name})),
-        "inviter": Person { username, display_name, avatar_id },
+        "inviter": Person { username, display_name, avatar_id, avatar_asset },
         "memberCount": members,
         "expiresAt": expires_at,
         "alreadyMember": already_member,
@@ -310,9 +331,15 @@ pub(crate) async fn accept(
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     // Space first, matching the space -> recipient lock order used by
     // invitation and removal paths; then the link row for its use counter.
-    let (space_id, space, name, owner_id, owner): (i64, String, String, String, i64) =
-        sqlx::query_as(
-            "SELECT s.id,s.external_id,s.name,o.external_id,s.owner_id FROM public.spaces s
+    let (space_id, space, name, owner_id, owner, icon_asset): (
+        i64,
+        String,
+        String,
+        String,
+        i64,
+        Option<String>,
+    ) = sqlx::query_as(
+            "SELECT s.id,s.external_id,s.name,o.external_id,s.owner_id,s.icon_asset FROM public.spaces s
          JOIN public.users o ON o.id=s.owner_id
          WHERE s.id=(SELECT space_id FROM public.space_invite_links WHERE code=$1)
            AND s.deleted_at IS NULL AND NOT s.demo FOR UPDATE OF s",
@@ -402,7 +429,7 @@ pub(crate) async fn accept(
     };
     tx.commit().await.map_err(database_error)?;
     Ok(Json(json!({
-        "space": Space { id: space, name, owner_id },
+        "space": Space { id: space, name, owner_id, icon_asset },
         "channelId": channel,
         "joined": !member,
     })))

@@ -325,10 +325,15 @@ async fn fake_r2() -> (String, Store, DeleteFailures) {
                 let Some(body) = store.lock().unwrap().get(&key).cloned() else {
                     return StatusCode::NOT_FOUND.into_response();
                 };
-                let body = if headers.contains_key("range") {
-                    body.into_iter().take(64).collect()
-                } else {
-                    body
+                // Only the `bytes=0-{end}` prefixes the API asks for.
+                let end = headers
+                    .get("range")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("bytes=0-"))
+                    .and_then(|end| end.parse::<usize>().ok());
+                let body = match end {
+                    Some(end) => body.into_iter().take(end + 1).collect(),
+                    None => body,
                 };
                 ([("content-length", body.len().to_string())], body).into_response()
             }
@@ -364,6 +369,7 @@ fn principal(id: i64, external_id: &str) -> Principal {
             id,
             external_id: external_id.to_owned(),
             avatar_id: 1,
+            avatar_asset: None,
             email: None,
             username: Some(external_id.to_lowercase()),
             display_name: Some(external_id.to_owned()),
@@ -999,6 +1005,469 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     assert_eq!(usage["compression"]["imageQuality"], 92);
 
     pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}
+
+fn gif(width: u16, height: u16, size: usize) -> Vec<u8> {
+    let mut bytes = b"GIF89a".to_vec();
+    bytes.extend(width.to_le_bytes());
+    bytes.extend(height.to_le_bytes());
+    bytes.resize(size, 0);
+    bytes
+}
+
+fn sized_png(width: u32, height: u32, size: usize) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.resize(size, 0);
+    bytes
+}
+
+/// A camera JPEG: its frame header sits behind a large EXIF segment.
+fn camera_jpeg(width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1, 0x4e, 0x22];
+    bytes.resize(bytes.len() + 0x4e20, 0);
+    bytes.extend([0xff, 0xc0, 0x00, 0x11, 8]);
+    bytes.extend(height.to_be_bytes());
+    bytes.extend(width.to_be_bytes());
+    bytes.resize(bytes.len() + 400, 0);
+    bytes
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way_out() {
+    let url = std::env::var("CHAT_TEST_DATABASE_URL")
+        .expect("CHAT_TEST_DATABASE_URL must point at disposable Postgres");
+    let options = PgConnectOptions::from_str(&url).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("pictures_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+    let mut people = Vec::new();
+    for name in ["Owner", "Outsider"] {
+        let external = random_id(12);
+        let (id, avatar): (i64, i16) = sqlx::query_as("INSERT INTO public.users(external_id,username,display_name) VALUES($1,lower($2),$2) RETURNING id,avatar_id")
+            .bind(&external).bind(name).fetch_one(&pool).await.unwrap();
+        people.push((principal(id, &external), avatar));
+    }
+    let (owner, mascot) = people[0].clone();
+    let outsider = people[1].0.clone();
+    let space_external = random_id(12);
+    let space_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Friends',$2) RETURNING id",
+    )
+    .bind(&space_external)
+    .bind(owner.user.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space_id)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (endpoint, store, _) = fake_r2().await;
+    // A tiny file quota: pictures must not count against it.
+    let assets = Assets::new(
+        pool.clone(),
+        R2::new(endpoint, "test".into(), "key".into(), "secret".into()),
+        100,
+    );
+    let signer = Arc::new(CdnSigner::new("https://cdn.test".into(), vec![9; 32]));
+    let mut state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.assets = Some(assets.clone());
+    let mut chat = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
+    chat.cdn = Some(signer.clone());
+    state.chat = Some(chat);
+
+    let picture = |purpose: &str, content_type: &str, size: usize, side: i32| {
+        let mut input = json!({"purpose": purpose, "filename": "picture", "contentType": content_type,
+            "byteSize": size, "width": side, "height": side});
+        if purpose == "spaceIcon" {
+            input["spaceId"] = json!(space_external);
+        }
+        serde_json::from_value::<CreateInput>(input).unwrap()
+    };
+    let create_as = |who: &Principal, input: CreateInput| {
+        create(State(state.clone()), Extension(who.clone()), Json(input))
+    };
+    let complete_as = |who: &Principal, id: &str| {
+        complete(
+            State(state.clone()),
+            Extension(who.clone()),
+            Path(id.to_owned()),
+        )
+    };
+    let code = |error: ApiError| (error.status, error.code);
+
+    // Reservations: type, size, dimensions and targets are checked first.
+    assert_eq!(
+        code(
+            create_as(&owner, picture("avatar", "image/avif", 10, 10))
+                .await
+                .unwrap_err()
+        ),
+        (StatusCode::BAD_REQUEST, Some("picture_type"))
+    );
+    assert_eq!(
+        code(
+            create_as(&owner, picture("avatar", "image/png", 1024 * 1024 + 1, 10))
+                .await
+                .unwrap_err()
+        ),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("picture_too_large"))
+    );
+    assert_eq!(
+        create_as(&owner, picture("avatar", "image/gif", 100, 1025))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        create_as(&outsider, picture("spaceIcon", "image/gif", 100, 100))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let with_channel: CreateInput =
+        serde_json::from_value(json!({"purpose":"avatar","channelId":"x",
+        "filename":"a","contentType":"image/png","byteSize":10,"width":1,"height":1}))
+        .unwrap();
+    assert_eq!(
+        create_as(&owner, with_channel).await.unwrap_err().status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // A GIF far larger than the file quota uploads unchanged and applies on completion.
+    let (status, Json(first)) = create_as(&owner, picture("avatar", "image/gif", 4000, 480))
+        .await
+        .unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(first.get("storage").is_none());
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    assert_eq!(first_id.len(), crate::pictures::ID_LENGTH);
+    assert_eq!(first["upload"]["headers"]["content-type"], "image/gif");
+    put(&first, "upload", &gif(480, 480, 4000)).await;
+    let done = complete_as(&owner, &first_id).await.unwrap().0;
+    assert_eq!(done["account"]["avatarAsset"], first_id.as_str());
+    assert_eq!(done["account"]["avatarId"], mascot);
+    let usage_now = usage(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(usage_now["used"], 0);
+
+    // A newer picture wins; a late retry of the older completion never undoes it.
+    let photo = camera_jpeg(640, 480);
+    let (_, Json(second)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+        .await
+        .unwrap();
+    let second_id = second["id"].as_str().unwrap().to_owned();
+    put(&second, "upload", &photo).await;
+    assert_eq!(
+        complete_as(&owner, &second_id).await.unwrap().0["account"]["avatarAsset"],
+        second_id.as_str()
+    );
+    assert_eq!(
+        complete_as(&owner, &first_id).await.unwrap().0["account"]["avatarAsset"],
+        second_id.as_str()
+    );
+    // Applied pictures cannot be cancelled; pending ones can.
+    assert_eq!(
+        cancel(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(second_id.clone())
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::CONFLICT
+    );
+    let (_, Json(dropped)) = create_as(&owner, picture("avatar", "image/png", 50, 10))
+        .await
+        .unwrap();
+    assert_eq!(
+        cancel(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(dropped["id"].as_str().unwrap().to_owned())
+        )
+        .await
+        .unwrap(),
+        StatusCode::NO_CONTENT
+    );
+
+    // Real pixel size comes from the stored bytes, not the reservation.
+    let (_, Json(huge)) = create_as(&owner, picture("avatar", "image/png", 64, 100))
+        .await
+        .unwrap();
+    put(&huge, "upload", &sized_png(4000, 10, 64)).await;
+    let huge_id = huge["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        code(complete_as(&owner, &huge_id).await.unwrap_err()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("picture_invalid"))
+    );
+    let (_, Json(fake)) = create_as(&owner, picture("avatar", "image/png", 6, 10))
+        .await
+        .unwrap();
+    put(&fake, "upload", b"<html>").await;
+    assert_eq!(
+        code(
+            complete_as(&owner, fake["id"].as_str().unwrap())
+                .await
+                .unwrap_err()
+        ),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("picture_invalid"))
+    );
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT avatar_asset FROM public.users WHERE id=$1")
+            .bind(owner.user.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(current.as_deref(), Some(second_id.as_str()));
+
+    // Space icons apply to spaces the uploader still owns.
+    let (_, Json(icon)) = create_as(&owner, picture("spaceIcon", "image/png", 64, 256))
+        .await
+        .unwrap();
+    put(&icon, "upload", &sized_png(256, 256, 64)).await;
+    let icon_id = icon["id"].as_str().unwrap().to_owned();
+    let applied = complete_as(&owner, &icon_id).await.unwrap().0;
+    assert_eq!(applied["space"]["iconAsset"], icon_id.as_str());
+    assert_eq!(applied["space"]["id"], space_external.as_str());
+    let (_, Json(late)) = create_as(&owner, picture("spaceIcon", "image/png", 64, 256))
+        .await
+        .unwrap();
+    put(&late, "upload", &sized_png(256, 256, 64)).await;
+    sqlx::query("UPDATE public.spaces SET owner_id=$2 WHERE id=$1")
+        .bind(space_id)
+        .bind(outsider.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let late_id = late["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        complete_as(&owner, &late_id).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE public.spaces SET owner_id=$2 WHERE id=$1")
+        .bind(space_id)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let icon_now: Option<String> =
+        sqlx::query_scalar("SELECT icon_asset FROM public.spaces WHERE id=$1")
+            .bind(space_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(icon_now.as_deref(), Some(icon_id.as_str()));
+
+    // Applied pictures outlive the unsent-file lifetime, including replaced
+    // ones; abandoned, rejected and orphaned uploads are purged.
+    sqlx::query("UPDATE public.assets SET uploaded_at=now()-interval '3 days', created_at=now()-interval '3 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, Json(abandoned)) = create_as(&owner, picture("avatar", "image/png", 64, 10))
+        .await
+        .unwrap();
+    put(&abandoned, "upload", &sized_png(10, 10, 64)).await;
+    sqlx::query(
+        "UPDATE public.assets SET created_at=now()-interval '2 hours' WHERE external_id=$1",
+    )
+    .bind(abandoned["id"].as_str().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Two rejected, one cancelled, one orphaned by ownership, one abandoned.
+    assert_eq!(purge(&assets).await.unwrap(), 5);
+    for kept in [&first_id, &second_id, &icon_id] {
+        assert!(store.lock().unwrap().contains_key(&original_key(kept)));
+        let deleted: bool = sqlx::query_scalar(
+            "SELECT deleted_at IS NOT NULL FROM public.assets WHERE external_id=$1",
+        )
+        .bind(kept)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!deleted, "applied pictures are kept");
+    }
+    assert!(!store.lock().unwrap().contains_key(&original_key(&late_id)));
+
+    // Responses sign picture IDs on the way out, in people and spaces alike.
+    // The router's test sign-in is account ID 1 (the seeded Caper account).
+    let router = crate::app(state.clone());
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,1)")
+        .bind(space_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let get = |path: String| {
+        let router = router.clone();
+        async move {
+            use tower::ServiceExt;
+            let response = router
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let now = Utc::now().timestamp();
+    let signed = |id: &str| json!(signer.url(&original_key(id), now));
+    let listed = get("/api/spaces".into()).await;
+    assert_eq!(listed["spaces"][0]["iconAsset"], icon_id.as_str());
+    assert_eq!(listed["spaces"][0]["iconUrl"], signed(&icon_id));
+    let detail = get(format!("/api/spaces/{space_external}")).await;
+    assert_eq!(detail["space"]["iconUrl"], signed(&icon_id));
+    let members = detail["members"].as_array().unwrap();
+    let owner_entry = members
+        .iter()
+        .find(|member| member["id"] == owner.user.external_id.as_str())
+        .unwrap();
+    assert_eq!(owner_entry["avatarAsset"], second_id.as_str());
+    assert_eq!(owner_entry["avatarUrl"], signed(&second_id));
+    let team = members
+        .iter()
+        .find(|member| member["id"] != owner.user.external_id.as_str())
+        .unwrap();
+    assert!(team.get("avatarAsset").is_none() && team.get("avatarUrl").is_none());
+
+    // Message authors show their current picture; messages never store one.
+    let channel = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general')")
+        .bind(&channel)
+        .bind(space_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let account_hash = Sha256::digest(b"picture-account").to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&account_hash).bind(owner.user.id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")
+        .bind(random_id(12)).bind(Sha256::digest(b"picture-chat").as_slice()).bind(owner.user.id).bind(&account_hash).execute(&pool).await.unwrap();
+    let sent = crate::chat::send_message(
+        &pool,
+        &channel,
+        "picture-chat",
+        Uuid::new_v4(),
+        "hello",
+        &[],
+        None,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(sent["author"].get("avatarAsset").is_none());
+    let author = |history: Value| history["messages"][0]["author"].clone();
+    let history =
+        crate::chat::history_with(&pool, &channel, None, Some(owner.user.id), Some(&signer))
+            .await
+            .unwrap();
+    assert_eq!(author(history)["avatarAsset"], second_id.as_str());
+
+    // Removing returns to the same saved mascot; only owners clear icons.
+    let removed = crate::pictures::remove_avatar(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0;
+    assert!(removed.get("avatarAsset").is_none());
+    assert_eq!(removed["avatarId"], mascot);
+    let history =
+        crate::chat::history_with(&pool, &channel, None, Some(owner.user.id), Some(&signer))
+            .await
+            .unwrap();
+    assert!(author(history).get("avatarAsset").is_none());
+    assert_eq!(
+        crate::pictures::remove_icon(
+            State(state.clone()),
+            Extension(outsider.clone()),
+            Path(space_external.clone())
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let cleared = crate::pictures::remove_icon(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path(space_external.clone()),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert!(cleared.get("iconAsset").is_none());
+    assert_eq!(cleared["name"], "Friends");
+
+    // Picture changes are limited per day, separately from file uploads.
+    sqlx::query("UPDATE public.assets SET created_at=now() WHERE owner_id=$1")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at,created_at)
+         SELECT 'limit' || n, $1, 'avatar', 'image', 'image/png', 'a', 1, now()-interval '2 minutes', now()-interval '2 minutes' FROM generate_series(1, 50) n",
+    )
+    .bind(owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            create_as(&owner, picture("avatar", "image/png", 50, 10))
+                .await
+                .unwrap_err()
+        ),
+        (StatusCode::TOO_MANY_REQUESTS, Some("picture_rate_limited"))
+    );
+
+    drop(pool);
     admin
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await

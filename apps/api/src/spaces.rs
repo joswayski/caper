@@ -203,6 +203,8 @@ struct Space {
     id: String,
     name: String,
     owner_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_asset: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -220,6 +222,8 @@ struct Channel {
 struct Member {
     id: String,
     avatar_id: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avatar_asset: Option<String>,
     username: String,
     display_name: String,
     owner: bool,
@@ -333,8 +337,8 @@ async fn list_spaces(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<Value>, ApiError> {
-    let spaces: Vec<Space> = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT s.external_id, s.name, owner.external_id
+    let spaces: Vec<Space> = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT s.external_id, s.name, owner.external_id, s.icon_asset
          FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id
          JOIN public.users owner ON owner.id = s.owner_id
          WHERE sm.user_id = $1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL AND NOT s.demo
@@ -345,11 +349,16 @@ async fn list_spaces(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, name, owner_id)| Space { id, name, owner_id })
+    .map(|(id, name, owner_id, icon_asset)| Space {
+        id,
+        name,
+        owner_id,
+        icon_asset,
+    })
     .collect();
     // Owners are the only inviters; share their public identity, never the member list.
-    let invitations: Vec<Value> = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT s.external_id,s.name,o.external_id,o.username,o.display_name FROM public.space_invitations i
+    let invitations: Vec<Value> = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
+        "SELECT s.external_id,s.name,o.external_id,o.username,o.display_name,s.icon_asset FROM public.space_invitations i
          JOIN public.spaces s ON s.id=i.space_id JOIN public.users o ON o.id=s.owner_id
          WHERE i.user_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days'
            AND s.deleted_at IS NULL AND NOT s.demo
@@ -362,9 +371,13 @@ async fn list_spaces(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, name, owner_id, username, display_name)| {
-        json!({"id":id,"name":name,"ownerId":owner_id,
-            "inviter":{"username":username,"displayName":display_name}})
+    .map(|(id, name, owner_id, username, display_name, icon_asset)| {
+        let mut invitation = json!({"id":id,"name":name,"ownerId":owner_id,
+            "inviter":{"username":username,"displayName":display_name}});
+        if let Some(icon) = icon_asset {
+            invitation["iconAsset"] = json!(icon);
+        }
+        invitation
     })
     .collect();
     Ok(Json(
@@ -430,6 +443,7 @@ async fn create_space(
             id,
             name,
             owner_id: principal.user.external_id,
+            icon_asset: None,
         }),
     ))
 }
@@ -440,8 +454,8 @@ async fn get_space(
     Path(space): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
-    let row: (i64, String, String, String) = sqlx::query_as(
-        "SELECT s.id,s.name,s.external_id,o.external_id FROM public.spaces s
+    let row: (i64, String, String, String, Option<String>) = sqlx::query_as(
+        "SELECT s.id,s.name,s.external_id,o.external_id,s.icon_asset FROM public.spaces s
          JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo
            AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2 AND deleted_at IS NULL)",
@@ -502,7 +516,7 @@ async fn get_space(
     .map(|(channel, ids)| (channel, json!(ids)))
     .collect();
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members,"channelMembers":channel_members,"channelInvitations":invitations}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3,icon_asset:row.4},"channels":channels,"members":members,"channelMembers":channel_members,"channelInvitations":invitations}),
     ))
 }
 
@@ -513,8 +527,8 @@ async fn rename_space(
     Json(input): Json<NameInput>,
 ) -> Result<Json<Space>, ApiError> {
     let name = space_name(&input.name)?;
-    let row: Option<(String, String)> = sqlx::query_as(
-        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING external_id,(SELECT external_id FROM public.users WHERE id=$2)",
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING external_id,(SELECT external_id FROM public.users WHERE id=$2),icon_asset",
     )
     .bind(&space)
     .bind(principal.user.id)
@@ -522,8 +536,33 @@ async fn rename_space(
     .fetch_optional(pool(&state)?)
     .await
     .map_err(database_error)?;
-    let (id, owner_id) = row.ok_or_else(not_found)?;
-    Ok(Json(Space { id, name, owner_id }))
+    let (id, owner_id, icon_asset) = row.ok_or_else(not_found)?;
+    Ok(Json(Space {
+        id,
+        name,
+        owner_id,
+        icon_asset,
+    }))
+}
+
+/// A space as the spaces list shows it, for picture changes.
+pub(crate) async fn summary(pool: &PgPool, space: i64) -> Result<Value, ApiError> {
+    let (id, name, owner_id, icon_asset): (String, String, String, Option<String>) =
+        sqlx::query_as(
+            "SELECT s.external_id,s.name,o.external_id,s.icon_asset FROM public.spaces s
+             JOIN public.users o ON o.id=s.owner_id WHERE s.id=$1 AND s.deleted_at IS NULL",
+        )
+        .bind(space)
+        .fetch_optional(pool)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(not_found)?;
+    Ok(json!(Space {
+        id,
+        name,
+        owner_id,
+        icon_asset,
+    }))
 }
 
 async fn delete_space(
@@ -735,6 +774,7 @@ async fn add_space_member(
         Json(Member {
             id: member.1,
             avatar_id: member.2,
+            avatar_asset: member.5,
             username: member.3,
             display_name: member.4,
             owner: member.0 == principal.user.id,
@@ -771,8 +811,8 @@ async fn list_invitations(
     let pool = pool(&state)?;
     let id: i64 = sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo")
         .bind(&space).bind(principal.user.id).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)?;
-    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String)>(
-        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.space_invitations i
+    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, Option<String>, String, String)>(
+        "SELECT u.external_id,u.avatar_id,u.avatar_asset,u.username,u.display_name FROM public.space_invitations i
          JOIN public.users u ON u.id=i.user_id WHERE i.space_id=$1 AND i.status='pending'
            AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL
          ORDER BY i.updated_at,u.id",
@@ -782,9 +822,10 @@ async fn list_invitations(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, avatar_id, username, display_name)| Member {
+    .map(|(id, avatar_id, avatar_asset, username, display_name)| Member {
         id,
         avatar_id,
+        avatar_asset,
         username,
         display_name,
         owner: false,
@@ -800,8 +841,8 @@ async fn accept_invitation(
 ) -> Result<Json<Space>, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     // The same space -> recipient lock order as invitation/removal operations.
-    let (id,name,owner_id): (i64,String,String) = sqlx::query_as(
-        "SELECT s.id,s.name,o.external_id FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
+    let (id,name,owner_id,icon_asset): (i64,String,String,Option<String>) = sqlx::query_as(
+        "SELECT s.id,s.name,o.external_id,s.icon_asset FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo FOR UPDATE OF s",
     ).bind(&space).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     // Invitation changes are serialized on the space row held above. Check for
@@ -832,6 +873,7 @@ async fn accept_invitation(
         id: space,
         name,
         owner_id,
+        icon_asset,
     }))
 }
 
@@ -948,8 +990,8 @@ async fn list_channel_members(
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
     let (space_id, channel_id) = owned_channel(pool, &space, &channel, principal.user.id).await?;
-    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String, bool)>(
-        "SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id
+    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, Option<String>, String, String, bool)>(
+        "SELECT u.external_id,u.avatar_id,u.avatar_asset,u.username,u.display_name,s.owner_id=u.id
          FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
          JOIN public.spaces s ON s.id=sm.space_id
          WHERE sm.space_id=$2 AND sm.deleted_at IS NULL AND u.deleted_at IS NULL
@@ -962,20 +1004,21 @@ async fn list_channel_members(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, avatar_id, username, display_name, owner)| Member {
+    .map(|(id, avatar_id, avatar_asset, username, display_name, owner)| Member {
         id,
         avatar_id,
+        avatar_asset,
         username,
         display_name,
         owner,
     })
     .collect();
-    let invitations: Vec<Value> = sqlx::query_as::<_,(String,i16,String,String)>(
-        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.channel_invitations i
+    let invitations: Vec<Value> = sqlx::query_as::<_,(String,i16,Option<String>,String,String)>(
+        "SELECT u.external_id,u.avatar_id,u.avatar_asset,u.username,u.display_name FROM public.channel_invitations i
          JOIN public.users u ON u.id=i.user_id JOIN public.space_members sm ON sm.user_id=u.id AND sm.space_id=$2 AND sm.deleted_at IS NULL
          WHERE i.channel_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL ORDER BY i.updated_at,u.id"
     ).bind(channel_id).bind(space_id).fetch_all(pool).await.map_err(database_error)?
-        .into_iter().map(|(id,avatar_id,username,display_name)|json!(Member{id,avatar_id,username,display_name,owner:false})).collect();
+        .into_iter().map(|(id,avatar_id,avatar_asset,username,display_name)|json!(Member{id,avatar_id,avatar_asset,username,display_name,owner:false})).collect();
     Ok(Json(json!({"members":rows,"invitations":invitations})))
 }
 
@@ -1036,12 +1079,12 @@ async fn owned_channel(
 async fn find_user_for_update(
     tx: &mut Transaction<'_, Postgres>,
     username: &str,
-) -> Result<(i64, String, i16, String, String), ApiError> {
+) -> Result<(i64, String, i16, String, String, Option<String>), ApiError> {
     let username = username.trim().to_ascii_lowercase();
     if !crate::accounts::valid_username(&username) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid username"));
     }
-    sqlx::query_as("SELECT id,external_id,avatar_id,username,display_name FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
+    sqlx::query_as("SELECT id,external_id,avatar_id,username,display_name,avatar_asset FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
         .bind(username).fetch_optional(&mut **tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "user not found"))
 }
@@ -1068,8 +1111,8 @@ async fn ensure_invitee_allows(
 }
 
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
-    Ok(sqlx::query_as::<_,(String,i16,String,String,bool)>("SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND sm.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
-        .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,avatar_id,username,display_name,owner)|Member{id,avatar_id,username,display_name,owner}).collect())
+    Ok(sqlx::query_as::<_,(String,i16,Option<String>,String,String,bool)>("SELECT u.external_id,u.avatar_id,u.avatar_asset,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND sm.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
+        .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,avatar_id,avatar_asset,username,display_name,owner)|Member{id,avatar_id,avatar_asset,username,display_name,owner}).collect())
 }
 
 fn constraint_or_database(error: sqlx::Error, message: &'static str) -> ApiError {
@@ -1131,6 +1174,7 @@ mod tests {
                 id,
                 external_id: external_id.to_owned(),
                 avatar_id: 42,
+                avatar_asset: None,
                 email: None,
                 username: Some(username.to_owned()),
                 display_name: Some(username.to_owned()),
@@ -1271,6 +1315,7 @@ mod tests {
                     id: incomplete_id,
                     external_id: incomplete_external,
                     avatar_id: 42,
+                    avatar_asset: None,
                     email: None,
                     username: None,
                     display_name: None,
