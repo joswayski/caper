@@ -3668,7 +3668,7 @@ internal fun counterTone(count: Int): Color = when {
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
-            supportingText = { Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
+            supportingText = { Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             supportingText = { Text("This is what people see in conversations.", color = TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
