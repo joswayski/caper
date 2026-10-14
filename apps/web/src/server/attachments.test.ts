@@ -406,6 +406,13 @@ test("expired URLs can be refreshed, garbage is dropped, and expiry is readable"
     await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch),
     {},
   );
+  assert.deepEqual(
+    await refreshAttachmentUrls(["f1"], (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch),
+    {},
+    "an offline refresh is not an unhandled rejection",
+  );
 });
 
 test("the attach control appears only when the API has uploads configured, with its compression settings", async () => {

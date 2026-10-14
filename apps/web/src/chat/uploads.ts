@@ -307,13 +307,14 @@ export async function refreshAttachmentUrls(
   ids: string[],
   fetcher: typeof fetch = fetch,
 ): Promise<Record<string, { url?: string; previewUrl?: string }>> {
+  // Offline is no fresh URLs, like a refusal; callers fire and forget.
   const response = await fetcher("/api/assets/urls", {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
     body: JSON.stringify({ ids }),
-  });
-  if (!response.ok) return {};
+  }).catch(() => undefined);
+  if (!response?.ok) return {};
   const body = (await response.json().catch(() => undefined)) as
     | { urls?: Record<string, { url?: unknown; previewUrl?: unknown }> }
     | undefined;
