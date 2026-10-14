@@ -46,13 +46,13 @@ function render(
 test("channel threads name the channel with #", () => {
   const markup = render([root]);
   expect(markup).toContain("in #general");
-  expect(markup).toContain("Also send to #general");
+  expect(markup).toContain("Also send to <strong>#general</strong>");
 });
 
 test("DM threads name the conversation without a channel #", () => {
   const markup = render([root], {}, { direct: true, channelName: "Maya" });
   expect(markup).toContain("with Maya");
-  expect(markup).toContain("Also send to conversation");
+  expect(markup).toContain("Also send to <strong>Maya</strong>");
   expect(markup).not.toContain("#Maya");
 });
 

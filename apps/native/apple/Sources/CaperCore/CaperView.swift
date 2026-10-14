@@ -3668,6 +3668,28 @@ private struct ChatView: View {
     }
 }
 
+/// A leading checkbox keeps the broadcast option away from the reply's Send button.
+private struct ThreadBroadcastToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 18))
+                    .foregroundStyle(configuration.isOn ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .frame(width: 24, height: 24)
+                configuration.label.fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Preserve the native toggle's label, value and action for VoiceOver.
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch)
+        }
+    }
+}
+
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -3704,8 +3726,7 @@ private struct NativeThreadView: View {
     @State private var arrivals = MessageArrivals()
     /// Your latest reply sent from this thread: its arrival scrolls to it.
     @State private var localReplyID: String?
-    /// Web: an icon send button, leaving the row to the broadcast toggle. Kept
-    /// out of the body so the type checker handles it separately.
+    /// Kept out of the body so the type checker handles it separately.
     private var sendReplyButton: some View {
         Button { Task { await chat.send(inThread: true) } } label: {
             CaperIcon(name: "send", size: 18)
@@ -3881,34 +3902,39 @@ private struct NativeThreadView: View {
                     Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 AttachmentDraftsView(chat: chat, inThread: true)
+                Toggle(isOn: $chat.threadBroadcast) {
+                    (Text("Also send to ") + Text(direct ? chat.channelName : "#\(chat.channelName)").font(CaperTheme.font(11, weight: .bold)))
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+                .toggleStyle(ThreadBroadcastToggleStyle())
+                .disabled(chat.pendingMessage != nil)
                 #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
                 #endif
-                HStack(alignment: .bottom, spacing: 0) {
-                    AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
-                    // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
-                    ZStack(alignment: .topLeading) {
-                        if chat.threadDraft.isEmpty {
-                            Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                HStack(alignment: .bottom, spacing: 8) {
+                    HStack(alignment: .bottom, spacing: 0) {
+                        AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
+                        // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
+                        ZStack(alignment: .topLeading) {
+                            if chat.threadDraft.isEmpty {
+                                Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            }
+                            threadComposer
                         }
-                        threadComposer
+                            .frame(minHeight: 42, maxHeight: 174)
+                            .fixedSize(horizontal: false, vertical: true)
+                            #if os(iOS)
+                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                            #endif
+                        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
                     }
-                        .frame(minHeight: 72, maxHeight: 174)
-                        .fixedSize(horizontal: false, vertical: true)
-                        #if os(iOS)
-                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        // Clipped too: the fill's square corners showed outside the rounded border.
+                        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                        #if os(macOS)
+                        .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                         #endif
-                    ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
-                }
-                    // Clipped too: the fill's square corners showed outside the rounded border.
-                    .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    #if os(macOS)
-                    .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
-                    #endif
-                HStack {
-                    Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
                     sendReplyButton
                 }
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,

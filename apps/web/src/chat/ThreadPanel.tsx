@@ -153,6 +153,29 @@ export default function ThreadPanel({
     return (previousReplies.current = next);
   }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
+  // Start at one line like the channel composer, growing for typed or wrapped text.
+  useLayoutEffect(() => {
+    const input = composer.current;
+    if (!input) return;
+    const resizeInput = () => {
+      const form = input.closest("form");
+      if (form) form.style.minHeight = `${form.offsetHeight}px`;
+      input.style.height = "0px";
+      input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
+      if (form) form.style.minHeight = "";
+      if (follow.current && scroll.current && !state.thread?.hasNewer)
+        scroll.current.scrollTop = scroll.current.scrollHeight;
+    };
+    resizeInput();
+    let width = input.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (input.clientWidth === width) return;
+      width = input.clientWidth;
+      resizeInput();
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [draft.text, rootId, readOnly, state.thread?.hasNewer]);
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
@@ -578,12 +601,24 @@ export default function ThreadPanel({
               />
             )}
             <form
+              className="chat-thread-send-row"
               data-attach={!!attachments || undefined}
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
               }}
             >
+              <label className="chat-thread-broadcast">
+                <input
+                  type="checkbox"
+                  checked={pending?.broadcast ?? draft.broadcast}
+                  disabled={!!pending}
+                  onChange={(event) => update({ broadcast: event.target.checked })}
+                />
+                <span>
+                  Also send to <strong>{direct ? channelName : `#${channelName}`}</strong>
+                </span>
+              </label>
               {attachments && (
                 <>
                   <button
@@ -629,7 +664,7 @@ export default function ThreadPanel({
                 id="chat-thread-reply"
                 people={mentionPeople}
                 specialMentions={specialMentions}
-                rows={3}
+                rows={1}
                 value={draft.text}
                 placeholder="Reply to thread…"
                 enterKeyHint="send"
@@ -659,36 +694,25 @@ export default function ThreadPanel({
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
-              <div className="chat-thread-send-row">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={pending?.broadcast ?? draft.broadcast}
-                    disabled={!!pending}
-                    onChange={(event) => update({ broadcast: event.target.checked })}
-                  />
-                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
-                </label>
-                <EmojiButton
-                  disabled={state.phase !== "ready" || state.thread.loading}
-                  onSelect={chooseEmoji}
-                  returnFocus={composer}
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    sending ||
-                    blocked ||
-                    state.sendRejected ||
-                    state.phase !== "ready" ||
-                    state.thread.loading ||
-                    (!pending && !draft.text.trim() && !attachments?.drafts.length)
-                  }
-                  aria-label="Send reply"
-                >
-                  <Send size={18} />
-                </button>
-              </div>
+              <EmojiButton
+                disabled={state.phase !== "ready" || state.thread.loading}
+                onSelect={chooseEmoji}
+                returnFocus={composer}
+              />
+              <button
+                type="submit"
+                disabled={
+                  sending ||
+                  blocked ||
+                  state.sendRejected ||
+                  state.phase !== "ready" ||
+                  state.thread.loading ||
+                  (!pending && !draft.text.trim() && !attachments?.drafts.length)
+                }
+                aria-label="Send reply"
+              >
+                <Send size={18} />
+              </button>
               {count >= COUNTER_START && (
                 <small className="chat-counter" data-tone={counterTone(count)}>
                   {count.toLocaleString()} / 4,000
