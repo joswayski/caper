@@ -921,6 +921,69 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   assert.ok(![...storage.values()].some((value) => value.includes("A new sketch")), "storage never contains previews");
 });
 
+test("a clicked browser alert opens in place when the page can, and loads its location otherwise", async (t) => {
+  const f = setup(t);
+  setAppGatewayForTests(f.gateway);
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "hidden", hasFocus: () => false }));
+  vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined, removeItem: () => undefined });
+  vi.stubGlobal("navigator", {});
+  const shown: Array<{ onclick?: () => void; close(): void }> = [];
+  vi.stubGlobal(
+    "Notification",
+    class {
+      static permission = "granted";
+      onclick?: () => void;
+      constructor() {
+        shown.push(this);
+      }
+      close() {}
+    },
+  );
+  let loaded: string | undefined;
+  Object.assign(window, {
+    focus: () => undefined,
+    location: { protocol: "https:", host: "caper.test", assign: (url: string) => (loaded = url) },
+  });
+  const offered: string[] = [];
+  const stop = watchBrowserNotifications(
+    "account",
+    () => undefined,
+    undefined,
+    (location) => {
+      offered.push(location);
+      return location.includes("channel=");
+    },
+  );
+  t.onTestFinished(() => {
+    stop();
+    setAppGatewayForTests(undefined);
+  });
+  f.hello(0);
+  const id = f.subscribe(0).id;
+  const emit = (seq: number, change: object) =>
+    f.sockets[0].frame({
+      type: "event",
+      id,
+      event: {
+        type: "notification.created",
+        seq: String(seq),
+        messageId: `message${seq}`,
+        title: "Maya · #design",
+        body: "A new sketch",
+        createdAt: new Date().toISOString(),
+        ...change,
+      },
+    });
+  emit(1, { spaceId: "space0000001", channelId: "chan00000002" });
+  emit(2, { conversationId: "dm0000000001" });
+  await vi.waitFor(() => assert.equal(shown.length, 2));
+  shown[0].onclick?.();
+  assert.deepEqual(offered, ["/spaces?space=space0000001&channel=chan00000002"]);
+  assert.equal(loaded, undefined, "a conversation shown in place keeps the page (and any call)");
+  shown[1].onclick?.();
+  assert.equal(loaded, "/spaces?dm=dm0000000001", "what the page can't show in place still loads");
+});
+
 test("browser alerts download images outside the cross-tab lock and coalesce unread refreshes", async (t) => {
   const f = setup(t);
   setAppGatewayForTests(f.gateway);

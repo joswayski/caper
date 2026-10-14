@@ -1970,6 +1970,8 @@ export default function Spaces({
       window.removeEventListener("focus", refresh);
     };
   }, [refreshFeedback, feedbackTeam]);
+  // Set below, once navigation is defined; read when a notification is clicked.
+  const openNotification = useRef<(location: string) => boolean>(() => false);
   useEffect(() => {
     if (account?.id)
       return watchBrowserNotifications(
@@ -1979,6 +1981,7 @@ export default function Spaces({
           void refreshUnread();
           void refreshFeedback();
         },
+        (location) => openNotification.current(location),
       );
   }, [account?.id, refreshUnread, refreshFeedback]);
   const changeNavigation = useCallback((open: boolean) => {
@@ -2083,6 +2086,36 @@ export default function Spaces({
   const openDirect = (conversation: DirectConversation) => {
     choose(detail?.space.id || undefined, undefined, false, conversation.id);
     setNavigationOpen(false);
+  };
+
+  // A clicked notification opens its conversation in place, like the sidebar
+  // does: loading the page again would end a voice call and drop drafts.
+  // Invitations, and conversations this page doesn't know yet, still load the
+  // page, which reads them fresh.
+  openNotification.current = (location) => {
+    if (embedded || loading) return false;
+    const url = new URL(location, window.location.origin);
+    const query = url.searchParams;
+    if (url.pathname !== "/spaces" || query.has("invite")) return false;
+    const feedback = query.get("feedback");
+    const dm = query.get("dm");
+    const spaceId = query.get("space");
+    const channelId = query.get("channel");
+    const conversation = dm ? directs.find((item) => item.id === dm) : undefined;
+    if (feedback && feedbackTeam)
+      choose(detail?.space.id || undefined, undefined, false, undefined, {
+        channelId: feedback,
+        messageId: query.get("message") ?? undefined,
+        threadRootId: query.get("thread") ?? undefined,
+      });
+    else if (conversation) choose(detail?.space.id || undefined, undefined, false, conversation.id);
+    else if (spaceId && channelId && spaces.some((space) => space.id === spaceId)) choose(spaceId, channelId);
+    else return false;
+    // As Back does: dialogs belong to the view being left.
+    setDialog(undefined);
+    setManageChannel(undefined);
+    setNavigationOpen(false);
+    return true;
   };
 
   const selfDirect = directs.find((conversation) => conversation.peer.id === account?.id);

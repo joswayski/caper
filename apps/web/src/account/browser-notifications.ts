@@ -81,11 +81,16 @@ export function notificationLocation(event: MessageNotification) {
     return `/spaces?space=${event.spaceId}&channel=${event.channelId}`;
 }
 
-/** Account-wide, not tied to the current channel's chat subscription. */
+/**
+ * Account-wide, not tied to the current channel's chat subscription. A click
+ * offers its location to `open`, which returns true when it showed it in place
+ * (keeping a voice call and drafts); otherwise the page loads the location.
+ */
 export function watchBrowserNotifications(
   accountId: string,
   showing: () => string | undefined,
   onActivity?: () => void,
+  open?: (location: string) => boolean,
 ) {
   let active = true;
   const downloads = new AbortController();
@@ -198,7 +203,7 @@ export function watchBrowserNotifications(
         notification.close();
         if (!active) return;
         window.focus();
-        window.location.assign(location);
+        if (!open?.(location)) window.location.assign(location);
       };
     } catch {
       if (image) URL.revokeObjectURL(image);
