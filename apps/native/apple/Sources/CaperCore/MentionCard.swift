@@ -73,7 +73,8 @@ enum MentionCard {
             return person(known.username, known.displayName, known.avatarId, known.avatarPicture)
         }
         if let peer = peers.first(where: { $0.id == id }) {
-            return person(peer.username, peer.displayName, nil, nil)
+            // DM peers carry their saved mascot and picture, as on web.
+            return person(peer.username, peer.displayName, peer.avatarId, peer.avatarPicture)
         }
         if let account, account.id == id {
             return person(account.username, account.displayName, account.avatarId, account.avatarPicture)
