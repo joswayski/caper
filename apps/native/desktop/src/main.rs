@@ -513,6 +513,9 @@ struct ThreadView {
     error: Option<String>,
     window: Option<MessageWindow>,
     has_newer: bool,
+    /// The last request was an older page: Retry repeats it rather than
+    /// reloading the latest replies.
+    retry_older: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1658,6 +1661,7 @@ impl CaperApp {
                         error: None,
                         window: None,
                         has_newer: false,
+                        retry_older: false,
                     };
                     if !loading {
                         app.thread_pages.insert(root.clone(), thread.clone());
@@ -6619,6 +6623,7 @@ impl CaperApp {
             error: None,
             window: None,
             has_newer: false,
+            retry_older: false,
         });
         self.load_thread(false);
     }
@@ -6637,6 +6642,7 @@ impl CaperApp {
         };
         thread.loading = true;
         thread.error = None;
+        thread.retry_older = older;
         if !older {
             thread.window = None;
             thread.has_newer = false;
@@ -7418,6 +7424,7 @@ impl CaperApp {
                     error: None,
                     window: Some(window),
                     has_newer: page.has_newer,
+                    retry_older: false,
                 });
             }
             if let Some(thread) = &self.thread_view {
@@ -13119,6 +13126,7 @@ impl CaperApp {
         let has_newer = thread.has_newer;
         let window = thread.window;
         let error = thread.error.clone();
+        let retry_older = thread.retry_older;
         let pending = self
             .pending
             .as_ref()
@@ -13476,8 +13484,10 @@ impl CaperApp {
                 }
                 if let Some(error) = error {
                     ui.colored_label(ERROR, error);
+                    // The page that failed, as on web: an older page again,
+                    // not a reload of the latest replies.
                     if ui.button("Retry").clicked() {
-                        self.load_thread(false);
+                        self.load_thread(retry_older);
                     }
                 }
                 // The channel's "Load older messages" style, as on web.
@@ -24603,6 +24613,7 @@ mod tests {
                     error: None,
                     window: None,
                     has_newer: false,
+                    retry_older: false,
                 });
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
                 let mut frame = || {
@@ -27276,6 +27287,7 @@ mod tests {
                 error: None,
                 window: None,
                 has_newer: false,
+                retry_older: false,
             });
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
@@ -31476,6 +31488,7 @@ mod tests {
             error: None,
             window: None,
             has_newer: false,
+            retry_older: false,
         });
     }
 
@@ -31496,6 +31509,47 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![egui::Event::Text("ok".into())]);
         assert_eq!(app.reaction_search, "ok");
+    }
+
+    #[test]
+    fn thread_retry_repeats_the_older_page_that_failed() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let root = app.timeline.messages().next().unwrap().id.clone();
+        open_loaded_thread(&mut app, &root);
+        let window = super::MessageWindow {
+            start: 3,
+            end: Some(9),
+        };
+        if let Some(thread) = &mut app.thread_view {
+            thread.has_more = true;
+            thread.before = Some("3".into());
+            thread.window = Some(window);
+            thread.has_newer = true;
+        }
+        app.load_thread(true);
+        // The older page failed.
+        if let Some(thread) = &mut app.thread_view {
+            thread.loading = false;
+            thread.error = Some("Couldn't load replies.".into());
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Retry"));
+        let thread = app.thread_view.as_ref().unwrap();
+        assert!(
+            thread.loading && thread.error.is_none(),
+            "Retry asked again"
+        );
+        assert!(
+            thread.retry_older && thread.window.is_some() && thread.has_newer,
+            "the older page again, keeping the jump window rather than reloading the latest"
+        );
     }
 
     #[test]
