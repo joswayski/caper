@@ -1,6 +1,7 @@
 import { ChatHistoryError, loadChatHistory } from "../chat/client.ts";
 import { getSpace, SpacesApiError, type SpaceDetail } from "./client.ts";
-import type { GeneralChatHistory } from "../chat/types.ts";
+import { attachmentsOf, attachmentView, type GeneralChatHistory } from "../chat/types.ts";
+import { friendlyError } from "./errors.ts";
 
 export interface PreparedSpace {
   detail: SpaceDetail;
@@ -12,6 +13,80 @@ export interface PreparedSpace {
 export interface PreparedDirect {
   history?: GeneralChatHistory;
   historyError?: string;
+}
+
+export interface SpaceLanding {
+  spaceId?: string;
+  channelId?: string;
+}
+
+/** Remember IDs only, per account/browser. Private messages never go in storage. */
+export function rememberSpaceLanding(accountId: string, view: PreparedSpace) {
+  if (view.detail.channels.find((channel) => channel.id === view.channelId)?.joined === false) return;
+  try {
+    localStorage.setItem(
+      `caper:space-landing:${accountId}`,
+      JSON.stringify({ spaceId: view.detail.space.id, channelId: view.channelId }),
+    );
+  } catch {
+    /* Storage is optional. */
+  }
+}
+
+/** Prepare the first conversation in the route loader, not after the shell mounts. */
+export async function prepareSpaceLanding(
+  accountId: string,
+  spaces: Array<{ id: string }>,
+  query: URLSearchParams,
+): Promise<{ initialSelection: SpaceLanding; initialView?: PreparedSpace; initialSpaceError?: string }> {
+  let saved: SpaceLanding | undefined;
+  try {
+    const value = JSON.parse(localStorage.getItem(`caper:space-landing:${accountId}`) ?? "null");
+    if (typeof value?.spaceId === "string")
+      saved = { spaceId: value.spaceId, channelId: typeof value.channelId === "string" ? value.channelId : undefined };
+  } catch {
+    /* Missing, corrupt or unavailable storage uses the first joined channel. */
+  }
+  const requested = query.get("space") ?? undefined;
+  const spaceId = spaces.find((space) => space.id === (requested ?? saved?.spaceId))?.id ?? spaces[0]?.id;
+  const initialSelection = { spaceId, channelId: query.get("channel") ?? undefined };
+  // Invitations, DMs and feedback visits keep their existing explicit entry flow.
+  if (requested && requested !== spaceId) return { initialSelection: { ...initialSelection, spaceId: requested } };
+  if (!spaceId || query.has("dm") || query.has("feedback")) return { initialSelection };
+  try {
+    const initialView = await createSpaceNavigation().take(
+      spaceId,
+      initialSelection.channelId,
+      !requested && saved?.spaceId === spaceId ? saved.channelId : undefined,
+    );
+    // Start only a bounded set of recent inline images/posters. Never wait for
+    // media, download video/audio originals, or activate a chat session/socket.
+    if (typeof Image !== "undefined") {
+      const urls = new Set<string>();
+      for (const message of initialView.history?.messages.slice(-8) ?? []) {
+        for (const attachment of attachmentsOf(message)) {
+          const view = attachmentView(attachment);
+          const url =
+            view === "image"
+              ? attachment.contentType === "image/gif"
+                ? attachment.url
+                : (attachment.previewUrl ?? attachment.url)
+              : ["video", "animated"].includes(view)
+                ? attachment.previewUrl
+                : undefined;
+          if (url) urls.add(url);
+        }
+      }
+      for (const url of [...urls].slice(-4)) {
+        const image = new Image();
+        image.src = url;
+        void image.decode().catch(() => undefined);
+      }
+    }
+    return { initialSelection: { spaceId, channelId: initialView.channelId }, initialView };
+  } catch (error) {
+    return { initialSelection, initialSpaceError: friendlyError(error) };
+  }
 }
 
 // Like channel navigation, DMs prepare read-only history before replacing the
@@ -108,7 +183,7 @@ export function createSpaceNavigation() {
     for (const key of visited.keys()) if (key.startsWith(`${spaceId}:`)) visited.delete(key);
     for (const key of entries.keys()) if (key.startsWith(`${spaceId}:`)) entries.delete(key);
   };
-  const prepare = (spaceId: string, channelId?: string) => {
+  const prepare = (spaceId: string, channelId?: string, preferredChannelId?: string) => {
     const key = `${spaceId}:${channelId ?? ""}`;
     const cached = entries.get(key);
     if (cached && cached.expires > Date.now()) return cached.result;
@@ -123,7 +198,9 @@ export function createSpaceNavigation() {
       const channel =
         detail.channels.find(
           (item) => item.id === requestedChannel && (channelId !== undefined || item.joined !== false),
-        ) ?? detail.channels.find((item) => item.joined !== false);
+        ) ??
+        detail.channels.find((item) => item.id === preferredChannelId && item.joined !== false) ??
+        detail.channels.find((item) => item.joined !== false);
       let history: GeneralChatHistory | undefined;
       let historyError: string | undefined;
       try {
@@ -166,8 +243,8 @@ export function createSpaceNavigation() {
       const view = peek(history.space.id, history.channel.id);
       if (view) remember({ ...view, history, historyError: undefined });
     },
-    take(spaceId: string, channelId?: string) {
-      const result = prepare(spaceId, channelId);
+    take(spaceId: string, channelId?: string, preferredChannelId?: string) {
+      const result = prepare(spaceId, channelId, preferredChannelId);
       // Speculation is single use; visited snapshots live separately. Each
       // return still rechecks space/channel access before trusting metadata.
       entries.delete(`${spaceId}:${channelId ?? ""}`);
