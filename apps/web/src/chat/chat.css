@@ -926,6 +926,14 @@
   .chat-thread-panel .chat-message-grouped > .chat-grouped-time + div::before {
     width: 82px;
   }
+  /* Clear the 24px action target (top: 4px) and its focus ring with a gap,
+     rather than squeezing media beside the first-line text float. */
+  .chat-message-grouped > .chat-grouped-time + div:has(> .chat-attachments)::before {
+    height: 30px;
+  }
+  .chat-message-grouped > div > .chat-attachments {
+    clear: both;
+  }
 }
 @media (hover: hover) {
   .chat-add-reaction:hover:not(:disabled),

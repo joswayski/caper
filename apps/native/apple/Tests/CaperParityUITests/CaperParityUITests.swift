@@ -969,6 +969,37 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
+    #if os(macOS)
+    func testGroupedAttachmentsStayBelowHoverActions() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let messageID = "chan00000001m03"
+        // An unavailable image still renders the real media frame. This tests
+        // layout/hit targets, not image decoding or delivery from a CDN.
+        for caption in ["Image test", ""] {
+            try await Self.fixtureControl(["incomingEdit": [
+                "channelId": "chan00000001", "messageId": messageID, "text": caption,
+                "attachments": [["id": "fixtureimage001", "kind": "image", "status": "ready",
+                                 "name": "TEST FIXTURE image.png", "contentType": "image/png",
+                                 "size": 1024, "width": 512, "height": 512,
+                                 "url": "http://127.0.0.1:3001/fixture-image.png"]],
+            ]])
+            let app = launch()
+            let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 30,
+                                  "Missing grouped media message")
+            let media = try require(row.buttons["attachment-fixtureimage001"], timeout: 10, "Missing media frame")
+            media.hover()
+            let action = try require(row.buttons["add-reaction-\(messageID)"], timeout: 5, "Missing hover action")
+            XCTAssertGreaterThanOrEqual(media.frame.minY, action.frame.maxY + 2,
+                                       "A follow-up's attachment must clear the entire hover-button target")
+            XCTAssertTrue(media.isHittable)
+            action.hover()
+            XCTAssertTrue(action.isHittable, "Moving off the media onto its action must keep the action available")
+            app.terminate()
+        }
+    }
+    #endif
+
     func testReactionPickerRetainsSearchAndTargetDuringLiveScroll() async throws {
         try await Self.fixtureControl(["reset": true])
         // Runs however this test ends, so its live messages and reaction never
