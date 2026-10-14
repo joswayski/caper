@@ -107,6 +107,8 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, day2).url, day2)
         XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, "https://cdn.caper.chat/assets/\(asset)?exp=x").url, day1,
                        "an unreadable expiry goes to the newer URL")
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: "https://cdn.caper.chat/assets/\(asset)", over: asset, day2).url,
+                       "https://cdn.caper.chat/assets/\(asset)")
         XCTAssertEqual(PictureMerge.newer(asset: asset, url: nil, over: asset, day1).url, day1)
         XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: "Pic0000000000000old1", day2).url, day1, "another asset never lends its URL")
         XCTAssertNil(PictureMerge.newer(asset: nil, url: nil, over: asset, day2).asset)

@@ -44,12 +44,12 @@ enum PictureMerge {
         return (asset, fresher(url, over: snapshotURL))
     }
 
-    /// The signed URL that stays valid longer, preferring `url` unless
-    /// `snapshotURL` expires strictly later.
+    /// The signed URL that stays valid longer, preferring `url` unless both
+    /// carry an expiry and `snapshotURL`'s is strictly later.
     static func fresher(_ url: String?, over snapshotURL: String?) -> String? {
         guard let url else { return snapshotURL }
-        guard let snapshotURL, let later = expiry(snapshotURL) else { return url }
-        return later > (expiry(url) ?? .min) ? snapshotURL : url
+        guard let snapshotURL, let later = expiry(snapshotURL), let current = expiry(url) else { return url }
+        return later > current ? snapshotURL : url
     }
 
     /// The CDN signature's `exp` (Unix seconds), when present.
