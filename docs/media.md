@@ -8174,6 +8174,24 @@ only); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 
 
+### Validation (October 14, 2026)
+
+| Platform | Validation boundary |
+| --- | --- |
+| API/Postgres | `cargo fmt --check`, Clippy (`-D warnings`) and all 238 workspace tests pass, including every ignored database/broker test against disposable Postgres 16 and Redis 7 (standing in for Valkey). New: picture header parsing (GIF, PNG, the three WebP forms, JPEG frames behind 20 KB of EXIF), reservation rules, signing that never signs a 16-character attachment ID, nested people, and one end-to-end test with the fake S3: limits, apply-on-complete, a late retry not undoing a newer picture, cancel rules, real-size rejection, owner-only icons and ownership lost mid-upload, kept pictures outside quota through purge, the daily limit, removal, history authors, and signed URLs in live `/api/spaces` responses. Not live R2/CDN. |
+| Web | `npm run check` passes; `npm test` 626 of 629 pass. `downloads.test.ts` and `noise-assets.test.ts` also fail on an untouched checkout in this orb, and `deepfilter.test.ts` timed out under load but passes alone. `scripts/test-pictures.mjs` (Playwright with in-page API mocks and a fake CDN, labelled fixtures) passes at 1280px and 390px: animated, still, broken and absent pictures in chat, members, voice and profile cards; 800×600 PNG → 512 px WebP and unchanged GIF uploads; local and server errors; removal; space icons in the rail; reduced motion. Screenshots inspected. Not Safari, live storage or a phone. |
+| Android | Gradle stops at the missing SDK. With a standalone Kotlin 2.2.20 compiler, models, data, `PicturePreparer.kt` and `PictureViews.kt` compile against the real libraries, and 201 data/model unit tests pass, including 14 new picture tests. `MainActivity.kt`, `CaperViewModel.kt` and the sheets were not compiled. No emulator or device run. |
+| iOS/macOS | No Xcode. A Linux Swift 6.0.3 toolchain parses every source and test file and type-checks the Foundation-only code with stubs; 10 new picture tests and the existing mention-card tests run and pass there. SwiftUI views, ImageIO/libwebp code and AppModel tests were not compiled. The macOS parity UI tests now scroll until Manage space's Remove and Delete buttons are reachable. No simulator or device run. |
+| Rust desktop | `cargo fmt --check`, application Clippy (`--no-deps`, `-D warnings`) and `cargo test` (527 passed, 12 existing ignored; 18 new, including three UI render tests and a loopback upload) pass on Linux with clang 21. The `parity-pictures` fixtures were captured under Xvfb: the GIF avatar changes between frames, plus the round crop, mascot fallback, rail icon and both settings dialogs. Not Windows, a 2x display or the real file pickers. |
+
+Run the browser check against `vite dev` with Playwright installed somewhere
+(the repository has no Playwright dependency):
+
+```sh
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs \
+  node scripts/test-pictures.mjs http://127.0.0.1:5174 /tmp/picture-shots
+```
+
 ### Deployment order
 
 1. No infrastructure, R2, CORS, CDN Worker or secret change: pictures use the
