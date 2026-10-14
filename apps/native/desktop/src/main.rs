@@ -1176,6 +1176,10 @@ struct CaperApp {
     /// `RESTORE_LIMIT`.
     restoring: Option<Instant>,
     navigation_target: Option<NavigationTarget>,
+    /// The pending navigation named a channel, DM or visit. A space tile
+    /// alone only switches the channels in Browse, so a narrow Browse stays
+    /// open, as on web, Android and Apple.
+    navigation_reveals: bool,
     navigation_prefetch: Option<navigation::Target>,
     navigation_error: Option<String>,
     navigation_cache: navigation::NavigationCache,
@@ -1442,6 +1446,7 @@ impl CaperApp {
             opening: false,
             restoring: None,
             navigation_target: None,
+            navigation_reveals: false,
             navigation_prefetch: None,
             navigation_error: None,
             navigation_cache: navigation::NavigationCache::default(),
@@ -5307,6 +5312,8 @@ impl CaperApp {
         if self.profile_sending() {
             return;
         }
+        // Before the cache fills in the space's remembered channel.
+        let reveals = target.channel.is_some();
         // Any conversation replaces the feedback inbox; only the visit's own
         // navigation keeps its request.
         self.feedback_open = false;
@@ -5372,6 +5379,7 @@ impl CaperApp {
         self.opening = true;
         self.navigation_error = None;
         self.navigation_target = Some(target);
+        self.navigation_reveals = reveals;
         self.navigation_prefetch = None;
         if self
             .navigation_cache
@@ -5595,12 +5603,15 @@ impl CaperApp {
                 self.error = None;
                 self.navigation_error = None;
                 self.navigation_target = None;
-                self.navigation_open = self.notification_browse_space.take().is_some_and(|space| {
+                let keep_browse =
+                    self.narrow_layout && self.navigation_open && !self.navigation_reveals;
+                let browse_space = self.notification_browse_space.take().is_some_and(|space| {
                     prepared
                         .detail
                         .as_ref()
                         .is_some_and(|detail| detail.space.id == space)
                 });
+                self.navigation_open = keep_browse || browse_space;
                 let general = !direct && prepared.detail.is_none();
                 if !direct {
                     self.selected_space = prepared
@@ -38826,6 +38837,45 @@ mod tests {
         assert!(!app.opening);
         assert!(app.navigation_error.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn narrow_space_tiles_keep_browse_open_until_a_channel_is_chosen() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.narrow_layout = true;
+        app.navigation_open = true;
+        let prepared = |channel: &str| {
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history(channel), Ok(session()))),
+            })
+        };
+        // A space tile alone switches the channels shown in Browse.
+        app.navigate(NavigationTarget {
+            space: Some("space".into()),
+            channel: None,
+        });
+        app.accept_navigation(app.generation, app.navigation, prepared("first"));
+        assert!(app.navigation_open);
+        // Choosing a channel reveals the conversation.
+        app.navigate(NavigationTarget {
+            space: Some("space".into()),
+            channel: Some("second".into()),
+        });
+        app.accept_navigation(app.generation, app.navigation, prepared("second"));
+        assert!(!app.navigation_open);
+        // Without Browse open (or at desktop width) nothing reopens it.
+        app.navigate(NavigationTarget {
+            space: Some("space".into()),
+            channel: None,
+        });
+        app.accept_navigation(app.generation, app.navigation, prepared("first"));
+        assert!(!app.navigation_open);
     }
 
     #[test]
