@@ -1179,7 +1179,10 @@ private struct ChannelSidebar: View {
                                 Text(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper").font(CaperTheme.font(15, weight: .bold)).lineLimit(1)
                                 Spacer(); if model.detail?.space.demo != true { CaperIcon(name: "chevron-down") }
                             }.contentShape(Rectangle())
-                        }.menuStyle(.borderlessButton).menuIndicator(.hidden).disabled(model.detail?.space.demo == true)
+                        }
+                        // .button with a plain style draws this label as laid out; the
+                        // macOS 26 SDK's borderless menus centre it and tint it with the accent.
+                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).disabled(model.detail?.space.demo == true)
                             .foregroundStyle(CaperTheme.text)
                             .modifier(ControlPointer())
                             .accessibilityLabel(model.detail?.space.demo == true ? "Caper" : model.detail?.space.name ?? "Caper")
@@ -3202,14 +3205,17 @@ private struct ChatView: View {
                     return .handled
                 }
                 #endif
-                .onChange(of: chat.channelMessages.last?.id) { old, id in
+                .onChange(of: chat.channelMessages.last?.id, initial: true) { old, id in
                     if chat.pendingMessage != nil { revealPending(proxy) }
                     else if chat.focusedMessageID == nil, let id {
                         // As on web, only local sends (revealPending) override the reader's
                         // place: a new message follows a reader already at the end, while a
                         // new conversation or replaced history (the old last row is gone) opens there.
+                        // History already loaded when the timeline appears (old == id) opens at
+                        // the end too; the first layout measures the top before this runs.
+                        let opening = old == id && !chat.hasNewer
                         let replaced = old.map { old in !chat.channelMessages.contains { $0.id == old } } ?? true
-                        if replaced || timelinePin.atBottom { proxy.scrollTo(id, anchor: .bottom) }
+                        if opening || replaced || timelinePin.atBottom { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
                 // Older history arrived above: the row that was first stays at the top.
@@ -3718,12 +3724,14 @@ private struct NativeThreadView: View {
                 #endif
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
-                .onChange(of: replies.last?.id) { old, id in
+                .onChange(of: replies.last?.id, initial: true) { old, id in
                     guard chat.focusedMessageID == nil, let id else { return }
                     // As on web: another person's reply follows only a reader at the end;
-                    // a newly opened thread and your own reply always show the latest.
+                    // a newly opened thread (including one whose replies were already
+                    // loaded, old == id) and your own reply always show the latest.
+                    let opening = old == id && !chat.threadHasNewer
                     let replaced = old.map { old in !replies.contains { $0.id == old } } ?? true
-                    if replaced || timelinePin.atBottom || replies.last?.clientMessageId == localReplyID { proxy.scrollTo(id, anchor: .bottom) }
+                    if opening || replaced || timelinePin.atBottom || replies.last?.clientMessageId == localReplyID { proxy.scrollTo(id, anchor: .bottom) }
                 }
                 .onChange(of: chat.pendingMessage?.id) { _, id in
                     if let id, let root = chat.pendingMessage?.threadRootId, root == chat.threadRootID { localReplyID = id }

@@ -19,18 +19,28 @@ private final class AttachmentURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     nonisolated(unsafe) static var handler: ((URLRequest, Data?) throws -> (Int, Data))?
     nonisolated(unsafe) private static var recorded: [Recorded] = []
+    /// Each test's clients tag requests with the generation they were made in, so
+    /// fire-and-forget work an earlier test left behind (a discarded draft's
+    /// `cancel`) is refused instead of landing in a later test's recording.
+    nonisolated(unsafe) private static var current = 0
+    static let generationHeader = "X-Caper-Test-Generation"
+    static var generation: Int { lock.withLock { current } }
 
     static var requests: [Recorded] { lock.withLock { recorded } }
-    static func reset() { lock.withLock { recorded = []; handler = nil } }
+    static func reset() { lock.withLock { recorded = []; handler = nil; current += 1 } }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let body = Self.body(of: request)
-        Self.lock.withLock {
-            Self.recorded.append(Recorded(method: request.httpMethod ?? "GET", url: request.url!,
-                                          headers: request.allHTTPHeaderFields ?? [:], body: body))
+        var headers = request.allHTTPHeaderFields ?? [:]
+        let tag = headers.removeValue(forKey: Self.generationHeader)
+        let stale = Self.lock.withLock {
+            if let tag, tag != String(Self.current) { return true }
+            Self.recorded.append(Recorded(method: request.httpMethod ?? "GET", url: request.url!, headers: headers, body: body))
+            return false
         }
+        if stale { client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return }
         do {
             guard let handler = Self.handler else { throw URLError(.badURL) }
             let (status, data) = try handler(request, body)
@@ -74,6 +84,7 @@ final class AttachmentTests: XCTestCase {
     private func client(token: String? = "account-secret") -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AttachmentURLProtocol.self]
+        configuration.httpAdditionalHeaders = [AttachmentURLProtocol.generationHeader: String(AttachmentURLProtocol.generation)]
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration),
                          tokenStore: AttachmentTokenStore(token))
     }

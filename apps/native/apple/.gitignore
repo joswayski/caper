@@ -9,3 +9,5 @@
 Package.resolved
 /CaperApple.xcodeproj/
 /Resources/Fonts/
+# XcodeGen writes the Info.plists from project.yml on every prepare.sh run.
+/Configuration/*-Info.plist
