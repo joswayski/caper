@@ -8675,7 +8675,7 @@ impl CaperApp {
                             ui.add_space(6.0);
                             ui.label(
                                 RichText::new(
-                                    "Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.",
+                                    "Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.",
                                 )
                                 .size(12.8)
                                 .color(MUTED),
@@ -18930,9 +18930,11 @@ impl CaperApp {
         focus_frame(ui, &field);
         self.username = normalize_username(&self.username);
         ui.label(
-            RichText::new("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
-                .small()
-                .color(MUTED),
+            RichText::new(
+                "Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.",
+            )
+            .small()
+            .color(MUTED),
         );
         ui.label("Display name");
         let field = ui.add_sized(
