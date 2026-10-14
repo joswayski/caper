@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type FormEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ArrowLeft,
@@ -412,6 +413,22 @@ function NameField({
       </span>
     </label>
   );
+}
+
+/**
+ * Saving disables a settings form, which drops focus from its button (and a
+ * channel's save bar hides once nothing is unsaved). Set the returned flag on
+ * submit; when the save settles, focus continues in the form's name field.
+ */
+function useNameRefocus(form: RefObject<HTMLFormElement | null>, pending: boolean) {
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (pending || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body)
+      form.current?.querySelector<HTMLInputElement>("input:not([type])")?.focus();
+  }, [pending, form]);
+  return refocus;
 }
 
 function ChannelPrivacy({
@@ -933,6 +950,8 @@ function ManageSpaceDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const nameForm = useRef<HTMLFormElement>(null);
+  const refocusName = useNameRefocus(nameForm, pending);
   useEffect(() => {
     let current = true;
     void listSpaceInvitations(detail.space.id)
@@ -965,10 +984,12 @@ function ManageSpaceDialog({
       dismissOnBackdrop={!pending && name === detail.space.name}
     >
       <form
+        ref={nameForm}
         onSubmit={(event) => {
           event.preventDefault();
           const invalid = spaceNameError(name);
           if (invalid) return setError(invalid);
+          refocusName.current = true;
           void run(async () => {
             const space = await updateSpace(detail.space.id, name);
             setName(space.name);
@@ -1078,6 +1099,8 @@ function ManageChannelDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const overview = useRef<HTMLFormElement>(null);
+  const refocusName = useNameRefocus(overview, pending);
   const dirty = name !== channel.name || privateChannel !== channel.private;
   const run = async (action: () => Promise<void>) => {
     setPending(true);
@@ -1110,6 +1133,7 @@ function ManageChannelDialog({
   return (
     <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop={!dirty && !pending}>
       <form
+        ref={overview}
         id="channel-overview"
         onSubmit={(event) => {
           event.preventDefault();
@@ -1117,6 +1141,7 @@ function ManageChannelDialog({
           const channelName = name.replace(/-$/, "");
           const invalid = channelNameError(channelName);
           if (invalid) return setError(invalid);
+          refocusName.current = true;
           void run(async () => {
             const updated = await updateChannel(detail.space.id, channel.id, channelName, privateChannel);
             setName(updated.name);
