@@ -8269,10 +8269,16 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs \
 4. Verify on staging/production: upload a still and an animated GIF avatar and a
    space icon; check members, chat, DMs, voice and the rail on a second account;
    reduced motion; remove both and confirm the same mascot and the initial return.
-5. Rollback: older API code ignores the new columns, but its cleanup treats
-   completed pictures as unsent files and purges their objects after 24 hours.
-   For a rollback longer than that, fix forward or clear `users.avatar_asset` and
-   `spaces.icon_asset` first. Leave the migration in place.
+5. Rollback: prefer a forward fix. A pre-pictures API image can't start against
+   the migrated database: startup migration validates the applied history and
+   stops on the unknown `202610140001` version, so the existing pods keep
+   serving (only the API runs the asset purger; the gateway never does). Don't
+   get around that by deleting migration records or setting SQLx's
+   `ignore_missing`: the old purge marks every completed upload with no
+   message as deleted after 24 hours and removes its R2 objects, which would
+   take every applied and kept picture. A reviewed rollback build must keep the
+   migration and the current purge, which skips completed pictures. Leave the
+   migration in place.
 
 ## iOS drawer releases still bounced off the far side (October 14, 2026)
 
