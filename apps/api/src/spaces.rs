@@ -480,8 +480,29 @@ async fn get_space(
     ).bind(row.0).bind(principal.user.id).fetch_all(pool).await.map_err(database_error)?
         .into_iter().map(|(id,name,username,display_name)|json!({"channel":Channel{id,space_id:space.clone(),name,private:true,joined:false},"inviter":{"username":username,"displayName":display_name}})).collect();
     let members = members(pool, row.0).await?;
+    // Who can read each private channel you can see (the owner and its grants),
+    // so member lists can lead with the channel's own people.
+    let channel_members: serde_json::Map<String, Value> = sqlx::query_as::<_, (String, Vec<String>)>(
+        "SELECT c.external_id, ARRAY(
+             SELECT u.external_id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
+             WHERE sm.space_id=c.space_id AND sm.deleted_at IS NULL AND u.deleted_at IS NULL
+               AND (u.id=s.owner_id OR EXISTS(SELECT 1 FROM public.channel_members cm
+                    WHERE cm.channel_id=c.id AND cm.user_id=u.id AND cm.deleted_at IS NULL))
+             ORDER BY u.id)
+         FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.space_id=$1 AND c.private AND c.deleted_at IS NULL
+           AND (s.owner_id=$2 OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2 AND deleted_at IS NULL))",
+    )
+    .bind(row.0)
+    .bind(principal.user.id)
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(|(channel, ids)| (channel, json!(ids)))
+    .collect();
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members,"channelInvitations":invitations}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members,"channelMembers":channel_members,"channelInvitations":invitations}),
     ))
 }
 

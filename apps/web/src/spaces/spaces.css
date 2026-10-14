@@ -1059,6 +1059,35 @@
     box-shadow: -12px 0 32px rgb(0 0 0 / 0.35);
   }
 }
+/* A private channel's readers lead the list on a slightly brighter neutral
+   wash; the rest of the space follows as a quieter group. */
+.member-group + .member-group {
+  margin-top: 12px;
+}
+.member-group-channel {
+  /* --surface-hover over the sidebar, so presence dots cut out cleanly. */
+  --presence-ring: color-mix(in srgb, rgb(255 255 255) 6%, var(--surface-sidebar));
+  padding: 4px 0 6px;
+  border-radius: var(--radius);
+  background: var(--surface-hover);
+}
+.member-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px 4px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.member-group-channel .member-group-label {
+  color: var(--text);
+}
+.member-group-others .member-profile-trigger strong {
+  color: var(--text-muted);
+  font-weight: 500;
+}
 .member-presence-connecting {
   padding: 0 8px;
   color: var(--text-muted);

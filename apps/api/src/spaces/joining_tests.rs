@@ -140,6 +140,12 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
     .unwrap()
     .0;
     assert_eq!(detail["channels"][0]["joined"], false);
+    // A private channel's readers (owner and grants) lead its member list;
+    // public channels have no entry.
+    assert_eq!(
+        detail["channelMembers"],
+        json!({"other1234567": [owner.user.external_id, member.user.external_id]})
+    );
     let (left, right) = tokio::join!(
         join_channel(
             State(state.clone()),
@@ -213,6 +219,8 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
     .unwrap()
     .0;
     assert_eq!(pending["channels"].as_array().unwrap().len(), 1);
+    // Invited but not granted: who is in the private channel stays hidden.
+    assert_eq!(pending["channelMembers"], json!({}));
     assert_eq!(
         pending["channelInvitations"][0]["channel"]["name"],
         "planning"

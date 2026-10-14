@@ -11,10 +11,21 @@ import { mentionCardPerson } from "../chat/mentions";
 const PAGE_SIZE = 25;
 type Status = "online" | "idle" | "offline";
 
+/** A private channel's readers lead its member list; the rest of the space follows. */
+export function memberGroups(members: Member[], channelMemberIds?: readonly string[]) {
+  if (!channelMemberIds) return { inChannel: undefined, others: members };
+  const ids = new Set(channelMemberIds);
+  return {
+    inChannel: members.filter((member) => ids.has(member.id)),
+    others: members.filter((member) => !ids.has(member.id)),
+  };
+}
+
 /** Only the current member page has live presence subscriptions. */
 export default function MemberPresence({
   spaceId,
   members,
+  channel,
   demo,
   accountId,
   onMessagePerson,
@@ -24,6 +35,8 @@ export default function MemberPresence({
 }: {
   spaceId: string;
   members: Member[];
+  /** A private channel: its readers lead the list in their own group. */
+  channel?: { name: string; memberIds: readonly string[] };
   demo?: boolean;
   accountId?: string;
   onMessagePerson: (username: string) => Promise<void>;
@@ -35,9 +48,14 @@ export default function MemberPresence({
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [live, setLive] = useState(false);
   const [profile, setProfile] = useState<MentionCardTarget>();
-  const lastPage = Math.max(0, Math.ceil(members.length / PAGE_SIZE) - 1);
+  const { inChannel, others } = memberGroups(members, channel?.memberIds);
+  const ordered = inChannel ? [...inChannel, ...others] : members;
+  const lastPage = Math.max(0, Math.ceil(ordered.length / PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
-  const visible = members.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+  const start = currentPage * PAGE_SIZE;
+  const visible = ordered.slice(start, start + PAGE_SIZE);
+  // Where this page splits between the channel's group and the rest of the space.
+  const split = inChannel ? Math.max(0, Math.min(visible.length, inChannel.length - start)) : 0;
   const ids = visible.map((member) => member.id).join(",");
 
   useEffect(() => {
@@ -61,6 +79,33 @@ export default function MemberPresence({
     );
   }, [spaceId, ids]);
 
+  const row = (member: Member) => {
+    const status = statuses[member.id];
+    return (
+      <li key={member.id}>
+        <button
+          type="button"
+          className="member-profile-trigger"
+          aria-label={`Open profile for ${member.displayName}`}
+          aria-haspopup="dialog"
+          onClick={(event) =>
+            setProfile({
+              person: mentionCardPerson(member, members, accountId),
+              anchor: event.currentTarget,
+              drawer: matchMedia("(max-width: 760px), (pointer: coarse)").matches,
+            })
+          }
+        >
+          <span className="member-presence-avatar">
+            <Avatar avatarId={member.avatarId} name={member.displayName} />
+            <PresenceDot status={status} live={live} />
+          </span>
+          <strong title={member.displayName}>{member.displayName}</strong>
+        </button>
+      </li>
+    );
+  };
+
   return (
     <aside id="space-member-list" className="space-member-presence" aria-label="Space members">
       <h2 className="member-presence-heading">
@@ -78,34 +123,30 @@ export default function MemberPresence({
         ) : (
           !members.length && <p className="member-presence-connecting">No members to show.</p>
         )}
-        <ul>
-          {visible.map((member) => {
-            const status = statuses[member.id];
-            return (
-              <li key={member.id}>
-                <button
-                  type="button"
-                  className="member-profile-trigger"
-                  aria-label={`Open profile for ${member.displayName}`}
-                  aria-haspopup="dialog"
-                  onClick={(event) =>
-                    setProfile({
-                      person: mentionCardPerson(member, members, accountId),
-                      anchor: event.currentTarget,
-                      drawer: matchMedia("(max-width: 760px), (pointer: coarse)").matches,
-                    })
-                  }
-                >
-                  <span className="member-presence-avatar">
-                    <Avatar avatarId={member.avatarId} name={member.displayName} />
-                    <PresenceDot status={status} live={live} />
-                  </span>
-                  <strong title={member.displayName}>{member.displayName}</strong>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        {inChannel ? (
+          <>
+            {split > 0 && (
+              <section className="member-group member-group-channel" aria-label={`In #${channel!.name}`}>
+                <h3 className="member-group-label">
+                  <span>In #{channel!.name}</span>
+                  <span className="section-count">{inChannel.length}</span>
+                </h3>
+                <ul>{visible.slice(0, split).map(row)}</ul>
+              </section>
+            )}
+            {split < visible.length && (
+              <section className="member-group member-group-others" aria-label="Others in this space">
+                <h3 className="member-group-label">
+                  <span>Others in this space</span>
+                  <span className="section-count">{others.length}</span>
+                </h3>
+                <ul>{visible.slice(split).map(row)}</ul>
+              </section>
+            )}
+          </>
+        ) : (
+          <ul>{visible.map(row)}</ul>
+        )}
         {lastPage > 0 && (
           <div className="member-presence-pages">
             <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>

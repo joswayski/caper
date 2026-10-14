@@ -267,6 +267,8 @@ export interface SpaceDetail {
   space: Space;
   channels: Channel[];
   members: Member[];
+  /** Private channels you can read: the ids of everyone who can read them (owner and grants). */
+  channelMembers?: Record<string, string[]>;
   channelInvitations?: ChannelInvitation[];
 }
 
