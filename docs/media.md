@@ -7925,7 +7925,12 @@ gets a quiet, new sequence. Do not overwrite/delete immutable assets.
 The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
 only reads the requested immutable asset from the fixed Caper repository. Clients
 never read rolling `latest.json`, so an old build cannot announce future features.
-The API has bounded GitHub fetches, coalescing and 60-second success/failure cache.
+The API has bounded GitHub fetches, per-revision coalescing and a 60-second
+success/failure cache. Revisions that loaded (up to 32) are counted apart from
+in-flight and failed lookups (up to 32), so unknown revisions can neither evict
+nor block a working one; once the failure side is full, further unknown
+revisions get `502` until a failure expires. A slow fetch never holds up other
+revisions.
 Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
 and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,
 at most 100/500 Unicode code points. Missing metadata fails closed.

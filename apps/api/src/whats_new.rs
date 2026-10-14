@@ -11,23 +11,111 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 
 const BASE_URL: &str = "https://github.com/joswayski/caper/releases/download";
 const MAX_BYTES: usize = 64 * 1024;
 const TTL: Duration = Duration::from_secs(60);
+/// Each map's bound. Feeds that loaded and lookups that have not are counted
+/// apart, so unknown revisions can never displace or block a working one.
+const CAPACITY: usize = 32;
 
 pub(super) struct WhatsNew {
     client: reqwest::Client,
     upstream: String,
-    cache: Mutex<BTreeMap<String, Cached>>,
+    cache: Mutex<Cache>,
+}
+
+#[derive(Default)]
+struct Cache {
+    /// Revisions whose feed loaded, refreshed in place once stale.
+    found: BTreeMap<String, Arc<Slot>>,
+    /// Lookups in flight or failed. When full, new revisions wait out the
+    /// oldest failure rather than replace it, keeping GitHub traffic bounded.
+    pending: BTreeMap<String, Arc<Slot>>,
+}
+
+/// One fetch per revision at a time: concurrent requests share its result.
+struct Slot(OnceCell<Cached>, Instant);
+
+impl Slot {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(OnceCell::new(), Instant::now()))
+    }
+
+    /// Fetches time out within seconds, so a slot still unfilled after `TTL`
+    /// was abandoned by every request waiting on it and must free its place.
+    fn stale(&self) -> bool {
+        self.0
+            .get()
+            .map_or(self.1, |cached| cached.fetched)
+            .elapsed()
+            >= TTL
+    }
+
+    fn found(&self) -> bool {
+        self.0.get().is_some_and(|cached| cached.value.is_some())
+    }
+
+    fn age(&self) -> Duration {
+        self.0
+            .get()
+            .map_or(Duration::ZERO, |cached| cached.fetched.elapsed())
+    }
 }
 
 struct Cached {
     value: Option<Feed>,
     fetched: Instant,
+}
+
+impl Cache {
+    /// The slot serving `key`, or `None` while unknown lookups are at capacity.
+    fn slot(&mut self, key: &str) -> Option<Arc<Slot>> {
+        self.pending.retain(|_, slot| !slot.stale());
+        // A failed refresh drops a revision back to the bounded unknown path.
+        self.found.retain(|_, slot| !slot.stale() || slot.found());
+        if let Some(slot) = self.found.get_mut(key) {
+            if slot.stale() {
+                *slot = Slot::new();
+            }
+            return Some(slot.clone());
+        }
+        if let Some(slot) = self.pending.get(key) {
+            return Some(slot.clone());
+        }
+        if self.pending.len() >= CAPACITY {
+            return None;
+        }
+        let slot = Slot::new();
+        self.pending.insert(key.to_owned(), slot.clone());
+        Some(slot)
+    }
+
+    /// Moves a lookup that just loaded into `found`, evicting the stalest.
+    fn promote(&mut self, key: &str, slot: &Arc<Slot>) {
+        if !self
+            .pending
+            .get(key)
+            .is_some_and(|pending| Arc::ptr_eq(pending, slot))
+        {
+            return;
+        }
+        self.pending.remove(key);
+        if self.found.len() >= CAPACITY
+            && let Some(oldest) = self
+                .found
+                .iter()
+                .max_by_key(|(_, slot)| slot.age())
+                .map(|(key, _)| key.clone())
+        {
+            self.found.remove(&oldest);
+        }
+        self.found.insert(key.to_owned(), slot.clone());
+    }
 }
 
 #[derive(Deserialize)]
@@ -119,7 +207,7 @@ impl WhatsNew {
                 .build()
                 .expect("valid highlights HTTP client"),
             upstream: BASE_URL.into(),
-            cache: Mutex::new(BTreeMap::new()),
+            cache: Mutex::default(),
         }
     }
 
@@ -135,27 +223,29 @@ impl WhatsNew {
             ));
         }
         let key = format!("{}:{}", request.platform, request.revision);
-        // Bounded refreshes coalesce; missing assets back off while asynchronous
-        // generation finishes. Failures never substitute a different revision.
-        let mut cache = self.cache.lock().await;
-        cache.retain(|_, entry| entry.fetched.elapsed() < TTL);
-        if !cache.contains_key(&key) {
-            // A stream of arbitrary SHAs must not evict the failure backoff and
-            // turn this public endpoint into unbounded GitHub traffic.
-            if cache.len() >= 32 {
-                return Err(unavailable());
-            }
-            let value = self.fetch(&request).await.ok();
-            cache.insert(
-                key.clone(),
+        // Bounded refreshes coalesce per revision without holding the map
+        // across GitHub; missing assets back off while asynchronous generation
+        // finishes. Failures never substitute a different revision.
+        let slot = self
+            .cache
+            .lock()
+            .expect("highlights cache lock")
+            .slot(&key)
+            .ok_or_else(unavailable)?;
+        let entry = slot
+            .0
+            .get_or_init(|| async {
                 Cached {
-                    value,
+                    value: self.fetch(&request).await.ok(),
                     fetched: Instant::now(),
-                },
-            );
-        }
-        let entry = &cache[&key];
+                }
+            })
+            .await;
         let feed = entry.value.as_ref().ok_or_else(unavailable)?;
+        self.cache
+            .lock()
+            .expect("highlights cache lock")
+            .promote(&key, &slot);
         let mut response = Json(feed).into_response();
         response.headers_mut().insert(
             "cache-control",
@@ -225,7 +315,15 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use tokio::sync::{Mutex, Semaphore};
     use tower::ServiceExt;
+
+    fn query(revision: &str) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .uri(format!("/api/whats-new?platform=web&revision={revision}"))
+            .body(Body::empty())
+            .unwrap()
+    }
 
     #[tokio::test]
     async fn public_route_is_revision_bound_cacheable_and_fails_closed() {
@@ -236,16 +334,23 @@ mod tests {
                 {"revision":revision,"sequence":2,"publishedAt":"2026-10-11T12:00:00Z","highlights":[{"title":"Edit messages","body":"View earlier versions."}]}]}),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
+        // Holds every lookup of the all-`f` revision until permits are added.
+        let gate = Arc::new(Semaphore::new(0));
         let upstream = Router::new().route(
             "/whats-new-web/{revision}",
             get({
                 let value = value.clone();
                 let calls = calls.clone();
-                move || {
+                let gate = gate.clone();
+                move |axum::extract::Path(file): axum::extract::Path<String>| {
                     let value = value.clone();
                     let calls = calls.clone();
+                    let gate = gate.clone();
                     async move {
                         calls.fetch_add(1, Ordering::SeqCst);
+                        if file.starts_with('f') {
+                            gate.acquire().await.unwrap().forget();
+                        }
                         Json(value.lock().await.clone())
                     }
                 }
@@ -316,37 +421,80 @@ mod tests {
             for (key, field) in invalid.as_object().unwrap() {
                 value.lock().await[key] = field.clone();
             }
-            cache.cache.lock().await.clear();
+            *cache.cache.lock().unwrap() = Cache::default();
             let response = router.clone().oneshot(request()).await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
             assert_eq!(response.headers()["cache-control"], "no-store");
             *value.lock().await = original;
         }
-        cache.cache.lock().await.clear();
+        *cache.cache.lock().unwrap() = Cache::default();
+        // A slow lookup holds neither the map nor other revisions.
         let before = calls.load(Ordering::SeqCst);
+        let slow = tokio::spawn(router.clone().oneshot(query(&"f".repeat(40))));
+        while calls.load(Ordering::SeqCst) == before {
+            tokio::task::yield_now().await;
+        }
+        let response =
+            tokio::time::timeout(Duration::from_secs(5), router.clone().oneshot(request()))
+                .await
+                .expect("not blocked behind a slow lookup")
+                .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        gate.add_permits(1);
         assert_eq!(
-            router.clone().oneshot(request()).await.unwrap().status(),
-            StatusCode::OK
+            slow.await.unwrap().unwrap().status(),
+            StatusCode::BAD_GATEWAY
         );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 2);
+
+        // Unknown revisions fill only their own bound and then wait out the
+        // backoff; a working revision is still served and refreshed.
+        let before = calls.load(Ordering::SeqCst);
         for number in 0..40 {
             let response = router
                 .clone()
-                .oneshot(
-                    HttpRequest::builder()
-                        .uri(format!(
-                            "/api/whats-new?platform=web&revision={number:040x}"
-                        ))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(query(&format!("{number:040x}")))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         }
-        assert_eq!(calls.load(Ordering::SeqCst) - before, 32);
+        // The slow lookup's failure already holds one of the places.
+        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY - 1);
         assert_eq!(
-            router.oneshot(request()).await.unwrap().status(),
+            router.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY - 1);
+        {
+            let mut map = cache.cache.lock().unwrap();
+            let slot = map.found.get_mut(&format!("web:{revision}")).unwrap();
+            let value = slot.0.get().unwrap().value.clone();
+            let old = Instant::now() - TTL;
+            *slot = Arc::new(Slot(
+                OnceCell::new_with(Some(Cached {
+                    value,
+                    fetched: old,
+                })),
+                old,
+            ));
+            // Lookups abandoned by every waiter free their places too.
+            for slot in map.pending.values_mut() {
+                *slot = Arc::new(Slot(OnceCell::new(), old));
+            }
+        }
+        assert_eq!(
+            router.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY);
+        assert_eq!(
+            router
+                .oneshot(query(&"9".repeat(40)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY + 1);
     }
 }
