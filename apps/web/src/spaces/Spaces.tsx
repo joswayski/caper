@@ -145,6 +145,20 @@ import "./spaces.css";
 /** Readable text for server and network failures; native clients share the same sentences. */
 const errorMessage = friendlyError;
 
+/** JSON with object keys sorted, so snapshots that differ only in key order compare equal. */
+function canonicalJson(value: unknown) {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item,
+  );
+}
+
+/** A state setter's update that keeps the held value when a poll brings the same data, so nothing re-renders. */
+function unlessSame<T>(next: T) {
+  return (current: T) => (canonicalJson(current) === canonicalJson(next) ? current : next);
+}
+
 /** Closes a disclosure menu and focuses its summary, so a dialog opened from it returns focus there. */
 function closeMenu(menu: HTMLDetailsElement) {
   menu.open = false;
@@ -397,13 +411,14 @@ function NameField({
           autoFocus={focus}
           data-initial-focus={focus || undefined}
           value={value}
-          maxLength={80}
+          // Channel names are ASCII; a space name counts characters like the server, so emoji aren't cut short.
+          maxLength={channel ? 80 : undefined}
           autoComplete="off"
           spellCheck={!channel}
           placeholder={channel ? "project-updates" : "Studio"}
           onChange={(event) => {
             const input = event.currentTarget;
-            if (!channel) return onChange(input.value);
+            if (!channel) return onChange(Array.from(input.value).slice(0, 80).join(""));
             const caret = normalizeChannelName(input.value.slice(0, input.selectionStart ?? input.value.length)).length;
             onChange(normalizeChannelName(input.value));
             requestAnimationFrame(() => input.setSelectionRange(caret, caret));
@@ -1869,6 +1884,22 @@ export default function Spaces({
       setSpaces((current) => withSpaceUpdates(current, update));
       setInvitations((current) => withSpaceUpdates(current, update));
       setRailInvitation((current) => current && withSpaceUpdate(current, update));
+      // The feedback team sees space names on inbox rows and on the conversation being visited.
+      setFeedback((current) =>
+        current?.reports.some((report) => report.space?.id === update.id)
+          ? {
+              ...current,
+              reports: current.reports.map((report) =>
+                report.space?.id === update.id ? { ...report, space: { ...report.space, name: update.name } } : report,
+              ),
+            }
+          : current,
+      );
+      setVisitView((current) =>
+        current?.history?.space.id === update.id
+          ? { ...current, history: { ...current.history, space: { ...current.history.space, name: update.name } } }
+          : current,
+      );
       setView((current) => {
         if (!current || current.detail.space.id !== update.id) return current;
         const updated = {
@@ -2153,7 +2184,7 @@ export default function Spaces({
       void listDirectConversations()
         .then((result) => {
           if (current) {
-            setDirects(result.conversations);
+            setDirects(unlessSame(result.conversations));
             setDirectError(undefined);
           }
         })
@@ -2490,8 +2521,8 @@ export default function Spaces({
         if (!current) return;
         const available = new Set(result.spaces.map((space) => space.id));
         for (const space of spaces) if (!available.has(space.id)) navigation.current.forget(space.id);
-        setSpaces(result.spaces);
-        setInvitations(result.invitations ?? []);
+        setSpaces(unlessSame(result.spaces));
+        setInvitations(unlessSame(result.invitations ?? []));
         if (detail?.space.id && !available.has(detail.space.id)) {
           setView(undefined);
           setDialog(undefined);
@@ -2509,7 +2540,7 @@ export default function Spaces({
             current &&
             revision === membershipRevision.current &&
             activeSpace.current === next.space.id &&
-            JSON.stringify(next) !== JSON.stringify(shownDetail.current)
+            canonicalJson(next) !== canonicalJson(shownDetail.current)
           )
             replaceDetail(next);
         }
