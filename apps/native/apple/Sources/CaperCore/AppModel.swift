@@ -404,8 +404,19 @@ public final class AppModel {
         let value = try await request()
         var next = profileUpdates
         next.recordFetched(people(value), since: mark)
-        if next != profileUpdates { profileUpdates = next }
+        if next != profileUpdates {
+            profileUpdates = next
+            refreshDirectTitle()
+        }
         return value
+    }
+
+    /// An open DM is titled with the other person's name: a repaired profile
+    /// (a missed `profile.updated`) renames its header too, not only its row.
+    private func refreshDirectTitle() {
+        guard let conversation = selectedDirectMessage, chat.channelID == conversation.id,
+              chat.channelName != conversation.peer.displayName else { return }
+        chat.channelName = conversation.peer.displayName
     }
 
     /// Opens (or reopens after sign-in) the live `profiles` feed. An older

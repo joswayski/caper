@@ -2640,4 +2640,32 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(model.directMessages.isEmpty)
         XCTAssertNil(model.selectedDirectMessageID)
     }
+
+    @MainActor
+    func testARefreshedPeerProfileRenamesTheOpenDirectMessage() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        var peerName = "Peer"
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/chat/channels/dm0000000001/messages":
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Peer","direct":true},"messages":[],"cursor":"1","hasMore":false}"#.utf8))
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/dms/dm0000000001/read": return (204, Data())
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"\#(peerName)"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.refreshDirectMessages()
+        let dm = try XCTUnwrap(model.directMessages.first)
+        await model.select(directMessage: dm)
+        XCTAssertEqual(model.chat.channelName, "Peer")
+        // A rename whose live event was missed: the next list refresh repairs the header too.
+        peerName = "Peer Renamed"
+        await model.refreshDirectMessages()
+        XCTAssertEqual(model.directMessages.first?.peer.displayName, "Peer Renamed")
+        XCTAssertEqual(model.chat.channelName, "Peer Renamed")
+        await model.logout()
+    }
 }
