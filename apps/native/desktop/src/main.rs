@@ -8212,6 +8212,7 @@ impl CaperApp {
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
                             );
+                            focus_frame(ui, &field);
                             if field.changed() {
                                 self.error = None;
                             }
@@ -8318,13 +8319,14 @@ impl CaperApp {
                             ui.add_space(24.0);
                             ui.label(bold("Username").size(14.0));
                             ui.add_space(4.0);
-                            ui.add(
+                            let field = ui.add(
                                 egui::TextEdit::singleline(&mut self.username)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(32)
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
                             );
+                            focus_frame(ui, &field);
                             self.username = normalize_username(&self.username);
                             ui.add_space(6.0);
                             ui.label(
@@ -8335,13 +8337,14 @@ impl CaperApp {
                             ui.add_space(20.0);
                             ui.label(bold("Display name").size(14.0));
                             ui.add_space(4.0);
-                            ui.add(
+                            let field = ui.add(
                                 egui::TextEdit::singleline(&mut self.display_name)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(64)
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
                             );
+                            focus_frame(ui, &field);
                             ui.add_space(6.0);
                             ui.label(
                                 RichText::new("Shown to other people. It does not need to be unique.")
@@ -8447,9 +8450,12 @@ impl CaperApp {
                                 egui::TextEdit::singleline(text)
                                     .id(egui::Id::new("sign-in-code"))
                                     .vertical_align(egui::Align::Center)
+                                    .font(egui::FontId::proportional(16.0))
+                                    .margin(egui::Margin::symmetric(14, 4))
                                     .min_size(egui::vec2(width, 52.0))
                                     .desired_width(width),
                             );
+                            focus_frame(ui, &response);
                             // No char limit: it would cut a pasted " ABC-234" before cleanup.
                             clean_sign_in_code(&mut self.code);
                             if refocus && !exhausted {
@@ -8579,10 +8585,14 @@ impl CaperApp {
                                 egui::TextEdit::singleline(text)
                                     .id(egui::Id::new("sign-in-email"))
                                     .vertical_align(egui::Align::Center)
+                                    // Web's field: 14px inset, 16px text.
+                                    .font(egui::FontId::proportional(16.0))
+                                    .margin(egui::Margin::symmetric(14, 4))
                                     .min_size(egui::vec2(width, 52.0))
                                     .desired_width(width)
-                                    .hint_text("you@example.com"),
+                                    .hint_text(RichText::new("you@example.com").color(MUTED.gamma_multiply(0.65))),
                             );
+                            focus_frame(ui, &response);
                             if refocus {
                                 response.request_focus();
                             }
@@ -9635,6 +9645,7 @@ impl CaperApp {
                                         .margin(egui::Margin::symmetric(8, 4))
                                         .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
                                 );
+                                focus_frame(ui, &search);
                                 if std::mem::take(&mut self.browse_focus) {
                                     search.request_focus();
                                 }
@@ -16133,12 +16144,13 @@ impl CaperApp {
                 });
                 ui.add_space(10.0);
                 let search_id = egui::Id::new("emoji-picker-search");
-                let _search = ui.add(
+                let search = ui.add(
                     egui::TextEdit::singleline(&mut self.reaction_search)
                         .id(search_id)
                         .hint_text("Search emoji")
                         .desired_width(f32::INFINITY),
                 );
+                focus_frame(ui, &search);
                 if self.reaction_search_focus {
                     ui.memory_mut(|memory| memory.request_focus(search_id));
                     self.reaction_search_focus = false;
@@ -17901,14 +17913,16 @@ impl CaperApp {
                                                 let id = egui::Id::new("direct-username");
                                                 let people: Vec<_> = self.people.iter().flatten().map(mentions::Person::from).collect();
                                                 let username = people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
-                                                    ui.add_sized(
+                                                    let field = ui.add_sized(
                                                         [ui.available_width(), 42.0],
                                                         egui::TextEdit::singleline(value)
                                                             .id(id)
                                                             .vertical_align(egui::Align::Center)
                                                             .margin(egui::Margin::symmetric(8, 4))
                                                             .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
-                                                    )
+                                                    );
+                                                    focus_frame(ui, &field);
+                                                    field
                                                 });
                                                 if self.focus_dialog_field {
                                                     username.request_focus();
@@ -18347,12 +18361,13 @@ impl CaperApp {
         );
         ui.add_space(10.0);
         ui.label("Username");
-        ui.add_sized(
+        let field = ui.add_sized(
             [ui.available_width(), 42.0],
             egui::TextEdit::singleline(&mut self.username)
                 .vertical_align(egui::Align::Center)
                 .char_limit(32),
         );
+        focus_frame(ui, &field);
         self.username = normalize_username(&self.username);
         ui.label(
             RichText::new("3–32 lowercase letters, numbers, or underscores.")
@@ -18360,12 +18375,13 @@ impl CaperApp {
                 .color(MUTED),
         );
         ui.label("Display name");
-        ui.add_sized(
+        let field = ui.add_sized(
             [ui.available_width(), 42.0],
             egui::TextEdit::singleline(&mut self.display_name)
                 .vertical_align(egui::Align::Center)
                 .char_limit(64),
         );
+        focus_frame(ui, &field);
         ui.label(
             RichText::new("Shown to other people. It does not need to be unique.")
                 .small()
@@ -18838,6 +18854,7 @@ impl CaperApp {
                     ),
             )
             .labelled_by(label.id);
+        focus_frame(ui, &field);
         if self.focus_dialog_field {
             field.request_focus();
         }
@@ -19159,6 +19176,7 @@ impl CaperApp {
                                 RichText::new("Exact username").color(MUTED.gamma_multiply(0.65)),
                             ),
                     );
+                    focus_frame(ui, &field);
                     *value = normalize_username(value);
                     field
                 },
@@ -19761,6 +19779,7 @@ fn invite_number_field(
                 .desired_width(width),
         )
         .labelled_by(label);
+    focus_frame(ui, &field);
     if field.changed() {
         text.retain(|character| character.is_ascii_digit());
     }
@@ -22210,6 +22229,9 @@ fn configure(context: &egui::Context) {
     style.visuals.widgets.active.weak_bg_fill = PRESSED;
     style.visuals.widgets.open.weak_bg_fill = COMPOSER;
     style.visuals.selection.bg_fill = TERRACOTTA;
+    // egui also frames a focused TextEdit with this stroke; `focus_frame`
+    // repaints that frame terracotta. Selected text stays readable on the fill.
+    style.visuals.selection.stroke = Stroke::new(1.0, TEXT);
     style.visuals.override_text_color = Some(TEXT);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 7.0);
@@ -22399,6 +22421,21 @@ fn input_meter(ui: &mut egui::Ui, levels: &std::collections::VecDeque<f32>, acti
     }
 }
 
+/// Web's `:focus` border on fields: egui frames a focused `TextEdit` with
+/// `selection.stroke`, which also colors selected text, so framed fields
+/// repaint that frame terracotta here instead.
+fn focus_frame(ui: &egui::Ui, response: &egui::Response) {
+    if response.has_focus() {
+        let visuals = ui.style().interact(response);
+        ui.painter().rect_stroke(
+            response.rect.expand(visuals.expansion),
+            visuals.corner_radius,
+            Stroke::new(1.0, TERRACOTTA),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// Web's `.space-field` input; channel creation shows its # or lock icon inside.
 fn name_field(
     ui: &mut egui::Ui,
@@ -22421,6 +22458,7 @@ fn name_field(
                 bottom: 4,
             }),
     );
+    focus_frame(ui, &response);
     if let Some(icon) = icon {
         paint_icon(
             ui.painter(),
