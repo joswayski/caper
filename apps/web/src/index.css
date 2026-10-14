@@ -304,13 +304,33 @@
   color: var(--text-muted);
   font-size: 0.75rem;
 }
-.app-downloads .download-step {
+.beta-steps {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+.beta-steps li {
+  display: grid;
+}
+.beta-steps strong {
   color: var(--text);
 }
-.download-step a {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 4px;
+.beta-step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+/* Under the numbered steps, View source is the only remaining action. */
+.beta-steps + .download-actions {
+  grid-template-columns: minmax(0, 1fr);
 }
 .download-picker {
   z-index: 100;

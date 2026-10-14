@@ -92,9 +92,10 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           </h1>
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
+            {download && platform === "android" && <AndroidBetaSteps groupUrl={download.url} />}
             <div className="download-actions">
               {isLinux && <LinuxDownloadPicker />}
-              {download && platform && (
+              {download && platform && platform !== "android" && (
                 <a className="download-button" href={download.url}>
                   <PlatformIcon platform={platform} />
                   <span>{download.label}</span>
@@ -105,11 +106,6 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
                 View source
               </a>
             </div>
-            {download && platform === "android" && (
-              <p className="download-step">
-                Join the testers group, then <a href={playTestingUrl}>install from Google Play</a>.
-              </p>
-            )}
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">
@@ -286,6 +282,38 @@ function formatRelativeTime(committedAt: string, now: number) {
 // Apple and Windows paths are shared with Captures' homepage download buttons;
 // Linux uses the standard Tux mark (simple-icons, CC0) because the simplified
 // shared path is unreadable at button size. Android is the simple-icons mark too.
+// A Play closed test only admits members of its Google Group, who then opt in on
+// Google Play. Google can't chain those two pages, so the steps are numbered here;
+// the group opens in a new tab so this page is still waiting for step 2.
+function AndroidBetaSteps({ groupUrl }: { groupUrl: string }) {
+  return (
+    <ol className="beta-steps">
+      <li>
+        <a className="download-button" href={groupUrl} target="_blank" rel="noreferrer">
+          <span className="beta-step-number" aria-hidden="true">
+            1
+          </span>
+          <span>Join the testers group</span>
+        </a>
+        <p>
+          Tap <strong>Join group</strong>, then come back here.
+        </p>
+      </li>
+      <li>
+        <a className="download-button" href={playTestingUrl}>
+          <span className="beta-step-number" aria-hidden="true">
+            2
+          </span>
+          <span>Install from Google Play</span>
+        </a>
+        <p>
+          Tap <strong>Become a tester</strong>, then install Caper.
+        </p>
+      </li>
+    </ol>
+  );
+}
+
 function PlatformIcon({ platform }: { platform: DownloadPlatform }) {
   const path =
     platform === "macos" || platform === "ios"
