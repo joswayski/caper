@@ -1711,6 +1711,8 @@ private struct SidebarIconButton: ButtonStyle {
         model.pendingVoiceChannelID != nil || model.voice.phase == .joining || model.voice.phase == .reconnecting || model.voice.phase == .leaving
     }
     var enabled: Bool { !pending && model.voiceAvailable(in: channel) == true }
+    /// Joining… or Leaving… here: disabled, but still the call's accent (web's aria-busy).
+    var busy: Bool { model.pendingVoiceChannelID == channel.id || active }
     var title: String {
         if model.pendingVoiceChannelID == channel.id { return "Joining…" }
         if active { return model.voice.phase == .leaving ? "Leaving…" : "Joining…" }
@@ -1872,10 +1874,12 @@ private struct HeaderVoice: View {
         }
         Group {
             if compact {
-                button.buttonStyle(HeaderVoiceIconButton(tint: CaperTheme.terracottaBright,
-                                                         fill: glows ? CaperTheme.terracotta.opacity(0.16) : .clear))
+                // Unavailable steps back to neutral chrome, as on web; Joining…/Leaving… keep the accent.
+                button.buttonStyle(HeaderVoiceIconButton(tint: action.enabled || action.busy ? CaperTheme.terracottaBright : CaperTheme.muted,
+                                                         fill: glows ? CaperTheme.terracotta.opacity(0.16) : .clear,
+                                                         dimsWhenDisabled: action.busy))
             } else {
-                button.buttonStyle(HeaderVoiceButton(primary: true)).fixedSize()
+                button.buttonStyle(HeaderVoiceButton(primary: true, busy: action.busy)).fixedSize()
             }
         }
         .modifier(VoiceJoinGlow(active: glows))
@@ -1937,6 +1941,8 @@ private struct VoiceJoinGlow: ViewModifier {
 private struct HeaderVoiceIconButton: ButtonStyle {
     var tint: Color = CaperTheme.muted
     var fill: Color = .clear
+    /// Off for an unavailable Join, whose muted tint already reads as unavailable.
+    var dimsWhenDisabled = true
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(tint)
@@ -1944,7 +1950,7 @@ private struct HeaderVoiceIconButton: ButtonStyle {
             .background(configuration.isPressed ? CaperTheme.raised : fill)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
-            .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
+            .opacity(enabled || !dimsWhenDisabled ? 1 : 0.45).modifier(ControlHover())
     }
 }
 
@@ -2041,22 +2047,28 @@ private struct HeaderLeaveButtonStyle: ButtonStyle {
 /// The header's voice action: terracotta-tinted Join or Switch here.
 private struct HeaderVoiceButton: ButtonStyle {
     let primary: Bool
+    /// Joining…/Leaving…: disabled but keeping the accent.
+    var busy = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
+        // As on web, an unavailable Join steps back to neutral chrome: a plain
+        // border and muted label, at full opacity.
+        let unavailable = primary && !enabled && !busy
+        let accent = primary && !unavailable
         configuration.label.font(CaperTheme.font(12, weight: .bold))
-            .foregroundStyle(primary ? CaperTheme.terracottaBright : CaperTheme.muted)
+            .foregroundStyle(accent ? CaperTheme.terracottaBright : CaperTheme.muted)
             .padding(.horizontal, 10)
             #if os(iOS)
             .frame(minHeight: 44)
             #else
             .frame(minHeight: 30)
             #endif
-            .background(primary ? CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14)
+            .background(unavailable ? Color.clear : accent ? CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14)
                         : configuration.isPressed ? CaperTheme.composer : CaperTheme.raised)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(primary ? CaperTheme.terracotta.opacity(0.7) : CaperTheme.border))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(accent ? CaperTheme.terracotta.opacity(0.7) : CaperTheme.border))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
-            .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
+            .opacity(enabled || unavailable ? 1 : 0.45).modifier(ControlHover())
     }
 }
 

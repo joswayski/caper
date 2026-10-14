@@ -1275,7 +1275,8 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
         HeaderVoiceAction.Switch -> "Switch voice to #$channelName"
         else -> "Join voice"
     }
-    val active = enabled && action != HeaderVoiceAction.Joining
+    val joining = action == HeaderVoiceAction.Joining
+    val active = enabled && !joining
     val prepare by rememberUpdatedState(onPrepare)
     val joinModifier = Modifier
         // Web prepares the join on touch-down, before the tap completes.
@@ -1295,7 +1296,8 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             // Phones: an occupied Join also gets a faint terracotta wash.
             .then(if (glows) Modifier.background(OccupiedJoinWash, RoundedCornerShape(6.dp)) else Modifier)
             .then(joinModifier), enabled = active) {
-            Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(20.dp), tint = if (active) TerracottaLight else TerracottaLight.copy(alpha = 0.6f))
+            // As on web: Joining… keeps the accent; unavailable steps back to the muted icon.
+            Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(20.dp), tint = if (active || joining) TerracottaLight else TextMuted)
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1315,12 +1317,14 @@ internal enum class HeaderVoiceAction { Join, Switch, Joining, Leave }
             Spacer(Modifier.width(6.dp))
             Text("Leave", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
         } else {
-            // Web's terracotta-tinted voice button; disabled or joining, it dims rather than turning grey.
+            // Web's terracotta-tinted voice button. Joining… keeps the accent; unavailable steps
+            // back to neutral chrome (plain border, muted label, no wash), as on web.
             OutlinedButton(onJoin, Modifier.heightIn(min = 48.dp).voiceJoinGlow(glows, 8.dp).then(joinModifier),
                 enabled = active, shape = MaterialTheme.shapes.small,
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = TerracottaWash, contentColor = TerracottaLight,
-                    disabledContainerColor = TerracottaWash, disabledContentColor = TerracottaLight.copy(alpha = 0.6f)),
-                border = BorderStroke(1.dp, if (active) TerracottaBorder else TerracottaBorder.copy(alpha = 0.6f)),
+                    disabledContainerColor = if (joining) TerracottaWash else Color.Transparent,
+                    disabledContentColor = if (joining) TerracottaLight else TextMuted),
+                border = BorderStroke(1.dp, if (active || joining) TerracottaBorder else Border),
                 contentPadding = padding) {
                 Icon(painterResource(R.drawable.lucide_headphones), null, Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))

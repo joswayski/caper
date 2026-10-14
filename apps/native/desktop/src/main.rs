@@ -10962,15 +10962,27 @@ impl CaperApp {
                 // People are talking here: Join glows softly until you are in.
                 let occupied = enabled && !self.voice_people(id).0.is_empty();
                 let glow = ui.painter().add(egui::Shape::Noop);
+                // Unavailable steps back to neutral chrome, unfaded, as on web.
+                let colors = if enabled {
+                    (VOICE_TONE.rest.2, VOICE_TONE.hover.2)
+                } else {
+                    (QUIET_TONE.rest.2, QUIET_TONE.rest.2)
+                };
                 let button = ui
-                    .add_enabled_ui(enabled, |ui| {
-                        voice_icon_button(
-                            ui,
-                            NavIcon::Headphones,
-                            (VOICE_TONE.rest.2, VOICE_TONE.hover.2),
-                            occupied.then_some((OCCUPIED_JOIN_TINT, VOICE_TONE.hover.0)),
-                            label,
-                        )
+                    .scope(|ui| {
+                        if !enabled {
+                            ui.visuals_mut().disabled_alpha = 1.0;
+                        }
+                        ui.add_enabled_ui(enabled, |ui| {
+                            voice_icon_button(
+                                ui,
+                                NavIcon::Headphones,
+                                colors,
+                                occupied.then_some((OCCUPIED_JOIN_TINT, VOICE_TONE.hover.0)),
+                                label,
+                            )
+                        })
+                        .inner
                     })
                     .inner;
                 if occupied {
@@ -11005,18 +11017,26 @@ impl CaperApp {
             VoiceAction::Join { switching, enabled } => {
                 // People are talking here: Join glows softly until you are in.
                 let glow = ui.painter().add(egui::Shape::Noop);
+                // Unavailable steps back to neutral chrome, unfaded, as on web;
+                // Joining… above keeps the voice accent.
                 let button = ui
-                    .add_enabled_ui(enabled, |ui| {
-                        header_voice_button(
-                            ui,
-                            NavIcon::Headphones,
-                            if switching {
-                                "Switch here"
-                            } else {
-                                "Join voice"
-                            },
-                            VOICE_TONE,
-                        )
+                    .scope(|ui| {
+                        if !enabled {
+                            ui.visuals_mut().disabled_alpha = 1.0;
+                        }
+                        ui.add_enabled_ui(enabled, |ui| {
+                            header_voice_button(
+                                ui,
+                                NavIcon::Headphones,
+                                if switching {
+                                    "Switch here"
+                                } else {
+                                    "Join voice"
+                                },
+                                if enabled { VOICE_TONE } else { QUIET_TONE },
+                            )
+                        })
+                        .inner
                     })
                     .inner;
                 if enabled && !self.voice_people(id).0.is_empty() {
@@ -20091,7 +20111,9 @@ fn voice_icon_button(
         ui.painter(),
         egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
         icon,
-        if ui.is_enabled() {
+        // A scope that keeps disabled controls unfaded (an unavailable Join's
+        // neutral chrome) already passes the muted color it wants.
+        if ui.is_enabled() || ui.visuals().disabled_alpha >= 1.0 {
             color
         } else {
             color.gamma_multiply(0.5)
