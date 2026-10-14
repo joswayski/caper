@@ -14620,6 +14620,11 @@ impl CaperApp {
         };
         let short = grouped.then(|| short_time(&message.created_at));
         let can_react = self.selected_is_joined() && self.session.is_some();
+        // As on web, a forward whose original is unavailable cannot be forwarded.
+        let forwardable = message
+            .forward
+            .as_ref()
+            .is_none_or(|forward| forward.message.is_some());
         // Web's hover actions: Reply in thread (outside threads), Reply and Add
         // reaction for members, and ⋯ always, read-only previews included.
         let action_count = 1 + usize::from(!in_thread) + if can_react { 2 } else { 0 };
@@ -14823,7 +14828,7 @@ impl CaperApp {
                         self.select_reply(ui.ctx(), message, in_thread);
                         ui.close();
                     }
-                    if ui.button("Forward message").clicked() {
+                    if forwardable && ui.button("Forward message").clicked() {
                         self.forwarding.picker(
                             &self.worker,
                             self.generation,
@@ -15127,34 +15132,55 @@ impl CaperApp {
                             },
                         );
                         // Web's quick reactions toggle your own; then the full picker.
+                        // Like replying and pinning, they need membership: read-only
+                        // previews and requests get no controls that do nothing.
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            for (emoji, mine) in quick_reactions(&reactions, author.as_deref()) {
-                                let Some(entry) = emoji::find(emoji) else {
-                                    continue;
-                                };
-                                let image = self.reaction_textures.image(ui, entry, 20.0);
-                                if quick_reaction(ui, image, &format!("React with {emoji}"), mine)
-                                    .clicked()
+                        if can_react {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                for (emoji, mine) in quick_reactions(&reactions, author.as_deref())
                                 {
-                                    self.set_reaction(&message.id, emoji, !mine);
+                                    let Some(entry) = emoji::find(emoji) else {
+                                        continue;
+                                    };
+                                    let image = self.reaction_textures.image(ui, entry, 20.0);
+                                    if quick_reaction(
+                                        ui,
+                                        image,
+                                        &format!("React with {emoji}"),
+                                        mine,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.set_reaction(&message.id, emoji, !mine);
+                                        ui.close();
+                                    }
+                                }
+                                if drawn_icon_button_sized(
+                                    ui,
+                                    NavIcon::SmilePlus,
+                                    "Add reaction",
+                                    32.0,
+                                )
+                                .clicked()
+                                {
+                                    self.reaction_picker = Some(message.id.clone());
+                                    self.composer_emoji = None;
+                                    self.reaction_search.clear();
+                                    self.reaction_category = 0;
+                                    self.reaction_search_focus = true;
                                     ui.close();
                                 }
-                            }
-                            if drawn_icon_button_sized(ui, NavIcon::SmilePlus, "Add reaction", 32.0)
-                                .clicked()
-                            {
-                                self.reaction_picker = Some(message.id.clone());
-                                self.composer_emoji = None;
-                                self.reaction_search.clear();
-                                self.reaction_category = 0;
-                                self.reaction_search_focus = true;
-                                ui.close();
-                            }
-                        });
-                        ui.add_space(8.0);
-                        if message_menu_item(ui, NavIcon::Reply, "Reply", self.pending.is_none())
+                            });
+                            ui.add_space(8.0);
+                        }
+                        if can_react
+                            && message_menu_item(
+                                ui,
+                                NavIcon::Reply,
+                                "Reply",
+                                self.pending.is_none(),
+                            )
                             .clicked()
                         {
                             self.select_reply(ui.ctx(), message, in_thread);
@@ -15178,8 +15204,9 @@ impl CaperApp {
                             );
                             ui.close();
                         }
-                        if message_menu_item(ui, NavIcon::Forward, "Forward message", true)
-                            .clicked()
+                        if forwardable
+                            && message_menu_item(ui, NavIcon::Forward, "Forward message", true)
+                                .clicked()
                             && let Some(token) = self.token.clone()
                         {
                             self.forwarding.picker(
@@ -15213,23 +15240,24 @@ impl CaperApp {
                                 Some((message.id.clone(), reactions[0].emoji.clone()));
                             ui.close();
                         }
-                        if message_menu_item(
-                            ui,
-                            if active {
-                                NavIcon::PinOff
-                            } else {
-                                NavIcon::Pin
-                            },
-                            if self.pending_pins.contains(&message.id) {
-                                "Saving…"
-                            } else if active {
-                                "Unpin message"
-                            } else {
-                                "Pin message"
-                            },
-                            !self.pending_pins.contains(&message.id),
-                        )
-                        .clicked()
+                        if can_react
+                            && message_menu_item(
+                                ui,
+                                if active {
+                                    NavIcon::PinOff
+                                } else {
+                                    NavIcon::Pin
+                                },
+                                if self.pending_pins.contains(&message.id) {
+                                    "Saving…"
+                                } else if active {
+                                    "Unpin message"
+                                } else {
+                                    "Pin message"
+                                },
+                                !self.pending_pins.contains(&message.id),
+                            )
+                            .clicked()
                         {
                             self.set_pin(message, !active);
                             ui.close();
@@ -25049,6 +25077,62 @@ mod tests {
         assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin message")), "unpin belongs only in the actions menu");
         click(&mut app, &context, egui::pos2(20.0, 20.0));
         assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn message_actions_menu_offers_only_what_the_reader_can_do() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        let channel = app.selected_channel.clone().unwrap();
+        let mut message = app.timeline.messages().next().unwrap().clone();
+        message.content.text = "Forwarded wrapper text".into();
+        message.forward = Some(Box::new(crate::model::MessageForward {
+            message: None,
+            seq: "1".into(),
+        }));
+        app.timeline.reset(vec![message], "7").unwrap();
+        let open_menu = |app: &mut CaperApp| {
+            egui::Popup::close_all(&context);
+            render(app, &context, vec![]);
+            let output = render(app, &context, vec![]);
+            let text = text_position(&output, "Forwarded wrapper text");
+            render(app, &context, vec![egui::Event::PointerMoved(text)]);
+            let hovered = render(app, &context, vec![]);
+            let more = node_bounds(&hovered, "Message actions").expect("actions button");
+            click(app, &context, more.center());
+            render(app, &context, vec![]);
+            render(app, &context, vec![])
+        };
+        let member = open_menu(&mut app);
+        let shown = texts(&member);
+        for label in ["Reply", "Pin message", "Copy message ID"] {
+            assert!(shown.contains(&label), "members see {label}: {shown:?}");
+        }
+        assert!(node_bounds(&member, "React with 👍").is_some());
+        assert!(
+            !shown.contains(&"Forward message"),
+            "a forward whose original is unavailable cannot be forwarded"
+        );
+
+        // A channel previewed without joining it is read-only, as on web.
+        for item in &mut app.detail.as_mut().unwrap().channels {
+            if item.id == channel {
+                item.joined = false;
+            }
+        }
+        let preview = open_menu(&mut app);
+        let shown = texts(&preview);
+        assert!(shown.contains(&"Copy message ID"), "{shown:?}");
+        for label in ["Reply", "Pin message", "Unpin message"] {
+            assert!(!shown.contains(&label), "previews offer no {label}");
+        }
+        assert!(node_bounds(&preview, "React with 👍").is_none());
+        assert!(node_bounds(&preview, "Add reaction").is_none());
     }
 
     #[test]
