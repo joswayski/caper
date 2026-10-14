@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   AudioLines,
   ChevronDown,
@@ -215,7 +216,7 @@ function Avatar({ person }: { person: (typeof people)[number] }) {
 }
 
 /** A local-only, deliberately labelled illustration of a lively Caper room. */
-export default function LiveWindow() {
+export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: boolean }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -734,11 +735,12 @@ export default function LiveWindow() {
           </div>
         </div>
       </div>
-      <a
+      <Link
         className="live-activator"
         data-live-activator
         data-live-control
-        href="/spaces"
+        to="/spaces"
+        preload={preloadSpace ? "intent" : false}
         aria-label="Join Caper"
         draggable={false}
       >
@@ -747,7 +749,7 @@ export default function LiveWindow() {
           <span className="live-invite-fine">Click to join</span>
           <span className="live-invite-coarse">Tap to join</span>
         </span>
-      </a>
+      </Link>
     </div>
   );
 }

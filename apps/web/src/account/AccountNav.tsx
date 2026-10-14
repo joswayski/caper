@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { getAccount, logout, type Account } from "./client";
 
 export default function AccountNav({
@@ -40,12 +41,13 @@ export default function AccountNav({
 
   return (
     <div className="flex min-w-0 items-center gap-4 max-[560px]:gap-2.5">
-      <a
+      <Link
         className="shrink-0 rounded-[4px] py-2.5 text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 max-[560px]:text-[.78rem]"
-        href="/spaces"
+        to="/spaces"
+        preload={account.username && account.displayName ? "render" : false}
       >
         Spaces
-      </a>
+      </Link>
       <a
         className="min-w-0 truncate rounded-[4px] py-2.5 text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 max-[560px]:text-[.78rem]"
         href="/profile"
