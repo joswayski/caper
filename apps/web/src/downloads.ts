@@ -11,14 +11,21 @@ export const downloads = {
     url: `${release}/Caper-macOS-Apple-Silicon.dmg`,
   },
   windows: { label: "Download for Windows", detail: "x64 · Setup.exe", url: `${release}/Caper-Windows-x64-Setup.exe` },
-  "linux-deb": { label: "Download for Linux", detail: "x64 · .deb", url: `${release}/Caper-Linux-x64.deb` },
-  linux: {
-    label: "Linux downloads",
-    detail: "Check compatibility",
-    url: desktopRelease,
-  },
 };
 export const intelMacDownload = `${release}/Caper-macOS-Intel.dmg`;
+
+export const linuxDownloads = [
+  {
+    label: "Debian / Ubuntu · .deb",
+    detail: "x64 · Ubuntu 24.04 or compatible Debian-based systems",
+    url: `${release}/Caper-Linux-x64.deb`,
+  },
+  {
+    label: "Portable archive · .tar.gz",
+    detail: "x64 · Advanced use; requires compatible system libraries",
+    url: `${release}/Caper-Linux-x64.tar.gz`,
+  },
+];
 
 // Public phone betas. A link stays null until it accepts testers: the TestFlight
 // public link once a build passes Beta App Review, and the Google Group once the
@@ -33,7 +40,7 @@ export const mobileBetas: Record<"ios" | "android", { label: string; url: string
   android: androidTestersGroupUrl ? { label: "Get the Android beta", url: androidTestersGroupUrl } : null,
 };
 
-// Unknown Linux distributions need the compatibility notes, not an archive dump.
+// Select the visitor's download button; only Linux offers a package picker.
 export function detectDownloadPlatform({
   userAgent,
   platform = "",

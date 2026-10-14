@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
-import { detectDownloadPlatform, downloads, intelMacDownload, mobileBetas, playTestingUrl } from "../downloads.ts";
+import {
+  detectDownloadPlatform,
+  downloads,
+  intelMacDownload,
+  linuxDownloads,
+  mobileBetas,
+  playTestingUrl,
+} from "../downloads.ts";
+import Home from "../pages/Home";
 
 test("desktop hints select current platform packages", () => {
   for (const [userAgent, expected] of [
@@ -44,6 +54,54 @@ test("all desktop links use the rolling native release, never legacy previews", 
   assert.equal(downloads.macos.url, `${base}Caper-macOS-Apple-Silicon.dmg`);
   assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.dmg`);
   assert.equal(downloads.windows.url, `${base}Caper-Windows-x64-Setup.exe`);
-  assert.equal(downloads["linux-deb"].url, `${base}Caper-Linux-x64.deb`);
-  assert.equal(downloads.linux.url, "https://github.com/joswayski/caper/releases/tag/native-latest");
+  assert.deepEqual(
+    linuxDownloads.map((download) => download.url),
+    [`${base}Caper-Linux-x64.deb`, `${base}Caper-Linux-x64.tar.gz`],
+  );
+});
+
+test("each homepage offers only its own platform: direct links except for the Linux package picker", () => {
+  const base = "https://github.com/joswayski/caper/releases/download/native-latest/";
+  const repository = "https://github.com/joswayski/caper";
+  for (const [platform, hrefs] of [
+    ["macos", [`${base}Caper-macOS-Apple-Silicon.dmg`, repository]],
+    ["windows", [`${base}Caper-Windows-x64-Setup.exe`, repository]],
+    ["ios", ["https://testflight.apple.com/join/khGQMuYP", repository]],
+    [
+      "android",
+      [
+        "https://groups.google.com/g/caper-testers",
+        repository,
+        "https://play.google.com/apps/testing/chat.caper.android",
+      ],
+    ],
+    ["linux", [repository]],
+    ["linux-deb", [repository]],
+    [null, [repository]],
+  ] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(Home, {
+        account: null,
+        initialNow: 0,
+        latestChanges: [],
+        downloadPlatform: platform,
+      }),
+    );
+    const actions = markup.slice(
+      markup.indexOf('<div class="app-downloads">'),
+      markup.indexOf('<p class="experimental-note">'),
+    );
+    assert.deepEqual(
+      [...actions.matchAll(/href="([^"]+)"/g)].map((match) => match[1]),
+      hrefs,
+      String(platform),
+    );
+    assert.equal(
+      actions.includes('aria-haspopup="dialog"'),
+      platform === "linux" || platform === "linux-deb",
+      String(platform),
+    );
+    assert.doesNotMatch(actions, /<select|available for/i);
+    assert.equal(actions.includes("Download for Linux"), platform === "linux" || platform === "linux-deb");
+  }
 });

@@ -1,5 +1,18 @@
-import { Fragment, useEffect, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  autoUpdate,
+  flip,
+  FloatingFocusManager,
+  FloatingPortal,
+  offset,
+  shift,
+  useClick,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
+import { Check, ChevronDown, Copy, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
@@ -9,6 +22,7 @@ import {
   desktopRelease,
   detectDownloadPlatform,
   downloads,
+  linuxDownloads,
   mobileBetas,
   playTestingUrl,
   type DownloadPlatform,
@@ -32,11 +46,13 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "alwa
 export default function Home({ account, initialNow, latestChanges, downloadPlatform }: HomeProps) {
   const [now, setNow] = useState(initialNow);
   const [platform, setPlatform] = useState(downloadPlatform);
-  const download = !platform
-    ? null
-    : platform === "ios" || platform === "android"
-      ? mobileBetas[platform]
-      : downloads[platform];
+  const isLinux = platform === "linux" || platform === "linux-deb";
+  const download =
+    !platform || isLinux
+      ? null
+      : platform === "ios" || platform === "android"
+        ? mobileBetas[platform]
+        : downloads[platform];
 
   useEffect(() => {
     // iPadOS can send a Mac user agent; touch points distinguish it after hydration.
@@ -77,10 +93,11 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
             <div className="download-actions">
+              {isLinux && <LinuxDownloadPicker />}
               {download && platform && (
                 <a className="download-button" href={download.url}>
                   <PlatformIcon platform={platform} />
-                  {download.label}
+                  <span>{download.label}</span>
                 </a>
               )}
               <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer">
@@ -93,9 +110,6 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
                 Join the testers group, then <a href={playTestingUrl}>install from Google Play</a>.
               </p>
             )}
-            <p>
-              {download ? "Also available for" : "Available for"} <PlatformLinks links={otherPlatforms(platform)} />.
-            </p>
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">
@@ -186,26 +200,64 @@ function ContactLinks() {
   );
 }
 
-type PlatformLink = { label: string; url: string };
+function LinuxDownloadPicker() {
+  const [open, setOpen] = useState(false);
+  const { refs, floatingStyles, context } = useFloating({
+    open,
+    onOpenChange: setOpen,
+    placement: "bottom-start",
+    strategy: "fixed",
+    middleware: [offset(8), flip(), shift({ padding: 12, crossAxis: true })],
+    whileElementsMounted: autoUpdate,
+  });
+  const { getReferenceProps, getFloatingProps } = useInteractions([
+    useClick(context),
+    useDismiss(context),
+    useRole(context),
+  ]);
 
-// Every platform except the visitor's own; phone betas appear once their links accept testers.
-function otherPlatforms(platform: DownloadPlatform | null) {
-  const links: PlatformLink[] = [];
-  if (platform !== "macos") links.push({ label: "macOS", url: desktopRelease });
-  if (platform !== "windows") links.push({ label: "Windows", url: desktopRelease });
-  if (platform !== "linux" && platform !== "linux-deb") links.push({ label: "Linux", url: desktopRelease });
-  if (platform !== "ios" && mobileBetas.ios) links.push({ label: "iOS", url: mobileBetas.ios.url });
-  if (platform !== "android" && mobileBetas.android) links.push({ label: "Android", url: mobileBetas.android.url });
-  return links;
-}
-
-function PlatformLinks({ links }: { links: readonly PlatformLink[] }) {
-  return links.map((link, index) => (
-    <Fragment key={link.label}>
-      {index === 0 ? "" : links.length === 2 ? " and " : index === links.length - 1 ? ", and " : ", "}
-      <a href={link.url}>{link.label}</a>
-    </Fragment>
-  ));
+  return (
+    <>
+      <button ref={refs.setReference} type="button" className="download-button" {...getReferenceProps()}>
+        <PlatformIcon platform="linux" />
+        <span>Download for Linux</span>
+        <ChevronDown aria-hidden="true" />
+      </button>
+      {open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={context} modal={false}>
+            <div
+              ref={refs.setFloating}
+              className="download-picker"
+              style={floatingStyles}
+              aria-label="Download for Linux"
+              {...getFloatingProps()}
+            >
+              <div className="download-picker-content">
+                <div className="download-picker-heading">
+                  <strong>Download for Linux</strong>
+                  <button type="button" aria-label="Close downloads" onClick={() => setOpen(false)}>
+                    <X size={18} aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="download-platform">
+                  {linuxDownloads.map((download) => (
+                    <a key={download.url} href={download.url}>
+                      <span>{download.label}</span>
+                      <small>{download.detail}</small>
+                    </a>
+                  ))}
+                </div>
+                <a className="download-release-notes" href={desktopRelease}>
+                  Installation notes
+                </a>
+              </div>
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
+    </>
+  );
 }
 
 function formatRelativeTime(committedAt: string, now: number) {
