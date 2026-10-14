@@ -15,6 +15,8 @@ permissions:
 
 # The running build always finishes and only the newest waiting run starts next
 # (GitHub replaces older pending runs in the group), so runs never pile up.
+# Jobs do not cancel each other on failure: each platform reports its own
+# result, so one failing suite never shows up as other platforms "cancelled".
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -117,18 +119,6 @@ jobs:
           path: dist/native/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 14
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   apple:
     name: Apple / ${{ matrix.target }}
@@ -241,18 +231,6 @@ jobs:
             apps/native/apple/ParityResults.xcresult/
           if-no-files-found: warn
           retention-days: 14
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   android:
     name: Android / development APK
@@ -355,15 +333,3 @@ jobs:
       - name: Remove google-services.json
         if: always()
         run: rm -f apps/native/android/app/google-services.json
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
