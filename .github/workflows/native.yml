@@ -144,9 +144,9 @@ jobs:
     runs-on: ${{ needs.route.outputs.mac == 'true' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
     # Cold package and parity builds can take 27 minutes on iOS and 33 minutes
     # on hosted Intel before the UI suite starts, and the hosted iOS suite ran
-    # past 60 minutes. Give both room to finish; each XCTest keeps its execution
-    # timeout. Keep macOS ARM's 30-minute budget.
-    timeout-minutes: ${{ matrix.platform == 'ios' && 90 || matrix.target == 'macos-x64' && 60 || 30 }}
+    # past 60 minutes; hosted macOS ARM ran past 30 under capacity constraints.
+    # Give each room to finish; each XCTest keeps its execution timeout.
+    timeout-minutes: ${{ matrix.platform == 'ios' && 90 || 60 }}
     env:
       # build.sh and parity-screenshots.sh target the runner's own architecture otherwise.
       CAPER_MACOS_ARCH: ${{ matrix.target == 'macos-x64' && 'x86_64' || '' }}
