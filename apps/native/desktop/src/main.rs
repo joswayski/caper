@@ -8419,6 +8419,16 @@ impl CaperApp {
         });
     }
 
+    /// Edit profile, its fields seeded from the saved profile: a change saved
+    /// on another device since sign-in shows, and Save cannot revert it.
+    fn open_profile_dialog(&mut self) {
+        if let Some(account) = &self.account {
+            self.username = account.username.clone().unwrap_or_default();
+            self.display_name = account.display_name.clone().unwrap_or_default();
+        }
+        self.dialog = Some(Dialog::Profile);
+    }
+
     /// A signed-in account without a profile finishes it on its own page, as on web.
     fn onboarding(&self) -> bool {
         matches!(self.dialog, Some(Dialog::Profile))
@@ -11934,18 +11944,11 @@ impl CaperApp {
             },
         );
         if open_profile.on_hover_text(profile_label).clicked() {
-            // As on web, the form opens with the saved profile: a name changed
-            // on another device (`profile.updated`) or an abandoned edit must
-            // not be shown, or saved back over the newer one.
-            if let Some(account) = &self.account {
-                self.username = account.username.clone().unwrap_or_default();
-                self.display_name = account.display_name.clone().unwrap_or_default();
-            }
-            self.dialog = Some(if self.account.is_some() {
-                Dialog::Profile
+            if self.account.is_some() {
+                self.open_profile_dialog();
             } else {
-                Dialog::SignIn
-            });
+                self.dialog = Some(Dialog::SignIn);
+            }
         }
         let controls = egui::Rect::from_min_max(
             egui::pos2(profile.right() + 2.0, content.top()),
