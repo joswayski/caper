@@ -212,7 +212,7 @@ try {
       "#chat-thread-reply",
       broadcast ? "TEST FIXTURE — Broadcast reply." : "TEST FIXTURE — Hidden reply.",
     );
-    browser("click", ".chat-thread-send-row button");
+    browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
     wait(
       '!document.querySelector(".chat-thread-panel .chat-message-pending") && document.querySelector("#chat-thread-reply").value === ""',
     );

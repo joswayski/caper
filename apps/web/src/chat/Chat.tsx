@@ -1757,7 +1757,12 @@ export default function Chat({
                 }
               }}
               onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+                // Safari can blur the summary without focusing a tapped menu button.
+                // Keep the item mounted until its click; outside taps close the menu
+                // through Spaces' pointer handler. A known focus destination still
+                // closes it when keyboard navigation leaves the menu.
+                if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+                  event.currentTarget.open = false;
               }}
             >
               <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>

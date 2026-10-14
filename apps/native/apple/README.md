@@ -4,6 +4,7 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 
 ## Current implementation
 
+- Your own name, avatar or resolved mention in a conversation opens a profile card with **Edit profile**, which opens the existing picture, username and display-name editor. Closing or saving returns to the conversation. The shared view also supports macOS; this entry point still needs Apple UI/device validation.
 - Signed-out first launch opens passwordless email sign-in, then onboarding/profile, with no Guest/General fallback. Logout returns to sign-in; valid saved sessions restore through the origin-namespaced Keychain.
 - Packaged macOS releases offer **Check for updates** in the account settings menu, Settings and the Caper application menu. Automatic checks reveal a smiling Caper above the profile that briefly peeks, waves and walks, then hides; Reduce Motion/background windows keep a still clickable peek. Clicking it or finding an update manually opens a centered modal with **What’s new expanded**, scrolling notes and fixed restart/Later/installer actions. Later, Escape and the backdrop close it without forgetting the update; restart still warns about leaving calls. Current-version/errors retain native alerts. Development builds and fixtures never run the updater. iPhone updates remain managed by the App Store/TestFlight.
 - The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, toggleable responsive member panel, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.

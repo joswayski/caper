@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
 /**
  * The card a person's @mention pill opens: on phones, a bottom sheet in the
  * who-reacted pattern. Compose here without leaving the conversation; only Send
- * resolves a DM and opens it after confirmation. For you it says "You" instead.
+ * resolves a DM and opens it after confirmation. Your own card opens Edit profile.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun MentionCardSheet(
@@ -52,6 +52,9 @@ import kotlinx.coroutines.launch
     var confirmBlock by remember(card.id) { mutableStateOf(false) }
     var profileMenu by remember(card.id) { mutableStateOf(false) }
     var picking by remember(card.id) { mutableStateOf(false) }
+    var editingProfile by remember(card.id) { mutableStateOf(false) }
+    val account = state?.account
+    val canEditProfile = card.self && account != null && account.id == card.id && viewModel != null
     val id = card.id
     val person = card.id ?: "@${card.username?.lowercase(java.util.Locale.ROOT)}"
     val profileDraft = viewModel?.profileDrafts?.state?.collectAsState()?.value?.get(person) ?: ProfileMessageDraft()
@@ -76,7 +79,7 @@ import kotlinx.coroutines.launch
         message({ pending = null; onDismiss() }, { pending = null; error = it })
     }
     // Block closes the card first, as on web: only the confirmation stays.
-    if (!confirmBlock) ProfileBottomSheet(shown.title, profileDraft, picking || pending != null, onDismiss, header = {
+    if (!confirmBlock && !editingProfile) ProfileBottomSheet(shown.title, profileDraft, picking || pending != null, onDismiss, header = {
         // Identity, then Open conversation (and the sheet's Close) at the end, as on web.
         Avatar(shown.displayName ?: shown.username ?: shown.title, 48.dp, avatarId = shown.avatarId, avatarAsset = shown.avatarAsset, avatarUrl = shown.avatarUrl)
         Column(Modifier.weight(1f)) {
@@ -107,8 +110,13 @@ import kotlinx.coroutines.launch
         }
         if (canMessage) ProfileIconButton(R.drawable.lucide_message_circle, if (pending == "message") "Opening…" else "Open conversation", idle, ::openConversation)
     }) {
-        if (card.self) Text("You", color = TextMuted, fontSize = 13.sp)
-        else {
+        if (card.self) {
+            Text("You", color = TextMuted, fontSize = 13.sp)
+            if (canEditProfile) Button(
+                { editingProfile = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
+            ) { Text("Edit profile") }
+        } else {
             val invite = !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
             if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 enabled = idle, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -152,6 +160,12 @@ import kotlinx.coroutines.launch
         BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId, card.avatarAsset, card.avatarUrl),
         viewModel, onDismiss,
     )
+    // Replace the bottom sheet with the existing editor, including picture controls.
+    if (editingProfile && canEditProfile && account != null && state != null && viewModel != null) {
+        ProfileScreen(account, state.busy, state.error, onDismiss, picture = { ProfilePictureSection(state, viewModel) }) { username, display ->
+            viewModel.updateProfile(username, display, onDismiss)
+        }
+    }
 }
 
 @Composable private fun ProfileIconButton(icon: Int, label: String, enabled: Boolean, onClick: () -> Unit) {

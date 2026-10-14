@@ -3325,14 +3325,13 @@ a.chat-draft-preview:focus-visible strong {
   opacity: 0.55;
   cursor: wait;
 }
-.chat-thread-send-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.chat-thread-composer form {
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
-.chat-thread-send-row label {
-  flex: 1;
+.chat-thread-broadcast {
+  grid-column: 1 / -1;
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -3342,19 +3341,37 @@ a.chat-draft-preview:focus-visible strong {
   font-size: 0.72rem;
   overflow-wrap: anywhere;
 }
-.chat-thread-send-row input {
+.chat-thread-broadcast input {
   flex-shrink: 0;
   width: 16px;
   height: 16px;
   margin: 0;
   accent-color: var(--terracotta);
 }
+.chat-thread-composer .chat-mention-input,
+.chat-thread-composer .chat-attach,
+.chat-thread-send-row > .chat-composer-tool {
+  grid-column: 1;
+  grid-row: 2;
+}
+.chat-thread-composer form textarea {
+  padding-right: 48px;
+}
+.chat-thread-send-row > .chat-composer-tool {
+  justify-self: end;
+  z-index: 1;
+  width: 40px;
+  height: 40px;
+  margin: 1px 4px 1px 0;
+}
 .chat-thread-send-row button[type="submit"] {
+  grid-column: 2;
+  grid-row: 2;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   border: 0;
   border-radius: 8px;
   background: var(--action);
@@ -3935,6 +3952,17 @@ a.chat-draft-preview:focus-visible strong {
   .chat-forward-body :is(input[type="search"], textarea),
   .chat-edit-dialog :is(textarea, select) {
     font-size: 16px;
+  }
+  .chat-thread-composer form textarea {
+    min-height: 46px;
+  }
+  .chat-thread-composer .chat-attach,
+  .chat-thread-send-row > .chat-composer-tool {
+    width: 44px;
+    height: 44px;
+  }
+  .chat-thread-send-row button[type="submit"] {
+    margin-bottom: 1px;
   }
   /* A full touch target for the thread's Send, like its Back button. */
   .chat-thread-send-row button[type="submit"] {

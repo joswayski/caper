@@ -8660,14 +8660,6 @@ impl CaperApp {
                             );
                             ui.add_space(24.0);
                             ui.label(black("Choose how you show up.").size(40.0));
-                            ui.add_space(20.0);
-                            ui.label(
-                                RichText::new(
-                                    "Your username is unique. Your display name is what people see in conversations.",
-                                )
-                                .size(16.0)
-                                .color(MUTED),
-                            );
                             ui.add_space(24.0);
                             ui.label(bold("Username").size(14.0));
                             ui.add_space(4.0);
@@ -8682,9 +8674,11 @@ impl CaperApp {
                             self.username = normalize_username(&self.username);
                             ui.add_space(6.0);
                             ui.label(
-                                RichText::new("3-32 lowercase letters, numbers, or underscores.")
-                                    .size(12.8)
-                                    .color(MUTED),
+                                RichText::new(
+                                    "Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.",
+                                )
+                                .size(12.8)
+                                .color(MUTED),
                             );
                             ui.add_space(20.0);
                             ui.label(bold("Display name").size(14.0));
@@ -8699,7 +8693,7 @@ impl CaperApp {
                             focus_frame(ui, &field);
                             ui.add_space(6.0);
                             ui.label(
-                                RichText::new("Shown to other people. It does not need to be unique.")
+                                RichText::new("This is what people see in conversations.")
                                     .size(12.8)
                                     .color(MUTED),
                             );
@@ -13236,7 +13230,7 @@ impl CaperApp {
             });
         if !read_only {
             // TopBottomPanel remembers its previous height. Reserve the current
-            // editor and send row before it clips the child UI, as in the channel.
+            // editor and broadcast row before it clips the child UI, as in the channel.
             let (people, specials) = self.mention_people();
             let text = self
                 .thread_drafts
@@ -13245,27 +13239,30 @@ impl CaperApp {
                 .0
                 .clone();
             let width = (ui.available_width() - 36.0).max(1.0);
+            // Send sits beside the field; attachment and emoji stay inside it.
+            let editor_width = (width - 44.0).max(1.0);
+            let text_width = (editor_width - 22.0 - 72.0).max(1.0);
             let draft_height = draft_layout(
                 ui,
                 &text,
-                (width - 22.0 - 36.0).max(1.0),
+                text_width,
                 &people,
                 specials,
                 egui::FontId::proportional(13.6),
             )
             .size()
             .y;
-            let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(80.0, 320.0);
-            let editor_height = (draft_height + 20.0).clamp(80.0, max_editor_height);
-            // Two 36px buttons, two 8px gaps, then the checkbox's icon and gap.
-            broadcast_label.wrap.max_width = (width - 88.0 - 23.0).max(1.0);
+            let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(48.0, 320.0);
+            let editor_height = (draft_height + 30.0).clamp(48.0, max_editor_height);
+            // The checkbox has its own full-width row above the input.
+            broadcast_label.wrap.max_width = (width - 23.0).max(1.0);
             let label_height = ui.painter().layout_job(broadcast_label.clone()).size().y;
-            let send_height = label_height.max(44.0);
+            let broadcast_height = label_height.max(44.0);
             let files = self.draft_file_count(Some(&root));
             let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
             let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
             egui::TopBottomPanel::bottom("thread-composer")
-                .min_height(editor_height + 8.0 + send_height + 28.0 + chips_height)
+                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height)
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -13317,6 +13314,17 @@ impl CaperApp {
                         _ => {}
                     }
                 }
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), broadcast_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().icon_width = 16.0;
+                    ui.spacing_mut().icon_spacing = 7.0;
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
+                    ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
+                    ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
+                    let draft = self.thread_drafts.entry(root.clone()).or_default();
+                    ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, broadcast_label.clone()));
+                });
+                ui.add_space(8.0);
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
@@ -13324,34 +13332,50 @@ impl CaperApp {
                 let full = files >= uploads::MAX_ATTACHMENTS;
                 let attach_unavailable = self.attach_unavailable_reason();
                 let mut pick = false;
+                let mut choose_emoji = false;
+                let mut send = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
-                let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
-                    // Padding belongs outside the scrolling text. egui's
-                    // default 3px clip expansion otherwise bleeds over the border.
-                    ui.visuals_mut().clip_rect_margin = 0.0;
-                    ui.horizontal_top(|ui| {
-                        pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
-                            .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
-                                else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
-                                else { "Attach files".to_owned() }).clicked();
-                        ui.add_enabled_ui(!loading, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt(("thread-composer-scroll", &root))
-                            .max_height(editor_height - 20.0)
-                            .min_scrolled_height(60.0)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
-                                .id(composer_id).desired_rows(3).desired_width(f32::INFINITY).char_limit(4000)
-                                .min_size(egui::vec2(0.0, 60.0))
-                                .font(egui::FontId::proportional(13.6))
-                                .margin(egui::Margin::ZERO)
-                                .frame(false)
-                                .layouter(&mut layouter)
-                                .hint_text(RichText::new("Reply to thread…").color(MUTED))
-                                .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
+                let editor = ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
+                        ui.set_width(editor_width - 22.0);
+                        // The scrolling text stays inside the padded field.
+                        ui.visuals_mut().clip_rect_margin = 0.0;
+                        ui.horizontal_top(|ui| {
+                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
+                                .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
+                                    else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
+                                    else { "Attach files".to_owned() }).clicked();
+                            let output = ui.allocate_ui_with_layout(egui::vec2(text_width, editor_height - 20.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_width(text_width);
+                                ui.add_enabled_ui(!loading, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("thread-composer-scroll", &root))
+                                        .max_height(editor_height - 20.0)
+                                        .min_scrolled_height(28.0)
+                                        .auto_shrink([false, true])
+                                        .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
+                                            .id(composer_id).desired_rows(1).desired_width(f32::INFINITY).char_limit(4000)
+                                            .min_size(egui::vec2(0.0, 18.0))
+                                            .font(egui::FontId::proportional(13.6))
+                                            .margin(egui::vec2(0.0, 5.0))
+                                            .frame(false)
+                                            .layouter(&mut layouter)
+                                            .hint_text(RichText::new("Reply to thread…").color(MUTED))
+                                            .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
+                                }).inner
+                            }).inner;
+                            choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
+                            output
                         }).inner
-                    }).inner
-                });
+                    });
+                    ui.vertical(|ui| {
+                        ui.add_space((editor.response.rect.height() - 42.0).max(0.0));
+                        let empty = draft.0.trim().is_empty() && files == 0;
+                        send = send_icon_button_sized(ui, !blocked && !loading && !empty, "Send reply", 36.0).clicked();
+                    });
+                    editor
+                }).inner;
                 let mut output = editor.inner;
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
@@ -13360,31 +13384,6 @@ impl CaperApp {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
-                ui.add_space(8.0);
-                // Reserve the fixed controls first. Long channel names wrap in
-                // the remaining space instead of pushing Send outside the panel.
-                let send = ui
-                    .allocate_ui_with_layout(egui::vec2(ui.available_width(), send_height), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let draft = self.thread_drafts.entry(root.clone()).or_default();
-                        let empty = draft.0.trim().is_empty() && files == 0;
-                            let send = send_icon_button_sized(ui, !blocked && !loading && !empty, "Send reply", 36.0).clicked();
-                            let emoji = ui
-                                .add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 36.0))
-                                .inner
-                                .clicked();
-                            ui.allocate_ui_with_layout(ui.available_size(), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.spacing_mut().icon_width = 16.0;
-                                ui.spacing_mut().icon_spacing = 7.0;
-                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                                ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
-                                ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
-                                ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
-                                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, broadcast_label.clone()));
-                            });
-                            (send, emoji)
-                    })
-                    .inner;
-                let (send, choose_emoji) = send;
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
                 if choose_emoji {
                     self.open_composer_emoji(EmojiTarget::Thread(root.clone()), &output, &draft.0);
@@ -18917,13 +18916,6 @@ impl CaperApp {
             );
             ui.add_space(14.0);
         }
-        ui.label(
-            RichText::new(
-                "Your username is unique. Your display name is what people see in conversations.",
-            )
-            .color(MUTED),
-        );
-        ui.add_space(10.0);
         ui.label("Username");
         let field = ui.add_sized(
             [ui.available_width(), 42.0],
@@ -18934,7 +18926,7 @@ impl CaperApp {
         focus_frame(ui, &field);
         self.username = normalize_username(&self.username);
         ui.label(
-            RichText::new("3–32 lowercase letters, numbers, or underscores.")
+            RichText::new("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
                 .small()
                 .color(MUTED),
         );
@@ -18947,7 +18939,7 @@ impl CaperApp {
         );
         focus_frame(ui, &field);
         ui.label(
-            RichText::new("Shown to other people. It does not need to be unique.")
+            RichText::new("This is what people see in conversations.")
                 .small()
                 .color(MUTED),
         );
@@ -24438,7 +24430,7 @@ mod tests {
                     .iter()
                     .find_map(|shape| match &shape.shape {
                         egui::Shape::Rect(rect)
-                            if rect.fill == super::COMPOSER && rect.rect.width() > width - 50.0 =>
+                            if rect.fill == super::COMPOSER && rect.rect.width() > width - 100.0 =>
                         {
                             Some(rect.rect)
                         }
@@ -24464,7 +24456,7 @@ mod tests {
                 if app.thread_drafts[&root].0.is_empty() {
                     assert_eq!(
                         editor.height(),
-                        80.0,
+                        48.0,
                         "editor shrinks when the draft clears"
                     );
                 }
@@ -24485,8 +24477,10 @@ mod tests {
                     );
                 }
                 assert!(
-                    broadcast.right() <= emoji.left() && emoji.right() <= send.left(),
-                    "{width}: controls overlap"
+                    broadcast.bottom() <= editor.top()
+                        && editor.contains_rect(emoji)
+                        && editor.right() <= send.left(),
+                    "{width}: broadcast stays above the input and Send stays beside it"
                 );
                 for shape in &output.shapes {
                     if let egui::Shape::Text(text) = &shape.shape

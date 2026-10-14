@@ -1997,9 +1997,6 @@ export default function Call({
         {/* The body scrolls beneath a fixed heading, so a classic scrollbar's
             gutter never cuts the heading's divider short. */}
         <div className="audio-dialog-body">
-          <p className="noise-status">
-            Your username is unique. Your display name is what people see in conversations.
-          </p>
           {profileOpen && account && (
             <ProfileForm
               account={account}

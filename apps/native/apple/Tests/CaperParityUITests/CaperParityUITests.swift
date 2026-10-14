@@ -462,6 +462,17 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].waitForExistence(timeout: 2), "Your own card says You")
         XCTAssertFalse(app.buttons["mention-card-message"].exists, "Your own card has no Message button")
         capture("mention-card-self", app: app)
+        let edit = try require(app.buttons["mention-card-edit-profile"], timeout: 5,
+                               "Your own profile card must offer Edit profile")
+        edit.tap()
+        XCTAssertTrue(app.textFields["Username"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Display name"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["change-profile-picture"].exists)
+        capture("mention-card-edit-profile", app: app)
+        app.buttons["Close profile"].tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["profile-save"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(row.exists, "Closing profile settings must return to the same conversation")
     }
 
     func testProfileBlockMenuAndBackdropDismissalPreserveDraft() throws {
@@ -472,6 +483,7 @@ final class CaperParityUITests: XCTestCase {
         let card = app.descendants(matching: .any)["mention-card"]
         let composer = try require(app.descendants(matching: .any)["mention-card-composer"], timeout: 5,
                                    "The profile must have its own composer")
+        XCTAssertFalse(app.buttons["mention-card-edit-profile"].exists, "Other people's cards must not offer your profile settings")
         XCTAssertFalse(app.descendants(matching: .any)["mention-card-block"].exists,
                        "Block must stay inside the secondary menu")
         composer.tap()
@@ -2185,18 +2197,21 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
-    func testProfileEditRetainsRejectedValuesAndRetries() async throws {
+    func testOwnMessageAuthorOpensProfileEditorRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
-        #if os(iOS)
-        app.buttons["Back to Browse"].tap()
-        #endif
-        let account = app.buttons["account-profile"]
-        XCTAssertTrue(account.waitForExistence(timeout: 10))
-        account.tap()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                              "Missing the seeded message from your account")
+        let author = try require(row.buttons.matching(NSPredicate(format: "label == %@", "Open profile for Fixture Owner")).firstMatch,
+                                 timeout: 5, "Your name in a chat message must open your profile")
+        author.tap()
+        let edit = try require(app.buttons["mention-card-edit-profile"], timeout: 5,
+                               "Your own message's profile card must offer Edit profile")
+        edit.tap()
         let username = app.textFields["Username"]
         let displayName = app.textFields["Display name"]
         let submit = app.buttons["profile-save"]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["change-profile-picture"].exists)
         let savedUsername = try XCTUnwrap(username.value as? String)
         let originalName = try XCTUnwrap(displayName.value as? String)
         XCTAssertFalse(savedUsername.isEmpty)

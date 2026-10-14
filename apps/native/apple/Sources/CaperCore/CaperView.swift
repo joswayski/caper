@@ -4738,6 +4738,7 @@ private struct MentionCardView: View {
     /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
     @State private var invited: [String: String] = [:]
     @State private var blockRequested = false
+    @State private var editingProfile = false
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
     private var ownedSpaces: [Space] {
         // Don't offer the open space to someone who is already in it.
@@ -4755,6 +4756,24 @@ private struct MentionCardView: View {
     }
 
     var body: some View {
+        if editingProfile {
+            // Replace the card inside its presentation, so opening the editor
+            // does not race the profile sheet's dismissal on iPhone.
+            ProfileSheet(model: model, close: close)
+                #if os(macOS)
+                .frame(width: 520, height: 620)
+                #else
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(CaperTheme.surface)
+                #endif
+        } else {
+            profileCard
+        }
+    }
+
+    private var profileCard: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
@@ -4806,6 +4825,11 @@ private struct MentionCardView: View {
                 if person.isSelf {
                     Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("mention-card-you")
+                    if model.account?.id == person.id {
+                        Button("Edit profile") { editingProfile = true }
+                            .buttonStyle(CaperPrimaryButton())
+                            .accessibilityIdentifier("mention-card-edit-profile")
+                    }
                 } else {
                     if !blocked, person.username != nil, !ownedSpaces.isEmpty {
                         Button("Invite to space") { choosingSpace.toggle() }
@@ -6209,14 +6233,12 @@ private struct ProfileView: View {
                     .padding(.top, 20)
                 Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Your username is unique. Your display name is what people see in conversations.")
-                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                     .submitLabel(.next).onSubmit { displayNameFocused = true }
-                Text("3-32 lowercase letters, numbers, or underscores.")
+                Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
-                Text("Shown to other people. It does not need to be unique.")
+                Text("This is what people see in conversations.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error = model.error {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -7347,19 +7369,19 @@ private struct ProfileSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             // Web's Edit profile dialog; Log out lives in User Settings.
-            SheetHeader(title: "Edit profile", detail: "Your username is unique. Your display name is what people see in conversations.",
+            SheetHeader(title: "Edit profile",
                         closeLabel: "Close profile", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     pictureSection
                     CaperField(title: "Username", text: $username)
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
-                    Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                         // Return saves: on iPhone an error line can push Save
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
-                    Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("This is what people see in conversations.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     Text(model.error ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)

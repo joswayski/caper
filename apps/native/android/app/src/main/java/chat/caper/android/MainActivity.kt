@@ -1752,38 +1752,38 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft)
-                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
-                    EmojiTextField(draft, change, Modifier.fillMaxWidth().attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…") }, maxLines = 5,
-                        visualTransformation = MentionVisualTransformation(mentionSource(state)),
-                        leadingIcon = {
-                            AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
-                        },
-                        trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
+                val broadcastChecked = pending?.broadcast ?: broadcast
+                // The label toggles too, as one checkbox control.
+                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
+                    .toggleable(value = broadcastChecked, enabled = pending == null, role = Role.Checkbox, onValueChange = { broadcast = it }),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    // Padded to the 48dp a checkbox with its own click handler would have.
+                    Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
+                    Text(buildAnnotatedString {
+                        append("Also send to ")
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
+                    }, Modifier.weight(1f), fontSize = 12.sp)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val broadcastChecked = pending?.broadcast ?: broadcast
-                    // The label toggles too, as one checkbox control.
-                    Row(Modifier.weight(1f).clip(MaterialTheme.shapes.small)
-                        .toggleable(value = broadcastChecked, enabled = pending == null, role = Role.Checkbox, onValueChange = { broadcast = it }),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        // Padded to the 48dp a checkbox with its own click handler would have.
-                        Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
-                        Text(buildAnnotatedString {
-                            append("Also send to ")
-                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
-                        }, Modifier.weight(1f), fontSize = 12.sp)
+                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                        EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
+                            visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                            leadingIcon = {
+                                AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
+                            },
+                            trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
+                        // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
+                        FilledIconButton(
+                            ::send, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                            enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
+                            shape = MaterialTheme.shapes.small,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Action, contentColor = OnAction,
+                                disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+                            ),
+                        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
                     }
-                    // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
-                    FilledIconButton(
-                        ::send, modifier = Modifier.size(48.dp).semantics { contentDescription = "Send reply" },
-                        enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
-                        shape = MaterialTheme.shapes.small,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = Action, contentColor = OnAction,
-                            disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                        ),
-                    ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
                 }
                 DraftCounter(draft.text)
                 if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
@@ -3664,13 +3664,12 @@ internal fun counterTone(count: Int): Color = when {
             Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
         if (picture != null) { picture(); HorizontalDivider(color = Border) }
-        Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
-            supportingText = { Text("3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
+            supportingText = { Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("Shown to other people. It does not need to be unique.", color = TextMuted) })
+            supportingText = { Text("This is what people see in conversations.", color = TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
