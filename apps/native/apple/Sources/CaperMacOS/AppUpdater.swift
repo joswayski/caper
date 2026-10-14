@@ -1,6 +1,7 @@
 import AppKit
 import CaperCore
 import Foundation
+import Observation
 
 /// Self-updates through `caper-updater` (apps/native/updater), which release
 /// builds carry in Contents/MacOS. It checks the signed release manifest shortly
@@ -9,7 +10,7 @@ import Foundation
 ///
 /// Prompts are AppKit alerts rather than SwiftUI `.alert` modifiers, so they
 /// never compete with the confirmation dialogs inside the Caper window.
-@MainActor final class AppUpdater {
+@MainActor @Observable final class AppUpdater {
     struct Update: Equatable {
         let version: String
         let notes: String
@@ -29,7 +30,8 @@ import Foundation
     private let sourceRevision: String?
     private var declined: Set<String> = []
     private var timer: Timer?
-    private var checking = false
+    private(set) var checking = false
+    private var availableUpdate: Update?
     private var manualCheck = false
 
     static let firstCheckDelay: TimeInterval = 20
@@ -56,6 +58,20 @@ import Foundation
     }
 
     var isAvailable: Bool { updater != nil }
+
+    var controls: DesktopUpdateControls {
+        DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
+            check: isAvailable ? { self.check(manual: true) } : nil,
+            review: availableUpdate == nil ? nil : { self.review() })
+    }
+
+    /// Later closes the alert; the account row can reopen it without a network check.
+    private func review() {
+        guard !checking, let update = availableUpdate else { return }
+        checking = true
+        defer { checking = false }
+        offer(update)
+    }
 
     /// Signed downloads must be installed before opening the account UI. Finder
     /// owns the move and Gatekeeper handling; never strip quarantine or guess
@@ -151,7 +167,8 @@ import Foundation
         }
         switch result {
         case let .success(data):
-            guard let update = Self.parse(data) else {
+            availableUpdate = Self.parse(data)
+            guard let update = availableUpdate else {
                 if manual { inform("Caper is up to date", "") }
                 return
             }

@@ -8,8 +8,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
 - Packaged releases check for signed updates 20 seconds after launch and every
-  minute. **User Settings → Settings… → Updates → Check for updates** checks
-  immediately with progress and success/failure feedback. Writable installs
+  minute. **User Settings → Check for updates** checks immediately and opens
+  Settings with progress and success/failure feedback; the Updates section keeps
+  the same check action. Available releases add a **Restart to update** row above
+  the account controls, with a soft terracotta sparkle glow (still with reduced
+  motion). **Later** hides the notice but keeps that row; clicking it reopens
+  review without installing or checking again. Writable installs
   offer a restart to update; the `.deb` offers a download for manual installation.
 - **Settings… → Updates → What’s new** reopens shipped release highlights for
   the exact running source revision. First successful load quietly establishes

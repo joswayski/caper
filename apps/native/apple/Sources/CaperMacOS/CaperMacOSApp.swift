@@ -4,13 +4,14 @@ import SwiftUI
 @main
 struct CaperMacOSApp: App {
     private let parity = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
-    private let updater = AppUpdater()
+    @State private var updater = AppUpdater()
     @State private var ready = false
     @State private var whatsNew: WhatsNewModel?
 
     var body: some Scene {
         WindowGroup {
             CaperWindow(parity: parity, updater: updater, ready: $ready, whatsNew: $whatsNew)
+                .environment(\.desktopUpdates, updater.controls)
         }
         // Keep system window controls in their own title bar, outside the space rail.
         .windowStyle(.titleBar)
@@ -18,12 +19,13 @@ struct CaperMacOSApp: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.check(manual: true) }
-                    .disabled(!ready || !updater.isAvailable)
+                    .disabled(!ready || !updater.isAvailable || updater.checking)
             }
         }
         Settings {
             if let whatsNew {
                 CaperSettingsView(whatsNew: whatsNew)
+                    .environment(\.desktopUpdates, updater.controls)
             }
         }
     }

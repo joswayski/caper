@@ -442,6 +442,7 @@ enum NavIcon {
     Send,
     MessageCircle,
     MessageSquare,
+    Sparkles,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11376,6 +11377,45 @@ impl CaperApp {
     }
 
     fn account_bar(&mut self, ui: &mut egui::Ui) {
+        if let Some(update) = self.updates.known_available() {
+            let label = if update.can_apply {
+                "Restart to update"
+            } else {
+                "Download update"
+            };
+            let (rect, response) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+            });
+            if response.hovered() || response.has_focus() {
+                ui.painter().rect_filled(rect, 8.0, COMPOSER);
+            }
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 18.0, rect.center().y),
+                egui::vec2(18.0, 18.0),
+            );
+            let glow = ui.painter().add(egui::Shape::Noop);
+            join_glow(ui, glow, icon, 8.0);
+            paint_icon(ui.painter(), icon, NavIcon::Sparkles, TERRACOTTA_BRIGHT);
+            ui.painter().text(
+                egui::pos2(rect.left() + 36.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                TEXT,
+            );
+            if response
+                .on_hover_text(format!(
+                    "Caper {} is available. Review the update.",
+                    update.version
+                ))
+                .clicked()
+            {
+                self.updates.show_available();
+            }
+            ui.add_space(8.0);
+        }
         if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
             &self.voice.state.phase
         {
@@ -11623,6 +11663,27 @@ impl CaperApp {
                     .width(232.0)
                     .show(|ui| {
                         if ui.button("Settings…").clicked() {
+                            self.open_settings();
+                            ui.close();
+                        }
+                        let checking = self.updates.status() == updates::Status::Checking;
+                        if ui
+                            .add_enabled(
+                                self.updates.can_check() && !checking,
+                                egui::Button::new(if checking {
+                                    "Checking…"
+                                } else {
+                                    "Check for updates"
+                                }),
+                            )
+                            .on_hover_text(if self.updates.can_check() {
+                                "Check now and show the result in Settings."
+                            } else {
+                                "Update checks are available in packaged release builds."
+                            })
+                            .clicked()
+                        {
+                            self.updates.check_now();
                             self.open_settings();
                             ui.close();
                         }
@@ -20235,6 +20296,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
         NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
         NavIcon::MessageSquare => egui::include_image!("../resources/icons/message-square.svg"),
+        NavIcon::Sparkles => egui::include_image!("../resources/icons/sparkles.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
@@ -24225,6 +24287,53 @@ mod tests {
                 );
             }
             assert!(!app.showing_pins, "header close works at {size:?}");
+        }
+    }
+
+    #[test]
+    fn account_update_action_survives_later_and_reopens_review_without_installing() {
+        for (fixture, label) in [
+            ("parity-update", "Restart to update"),
+            ("parity-update-download", "Download update"),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            app.updates.dismiss();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let pos = text_center(&output, label);
+            let output = click_at(&mut app, &context, pos);
+            assert_eq!(app.updates.available().unwrap().version, "0.1.42");
+            assert!(app.updates.error.is_none());
+            assert!(
+                output.platform_output.commands.is_empty(),
+                "review must not download or install"
+            );
+            assert!(
+                output
+                    .viewport_output
+                    .values()
+                    .all(|viewport| !viewport.commands.contains(&egui::ViewportCommand::Close))
+            );
+            let mut output = egui::FullOutput::default();
+            for _ in 0..4 {
+                output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| app.update_notice(context),
+                );
+            }
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "A fresh Caper is ready")));
         }
     }
 

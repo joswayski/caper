@@ -59,6 +59,7 @@ const names = {
   settings: "Settings",
   smile: "Smile",
   "smile-plus": "SmilePlus",
+  sparkles: "Sparkles",
   speech: "Speech",
   users: "Users",
   "volume-2": "Volume2",

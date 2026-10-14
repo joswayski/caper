@@ -2380,6 +2380,7 @@ private struct AccountBar: View {
     @Binding var sheet: WorkspaceSheet?
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.desktopUpdates) private var updates
     /// Closing a dialog opened from this menu returns keyboard focus here, as on web.
     @FocusState private var settingsFocused: Bool
     #else
@@ -2399,6 +2400,24 @@ private struct AccountBar: View {
     }
     var body: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
+            if let review = updates.review {
+                Button { review() } label: {
+                    HStack(spacing: 10) {
+                        CaperIcon(name: "sparkles", size: 18)
+                            .foregroundStyle(CaperTheme.terracottaBright)
+                            .modifier(VoiceJoinGlow(active: true))
+                        Text(updates.canApply ? "Restart to update" : "Download update")
+                            .font(CaperTheme.font(13, weight: .bold))
+                        Spacer(minLength: 0)
+                    }.padding(.horizontal, 10).frame(height: 36).contentShape(Rectangle())
+                }.buttonStyle(.plain).modifier(ControlHover())
+                    .disabled(updates.isChecking)
+                    .help("Review the update before restarting Caper and leaving any voice call.")
+                    .accessibilityIdentifier("desktop-update-action")
+                    .padding(.bottom, 8)
+            }
+            #endif
             if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
                 HStack(spacing: 8) {
                     Button { Task { await model.openVoiceContext() } } label: {
@@ -2491,6 +2510,9 @@ private struct AccountBar: View {
                 #if os(macOS)
                 Button("Settings…") { openSettings() }
                     .accessibilityIdentifier("open-settings")
+                Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    .disabled(updates.check == nil || updates.isChecking)
+                    .accessibilityIdentifier("check-for-updates")
                 Divider()
                 #else
                 Section("Audio settings") {
@@ -6097,11 +6119,39 @@ private struct ProfileView: View {
 }
 
 #if os(macOS)
+/// The macOS host supplies updater actions; shared views never launch processes.
+public struct DesktopUpdateControls {
+    public let isChecking: Bool
+    public let canApply: Bool
+    public let check: (@MainActor () -> Void)?
+    public let review: (@MainActor () -> Void)?
+
+    public init(isChecking: Bool = false, canApply: Bool = false,
+                check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
+        self.isChecking = isChecking
+        self.canApply = canApply
+        self.check = check
+        self.review = review
+    }
+}
+
+private struct DesktopUpdatesKey: EnvironmentKey {
+    static let defaultValue = DesktopUpdateControls()
+}
+
+extension EnvironmentValues {
+    public var desktopUpdates: DesktopUpdateControls {
+        get { self[DesktopUpdatesKey.self] }
+        set { self[DesktopUpdatesKey.self] = newValue }
+    }
+}
+
 /// The Settings scene is also available before signing in, through Caper → Settings.
 @MainActor public struct CaperSettingsView: View {
     @State private var loginItem = CaperLoginItem.shared
     @Bindable private var effects = CaperEffects.shared
     @Bindable private var notes: WhatsNewModel
+    @Environment(\.desktopUpdates) private var updates
     public init(whatsNew: WhatsNewModel) { notes = whatsNew }
 
     public var body: some View {
@@ -6140,6 +6190,16 @@ private struct ProfileView: View {
                     }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
                 }
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                        .disabled(updates.check == nil || updates.isChecking)
+                        .accessibilityIdentifier("check-for-updates")
+                    Text(updates.check == nil
+                         ? "Update checks are available in packaged release builds."
+                         : "Checks automatically every minute.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
                 Button("What’s new") { notes.open() }.accessibilityIdentifier("open-whats-new")
             }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
         }

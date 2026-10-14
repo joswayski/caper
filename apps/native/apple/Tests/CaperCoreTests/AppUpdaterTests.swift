@@ -43,6 +43,9 @@ final class AppUpdaterTests: XCTestCase {
         let updater = AppUpdater(environment: ["CAPER_TEST_MODE": "parity"])
         XCTAssertFalse(updater.isAvailable)
         XCTAssertTrue(updater.prepareInstallation())
+        XCTAssertNil(updater.controls.check)
+        XCTAssertNil(updater.controls.review)
+        XCTAssertFalse(updater.controls.isChecking)
     }
 
     func testStackedNotesAndLegacyOutputRemainReadable() throws {

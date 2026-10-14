@@ -167,12 +167,17 @@ impl Updates {
     }
 
     pub fn available(&self) -> Option<Available> {
-        self.state
-            .lock()
-            .unwrap()
-            .available
-            .clone()
+        self.known_available()
             .filter(|update| self.dismissed.as_ref() != Some(&update.version))
+    }
+
+    /// Later hides the notice, not the account bar's update action.
+    pub fn known_available(&self) -> Option<Available> {
+        self.state.lock().unwrap().available.clone()
+    }
+
+    pub fn show_available(&mut self) {
+        self.dismissed = None;
     }
 
     pub fn dismiss(&mut self) {
@@ -366,6 +371,10 @@ mod tests {
     fn later_hides_only_that_release_and_a_failed_check_keeps_known_updates() {
         let mut updates = Updates::preview(release("0.1.18"));
         updates.dismiss();
+        assert_eq!(updates.known_available(), Some(release("0.1.18")));
+        updates.show_available();
+        assert_eq!(updates.available(), Some(release("0.1.18")));
+        updates.dismiss();
         updates
             .state
             .lock()
@@ -421,14 +430,14 @@ mod tests {
     }
 
     #[test]
-    fn settings_manual_check_button_reports_progress_success_and_retryable_failure() {
+    fn account_menu_check_reports_progress_success_and_retryable_failure_in_settings() {
         let context = egui::Context::default();
+        context.enable_accesskit();
         let mut app = crate::CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
-        app.dialog = Some(crate::Dialog::Settings);
         let (sender, receiver) = mpsc::channel();
         app.updates.requests = Some(sender);
         let frame = |app: &mut crate::CaperApp, events| {
@@ -446,6 +455,38 @@ mod tests {
         };
         frame(&mut app, vec![]);
         let output = frame(&mut app, vec![]);
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("User Settings"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let settings = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(settings),
+                    egui::Event::PointerButton {
+                        pos: settings,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
         let pos = output
             .shapes
             .iter()
@@ -458,7 +499,7 @@ mod tests {
                     None
                 }
             })
-            .expect("manual check button is visible without scrolling");
+            .expect("manual check is directly in the account menu");
         for pressed in [true, false] {
             frame(
                 &mut app,
@@ -476,7 +517,10 @@ mod tests {
         receiver
             .try_recv()
             .expect("the button wakes the update worker");
-        context.enable_accesskit();
+        assert!(
+            matches!(app.dialog, Some(crate::Dialog::Settings)),
+            "check feedback is visible"
+        );
         let checking = frame(&mut app, vec![]);
         let button = checking
             .platform_output
