@@ -2019,7 +2019,7 @@ export default function Spaces({
       dmId === selected.dmId &&
       sameVisit(visit, selected.visit)
     ) {
-      setNavigationOpen(false);
+      if (channelId || dmId || visit) setNavigationOpen(false);
       // Previewing the channel already on screen from Browse still closes it.
       setBrowseOpen(false);
       return;
@@ -2354,10 +2354,13 @@ export default function Spaces({
     setError(undefined);
     setPending(true);
     const cached = navigation.current.peek(selected.spaceId, selected.channelId);
+    // Space tiles switch the channel list in Browse; revealing a conversation
+    // requires an explicit channel/DM/visit selection, including cached loads.
+    const openConversation = !!(selected.channelId || selected.dmId || selected.visit);
     if (cached) {
       setView(cached);
       if (!selected.dmId) setDirectView(undefined);
-      setNavigationOpen(false);
+      if (openConversation) setNavigationOpen(false);
     }
     void navigation.current
       .take(selected.spaceId, selected.channelId)
@@ -2369,7 +2372,7 @@ export default function Spaces({
         setView(next);
         if (!selected.dmId) setDirectView(undefined);
         setPending(false);
-        setNavigationOpen(false);
+        if (openConversation) setNavigationOpen(false);
         const query = new URLSearchParams({ space: next.detail.space.id });
         if (next.channelId) query.set("channel", next.channelId);
         if (selected.dmId) {
