@@ -2814,41 +2814,16 @@ private struct ConversationStage: View {
 }
 
 /// The timeline's content/viewport heights and whether its end is visible.
-private struct TimelinePin: Equatable {
-    var height: CGFloat
-    var contentHeight: CGFloat
-    var atBottom: Bool
-    var firstID: String?
-    /// The last rows, whose reactions, edits and files grow the end in place.
-    var recent: [TimelineEntry]
-    /// More than a screen of short messages.
-    static let recentRows = 20
+extension TimelinePin {
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
     init(_ geometry: GeometryProxy, viewport: String, firstID: String?, recent: [TimelineEntry]) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
         contentHeight = geometry.size.height
+        offset = visible.minY
         atBottom = visible.maxY >= geometry.size.height - 24
         self.firstID = firstID
         self.recent = recent
-    }
-}
-
-/// The timeline's last `TimelinePin`. A plain reference box, so scrolling
-/// never re-renders the conversation.
-private final class TimelinePinBox {
-    private var last: TimelinePin?
-    /// Whether the reader was last seen at the end; true before the first measurement.
-    var atBottom: Bool { last?.atBottom ?? true }
-    /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
-    /// A changed first row means history was prepended/replaced, not tail growth.
-    /// Growth that leaves the end without any recent row changing is LazyVStack
-    /// measuring rows as the reader starts scrolling up; that must not snap back.
-    func needsReveal(to pin: TimelinePin) -> Bool {
-        defer { last = pin }
-        guard let last else { return false }
-        return last.atBottom && last.firstID == pin.firstID &&
-            (pin.height < last.height || (pin.contentHeight > last.contentHeight && (pin.atBottom || pin.recent != last.recent)))
     }
 }
 
