@@ -180,7 +180,14 @@ async fn persist_edit(
     // Edited text is re-resolved like a new message, so added or removed
     // `@mentions` follow the latest revision.
     let mut found = mentions::parse(text, !direct);
-    if !crate::feedback::reported(&mut tx, message_id).await? {
+    if crate::feedback::reported(&mut tx, message_id).await? {
+        // The team was notified when it was sent, so it stays marked that way
+        // even when the edit drops the `@feedback` text, or never had it (each
+        // top-level message in the Caper DM is reported by itself).
+        if !found.contains(&Mention::Feedback) {
+            found.push(Mention::Feedback);
+        }
+    } else {
         found.retain(|mention| *mention != Mention::Feedback);
     }
     let content = with_mentions(&mut tx, content, &found).await?;

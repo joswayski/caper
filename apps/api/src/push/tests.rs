@@ -3520,6 +3520,18 @@ async fn messaging_caper_sends_each_new_message_to_the_team(pool: PgPool) {
         json!([{"type": "feedback"}]),
         "marked as sent to the team"
     );
+    // Fixing a typo keeps the mark: the team was already told.
+    let (status, edited) = call(
+        &h.app,
+        "PUT",
+        &format!("/api/chat/channels/{caper}/messages/{first}"),
+        None,
+        Some(&alice.chat),
+        json!({"text": "Uploads hang at 99%", "expectedRevision": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["content"]["mentions"], json!([{"type": "feedback"}]));
     expand(&h).await;
     assert_eq!(
         notified(&pool, &first).await,
