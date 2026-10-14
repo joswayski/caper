@@ -3659,6 +3659,8 @@ internal fun counterTone(count: Int): Color = when {
 ) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
+    // `error` is app-wide: Edit profile shows only its own save's failure, never an earlier one.
+    var submitted by remember { mutableStateOf(close == null) }
     val form: @Composable ColumnScope.() -> Unit = {
         if (close == null) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
@@ -3672,11 +3674,11 @@ internal fun counterTone(count: Int): Color = when {
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             supportingText = { Text("This is what people see in conversations.", color = TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+            error?.takeIf { submitted }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
         PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name),
             Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
-            contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submit(username, name) }
+            contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
     }
     // Onboarding spaces the form as the Edit profile dialog does.
     if (close == null) AuthFrame { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) { form() } }
