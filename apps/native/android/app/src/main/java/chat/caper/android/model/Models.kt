@@ -119,7 +119,18 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val channels: List<Channel>,
     val members: List<Member>,
     val channelInvitations: List<ChannelInvitation> = emptyList(),
-)
+    /** Private channels you can read: who can read each (owner and grants). */
+    val channelMembers: Map<String, List<String>> = emptyMap(),
+) {
+    /** A private channel's readers, then the rest of the space, each in the space's order; null for public channels. */
+    fun memberGroups(channelId: String?): Pair<List<Member>, List<Member>>? {
+        val ids = channelMembers[channelId ?: return null]?.toSet() ?: return null
+        return members.partition { it.id in ids }
+    }
+
+    /** The members in the order the member list shows them for [channelId]. */
+    fun memberOrder(channelId: String?): List<Member> = memberGroups(channelId)?.let { it.first + it.second } ?: members
+}
 /** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null, val admin: Boolean = false)
 /**

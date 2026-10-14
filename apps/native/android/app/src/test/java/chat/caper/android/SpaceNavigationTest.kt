@@ -16,6 +16,21 @@ class SpaceNavigationTest {
     private val channels = listOf(preview, general, design)
     private val detail = SpaceDetail(Space("space0000001", "Studio"), channels, emptyList())
 
+    @Test fun `a private channel's readers lead its member list in space order`() {
+        val members = listOf("ana", "bo", "cy", "dee").map { Member(it, it, it.uppercase(), owner = it == "ana") }
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString<SpaceDetail>(
+            json.encodeToString(SpaceDetail.serializer(), detail.copy(members = members, channelMembers = mapOf("leads0000001" to listOf("dee", "ana", "gone")))))
+        val (readers, others) = decoded.memberGroups("leads0000001")!!
+        assertEquals(listOf("ana", "dee"), readers.map { it.id })
+        assertEquals(listOf("bo", "cy"), others.map { it.id })
+        assertEquals(listOf("ana", "dee", "bo", "cy"), decoded.memberOrder("leads0000001").map { it.id })
+        // Public channels, and an older API without the field, keep one list.
+        assertNull(decoded.memberGroups(general.id))
+        assertEquals(members, decoded.memberOrder(general.id))
+        assertNull(json.decodeFromString<SpaceDetail>("""{"space":{"id":"s","name":"S"},"channels":[],"members":[]}""").memberGroups("leads0000001"))
+    }
+
     @Test fun `a space reopens its last channel while you are still in it`() {
         assertEquals(design, spaceLandingChannel(channels, preferred = null, remembered = design.id))
         // A requested channel wins, even one you only preview.

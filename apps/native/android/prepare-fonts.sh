@@ -12,7 +12,8 @@ mkdir -p "$GENERATED/res/font" "$GENERATED/assets"
 for weight in Regular Medium Bold Black; do
   source="$CACHE/Satoshi-$weight.otf"
   [[ -f "$source" ]] || { echo "Missing official Satoshi font: $source" >&2; exit 1; }
-  cp "$source" "$GENERATED/res/font/satoshi_${weight,,}.otf"
+  # tr, not ${weight,,}: macOS ships bash 3.2.
+  cp "$source" "$GENERATED/res/font/satoshi_$(printf %s "$weight" | tr "[:upper:]" "[:lower:]").otf"
 done
 
 license="$CACHE/Satoshi-FFL.txt"
