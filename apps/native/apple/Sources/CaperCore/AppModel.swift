@@ -466,10 +466,14 @@ public final class AppModel {
     }
 
     /// `space.updated`: the space's name and icon in the rail, invitations,
-    /// the open space and remembered navigation. Spaces you don't have are ignored.
+    /// the open space and remembered navigation, and its name on a feedback
+    /// visit and inbox rows. Spaces you don't have are ignored.
     func applySpaceUpdate(_ update: Space) {
         guard spaces.contains(where: { $0.id == update.id }) || invitations.contains(where: { $0.id == update.id })
-                || detailSnapshot?.space.id == update.id || notificationInvitation?.id == update.id else { return }
+                || detailSnapshot?.space.id == update.id || notificationInvitation?.id == update.id
+                || visit?.spaceID == update.id || feedbackReportSnapshots.contains(where: { $0.space?.id == update.id }) else { return }
+        visit = visit?.applying(update)
+        feedbackReportSnapshots = feedbackReportSnapshots.map { $0.applying(update) }
         spaces = spaces.map { $0.applying(update) }
         invitations = invitations.map { $0.applying(update) }
         notificationInvitation = notificationInvitation?.applying(update)

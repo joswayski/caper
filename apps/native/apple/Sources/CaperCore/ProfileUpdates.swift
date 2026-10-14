@@ -279,3 +279,23 @@ extension SpaceDetail {
         return with(space: space.applying(update))
     }
 }
+
+extension FeedbackVisit {
+    /// A visit's title follows its space's name.
+    func applying(_ update: Space) -> FeedbackVisit {
+        guard !direct, spaceID == update.id else { return self }
+        return FeedbackVisit(channelID: channelID, spaceID: spaceID, spaceName: update.name, channelName: channelName, direct: direct,
+                             reportID: reportID, reporter: reporter)
+    }
+}
+
+extension FeedbackReport {
+    /// An inbox row's space name follows the space.
+    func applying(_ update: Space) -> FeedbackReport {
+        guard let space, space.id == update.id else { return self }
+        return FeedbackReport(id: id, messageId: messageId, threadRootId: threadRootId, createdAt: createdAt, text: text,
+                              attachments: attachments, reporter: reporter, channel: channel,
+                              space: SpaceReference(id: space.id, name: update.name), replyCount: replyCount,
+                              answered: answered, archived: archived)
+    }
+}

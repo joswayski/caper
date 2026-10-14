@@ -326,6 +326,16 @@ final class FeedbackTests: XCTestCase {
                                      direct: false, reportID: rootID).title, "#plans · Studio")
         XCTAssertEqual(FeedbackVisit(channelID: "Dm0000000001", spaceID: "", spaceName: "Direct messages", channelName: "Alice & Bob",
                                      direct: true, reportID: rootID).title, "Alice & Bob")
+
+        // `space.updated` renames that space on visits and inbox rows only.
+        let renamed = Space(id: "Space0000001", name: "Friends", ownerId: "Owner0000001")
+        let visit = FeedbackVisit(channelID: channelID, spaceID: "Space0000001", spaceName: "Studio", channelName: "Plans",
+                                  direct: false, reportID: rootID)
+        XCTAssertEqual(visit.applying(renamed).title, "#plans · Friends")
+        XCTAssertEqual(visit.applying(Space(id: "Other0000001", name: "Other", ownerId: "x")), visit)
+        XCTAssertEqual(page.reports[0].applying(renamed).space?.name, "Friends")
+        XCTAssertEqual(page.reports[0].applying(renamed).text, page.reports[0].text)
+        XCTAssertEqual(page.reports[0].applying(Space(id: "Other0000001", name: "Other", ownerId: "x")), page.reports[0])
     }
 
     // MARK: Notifications
@@ -504,6 +514,8 @@ final class FeedbackTests: XCTestCase {
         XCTAssertTrue(model.chat.threadMessages.contains { $0.id == replyID })
         XCTAssertTrue(model.isShowing(.feedback(FeedbackTarget(channelID: channelID, spaceID: nil, messageID: replyID, threadRootID: nil))))
         XCTAssertFalse(paths.contains { $0.contains("/read") }, "no read markers for visitors")
+        model.receiveProfileFeed(["type": "space.updated", "space": ["id": "Space0000001", "name": "Friends", "ownerId": "Owner0000001"]])
+        XCTAssertEqual(model.visit?.title, "#plans · Friends", "a visited space's rename reaches the title")
 
         await model.closeVisit()
         XCTAssertNil(model.visit, "with nothing before it, closing leaves an empty stage")
