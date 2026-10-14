@@ -94,7 +94,9 @@ fn index() -> &'static HashMap<String, usize> {
 
 /// Byte ranges of the emoji graphemes in message text, with their artwork,
 /// so text can draw them in color like the other clients. Plain ASCII
-/// (digits, `#`, `*`) is never an emoji without its keycap or variation mark.
+/// (digits, `#`, `*`) is never an emoji without its keycap or variation mark,
+/// and neither is a text-default character (© ™ ♥ ➡), whose catalog emoji
+/// carries U+FE0F, without its U+FE0F: web shows those as text.
 pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
     if text.is_ascii() {
         return Vec::new();
@@ -104,10 +106,12 @@ pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
         if grapheme.is_ascii() {
             continue;
         }
+        let single = grapheme.chars().nth(1).is_none();
         let entry = index()
             .get(&unicode_id(grapheme))
             .or_else(|| index().get(&grapheme.replace('\u{fe0f}', "")))
-            .map(|&position| &catalog()[position]);
+            .map(|&position| &catalog()[position])
+            .filter(|entry| !(single && entry.emoji.contains('\u{fe0f}')));
         if let Some(entry) = entry {
             found.push((start..start + grapheme.len(), entry));
         }
@@ -421,6 +425,21 @@ mod tests {
         // Plain digits and punctuation are text, not keycaps.
         assert!(inline("Room 3 # 1 * 2").is_empty());
         assert!(inline("café — naïve").is_empty());
+    }
+
+    #[test]
+    fn text_default_characters_are_emoji_only_with_their_variation_mark() {
+        for text in ["©", "®", "™", "♥", "✔", "➡", "▶", "☺"] {
+            assert!(inline(text).is_empty(), "{text} stays text");
+            let colored = format!("{text}\u{fe0f}");
+            assert_eq!(inline(&colored).len(), 1, "{colored} is an emoji");
+        }
+        let text = "© 2026 ™ ♥ ❤️ ☕";
+        let found: Vec<_> = inline(text)
+            .into_iter()
+            .map(|(range, _)| &text[range])
+            .collect();
+        assert_eq!(found, vec!["❤️", "☕"]);
     }
 
     #[test]
