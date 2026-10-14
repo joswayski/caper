@@ -73,6 +73,9 @@ const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
 const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
 const SIDEBAR: Color32 = Color32::from_rgb(21, 28, 30);
+/// Web's --surface-hover (6% white) over the sidebar, opaque: a private
+/// channel's own members in the member list.
+const SIDEBAR_RAISED: Color32 = Color32::from_rgb(35, 42, 44);
 const CONVERSATION: Color32 = Color32::from_rgb(25, 33, 35);
 const COMPOSER: Color32 = Color32::from_rgb(40, 49, 51);
 /// Web's `--surface-hover`: a neutral wash that reads on every dark surface,
@@ -2393,6 +2396,7 @@ impl CaperApp {
                 },
             ],
             channel_invitations: vec![],
+            channel_members: Default::default(),
         });
         self.presence
             .insert("fixture-owner".into(), "online".into());
@@ -4796,6 +4800,7 @@ impl CaperApp {
                 }],
                 members: vec![],
                 channel_invitations: vec![],
+                channel_members: Default::default(),
             });
         }
         self.session_error = session.as_ref().err().cloned();
@@ -4953,7 +4958,8 @@ impl CaperApp {
             self.detail
                 .as_ref()
                 .map(|detail| {
-                    let users = member_page_ids(detail, self.member_page);
+                    let users =
+                        member_page_ids(detail, self.selected_channel.as_deref(), self.member_page);
                     (detail.space.id.clone(), users)
                 })
                 .filter(|(_, users): &(String, Vec<String>)| !users.is_empty())
@@ -12272,9 +12278,27 @@ impl CaperApp {
     fn member_presence(&mut self, ui: &mut egui::Ui, overlay: bool) {
         let Some(detail) = &self.detail else { return };
         let member_count = detail.members.len();
+        let channel = self.selected_channel.as_deref();
+        // A private channel's readers lead the list in their own group.
+        let groups = detail.member_groups(channel).map(|(readers, others)| {
+            let name = detail
+                .channels
+                .iter()
+                .find(|item| Some(item.id.as_str()) == channel)
+                .map_or_else(String::new, |item| item.name.clone());
+            (
+                name,
+                readers
+                    .iter()
+                    .map(|member| member.id.clone())
+                    .collect::<std::collections::HashSet<_>>(),
+                readers.len(),
+                others.len(),
+            )
+        });
         let members: Vec<_> = detail
-            .members
-            .iter()
+            .member_order(channel)
+            .into_iter()
             .skip(self.member_page * MEMBER_PAGE_SIZE)
             .take(MEMBER_PAGE_SIZE)
             .cloned()
@@ -12358,28 +12382,64 @@ impl CaperApp {
                 ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
             });
         }
-        for member in members {
-            let tint = ui.painter().add(egui::Shape::Noop);
-            let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.spacing_mut().item_spacing.x = 10.0;
-                ui.add_space(16.0);
-                let status = self
-                    .presence
-                    .get(&member.id)
-                    .map_or("unknown", String::as_str);
-                presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
-                ui.add(egui::Label::new(bold(&member.display_name).size(12.0)).truncate());
+        let mut rows = |ui: &mut egui::Ui, members: Vec<model::Member>, quiet: bool, ring: Color32| {
+            for member in members {
+                let tint = ui.painter().add(egui::Shape::Noop);
+                let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    ui.add_space(16.0);
+                    let status = self
+                        .presence
+                        .get(&member.id)
+                        .map_or("unknown", String::as_str);
+                    presence_avatar_on(ui, &member.display_name, member.avatar_id, 30.0, status, ring);
+                    if quiet {
+                        ui.add(egui::Label::new(RichText::new(&member.display_name).size(12.0).color(MUTED)).truncate());
+                    } else {
+                        ui.add(egui::Label::new(bold(&member.display_name).size(12.0)).truncate());
+                    }
+                });
+                let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
+                if response.hovered() || response.has_focus() {
+                    ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
+                }
+                if response.clicked() {
+                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false, admin: false }, &response, true);
+                }
+
+            }
+        };
+        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
             });
-            let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
-            if response.hovered() || response.has_focus() {
-                ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
+            ui.add_space(4.0);
+        };
+        if let Some((name, readers, reader_count, other_count)) = &groups {
+            let (top, rest): (Vec<_>, Vec<_>) = members.into_iter().partition(|member| readers.contains(&member.id));
+            if !top.is_empty() {
+                egui::Frame::new().fill(SIDEBAR_RAISED).corner_radius(8).inner_margin(egui::Margin::symmetric(0, 6)).outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    label(ui, &format!("In #{name}"), *reader_count, true);
+                    rows(ui, top, false, SIDEBAR_RAISED);
+                });
             }
-            if response.clicked() {
-                self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false, admin: false }, &response, true);
+            if !rest.is_empty() {
+                ui.add_space(12.0);
+                egui::Frame::new().outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    label(ui, "Others in this space", *other_count, false);
+                    rows(ui, rest, true, SIDEBAR);
+                });
             }
+        } else {
+            rows(ui, members, false, SIDEBAR);
         }
         if page_count > 1 {
             ui.horizontal(|ui| {
@@ -22218,9 +22278,21 @@ fn avatar(
 }
 
 fn presence_avatar(ui: &mut egui::Ui, name: &str, avatar_id: Option<i32>, size: f32, status: &str) {
+    presence_avatar_on(ui, name, avatar_id, size, status, SIDEBAR);
+}
+
+/// `presence_avatar` on another background, so the dot's ring matches it.
+fn presence_avatar_on(
+    ui: &mut egui::Ui,
+    name: &str,
+    avatar_id: Option<i32>,
+    size: f32,
+    status: &str,
+    ring: Color32,
+) {
     let rect = avatar(ui, name, avatar_id, size, false);
     let dot = egui::pos2(rect.right() - 2.0, rect.bottom() - 3.0);
-    ui.painter().circle_filled(dot, 5.0, SIDEBAR);
+    ui.painter().circle_filled(dot, 5.0, ring);
     ui.painter().circle_filled(
         dot,
         3.5,
@@ -22273,10 +22345,10 @@ fn normalize_channel(value: &str) -> String {
     output
 }
 
-fn member_page_ids(detail: &SpaceDetail, page: usize) -> Vec<String> {
+fn member_page_ids(detail: &SpaceDetail, channel: Option<&str>, page: usize) -> Vec<String> {
     detail
-        .members
-        .iter()
+        .member_order(channel)
+        .into_iter()
         .skip(page * MEMBER_PAGE_SIZE)
         .take(MEMBER_PAGE_SIZE)
         .map(|member| member.id.clone())
@@ -36929,9 +37001,20 @@ mod tests {
             channels: Vec::new(),
             members,
             channel_invitations: Vec::new(),
+            channel_members: Default::default(),
         };
-        assert_eq!(member_page_ids(&detail, 0).len(), 25);
-        assert_eq!(member_page_ids(&detail, 1), ["member-25"]);
+        assert_eq!(member_page_ids(&detail, None, 0).len(), 25);
+        assert_eq!(member_page_ids(&detail, None, 1), ["member-25"]);
+        // A private channel's readers lead the pages, in the space's order.
+        let mut private = detail.clone();
+        private.channel_members.insert(
+            "leads".into(),
+            vec!["member-25".into(), "member-3".into(), "gone".into()],
+        );
+        let first = member_page_ids(&private, Some("leads"), 0);
+        assert_eq!(first[..3], ["member-3", "member-25", "member-0"]);
+        assert_eq!(member_page_ids(&private, Some("leads"), 1), ["member-24"]);
+        assert_eq!(member_page_ids(&private, Some("general"), 1), ["member-25"]);
     }
 
     #[test]

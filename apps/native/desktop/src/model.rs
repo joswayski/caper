@@ -281,6 +281,30 @@ pub struct SpaceDetail {
     pub members: Vec<Member>,
     #[serde(default)]
     pub channel_invitations: Vec<ChannelInvitation>,
+    /// Private channels you can read: who can read each (owner and grants).
+    #[serde(default)]
+    pub channel_members: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl SpaceDetail {
+    /// A private channel's readers, then the rest of the space, each in the
+    /// space's order; `None` for public channels and older APIs.
+    pub fn member_groups(&self, channel: Option<&str>) -> Option<(Vec<&Member>, Vec<&Member>)> {
+        let ids = self.channel_members.get(channel?)?;
+        Some(
+            self.members
+                .iter()
+                .partition(|member| ids.contains(&member.id)),
+        )
+    }
+
+    /// The members in the order the member list shows them for `channel`.
+    pub fn member_order(&self, channel: Option<&str>) -> Vec<&Member> {
+        self.member_groups(channel).map_or_else(
+            || self.members.iter().collect(),
+            |(readers, others)| readers.into_iter().chain(others).collect(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
