@@ -592,10 +592,8 @@
   stroke-width: 1.1px;
   opacity: 0.75;
 }
-.chat-message:has(> .chat-reply-context)
-  > div
-  > :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread, .chat-reply-message) {
-  top: var(--reply-actions-top);
+.chat-message:has(> .chat-reply-context) > div > .chat-message-tools {
+  top: calc(var(--reply-actions-top) - 3px);
 }
 .chat-pinned-message:has(> .chat-reply-context) > .chat-message-actions-trigger {
   top: var(--reply-actions-top);
@@ -763,7 +761,7 @@
 }
 /* Keep the row marked while its menu or picker is open and the pointer has
    moved into it. :where() lets mention, thread and jump tints still win. */
-.chat-message:where(:has(> div > :is(.chat-add-reaction, .chat-message-actions-trigger)[aria-expanded="true"])) {
+.chat-message:where(:has(> div > .chat-message-tools > [aria-expanded="true"])) {
   background: rgb(255 255 255 / 2%);
 }
 /* Replies stay quietly marked; mention, thread and source-jump tints still win. */
@@ -850,32 +848,35 @@
 .chat-message:where(.chat-thread-panel *) > :where(:not(.chat-forward-card)) > header {
   padding-right: 82px;
 }
-.chat-add-reaction,
-.chat-message-actions-trigger,
-.chat-reply-thread,
-.chat-reply-message {
+.chat-message-tools {
   position: absolute;
-  right: 14px;
-  top: 4px;
+  right: 11px;
+  top: 1px;
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+}
+.chat-message-tools > button,
+.chat-pinned-message > .chat-message-actions-trigger {
   display: grid;
   place-items: center;
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: var(--text-muted);
   cursor: pointer;
 }
-.chat-add-reaction {
-  right: 40px;
-}
-.chat-reply-message {
-  right: 66px;
-}
-.chat-reply-thread {
-  right: 92px;
+.chat-pinned-message > .chat-message-actions-trigger {
+  position: absolute;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
 }
 .chat-reply-thread:focus-visible,
 .chat-reply-message:focus-visible {
@@ -891,25 +892,16 @@
   opacity: 0.5;
 }
 @media (hover: hover) and (pointer: fine) {
-  .chat-add-reaction,
-  .chat-message-actions-trigger,
-  .chat-reply-thread,
-  .chat-reply-message {
+  .chat-message-tools,
+  .chat-pinned-message > .chat-message-actions-trigger {
     opacity: 0;
   }
-  .chat-message:hover .chat-add-reaction,
-  .chat-message:has(:focus-visible) .chat-add-reaction,
-  .chat-add-reaction[aria-expanded="true"],
-  .chat-message:hover .chat-message-actions-trigger,
-  .chat-message:has(:focus-visible) .chat-message-actions-trigger,
-  .chat-message-actions-trigger[aria-expanded="true"],
-  .chat-message:hover .chat-reply-thread,
-  .chat-message:has(:focus-visible) .chat-reply-thread,
-  .chat-message:hover .chat-reply-message,
-  .chat-message:has(:focus-visible) .chat-reply-message,
-  /* The whole bar stays while its menu or picker is open, instead of
-     collapsing to the one open trigger when the pointer moves into it. */
-  .chat-message:has(> div > [aria-expanded="true"]) :is(.chat-add-reaction, .chat-message-actions-trigger, .chat-reply-thread, .chat-reply-message) {
+  .chat-message:hover .chat-message-tools,
+  .chat-message:has(:focus-visible) .chat-message-tools,
+  .chat-message-tools:has(> [aria-expanded="true"]),
+  .chat-pinned-message:hover > .chat-message-actions-trigger,
+  .chat-pinned-message:has(:focus-visible) > .chat-message-actions-trigger,
+  .chat-pinned-message > .chat-message-actions-trigger[aria-expanded="true"] {
     opacity: 1;
   }
 }
@@ -920,7 +912,7 @@
     content: "";
     float: right;
     width: 108px;
-    height: 20px;
+    height: 28px;
   }
   /* Thread rows have three actions (no Reply in thread). */
   .chat-thread-panel .chat-message-grouped > .chat-grouped-time + div::before {
@@ -941,18 +933,15 @@
   .chat-reply-thread:hover,
   .chat-reply-message:hover:not(:disabled) {
     color: var(--text);
-    border-color: var(--terracotta);
+    background: var(--surface-hover);
   }
-}
-.chat-add-reaction[aria-expanded="true"] {
-  color: var(--text);
-  border-color: var(--text-muted);
 }
 /* An open picker or menu is a selection, so its trigger keeps the accent. */
 .chat-add-reaction[aria-expanded="true"],
 .chat-message-actions-trigger[aria-expanded="true"] {
   color: var(--text);
-  border-color: var(--terracotta);
+  background: rgb(182 77 50 / 16%);
+  box-shadow: inset 0 0 0 1px var(--terracotta);
 }
 .chat-reactions,
 .chat-forward-reactions {
@@ -1359,11 +1348,21 @@
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-add-reaction {
+  .chat-message-tools > .chat-add-reaction {
     display: none;
   }
+  .chat-message-tools {
+    right: 14px;
+    top: -2px;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
   /* Keep the 44px target on every message, but only draw it while open. */
-  .chat-message-actions-trigger {
+  .chat-message-tools > .chat-message-actions-trigger,
+  .chat-pinned-message > .chat-message-actions-trigger {
     width: 44px;
     height: 44px;
     border-color: transparent;
@@ -1374,14 +1373,11 @@
   }
   /* Center the glyph on the name line, or on a compact row's first text line,
      rather than below it (the target is taller than either). */
-  .chat-message > div > .chat-message-actions-trigger {
-    top: -2px;
-  }
-  .chat-message-grouped > div > .chat-message-actions-trigger {
+  .chat-message-grouped > div > .chat-message-tools {
     top: -6px;
   }
-  .chat-reply-thread,
-  .chat-reply-message {
+  .chat-message-tools > .chat-reply-thread,
+  .chat-message-tools > .chat-reply-message {
     display: none;
   }
   /* Compact follow-ups too: their text would otherwise run under the trigger. */

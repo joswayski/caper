@@ -1939,6 +1939,23 @@ pickers, counted chips, own-contribution highlighting, add/remove, and save-erro
 retry. Clients preserve per-message reaction revisions independently of the
 channel replay cursor.
 
+Web, macOS and Rust desktop group the message hover actions in one neutral,
+rounded, bordered bar. Controls retain their existing compact targets, individual
+hover/focus feedback and permissions. Web and Rust keep the whole bar visible
+while its menu or picker is open; thread rows omit Reply in thread. Narrow web,
+Android and iPhone retain their existing message-actions sheets instead of the
+desktop bar.
+
+Hover-bar validation: web check/build/typechecks and 639 web/shared tests pass;
+Rust desktop formatting, application Clippy, Linux build and 536 tests pass
+(12 existing device/audio tests ignored). Inspected labelled Chromium desktop,
+thread, menu/picker, keyboard-focus and 390px layouts, and 2× Linux wide/narrow
+renders. Real CDP touch holds and the reaction suite pass with touch emulation
+re-enabled before each input (this orb's browser commands otherwise reset it).
+The broader Threads and Pins scripts stop at quote-connector and invite-consent
+assertions respectively; both reproduce on unchanged main. No local macOS/Xcode,
+Windows or physical-device validation is claimed.
+
 On macOS, the reaction picker is a 352 × 420-point native popover anchored to
 the fixed conversation header, not the scrolling timeline. Its Cancel button
 lives in the popover content; Escape and outside clicks also dismiss it. The

@@ -635,19 +635,19 @@ try {
     browser("hover", "#chat-heading");
     assert.equal(
       evaluate(
-        `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`,
+        `document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread').checkVisibility({ opacityProperty: true })`,
       ),
-      "0",
+      false,
     );
     browser("focus", `${channel(root.clientMessageId)} .chat-reply-thread`);
     wait(
-      `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity === '1'`,
+      `document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread').checkVisibility({ opacityProperty: true })`,
     );
     assert.equal(
       evaluate(
-        `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread')).opacity`,
+        `document.querySelector('${channel(root.clientMessageId)} .chat-reply-thread').checkVisibility({ opacityProperty: true })`,
       ),
-      "1",
+      true,
     );
     assert.deepEqual(
       evaluate(

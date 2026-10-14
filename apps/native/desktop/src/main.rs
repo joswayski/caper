@@ -14623,7 +14623,7 @@ impl CaperApp {
         // Web's hover actions: Reply in thread (outside threads), Reply and Add
         // reaction for members, and ⋯ always, read-only previews included.
         let action_count = 1 + usize::from(!in_thread) + if can_react { 2 } else { 0 };
-        let action_width = action_count as f32 * 26.0 - 2.0;
+        let action_width = action_count as f32 * 24.0 + 6.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
             &message.author.id,
@@ -14907,18 +14907,18 @@ impl CaperApp {
         {
             let actions_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    message_rect.right() - action_width - 18.0,
-                    actions_y.unwrap_or(message_rect.top()) + 4.0,
+                    message_rect.right() - action_width - 15.0,
+                    actions_y.unwrap_or(message_rect.top()) + 1.0,
                 ),
-                egui::vec2(action_width, 24.0),
+                egui::vec2(action_width, 30.0),
             );
             // Overlay controls must not move the timeline cursor back into the message.
             let mut actions_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt(("message-actions", &message.id))
-                    .max_rect(actions_rect),
+                    .max_rect(actions_rect.shrink(3.0)),
             );
-            actions_ui.spacing_mut().item_spacing.x = 2.0;
+            actions_ui.spacing_mut().item_spacing.x = 0.0;
             actions_ui.horizontal(|ui| {
                 let reply = if in_thread {
                     None
@@ -14964,6 +14964,7 @@ impl CaperApp {
                 let picker_open = self.reaction_picker.as_deref() == Some(message.id.as_str());
                 actions_open = menu_open || picker_open;
                 let visible = ui.rect_contains_pointer(message_rect)
+                    || ui.rect_contains_pointer(actions_rect)
                     || menu_open
                     || picker_open
                     || more.has_focus()
@@ -14972,7 +14973,14 @@ impl CaperApp {
                         .flatten()
                         .any(egui::Response::has_focus);
                 if visible {
-                    // Web's bordered surface buttons.
+                    // One shared surface; only the hovered/selected control is lit.
+                    ui.painter().rect(
+                        actions_rect,
+                        8.0,
+                        SURFACE,
+                        Stroke::new(1.0, BORDER),
+                        egui::StrokeKind::Inside,
+                    );
                     for (button, open) in [
                         (reply.as_ref(), false),
                         (reply_message.as_ref(), false),
@@ -14987,13 +14995,19 @@ impl CaperApp {
                         let lit = open
                             || (button.sense.senses_click() && button.hovered())
                             || button.has_focus();
-                        ui.painter().rect(
-                            button.rect,
-                            8.0,
-                            if lit { RAISED } else { SURFACE },
-                            Stroke::new(1.0, if lit { TERRACOTTA } else { BORDER }),
-                            egui::StrokeKind::Inside,
-                        );
+                        if lit {
+                            ui.painter().rect(
+                                button.rect,
+                                5.0,
+                                RAISED,
+                                if open || button.has_focus() {
+                                    Stroke::new(1.0, TERRACOTTA)
+                                } else {
+                                    Stroke::NONE
+                                },
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                     }
                     let icon = |button: &egui::Response, open: bool| {
                         if open || button.hovered() {
@@ -24936,7 +24950,7 @@ mod tests {
         for button in [emoji, more] {
             assert_eq!((button.width(), button.height()), (24.0, 24.0));
         }
-        assert_eq!(more.x0 - emoji.x1, 2.0);
+        assert_eq!(more.x0, emoji.x1, "controls meet inside the shared bar");
         assert!(
             !nodes
                 .iter()

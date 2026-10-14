@@ -4144,8 +4144,7 @@ private struct MessageRow: View {
     @State private var history = false
     @State private var pressing = false
     #if os(macOS)
-    /// Room the first line leaves for the hover actions: 24pt each, 2pt apart
-    /// (Reply in thread, Reply, Add reaction and ⋯), plus a gap.
+    /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
     private var actionsInset: CGFloat { inThread ? 82 : 108 }
     @State private var controlsHovered = false
     @State private var actionsTop: CGFloat = 6
@@ -4307,7 +4306,7 @@ private struct MessageRow: View {
         #else
         row
             .overlay(alignment: .topTrailing) {
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     if !inThread {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                             CaperIcon(name: "message-square", size: 14).frame(width: 24, height: 24)
@@ -4339,9 +4338,13 @@ private struct MessageRow: View {
                         .modifier(ControlHover(isFocused: actionsFocused))
                         .help("More actions")
                         .accessibilityLabel("Message options")
-                }.opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
+                }.padding(3)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
+                    .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
+                    .opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : actionsTop)
+                    .padding(.trailing, 15).padding(.top, message.replyTo == nil ? 3 : max(0, actionsTop - 3))
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.

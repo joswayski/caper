@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, Reply, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, Reply, SmilePlus, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -1453,47 +1453,80 @@ export default function Chat({
                     onOpen={(anchor) => void openConversation(message, anchor)}
                     onView={viewFile(message.id, true)}
                   />
-                  <button
-                    type="button"
-                    className="chat-message-actions-trigger"
-                    aria-label={`Message actions for ${message.author.name}`}
-                    title="More actions"
-                    aria-haspopup="dialog"
-                    aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                    onClick={(event) =>
-                      // A second click on the open menu's own trigger closes it, like a toggle.
-                      actionTarget?.messageId === message.id && actionTarget.mode === "actions"
-                        ? setActionTarget(undefined)
-                        : openActions(message.id, event.currentTarget, inThread)
-                    }
+                  <div
+                    className="chat-message-tools"
+                    role="group"
+                    aria-label={`Actions for ${message.author.name}'s message`}
                   >
-                    <MoreHorizontal size={14} aria-hidden="true" />
-                  </button>
-                  {!readOnly && state.author && (
+                    {!inThread && (
+                      <button
+                        type="button"
+                        className="chat-reply-thread"
+                        aria-label={`Reply in thread to ${message.author.name}`}
+                        title="Reply in thread"
+                        onMouseEnter={() => prefetchThread(message.threadRootId ?? message.id)}
+                        onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
+                        onClick={() => openThread(message.threadRootId ?? message.id)}
+                      >
+                        <MessageSquare size={14} aria-hidden="true" />
+                      </button>
+                    )}
+                    {!readOnly && state.author && (
+                      <button
+                        type="button"
+                        className="chat-reply-message"
+                        aria-label={`Reply to ${message.author.name}`}
+                        title="Reply"
+                        disabled={!!state.pendingSend}
+                        onClick={() => replyToMessage(message, inThread)}
+                      >
+                        <Reply size={14} aria-hidden="true" />
+                      </button>
+                    )}
                     <button
                       type="button"
-                      className="chat-reply-message"
-                      aria-label={`Reply to ${message.author.name}`}
-                      title="Reply"
-                      disabled={!!state.pendingSend}
-                      onClick={() => replyToMessage(message, inThread)}
+                      className="chat-add-reaction"
+                      onClick={(event) =>
+                        actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                          ? setActionTarget(undefined)
+                          : setActionTarget({
+                              messageId: message.id,
+                              anchor: event.currentTarget,
+                              anchorRect: event.currentTarget.getBoundingClientRect(),
+                              mode: "emoji",
+                              drawer: isTouchLayout(),
+                              inThread,
+                            })
+                      }
+                      onMouseEnter={() => {
+                        if (viewerId && !readOnly && state.author) preloadReactionPicker();
+                      }}
+                      onFocus={preloadReactionPicker}
+                      disabled={!viewerId || readOnly || !state.author}
+                      aria-label="Add reaction"
+                      title="Add reaction"
+                      aria-haspopup="dialog"
+                      aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
                     >
-                      <Reply size={14} aria-hidden="true" />
+                      <SmilePlus size={14} aria-hidden="true" />
                     </button>
-                  )}
-                  {!inThread && (
                     <button
                       type="button"
-                      className="chat-reply-thread"
-                      aria-label={`Reply in thread to ${message.author.name}`}
-                      title="Reply in thread"
-                      onMouseEnter={() => prefetchThread(message.threadRootId ?? message.id)}
-                      onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
-                      onClick={() => openThread(message.threadRootId ?? message.id)}
+                      className="chat-message-actions-trigger"
+                      aria-label={`Message actions for ${message.author.name}`}
+                      title="More actions"
+                      aria-haspopup="dialog"
+                      aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
+                      onClick={(event) =>
+                        // A second click on the open menu's own trigger closes it, like a toggle.
+                        actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                          ? setActionTarget(undefined)
+                          : openActions(message.id, event.currentTarget, inThread)
+                      }
                     >
-                      <MessageSquare size={14} aria-hidden="true" />
+                      <MoreHorizontal size={14} aria-hidden="true" />
                     </button>
-                  )}
+                  </div>
                   <MessageReactions
                     message={message}
                     channelId={state.channelId}
@@ -1502,19 +1535,6 @@ export default function Chat({
                     save={reactionSaves[message.id]}
                     onReact={react}
                     onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
-                    pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
-                    onOpenPicker={(anchor) =>
-                      actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
-                        ? setActionTarget(undefined)
-                        : setActionTarget({
-                            messageId: message.id,
-                            anchor,
-                            anchorRect: anchor.getBoundingClientRect(),
-                            mode: "emoji",
-                            drawer: isTouchLayout(),
-                            inThread,
-                          })
-                    }
                     onDismissError={() =>
                       setReactionSaves((current) => ({
                         ...current,
