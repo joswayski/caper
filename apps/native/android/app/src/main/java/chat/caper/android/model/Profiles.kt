@@ -153,7 +153,7 @@ fun ChatHistory.withPerson(person: ProfilePerson): ChatHistory = copy(
 
 /**
  * `space.updated`: that space's name and icon in the rail, invitations, the open space (header,
- * Manage space) and a visit's title. A space you don't have changes nothing.
+ * Manage space), a visit's title and the Feedback inbox's reports. A space you don't have changes nothing.
  */
 fun AppUiState.withSpace(changed: Space): AppUiState {
     fun merge(space: Space) = if (space.id != changed.id) space
@@ -164,5 +164,8 @@ fun AppUiState.withSpace(changed: Space): AppUiState {
         notificationInvitation = notificationInvitation?.let(::merge),
         selectedSpace = selectedSpace?.let { detail -> if (detail.space.id == changed.id) detail.copy(space = merge(detail.space)) else detail },
         visit = visit?.let { open -> if (open.spaceId == changed.id) open.copy(spaceName = changed.name) else open },
+        feedback = if (feedback.reports.none { it.space?.id == changed.id }) feedback else feedback.copy(reports = feedback.reports.map { report ->
+            report.space?.takeIf { it.id == changed.id }?.let { report.copy(space = it.copy(name = changed.name)) } ?: report
+        }),
     )
 }

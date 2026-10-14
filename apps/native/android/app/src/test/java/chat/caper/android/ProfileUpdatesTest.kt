@@ -129,6 +129,12 @@ class ProfileUpdatesTest {
             spaces = listOf(studio, Space("space0000003", "Other", self)), invitations = listOf(invited),
             selectedSpace = SpaceDetail(studio, emptyList(), emptyList()),
             visit = VisitUi("channel00001", "space0000001", "Studio", "general", false),
+            feedback = FeedbackInboxUi(reports = listOf(
+                FeedbackReport("report000001", "message00001", "message00001", "now", reporter = FeedbackReporter("ann000000001"),
+                    channel = FeedbackChannel("channel00001", "general"), space = FeedbackSpace("space0000001", "Studio")),
+                FeedbackReport("report000002", "message00002", "message00002", "now", reporter = FeedbackReporter("ann000000001"),
+                    channel = FeedbackChannel("channel00003", "general"), space = FeedbackSpace("space0000003", "Other")),
+            )),
         )
         val renamed = state.withSpace(Space("space0000001", "Friends", self, iconAsset = newAsset, iconUrl = icon))
         assertEquals("Friends", renamed.spaces[0].name)
@@ -137,6 +143,7 @@ class ProfileUpdatesTest {
         assertEquals("Friends", renamed.selectedSpace!!.space.name)
         assertEquals(newAsset, renamed.selectedSpace!!.space.iconAsset)
         assertEquals("Friends", renamed.visit!!.spaceName)
+        assertEquals("Feedback reports take the new name", listOf("Friends", "Other"), renamed.feedback.reports.map { it.space?.name })
 
         val cleared = renamed.withSpace(Space("space0000001", "Friends", self))
         assertNull(cleared.spaces[0].iconAsset)
