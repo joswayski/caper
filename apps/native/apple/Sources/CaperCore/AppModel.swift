@@ -1296,7 +1296,9 @@ public final class AppModel {
             visit = nil; visitReturn = nil
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
-            navigationOpen = false
+            // A space tile changes the channels shown in Browse. Only an
+            // explicit channel selection should reveal chat on a phone.
+            if channelID != nil || !narrowLayout { navigationOpen = false }
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
