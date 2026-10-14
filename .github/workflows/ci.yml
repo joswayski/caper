@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 # The running build always finishes and only the newest waiting push runs next.
 concurrency:
@@ -34,18 +33,6 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   rust:
     needs: route
@@ -65,18 +52,6 @@ jobs:
       # `cargo check --workspace --all-targets`), so no separate check step.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   account-database:
     needs: route
@@ -123,18 +98,6 @@ jobs:
           done
           docker exec chat-valkey valkey-cli cluster info | grep -q 'cluster_state:ok'
       - run: CHAT_TEST_DATABASE_URL="$DATABASE_URL" CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 TEST_VALKEY_URL=redis://127.0.0.1:6379 FORWARD_TEST_VALKEY_URL=redis://127.0.0.1:6379 cargo test --locked -p caper-api -- --ignored --skip tests::shared
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   shared-media:
     needs: route
@@ -160,18 +123,6 @@ jobs:
           toolchain: 1.94.0
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --locked -p caper-api tests::shared -- --ignored
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   native-contracts:
     name: Python tooling and native contracts
@@ -193,18 +144,6 @@ jobs:
       - run: uv run --locked python shared/fonts/test_native_fonts.py -v
       - name: Verify bundled Apple emoji match the shared artwork and licenses
         run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
 
   updater:
     name: Native updater / ${{ matrix.os }}
@@ -231,15 +170,3 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"

@@ -18,17 +18,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: false
 jobs:
-  route:
-    uses: ./.github/workflows/mac-route.yml
-    secrets: inherit
-
-  # Builds and tests the image on the Mac's arm64 Linux VM when mac-route.yml
-  # picks it, and hands the tested image to the publish job, which runs on
-  # GitHub so the ECR role never reaches a self-hosted machine.
+  # Builds and tests the image on GitHub's arm64 runners, which start in
+  # seconds (the deploy path never queues behind a self-hosted machine), and
+  # hands the tested image to the publish job.
   api:
     name: linux/arm64 API image
-    needs: route
-    runs-on: ${{ needs.route.outputs.linux_arm == 'true' && fromJSON('["self-hosted","joselinux-arm"]') || 'ubuntu-24.04-arm' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -136,11 +131,16 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
+          SHIP_ENABLED: ${{ secrets.DEPLOY_APP_ID != '' && secrets.DEPLOY_APP_PRIVATE_KEY != '' }}
           DEPLOY_WORKFLOW_URL: https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper-api.yml
           GITHUB_TOKEN: ${{ github.token }}
           IMAGE_DIGEST: ${{ steps.record.outputs.digest }}
         run: |
           set -euo pipefail
+          if [[ "${SHIP_ENABLED:-}" == true ]]; then
+            echo "Ship deploys this image (next step); no Discord Deploy button."
+            exit 0
+          fi
           if [[ -z "$DEPLOY_NOTIFICATION_WEBHOOK_URL" ]]; then
             echo "DEPLOY_NOTIFICATION_WEBHOOK_URL is not configured; skipping notification."
             exit 0
@@ -209,3 +209,12 @@ jobs:
           notify_deployment "caper-api" "Caper API" "$DEPLOY_WORKFLOW_URL"
           notify_deployment "caper-gateway" "Caper chat gateway" \
             "https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper-gateway.yml"
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions/ship
+      - name: Ship to production
+        uses: ./.github/actions/ship
+        with:
+          repository: caper
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}

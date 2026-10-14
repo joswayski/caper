@@ -38,15 +38,74 @@ Adapted from the conventions in `joswayski/captures`.
 
 ## Shipping
 
-Speed beats ceremony: there are no real users yet, so ship, watch, and fix forward.
+`main` is production. A push to `main` reaches users within minutes, with no
+pull request, review or deploy button in between. Speed beats ceremony: there
+are no real users yet, so ship small, watch it land, and fix forward.
 
-- Commit and push straight to `main`; no pull requests. Run the local checks for what you changed first (above), then `git pull --rebase origin main` and push. Never force-push `main` or rewrite other agents' commits.
-- Never put literal CI-skip directives in commit messages, even to explain them: path-filtered image builds would silently not run.
-- Pushes to `main` run `CI` (a few minutes) and, when their paths changed, the `AWS image` (web) and `API image` (API and gateway) builds. `Native development builds` runs nightly and on demand; don't start it for routine changes.
-- After pushing, deploy what changed yourself, servers before clients, waiting for each step to succeed before the next. `SHA` is your pushed commit; find its image runs with `gh run list --repo joswayski/caper --commit "$SHA"` and wait with `gh run watch <id> --exit-status` (infrastructure runs: `gh run list --repo joswayski/infrastructure --workflow <file> --limit 1`). Report what you deployed.
-  1. Infrastructure or secrets the change needs, in `joswayski/infrastructure`, following that repository's guidance.
-  2. If `API image` ran for `SHA`: `gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$SHA"`, wait for it, then the same with `deploy-caper-gateway.yml`. The API applies database migrations on startup.
-  3. If `AWS image` ran for `SHA`: `gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$SHA"`.
-  4. If native client code changed: `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$SHA"`. It takes 20-40 minutes; you need not wait. The Intel Mac build finishes on its own and never blocks the release.
-- If `CI`, an image build, a deploy or a release fails, fix it forward with another commit. Roll back a broken server with the deploy workflow's `rollback_from_sha` input only when a fix will take longer than a few minutes.
-- Still ask the owner first for anything irreversible: destructive or data-dropping migrations, deleting infrastructure or data, rotating secrets.
+Before you push:
+
+- Run the local checks for what you changed (above) and build what you
+  touched. CI on `main` is a signal, not a gate. Nothing waits for it, so it
+  cannot stop a mistake from reaching users.
+- Push only what you would be happy for users to have right now, and keep
+  every commit deployable.
+- Write database migrations to be additive and backward compatible. The API
+  applies them on startup, while the previous gateway and web still run
+  against it. Leave dropping or rewriting data to a later, owner-approved
+  change.
+- Push a branch and open a draft pull request instead of pushing to `main`
+  when:
+  - the work is unfinished and you have to stop (session ending, disk full,
+    missing toolchain). The draft PR is the handoff: say what is done and what
+    is left.
+  - it needs a product decision the owner hasn't made.
+  - it is irreversible: destructive or data-rewriting migrations, deleting
+    data or infrastructure, rotating secrets. Ask the owner first.
+
+Push and deploy:
+
+- Push with `git pull --rebase origin main` (rerun checks if that pulled in
+  changes to code you touched), then `git push origin HEAD:main`, and retry
+  the same way if the push is rejected. Never force-push `main` or rewrite
+  other agents' commits.
+- Never put literal CI-skip directives in commit messages, even to explain
+  them: the path-filtered image builds would silently not run.
+- Pushes to `main` run `CI` (a few minutes) and, when their paths changed,
+  `API image` (API and gateway) and `AWS image` (web), about 2-3 minutes each.
+  Each image run then dispatches `Ship` in `joswayski/infrastructure`. Ship
+  rolls production forward to the newest published images on `main`:
+  - in order: API, then gateway, then web;
+  - never backwards;
+  - holding the web while a newer API build is still running or failed.
+
+  You don't coordinate deploys with other agents or the owner. Ship serializes
+  them. If the image run's "Ship to production" step says Ship is not
+  configured, dispatch it yourself once your image runs succeed. Dispatching
+  again is harmless:
+  `gh workflow run ship.yml --repo joswayski/infrastructure --ref main -f repository=caper`.
+  Don't run the per-app `deploy-caper-*.yml` workflows for routine changes.
+- Native clients: if native client code changed, run
+  `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$SHA"`.
+  It takes 20-40 minutes and you need not wait. The Intel Mac build finishes on
+  its own and never blocks the release. `Native development builds` runs
+  nightly and on demand; don't start it for routine changes.
+- Infrastructure or secrets the change needs go to `joswayski/infrastructure`
+  first, following that repository's guidance.
+- Watch it land. `SHA` is your pushed commit:
+  - its runs: `gh run list --repo joswayski/caper --commit "$SHA"`, then
+    `gh run watch <id> --repo joswayski/caper --exit-status`;
+  - Ship runs: `gh run list --repo joswayski/infrastructure --workflow ship.yml --limit 3`.
+    Each run's summary says what shipped and what waits.
+
+  Report what reached production (your `SHA` or a newer one). Without `gh`,
+  use the GitHub MCP Actions tools; Claude sessions need
+  `joswayski/infrastructure` added to dispatch Ship.
+
+When something breaks:
+
+- If `CI`, an image build, Ship or a release fails, fix it forward with
+  another commit. If the fix will take more than a few minutes, `git revert`
+  the bad commit and push; Ship deploys the revert like any other commit.
+- A deploy workflow's `rollback_from_sha` gives immediate relief, but only
+  until the next Ship rolls forward again. Always follow it with a revert or
+  fix.
