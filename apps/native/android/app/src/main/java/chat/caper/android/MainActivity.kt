@@ -1537,8 +1537,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit) {
     val context = LocalContext.current
-    Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-        Row(Modifier.height(52.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+    // Match the one-line Material composer and its bottom inset, retaining touch targets.
+    Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        Row(Modifier.height(56.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.small)
                 .clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
                 .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }

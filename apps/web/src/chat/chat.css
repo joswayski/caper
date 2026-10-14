@@ -2018,7 +2018,7 @@
 .chat-composer {
   position: relative;
   /* Keep the input inset from both the scrolling timeline and the panel edge. */
-  padding: 12px 18px 16px;
+  padding: 12px 18px var(--workspace-bottom-inset);
   background: var(--surface-conversation);
 }
 .chat-emoji-suggestions {

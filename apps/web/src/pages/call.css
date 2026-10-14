@@ -6,7 +6,7 @@
 .voice-panel {
   --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
-  margin: auto 12px 12px;
+  margin: auto 12px var(--workspace-bottom-inset);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-raised);

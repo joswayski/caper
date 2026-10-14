@@ -129,18 +129,40 @@ try {
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url.toString());
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
-  assert.deepEqual(
-    evaluate(`(() => {
-      const panel = document.querySelector(".voice-panel");
-      const account = panel.getBoundingClientRect();
-      const field = document.querySelector("#chat-message").getBoundingClientRect();
-      const composer = document.querySelector(".chat-composer").getBoundingClientRect();
-      const dividerTop = account.top + parseFloat(getComputedStyle(panel).borderTopWidth)
-        + parseFloat(getComputedStyle(panel, "::before").top);
-      return [account.top - field.top, account.bottom - field.bottom, dividerTop - composer.top];
-    })()`),
-    [0, 0, 0],
-    "Account and composer outlines and their upper dividers must align",
+  evaluate("document.fonts.ready.then(() => true)");
+  for (const width of [900, 1920, 1280]) {
+    browser("set", "viewport", String(width), "900", "2");
+    for (const draft of ["", "One line", "First line\nSecond line\nThird line"]) {
+      if (draft) browser("fill", "#chat-message", draft);
+      else {
+        browser("click", "#chat-message");
+        browser("press", "Control+a");
+        browser("press", "Backspace");
+      }
+      evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert.equal(evaluate('document.querySelector("#chat-message").value'), draft);
+      const bounds = evaluate(`(() => {
+        const panel = document.querySelector(".voice-panel");
+        const account = panel.getBoundingClientRect();
+        const field = document.querySelector("#chat-message").getBoundingClientRect();
+        const composer = document.querySelector(".chat-composer").getBoundingClientRect();
+        const dividerTop = account.top + parseFloat(getComputedStyle(panel).borderTopWidth)
+          + parseFloat(getComputedStyle(panel, "::before").top);
+        return [account.top - field.top, account.bottom - field.bottom, dividerTop - composer.top];
+      })()`);
+      if (draft.includes("\n")) {
+        assert.equal(bounds[1], 0, `Multiline input keeps the account bar's bottom edge at ${width}px`);
+        assert.ok(bounds[0] > 0, "Multiline input must still grow upward");
+        if (width === 1280) screenshot("desktop-composer-multiline");
+      } else {
+        assert.deepEqual(bounds, [0, 0, 0], `Account/input outlines and upper dividers align at ${width}px`);
+        if (draft === "") screenshot(`desktop-composer-aligned-${width}`);
+      }
+    }
+  }
+  browser("fill", "#chat-message", "");
+  console.log(
+    "PASS: account/input top, bottom and divider offsets are 0px at 900px, 1280px and 1920px; multiline grows upward without moving their bottom edge.",
   );
   // Wide layouts show the member list by default.
   assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");

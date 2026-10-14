@@ -9407,7 +9407,8 @@ impl CaperApp {
                 left: 12,
                 right: 12,
                 top: 0,
-                bottom: 12,
+                // Match the conversation composer's bottom inset.
+                bottom: 16,
             })
             .show(ui, |ui| {
                 ui.set_width(width - 24.0);
@@ -29963,6 +29964,26 @@ mod tests {
             dividers.is_empty(),
             "the timeline and input share one surface: {dividers:?}"
         );
+        let outline = |left| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.left() == left
+                            && rect.rect.top() > 800.0
+                            && rect.stroke.width == 1.0 =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing bottom control outline at {left}"))
+        };
+        let account = outline(71.0);
+        let composer = outline(358.0);
+        assert_eq!(account.y_range(), composer.y_range());
+        assert_eq!(composer.bottom(), 884.0, "16px inset in the 900px window");
     }
 
     #[test]
