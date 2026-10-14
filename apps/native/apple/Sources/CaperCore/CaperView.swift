@@ -3210,12 +3210,16 @@ private struct ChatView: View {
                 ScrollView(showsIndicators: false) {
                     let entries = timelineEntries
                     let recentRows = Array(entries.suffix(TimelinePin.recentRows))
+                    // Read once per render: the geometry transform below runs on every
+                    // scroll frame and must not re-derive the whole timeline each time.
+                    let channelMessages = chat.channelMessages
+                    let firstID = channelMessages.first?.id
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
                     let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
                     // Before any row is built, so rows see this render's arrivals.
                     let _ = arrivals.observe("channel", key: chat.channelID ?? "",
-                                             ids: chat.channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
+                                             ids: channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
                                              live: !chat.loading && !chat.loadFailed && !chat.hasNewer && !chat.loadingNewer)
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
@@ -3295,7 +3299,7 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                     // Reactions grow existing rows; a draft or keyboard shrinks
                     // the viewport. Both retain a reader already at the bottom.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id, recent: recentRows) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstID, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
