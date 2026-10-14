@@ -499,8 +499,12 @@ try {
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
   const dialog = page.locator(".profile-dialog");
-  await dialog.getByRole("button", { name: "Change picture" }).waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Remove picture" }).count(), 0);
+  // Without a custom picture, the mascot holds up "change me!" and the frame opens the picker directly.
+  const editPicture = dialog.getByRole("button", { name: "Change profile picture" });
+  await editPicture.waitFor();
+  await dialog.locator('.picture-settings-change-me[data-avatar-id="0"]').waitFor();
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
+  await page.waitForTimeout(300); // Let the sign's vector arrive.
   await shot(dialog, "pictures-profile-mascot.png");
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "landscape-photo.png",
@@ -520,8 +524,15 @@ try {
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].length >= 3 && [...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => element.dataset.avatarAsset === "upload000001" && element.querySelector(".caper-picture")?.dataset.state !== "loading")`,
   );
   await page.waitForFunction(loaded('.member-presence-avatar [data-avatar-asset="upload000001"]'));
-  await dialog.getByRole("button", { name: "Remove picture" }).waitFor();
+  // With one, the frame offers a new picture or removal; the sign steps aside.
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), "menu");
+  assert.equal(await dialog.locator(".picture-settings-change-me").count(), 0);
+  await editPicture.click();
+  await dialog.getByRole("menuitem", { name: "Remove picture" }).waitFor();
   await shot(dialog, "pictures-profile-uploaded.png");
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("menu").waitFor({ state: "detached" });
+  assert.ok(await dialog.isVisible(), "Escape closes the menu, not the dialog");
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "party.gif",
     mimeType: "image/gif",
@@ -557,22 +568,25 @@ try {
   });
   await dialog.getByText("You’ve changed pictures too many times today. Try again tomorrow.").waitFor();
   await shot(dialog, "pictures-profile-error.png");
-  await dialog.getByRole("button", { name: "Remove picture" }).click();
+  await editPicture.click();
+  await dialog.getByRole("menuitem", { name: "Remove picture" }).click();
   await dialog.getByText("Profile picture removed.").waitFor();
   await page.waitForFunction(
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => !element.dataset.avatarAsset && !element.querySelector(".caper-picture") && element.dataset.avatarId === "0")`,
   );
-  assert.equal(await dialog.getByRole("button", { name: "Remove picture" }).count(), 0);
+  await dialog.locator(".picture-settings-change-me").waitFor();
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
   await dialog.getByRole("button", { name: "Close profile" }).click();
 
   // ---- Space icon: remove, then upload a new one; the rail follows ----
   await page.locator(".space-menu summary").click();
   await page.getByRole("button", { name: "Space settings" }).click();
   const manage = page.locator(".space-dialog");
-  await manage.locator(".space-icon-section").getByRole("button", { name: "Change icon" }).waitFor();
+  await manage.locator(".space-icon-section").getByRole("button", { name: "Change space icon" }).waitFor();
   await page.waitForFunction(loaded(".space-icon-section .picture-settings-tile"));
   await shot(manage.locator(".space-icon-section"), "pictures-space-icon-settings.png");
-  await manage.getByRole("button", { name: "Remove icon" }).click();
+  await manage.getByRole("button", { name: "Change space icon" }).click();
+  await manage.getByRole("menuitem", { name: "Remove icon" }).click();
   await manage.getByText("Space icon removed.").waitFor();
   await page.waitForFunction(
     '!document.querySelector(".space-rail-item:first-child .caper-picture") && document.querySelector(".space-rail-item:first-child button > span").textContent === "T"',
@@ -691,7 +705,7 @@ try {
   const pages = await context(browser, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const profile = await pages.newPage();
   await profile.goto(new URL("/profile", origin).href);
-  await profile.getByRole("button", { name: "Change picture" }).waitFor();
+  await profile.getByRole("button", { name: "Change profile picture" }).waitFor();
   await shot(profile, "pictures-profile-page-narrow.png");
   await profile.goto(new URL("/invite/FIXTURE123", origin).href);
   await profile.waitForFunction(loaded("main [data-avatar-asset]"));

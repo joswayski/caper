@@ -18906,14 +18906,18 @@ impl CaperApp {
             .filter(|account| account.username.is_some() && account.display_name.is_some())
         {
             let name = self.identity_name();
-            self.picture_settings(
-                ui,
-                pictures::Target::Avatar,
-                account.picture().is_some(),
-                |ui, rect| {
-                    paint_avatar(ui, rect, &name, account.avatar_id, account.picture());
-                },
-            );
+            let custom = account.picture().is_some();
+            self.picture_settings(ui, pictures::Target::Avatar, custom, |ui, rect| {
+                paint_avatar(ui, rect, &name, account.avatar_id, account.picture());
+                // Without a custom picture, the mascot holds up "change me!".
+                if !custom && caper_avatar_index(account.avatar_id).is_some() {
+                    egui::Image::from_bytes(
+                        "bytes://caper-change-me.svg",
+                        avatar_images::CHANGE_ME,
+                    )
+                    .paint_at(ui, rect);
+                }
+            });
             ui.add_space(14.0);
         }
         ui.label("Username");
@@ -19092,8 +19096,9 @@ impl CaperApp {
     }
 
     /// The picture row of Profile and Manage space settings: the current
-    /// picture shown large, Change, Remove (only with a custom picture), and
-    /// progress or an inline error.
+    /// picture in its frame, with the eggshell edit badge on the corner. The
+    /// frame picks a picture, or (with a custom one set) opens a menu to choose
+    /// another or remove it; progress or an inline error shows beneath.
     fn picture_settings(
         &mut self,
         ui: &mut egui::Ui,
@@ -19101,9 +19106,9 @@ impl CaperApp {
         custom: bool,
         face: impl FnOnce(&egui::Ui, egui::Rect),
     ) {
-        let (title, change_label, remove_label) = match target {
-            pictures::Target::Avatar => ("Profile picture", "Change picture", "Remove picture"),
-            pictures::Target::SpaceIcon(_) => ("Space icon", "Change icon", "Remove icon"),
+        let (label, noun) = match target {
+            pictures::Target::Avatar => ("Change profile picture", "picture"),
+            pictures::Target::SpaceIcon(_) => ("Change space icon", "icon"),
         };
         let edit = &self.picture_edit;
         let busy = edit
@@ -19118,47 +19123,80 @@ impl CaperApp {
             .filter(|(failed, _)| *failed == target)
             .map(|(_, error)| error.clone());
         let unavailable = edit.unavailable;
+        // With uploads unavailable, a custom picture can still be removed.
+        let enabled = idle && (custom || !unavailable);
+        let side = PICTURE_FRAME;
+        let (outer, response) = ui.allocate_exact_size(
+            egui::vec2(side + PICTURE_BADGE_OVERHANG, side + PICTURE_BADGE_OVERHANG),
+            if enabled {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        );
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        let response = if enabled {
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            response
+        };
+        let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
+        let corner = picture_corner(side);
+        let hovered = enabled && response.hovered();
+        ui.painter().rect_filled(rect, corner, RAISED);
+        face(ui, rect);
+        if busy.is_some() {
+            ui.painter()
+                .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
+        }
+        ui.painter().rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0, if hovered { MUTED } else { BORDER }),
+            egui::StrokeKind::Inside,
+        );
+        // The badge sits over the frame's corner, cut out by a ring of the dialog.
+        let badge = egui::Rect::from_min_max(outer.max - egui::vec2(34.0, 34.0), outer.max);
+        ui.painter().rect_filled(badge, 10.0, SURFACE);
+        ui.painter().rect_filled(
+            badge.shrink(3.0),
+            8.0,
+            match (enabled, hovered, response.is_pointer_button_down_on()) {
+                (false, ..) => BORDER,
+                (true, _, true) => ACTION_PRESS,
+                (true, true, false) => ACTION_HOVER,
+                (true, false, false) => ACTION,
+            },
+        );
+        egui::Image::new(egui::include_image!("../resources/icons/pencil.svg"))
+            .tint(if enabled { ON_ACTION } else { MUTED })
+            .paint_at(
+                ui,
+                egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
+            );
         let (mut change, mut remove) = (false, false);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(72.0, 72.0), egui::Sense::hover());
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Image,
-                    true,
-                    if custom {
-                        format!("Current {}", title.to_lowercase())
-                    } else {
-                        format!("No custom {}", title.to_lowercase())
-                    },
-                )
+        if custom {
+            egui::Popup::menu(&response).show(|ui| {
+                if ui
+                    .add_enabled(
+                        !unavailable,
+                        egui::Button::new(format!("Choose a new {noun}…")),
+                    )
+                    .clicked()
+                {
+                    change = true;
+                    ui.close();
+                }
+                if ui.button(format!("Remove {noun}")).clicked() {
+                    remove = true;
+                    ui.close();
+                }
             });
-            face(ui, rect);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-                ui.label(bold(title).size(13.0));
-                ui.label(
-                    RichText::new("PNG, JPEG, WebP or GIF. GIFs animate.")
-                        .size(11.5)
-                        .color(MUTED),
-                );
-                ui.horizontal(|ui| {
-                    change = secondary_button(ui, change_label, idle && !unavailable).clicked();
-                    if custom {
-                        ui.spacing_mut().button_padding.x = 12.0;
-                        remove = toned(
-                            ui,
-                            REMOVE_TONE,
-                            idle,
-                            egui::Button::new(bold(remove_label).size(12.0))
-                                .min_size(egui::vec2(0.0, 36.0)),
-                        )
-                        .clicked();
-                    }
-                });
-            });
-        });
+        } else {
+            change = response.clicked();
+        }
+        ui.add_space(4.0);
         if let Some(removing) = busy {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
@@ -22983,6 +23021,11 @@ fn space_initial(name: &str) -> String {
 fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
     avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
 }
+
+/// Profile and Manage space settings: the picture frame's side, and how far
+/// its edit badge reaches past the corner.
+const PICTURE_FRAME: f32 = 112.0;
+const PICTURE_BADGE_OVERHANG: f32 = 6.0;
 
 /// Custom pictures are rounded squares: 30% of the side, the shared
 /// `--radius-avatar` (web's avatar containers and speaking rings).
@@ -33345,15 +33388,27 @@ mod tests {
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Profile picture"));
-        assert!(shows(&output, "Change picture") && shows(&output, "Remove picture"));
+        let frame =
+            labelled_center(&output, "Change profile picture").expect("the picture's frame");
+        assert!(
+            !shows(&output, "Remove picture"),
+            "no buttons beside the frame"
+        );
         let gif = app.pictures.texture_id("fixture-gif").unwrap();
         assert!(
             painted(&output, gif)
                 .iter()
-                .any(|face| face.rect.size() == egui::vec2(72.0, 72.0)),
-            "the current picture, large"
+                .any(|face| face.rect.size()
+                    == egui::vec2(super::PICTURE_FRAME, super::PICTURE_FRAME)),
+            "the current picture, framed"
         );
+        // With a custom picture, the frame offers another or removal.
+        // Signed in (fixture-only token), so the frame is enabled.
+        app.token = Some("fixture-only".into());
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, frame);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Choose a new picture…") && shows(&output, "Remove picture"));
         app.session = Some(model::ChatSession {
             token: "fixture-chat".into(),
             author: app
@@ -33457,15 +33512,21 @@ mod tests {
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        assert!(shows(&output, "Space icon"));
-        assert!(shows(&output, "Change icon") && shows(&output, "Remove icon"));
+        let frame = labelled_center(&output, "Change space icon").expect("the icon's frame");
         let icon = app.pictures.texture_id("fixture-icon").unwrap();
         assert!(
             painted(&output, icon)
                 .iter()
-                .any(|tile| tile.rect.size() == egui::vec2(72.0, 72.0)),
-            "the current icon, large"
+                .any(|tile| tile.rect.size()
+                    == egui::vec2(super::PICTURE_FRAME, super::PICTURE_FRAME)),
+            "the current icon, framed"
         );
+        // Signed in (fixture-only token), so the frame is enabled.
+        app.token = Some("fixture-only".into());
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, frame);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Choose a new icon…") && shows(&output, "Remove icon"));
         let mut space = app.spaces[1].clone();
         space.icon_asset = None;
         app.picture_changed(
@@ -33483,7 +33544,7 @@ mod tests {
         // Members who don't own the space never see icon controls.
         app.account.as_mut().unwrap().id = "fixture-maya".into();
         let output = render(&mut app, &context, vec![]);
-        assert!(!shows(&output, "Space icon") && !shows(&output, "Change icon"));
+        assert!(labelled_center(&output, "Change space icon").is_none());
     }
 
     #[test]

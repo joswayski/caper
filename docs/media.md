@@ -8213,9 +8213,12 @@ aspect-filled in a rounded square (corner radius 30% of the side, the
 speaking rings around them follow that shape. Space icons fill their existing
 tile. The mascot or initial underneath stays visible while loading or if a URL
 fails. Decoded pictures are cached by asset
-ID, since URLs re-sign daily. **Change picture**/**Remove picture** live in the
-profile settings and **Change icon**/**Remove icon** in **Manage space** (owners
-only); a successful change updates the signed-in client everywhere through the
+ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
+only) show the picture or icon in a frame with an edit badge on its corner: the
+frame picks a picture, or, while a custom one is set, opens a menu to choose
+another or remove it. Without a custom profile picture, the saved mascot holds
+up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
+any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 
 
@@ -8228,6 +8231,12 @@ existing own-profile refresh path.
 | Android | Gradle stops at the missing SDK. With a standalone Kotlin 2.2.20 compiler, models, data, `PicturePreparer.kt` and `PictureViews.kt` compile against the real libraries, and 201 data/model unit tests pass, including 14 new picture tests. `MainActivity.kt`, `CaperViewModel.kt` and the sheets were not compiled. No emulator or device run. |
 | iOS/macOS | No Xcode. A Linux Swift 6.0.3 toolchain parses every source and test file and type-checks the Foundation-only code with stubs; 10 new picture tests and the existing mention-card tests run and pass there. SwiftUI views, ImageIO/libwebp code and AppModel tests were not compiled. The macOS parity UI tests now scroll until Manage space's Remove and Delete buttons are reachable. No simulator or device run. |
 | Rust desktop | `cargo fmt --check`, application Clippy (`--no-deps`, `-D warnings`) and `cargo test` (527 passed, 12 existing ignored; 18 new, including three UI render tests and a loopback upload) pass on Linux with clang 21. The `parity-pictures` fixtures were captured under Xvfb: the GIF avatar changes between frames, plus the round crop, mascot fallback, rail icon and both settings dialogs. Not Windows, a 2x display or the real file pickers. |
+
+The framed editor and "change me!" sign (same day): web `npm run check` and
+`scripts/test-pictures.mjs` pass at 1280px and 390px (frame opens the picker
+without a picture and a menu with one; Escape closes the menu, not the dialog);
+Rust desktop `cargo test` (536 passed), application Clippy and Xvfb renders of
+both states. Android and Apple were not compiled (no SDK or Xcode here).
 
 Run the browser check against `vite dev` with Playwright installed somewhere
 (the repository has no Playwright dependency):

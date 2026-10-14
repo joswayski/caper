@@ -7404,13 +7404,18 @@ private struct ProfileSheet: View {
         !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
     }
 
-    /// The current picture, large, with Change and (for a custom one) Remove.
+    /// The current picture in its frame; without one, the mascot asks to be changed.
     @ViewBuilder private var pictureSection: some View {
         if let account = model.account {
+            let name = account.displayName ?? account.username ?? "You"
+            let side = PictureEditor<EmptyView>.side
             PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil,
                           upload: { try await model.changeAvatar($0) }, remove: { try await model.removeAvatar() }) {
-                Avatar(name: account.displayName ?? account.username ?? "You", size: 72, avatarID: account.avatarId,
-                       picture: account.avatarPicture)
+                if account.avatarAsset == nil {
+                    ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
+                } else {
+                    Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
+                }
             }
             Divider().overlay(CaperTheme.border)
         }
@@ -7918,14 +7923,14 @@ private struct SpaceEditor: View {
             .modifier(ConfirmationPresentation())
         }
     }
-    /// Owners only: the space's icon (or its initial tile), Change and Remove.
+    /// Owners only: the space's icon (or its initial tile) in its frame.
     @ViewBuilder private var iconSection: some View {
         if model.isOwner, let space = model.detail?.space, space.demo != true {
             Divider().overlay(CaperTheme.border)
+            let side = PictureEditor<EmptyView>.side
             PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil,
                           upload: { try await model.changeSpaceIcon($0) }, remove: { try await model.removeSpaceIcon() }) {
-                SpaceIconTile(name: space.name, picture: space.iconPicture, size: 64, fontSize: 22, corner: 14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.border))
+                SpaceIconTile(name: space.name, picture: space.iconPicture, size: side, fontSize: 34, corner: 0)
             }
         }
     }

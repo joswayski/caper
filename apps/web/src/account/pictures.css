@@ -1,19 +1,87 @@
 /* Profile picture and space icon settings (PictureSettings.tsx). */
 .picture-settings {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px 16px;
+  justify-items: start;
+  gap: 8px;
   color: var(--text);
+}
+/* The frame and its menu; the menu opens beneath it. */
+.picture-settings-frame {
+  position: relative;
+}
+/* The whole frame is the control: the picture, with the edit badge on its corner. */
+.picture-settings-edit {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-avatar);
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.picture-settings-edit:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 3px;
+}
+.picture-settings-edit:disabled {
+  cursor: not-allowed;
+}
+.picture-settings-edit[aria-busy="true"],
+.picture-settings[aria-busy="true"] .picture-settings-edit {
+  cursor: progress;
 }
 /* The current picture, shown large in the shape it has everywhere else. */
 .picture-settings-preview {
   position: relative;
   display: grid;
-  width: 72px;
-  height: 72px;
+  width: 112px;
+  height: 112px;
   overflow: hidden;
+  border: 1px solid var(--border);
   border-radius: var(--radius-avatar);
+  background: var(--surface-raised);
+  transition:
+    border-color var(--motion-fast) ease,
+    opacity var(--motion-fast) ease;
+}
+.picture-settings[aria-busy="true"] .picture-settings-preview {
+  opacity: 0.55;
+}
+.picture-settings-change-me {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* Sits on the frame's corner, cut out from the dialog by a ring of its surface. */
+.picture-settings-badge {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--surface);
+  border-radius: 8px;
+  color: var(--blackout);
+  background: var(--action);
+  transition: background-color var(--motion-fast) ease;
+}
+@media (hover: hover) {
+  .picture-settings-edit:hover:not(:disabled) .picture-settings-preview {
+    border-color: var(--text-muted);
+  }
+  .picture-settings-edit:hover:not(:disabled) .picture-settings-badge {
+    background: var(--action-hover);
+  }
+}
+.picture-settings-edit:active:not(:disabled) .picture-settings-badge {
+  background: var(--action-press);
+}
+.picture-settings-edit:disabled .picture-settings-badge {
+  color: var(--text-muted);
+  background: var(--border);
 }
 /* The space's tile, as the rail shows it: initial beneath, icon over it. */
 .picture-settings-tile {
@@ -22,75 +90,82 @@
   place-items: center;
   width: 100%;
   height: 100%;
-  border: 1px solid var(--border);
   border-radius: inherit;
   color: var(--text-muted);
   background: var(--surface-raised);
-  font-size: 1.4rem;
+  font-size: 2rem;
   font-weight: 700;
 }
-.picture-settings-body {
+.picture-settings-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 2;
   display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.picture-settings h3 {
-  margin: 0;
-  font-size: 0.88rem;
-  font-weight: 700;
-}
-.picture-settings-body > p {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  line-height: 1.45;
-}
-.picture-settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-}
-.picture-settings-actions button {
-  min-height: 36px;
-  padding: 0 12px;
+  min-width: 200px;
+  padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--text);
-  background: var(--surface-raised);
-  font: inherit;
-  font-size: 0.76rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+  animation: picture-settings-menu-in var(--motion-fast) var(--ease-out);
 }
-@media (hover: hover) {
-  .picture-settings-actions button:hover:not(:disabled) {
-    border-color: var(--text-muted);
-    background: var(--border);
+@keyframes picture-settings-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
-.picture-settings-actions button:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 2px;
+@media (prefers-reduced-motion: reduce) {
+  .picture-settings-menu {
+    animation: none;
+  }
 }
-.picture-settings-actions button:disabled {
+.picture-settings-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+.picture-settings-menu button svg {
+  flex: none;
+  color: var(--text-muted);
+}
+@media (hover: hover) {
+  .picture-settings-menu button:hover:not(:disabled) {
+    background: var(--surface-raised);
+  }
+}
+.picture-settings-menu button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+  background: var(--surface-raised);
+}
+.picture-settings-menu button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
-.picture-settings-actions button[aria-busy="true"] {
-  cursor: progress;
-}
 /* Reserves its line, so progress appearing never moves the form below. */
-.picture-settings-body > .picture-settings-status {
-  min-height: 1.45em;
-}
+.picture-settings-status,
 .picture-settings-error {
-  grid-column: 1 / -1;
+  min-height: 1.45em;
   margin: 0;
-  color: var(--error-text);
   font-size: 0.76rem;
   line-height: 1.45;
+}
+.picture-settings-status {
+  color: var(--text-muted);
+}
+.picture-settings-error {
+  color: var(--error-text);
 }

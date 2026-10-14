@@ -1604,3 +1604,6 @@ pub const BRANDING: [&[u8]; 800] = [
     include_bytes!("../../../web/public/images/branding/v1/798.svg"),
     include_bytes!("../../../web/public/images/branding/v1/799.svg"),
 ];
+
+/// Drawn over the mascot in Edit profile while there is no custom picture.
+pub const CHANGE_ME: &[u8] = include_bytes!("../../../web/public/images/avatars/change-me.svg");

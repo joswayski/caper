@@ -6,17 +6,26 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -29,6 +38,7 @@ import chat.caper.android.model.PROFILE_PICTURE_KEY
 import chat.caper.android.model.Picture
 import chat.caper.android.model.PictureSaveUi
 import chat.caper.android.model.SpaceDetail
+import chat.caper.android.model.caperAvatarIndex
 import chat.caper.android.model.pictureOf
 import chat.caper.android.ui.*
 import coil3.compose.AsyncImage
@@ -91,10 +101,14 @@ internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate
     }
 }
 
+/** The picture frame's side. */
+private val FrameSide = 112.dp
+
 /**
- * Edit profile's picture: the current one large (or the saved mascot), Change picture (the
- * system photo picker, images only; GIFs stay animated) and, while one is set, Remove picture.
- * The change runs in the view model, so it finishes (or fails here) even if the dialog closes.
+ * Edit profile's picture in its frame, with an edit badge on the corner. Without a custom
+ * picture the saved mascot holds up "change me!" and the frame opens the system photo picker
+ * (images only; GIFs stay animated); with one, it offers a new picture or removal. The change
+ * runs in the view model, so it finishes (or fails here) even if the dialog closes.
  */
 @Composable internal fun ProfilePictureSection(state: AppUiState, viewModel: CaperViewModel) {
     val account = state.account ?: return
@@ -105,22 +119,34 @@ internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) viewModel.changePicture(uri, epoch = epoch)
     }
-    PictureControls(
+    val name = account.displayName ?: account.username ?: "You"
+    // Set even when this server sends no URL to show it with, so it can still be removed.
+    val hasPicture = !account.avatarAsset.isNullOrEmpty()
+    PictureFrame(
         save = save,
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
-        // Set even when this server sends no URL to show it with, so it can still be removed.
-        hasPicture = !account.avatarAsset.isNullOrEmpty(),
-        changeLabel = "Change picture", removeLabel = "Remove picture",
-        hint = "PNG, JPEG, WebP or GIF. GIFs up to 5 MB keep their animation.",
+        hasPicture = hasPicture,
+        label = "Change profile picture", noun = "picture",
         change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture() },
     ) {
-        Avatar(account.displayName ?: account.username ?: "You", 72.dp, avatarId = account.avatarId,
-            avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
+        if (hasPicture) {
+            Avatar(name, FrameSide, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
+        } else {
+            ChangeMeMascot(name, account.avatarId, FrameSide)
+        }
     }
 }
 
-/** Manage space's icon (owner only): the icon or initial tile, Change icon and, while one is set, Remove icon. */
+/** Edit profile's frame without a custom picture: the saved mascot holding up a "change me!" sign. */
+@Composable private fun ChangeMeMascot(name: String, avatarId: Int?, size: Dp) {
+    Box(Modifier.size(size)) {
+        Avatar(name, size, avatarId = avatarId)
+        if (caperAvatarIndex(avatarId) != null) Image(painterResource(R.drawable.caper_change_me), null, Modifier.matchParentSize())
+    }
+}
+
+/** Manage space's icon (owner only): the icon or initial tile in its frame. */
 @Composable internal fun SpaceIconSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
     val space = detail.space
     if (space.demo || state.account?.id != space.ownerId) return
@@ -131,44 +157,72 @@ internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate
         if (uri != null) viewModel.changePicture(uri, space.id, epoch)
     }
     Text("Icon", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    PictureControls(
+    PictureFrame(
         save = save,
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = !space.iconAsset.isNullOrEmpty(),
-        changeLabel = "Change icon", removeLabel = "Remove icon",
-        hint = "Shown in the space list for everyone in ${space.name}.",
+        label = "Change space icon", noun = "icon",
         change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture(space.id) },
     ) {
-        Surface(Modifier.size(64.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, Border)) {
-            SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 64.dp, TextMuted, fontSize = 24.sp)
-        }
+        SpaceTileFace(space.name, space.iconAsset, space.iconUrl, FrameSide, TextMuted, fontSize = 34.sp)
     }
 }
 
-/** The picture beside its quiet actions (wrapping on narrow phones), with progress and the inline error under them. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable private fun PictureControls(
-    save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean,
-    changeLabel: String, removeLabel: String, hint: String, change: () -> Unit, remove: () -> Unit,
-    picture: @Composable () -> Unit,
+/**
+ * The picture framed in the rounded square it has everywhere, with the eggshell edit badge on
+ * its corner. The frame picks a picture directly, or (with a custom one set) opens a menu to
+ * choose another or remove it. Progress and the inline error show beneath.
+ */
+@Composable private fun PictureFrame(
+    save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
+    change: () -> Unit, remove: () -> Unit, picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        picture()
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                OutlinedButton(change, enabled = !busy && !unavailable, shape = MaterialTheme.shapes.small,
-                    border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) {
-                    PendingLabel(changeLabel, "Uploading…", save?.uploading == true)
-                }
-                if (hasPicture) TextButton(remove, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors(TextMuted)) {
-                    PendingLabel(removeLabel, "Removing…", save?.removing == true)
+    // With uploads unavailable, a custom picture can still be removed.
+    val enabled = !busy && (hasPicture || !unavailable)
+    var menu by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box {
+            Box(
+                Modifier
+                    .semantics { contentDescription = label }
+                    .clickable(enabled = enabled, role = Role.Button) { if (hasPicture) menu = true else change() }
+                    // Room for the badge, which sits over the frame's corner.
+                    .padding(end = 6.dp, bottom = 6.dp),
+            ) {
+                Box(
+                    Modifier.size(FrameSide).alpha(if (busy) 0.55f else 1f).clip(PictureShape)
+                        .background(SurfaceRaised).border(1.dp, Border, PictureShape),
+                    contentAlignment = Alignment.Center,
+                ) { picture() }
+                Box(
+                    Modifier.align(Alignment.BottomEnd).offset(6.dp, 6.dp)
+                        .background(Surface, RoundedCornerShape(10.dp)).padding(3.dp)
+                        .background(if (enabled) Action else Border, RoundedCornerShape(8.dp)).size(28.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(painterResource(R.drawable.lucide_pencil), null, Modifier.size(15.dp), tint = if (enabled) OnAction else TextMuted)
                 }
             }
-            Text(if (unavailable) "Picture uploads aren’t available right now." else hint, color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp)
+            DropdownMenu(menu, { menu = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                DropdownMenuItem(
+                    { Text("Choose a new $noun") }, { menu = false; change() }, enabled = !unavailable,
+                    leadingIcon = { Icon(painterResource(R.drawable.lucide_image), null, Modifier.size(16.dp)) },
+                )
+                DropdownMenuItem(
+                    { Text("Remove $noun") }, { menu = false; remove() },
+                    leadingIcon = { Icon(painterResource(R.drawable.lucide_trash_2), null, Modifier.size(16.dp)) },
+                )
+            }
         }
+        val status = when {
+            save?.uploading == true -> "Uploading…"
+            save?.removing == true -> "Removing…"
+            unavailable -> "Picture uploads aren’t available right now."
+            else -> null
+        }
+        save?.error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+            ?: status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     }
-    save?.error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
 }

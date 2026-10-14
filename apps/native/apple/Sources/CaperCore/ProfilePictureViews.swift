@@ -126,9 +126,10 @@ struct SpaceIconTile: View {
     }
 }
 
-/// Edit profile's picture and Manage space's icon: the current picture,
-/// **Change** (Photos or Files; GIF bytes are kept unchanged) and
-/// **Remove** while a custom one is set, with progress and inline errors.
+/// Edit profile's picture and Manage space's icon: the current picture in a
+/// frame with an edit badge on its corner. The frame opens a menu: Photos or
+/// Files (GIF bytes are kept unchanged) and, while a custom one is set,
+/// **Remove**. Progress and inline errors show beneath it.
 struct PictureEditor<Preview: View>: View {
     let purpose: PicturePurpose
     /// A custom picture is set (Remove is offered).
@@ -138,13 +139,16 @@ struct PictureEditor<Preview: View>: View {
     private let preview: Preview
     @State private var phase: Phase?
     @State private var error: String?
-    /// The server has no upload storage (503): Change stays disabled.
+    /// The server has no upload storage (503): only removal stays offered.
     @State private var unavailable = false
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var photoItem: PhotosPickerItem?
 
     private enum Phase { case uploading, removing }
+
+    /// The frame's side, in points.
+    static var side: CGFloat { 112 }
 
     init(purpose: PicturePurpose, hasPicture: Bool, upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, @ViewBuilder preview: () -> Preview) {
@@ -156,45 +160,42 @@ struct PictureEditor<Preview: View>: View {
     }
 
     private var avatar: Bool { purpose == .avatar }
-    private var changeTitle: String { phase == .uploading ? "Uploading…" : avatar ? "Change picture" : "Change icon" }
-    private var removeTitle: String { phase == .removing ? "Removing…" : avatar ? "Remove picture" : "Remove icon" }
+    private var noun: String { avatar ? "picture" : "icon" }
+    private var status: String? {
+        switch phase {
+        case .uploading: "Uploading…"
+        case .removing: "Removing…"
+        case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
+        }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 14) {
-                preview.accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(avatar ? "Profile picture" : "Space icon").font(CaperTheme.font(13, weight: .bold))
-                    if let error {
-                        Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        Text(unavailable ? ProfilePicturePolicy.unavailableMessage : "Photos are cropped to a square. GIFs up to 5 MB stay animated.")
-                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: 8) {
-                Menu {
-                    Button { showPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
-                    Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
-                } label: {
-                    Text(changeTitle).lineLimit(1)
-                }
-                .menuStyle(.button)
-                .buttonStyle(CaperPrimaryButton())
-                .menuIndicator(.hidden)
-                .frame(width: 148)
-                .disabled(phase != nil || unavailable)
-                .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
+        VStack(alignment: .leading, spacing: 8) {
+            Menu {
+                Button { showPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
+                    .disabled(unavailable)
+                Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
+                    .disabled(unavailable)
                 if hasPicture {
-                    Button(removeTitle, role: .destructive, action: removePicture)
-                        .buttonStyle(CaperSecondaryButton(minHeight: 42))
-                        .disabled(phase != nil)
-                        .accessibilityIdentifier(avatar ? "remove-profile-picture" : "remove-space-icon")
+                    Divider()
+                    Button(role: .destructive, action: removePicture) { Label("Remove \(noun)", systemImage: "trash") }
                 }
+            } label: {
+                framedPicture
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(phase != nil || (unavailable && !hasPicture))
+            .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
+            .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
+            if let error {
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let status {
+                Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         // `.current` keeps the library's original bytes, so GIFs stay animated.
@@ -208,6 +209,29 @@ struct PictureEditor<Preview: View>: View {
             guard case .success(let url) = result else { return }
             start { try await Task.detached(priority: .userInitiated) { try PictureFile.read(url) }.value }
         }
+    }
+
+    /// The picture, framed in the rounded square it has everywhere, with the
+    /// eggshell edit badge on its corner.
+    private var framedPicture: some View {
+        let shape = Avatar.pictureShape(Self.side)
+        return preview
+            .frame(width: Self.side, height: Self.side)
+            .background(CaperTheme.raised)
+            .clipShape(shape)
+            .overlay(shape.stroke(CaperTheme.border))
+            .opacity(phase == nil ? 1 : 0.55)
+            .overlay(alignment: .bottomTrailing) {
+                CaperIcon(name: "pencil", size: 15)
+                    .foregroundStyle(phase == nil ? CaperTheme.blackout : CaperTheme.muted)
+                    .frame(width: 28, height: 28)
+                    .background(phase == nil ? CaperTheme.action : CaperTheme.border, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(3)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                    .offset(x: 6, y: 6)
+            }
+            .padding([.trailing, .bottom], 6)
+            .contentShape(Rectangle())
     }
 
     /// Loads the picked bytes, prepares them off the main actor, then uploads.
@@ -259,5 +283,23 @@ enum PictureFile {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { throw PictureError.tooLarge }
         return try Data(contentsOf: url)
+    }
+}
+
+/// Edit profile's frame without a custom picture: the saved mascot holding up
+/// a "change me!" sign (one vector over it, in the mascot's own square).
+struct ChangeMeMascot: View {
+    let name: String
+    let avatarID: Int?
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Avatar(name: name, size: size, avatarID: avatarID)
+            Image("caper-change-me", bundle: caperResourceBundle).renderingMode(.original)
+                .resizable().scaledToFit().frame(width: size, height: size)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }

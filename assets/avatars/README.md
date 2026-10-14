@@ -28,6 +28,13 @@ and 69 dinosaur. There is no sombrero design in the current artwork.
 atlas from the sheets (ImageMagick 7). Current vectors are exported by
 `node scripts/generate-avatar-vectors.mjs`; `--check` verifies all client copies.
 
+`change-me.svg` is original artwork drawn in the same 256 × 256 space: two
+gloved hands holding up a "change me!" sign, its lettering outlined from
+Satoshi Black so no client needs the font. Edit profile draws it over the
+saved mascot while there is no custom picture; the generator exports it with
+the avatars (web, Apple `caper-change-me`, Android `caper_change_me`, Rust
+`CHANGE_ME`). Keep it to paths with a fill and an optional round-joined stroke.
+
 Website wordmarks and rotating favicons use `/images/branding/v1/{id}.svg`.
 Native in-app wordmarks bundle the same transparent artwork: Rust's `BRANDING`
 table, Apple's `caper-branding-{id}` assets and Android's `caper_branding_{id}`
