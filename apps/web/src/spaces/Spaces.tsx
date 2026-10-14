@@ -2555,7 +2555,13 @@ export default function Spaces({
         private: true,
       }
     : directView
-      ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true }
+      ? // The listed copy carries the peer's latest name, as the sidebar shows it.
+        {
+          id: directView.conversation.id,
+          name: (currentDirect ?? directView.conversation).peer.displayName,
+          spaceId: "",
+          private: true,
+        }
       : detail?.channels.find((item) => item.id === view?.channelId);
   const owner = !!account && detail?.space.ownerId === account.id;
   const ownedCount = account ? spaces.filter((space) => space.ownerId === account.id).length : 0;
