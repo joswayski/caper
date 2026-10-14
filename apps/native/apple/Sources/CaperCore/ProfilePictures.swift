@@ -431,8 +431,10 @@ final class ProfilePictureLoader {
         let session = self.session
         let downloaded = files.object(forKey: asset as NSString).map { $0 as Data }
         let task = Task.detached(priority: .utility) { () -> (frames: ProfilePictureFrames, data: Data)? in
-            guard let data = downloaded ?? (try? await ProfilePictureDecoder.fetch(url, session: session)),
-                  let frames = try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize) else { return nil }
+            // `??` can't await on its right-hand side, so the download is its own step.
+            var bytes = downloaded
+            if bytes == nil { bytes = try? await ProfilePictureDecoder.fetch(url, session: session) }
+            guard let data = bytes, let frames = try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize) else { return nil }
             return (frames, data)
         }
         loading[key] = task
