@@ -253,6 +253,7 @@ fn run(
             }
             .into(),
         });
+        let mut live = false;
         let result = connect_once(
             &url,
             &token,
@@ -264,7 +265,13 @@ fn run(
             &events,
             &stop,
             &activity,
+            &mut live,
         );
+        // A connection that went live starts the backoff over: a drop after
+        // hours online reconnects as quickly as the first one.
+        if live {
+            attempt = 0;
+        }
         let _ = events.send(GatewayEvent::VoiceReset {
             generation: media.epoch,
         });
@@ -311,6 +318,7 @@ fn connect_once(
     events: &Sender<GatewayEvent>,
     stop: &Arc<AtomicBool>,
     activity: &Mutex<Instant>,
+    live: &mut bool,
 ) -> Result<(), Failure> {
     let mut active = ChatStream::new(Connection::open(url, token.as_deref(), stop)?, cursor);
     let mut candidate: Option<ChatStream> = None;
@@ -386,6 +394,7 @@ fn connect_once(
                 Err(error) => return Err(error),
             }
         }
+        *live |= active.subscribed.contains(&subscription);
         if candidate.as_ref().is_some_and(|stream| {
             stream.ready
                 && stream.cursor == *cursor
