@@ -159,6 +159,7 @@ const drag = (selector) => {
     evaluate(
       'window.dragStartTilt = Number(document.querySelector(".live-scene").style.transform.match(/rotateY\\(([-\\d.]+)deg\\)/)[1]);',
     );
+    evaluate('window.dragStartJoinTransform = getComputedStyle(document.querySelector(".live-activator")).transform;');
     browser("mouse", "move", String(point[0] + 40), String(point[1] + 20));
     assert.equal(
       evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'),
@@ -171,6 +172,17 @@ const drag = (selector) => {
     );
     wait(
       'Number(document.querySelector(".live-scene").style.transform.match(/rotateY\\(([-\\d.]+)deg\\)/)[1]) > window.dragStartTilt + 1',
+    );
+    assert.ok(
+      evaluate(`
+        const scene = new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.live-scene')).transform);
+        const join = new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.live-activator')).transform);
+        const scale = Math.hypot(scene.m11, scene.m12, scene.m13);
+        return getComputedStyle(document.querySelector('.live-activator')).transform !== window.dragStartJoinTransform
+          && ['m11', 'm12', 'm13', 'm21', 'm22', 'm23', 'm31', 'm32', 'm33']
+            .every(key => Math.abs(scene[key] / scale - join[key]) < .00001);
+      `),
+      "The join pill turns with the demo without inheriting its shrinking scale",
     );
   } finally {
     browser("mouse", "up", "left");
@@ -262,8 +274,11 @@ try {
     before,
     "Reduced motion freezes the script",
   );
+  drag(".sim-brand");
   browser("set", "media", "dark");
   wait("window.demoClockActive");
+  drag(".sim-brand");
+  console.log("PASS: join follows demo tilt at readable size, including explicit dragging with reduced motion");
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), "center");
   assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), "/spaces");
 
@@ -445,7 +460,6 @@ try {
     "PASS: decorative messages, reactions, profiles, invite, channel and voice controls never highlight or navigate; only join keeps hover and keyboard focus feedback",
   );
   for (const selector of [
-    ".sim-brand",
     ".sim-chat > header h2",
     ".sim-message:last-of-type p",
     ".sim-meme",

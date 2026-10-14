@@ -366,8 +366,9 @@
   border-radius: 0;
 }
 
-/* Keep the only action outside the tilted scene: 3D compositing must not hide
-   the pill, and idle motion must not move its touch target. */
+/* Keep the action above the scene's compositing layers. Share its rotation,
+   but not its shrinking scale or translation, so the pill stays readable and
+   centered while turning with the demo. */
 .live-activator {
   --counter-scale: 1;
   position: absolute;
@@ -383,6 +384,7 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
+  transform: var(--scene-rotation, none);
 }
 .live-invite {
   pointer-events: auto;

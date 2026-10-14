@@ -78,11 +78,13 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
   // Lets resting-state labels stay a readable size on the shrunken window.
   scene.style.setProperty("--counter-scale", (1 / geometry.scale).toFixed(4));
   scene.style.setProperty("--depth", "1");
+  const rotation = `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+  stage.style.setProperty("--scene-rotation", rotation);
   const applyRestTransform = () => {
     scene.style.transform =
       `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) ` +
       `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) ` +
-      `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+      rotation;
   };
   applyRestTransform();
   // The homepage's arrival animation temporarily translates the whole scene.
@@ -164,6 +166,8 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     const z = rest.z * closed + Math.sin(elapsed * 0.00022) * IDLE.z * idle * motionScale;
     const lift = Math.sin(elapsed * 0.0007) * IDLE.lift * idle * motionScale;
     const scale = geometry.scale + (1 - geometry.scale) * open;
+    const rotation = `rotateX(${x.toFixed(3)}deg) rotateY(${y.toFixed(3)}deg) rotateZ(${z.toFixed(3)}deg)`;
+    stage.style.setProperty("--scene-rotation", rotation);
     scene.style.setProperty("--depth", closed.toFixed(4));
     if (open === 1 || (active && mode === "sheet")) {
       // Fully open: plain layout, so text is crisp and the app behaves normally.
@@ -174,7 +178,7 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
       scene.style.transform =
         `translate3d(${(geometry.dx * closed).toFixed(2)}px, ${(geometry.dy * closed + lift).toFixed(2)}px, 0) ` +
         `scale3d(${scale.toFixed(4)}, ${scale.toFixed(4)}, ${scale.toFixed(4)}) ` +
-        `rotateX(${x.toFixed(3)}deg) rotateY(${y.toFixed(3)}deg) rotateZ(${z.toFixed(3)}deg)`;
+        rotation;
     }
   };
 
