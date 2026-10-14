@@ -131,6 +131,45 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(account.applying(Person(id: "Other0000001", username: "x", displayName: "X")), account)
     }
 
+    // MARK: Self-healing
+
+    func testAMissedEventIsRepairedByTheNextRefresh() {
+        let p1 = Person(id: maya.id, username: "maya", displayName: "Maya P1", avatarId: 31, avatarAsset: "Pic0000000000000old1", avatarUrl: oldURL)
+        let p2 = Person(id: maya.id, username: "maya_p2", displayName: "Maya P2", avatarId: 31, avatarAsset: "Pic0000000000000new1", avatarUrl: newURL)
+        // An author loaded long before either change.
+        let author = ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarId: 31)
+        var profiles = ProfileDirectory()
+        profiles.record(p1)
+        XCTAssertEqual(profiles.apply(author).name, "Maya P1")
+        // P2 is missed (no replay after a reconnect); the next refresh carries it.
+        let mark = profiles.mark
+        let refreshed = [Member(id: maya.id, username: "maya_p2", displayName: "Maya P2", owner: false, avatarId: 31,
+                                avatarAsset: "Pic0000000000000new1", avatarUrl: newURL).profile]
+        profiles.recordFetched(refreshed, since: mark)
+        let shown = profiles.apply(author)
+        XCTAssertEqual(shown.name, "Maya P2")
+        XCTAssertEqual(shown.avatarPicture?.asset, "Pic0000000000000new1")
+        XCTAssertEqual(profiles[maya.id], p2)
+        // A refresh without the picture clears it: absent means none.
+        profiles.recordFetched([Person(id: maya.id, username: "maya_p2", displayName: "Maya P2", avatarId: 31)], since: profiles.mark)
+        XCTAssertNil(profiles.apply(author).avatarPicture)
+    }
+
+    func testAnEventDuringAFetchWinsAndOldSessionsChangeNothing() {
+        var profiles = ProfileDirectory()
+        let mark = profiles.mark
+        profiles.record(maya)  // arrives while the request is in flight
+        profiles.recordFetched([Person(id: maya.id, username: "maya", displayName: "Maya (stale)")], since: mark)
+        XCTAssertEqual(profiles[maya.id]?.displayName, "Maya R", "the in-flight result is older than the event")
+        // Fresh lists also cover people with no event yet.
+        profiles.recordFetched([DirectMessagePeer(id: "Sam000000001", username: "sam", displayName: "Sam").profile], since: profiles.mark)
+        XCTAssertEqual(profiles.apply(ChatAuthor(id: "Sam000000001", name: "Old Sam", isGuest: false)).name, "Sam")
+        // A fetch started before a logout cannot reach the next session's directory.
+        var next = ProfileDirectory()
+        next.recordFetched([maya], since: mark)
+        XCTAssertTrue(next.isEmpty)
+    }
+
     // MARK: Spaces
 
     func testSpaceUpdatesRenameAndChangeTheIconOfThatSpaceOnly() {

@@ -396,6 +396,18 @@ public final class AppModel {
     /// then your own account for your own row.
     public func profiled(_ member: Member) -> Member { profileUpdates.apply(member).withProfile(account) }
 
+    /// A request whose result lists people's current profiles. They become
+    /// the newest known state for those IDs, repairing any missed
+    /// `profile.updated`, unless an event for someone arrived meanwhile.
+    private func fetchingProfiles<T>(_ request: () async throws -> T, people: (T) -> [Person]) async throws -> T {
+        let mark = profileUpdates.mark
+        let value = try await request()
+        var next = profileUpdates
+        next.recordFetched(people(value), since: mark)
+        if next != profileUpdates { profileUpdates = next }
+        return value
+    }
+
     /// Opens (or reopens after sign-in) the live `profiles` feed. An older
     /// gateway without it leaves things as they were: changes then show on
     /// the next load, as before.
@@ -585,7 +597,7 @@ public final class AppModel {
         guard account != nil else { return }
         let attempt = generation
         do {
-            let conversations = try await api.directMessages()
+            let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
             guard generation == attempt, account != nil else { return }
             let wasRequest = selectedDirectMessage?.status == .incoming
             directMessages = conversations
@@ -609,7 +621,7 @@ public final class AppModel {
         peopleRequest += 1
         let request = peopleRequest
         do {
-            let loaded = try await api.people()
+            let loaded = try await fetchingProfiles({ try await api.people() }, people: { $0 })
             guard generation == attempt, peopleRequest == request, account != nil else { return }
             people = loaded
         } catch {}
@@ -663,7 +675,7 @@ public final class AppModel {
             else {
                 // POST /api/dms accepts an existing incoming request. Look it
                 // up first so profile Send never silently accepts one.
-                let conversations = try await api.directMessages()
+                let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
                 try draft.checkActive()
                 guard generation == attempt else { throw CancellationError() }
                 directMessages = conversations
@@ -820,7 +832,7 @@ public final class AppModel {
                     }
                     await navigate(space: space, channelID: source.message.channelId)
                 } else {
-                    let conversations = try await api.directMessages()
+                    let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
                     guard generation == attempt, navigationGeneration == navigation else { return false }
                     guard let direct = conversations.first(where: { $0.id == source.message.channelId }) else {
                         throw APIError(status: 404, message: "Conversation is unavailable.")
@@ -917,7 +929,7 @@ public final class AppModel {
         guard account != nil else { return }
         let attempt = generation
         do {
-            let blocks = try await api.blocks()
+            let blocks = try await fetchingProfiles({ try await api.blocks() }, people: { $0.map(\.profile) })
             guard generation == attempt, account != nil else { return }
             blockedAccounts = blocks; blockedIDs = Set(blocks.map(\.id)); blocksLoaded = true; blocksError = nil
             chat.setBlockedAuthors(blockedIDs)
@@ -1126,7 +1138,8 @@ public final class AppModel {
         }
         guard selectedDirectMessageID == nil else { return }
         let navigation = navigationGeneration
-        guard let refreshed = try? await api.space(current.space.id), refreshed.space.id == current.space.id,
+        guard let refreshed = try? await fetchingProfiles({ try await api.space(current.space.id) }, people: { $0.profiles }),
+              refreshed.space.id == current.space.id,
               generation == attempt, navigationGeneration == navigation, openingSpaceID == nil,
               membershipChanges == 0, membershipRevision == revision,
               detail?.space.id == current.space.id, selectedDirectMessageID == nil else { return }
@@ -1253,7 +1266,7 @@ public final class AppModel {
             let detail: SpaceDetail
             // A hover is not authorization for a later click. Recheck membership
             // even when speculative history has already completed.
-            detail = try await self.api.space(space.id)
+            detail = try await self.fetchingProfiles({ try await self.api.space(space.id) }, people: { $0.profiles })
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
             spaceVerified = true
@@ -1489,7 +1502,7 @@ public final class AppModel {
     public func loadSpaceInvitations() async throws {
         guard let id = detail?.space.id, isOwner else { pendingMembers = []; return }
         let attempt = generation
-        let members = try await api.spaceInvitations(spaceID: id)
+        let members = try await fetchingProfiles({ try await api.spaceInvitations(spaceID: id) }, people: { $0.map(\.profile) })
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
         pendingMembers = members
     }
@@ -1667,7 +1680,7 @@ public final class AppModel {
     public func channelMembers(_ channel: Channel) async throws -> [Member] {
         guard let spaceID = detail?.space.id else { return [] }
         let attempt = generation
-        let members = try await api.channelMembers(spaceID: spaceID, channelID: channel.id)
+        let members = try await fetchingProfiles({ try await api.channelMembers(spaceID: spaceID, channelID: channel.id) }, people: { $0.map(\.profile) })
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
         return members.map { profiled($0) }
     }
@@ -1675,7 +1688,7 @@ public final class AppModel {
     public func channelInvitations(_ channel: Channel) async throws -> [Member] {
         guard let spaceID = detail?.space.id else { return [] }
         let attempt = generation
-        let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
+        let invitations = try await fetchingProfiles({ try await api.channelInvitations(spaceID: spaceID, channelID: channel.id) }, people: { $0.map(\.profile) })
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
         return invitations.map { profiled($0) }
     }
@@ -1755,7 +1768,7 @@ public final class AppModel {
     private func refreshDetail(spaceID: String, selecting channelID: String?) async throws {
         let attempt = generation
         let navigation = navigationGeneration
-        let refreshed = try await api.space(spaceID)
+        let refreshed = try await fetchingProfiles({ try await api.space(spaceID) }, people: { $0.profiles })
         guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
         replace(detail: refreshed)
         let retained = channelID.flatMap { id in refreshed.channels.first { $0.id == id } }

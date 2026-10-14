@@ -617,6 +617,27 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertTrue(model.profileUpdates.isEmpty, "signing out forgets other people's updates")
     }
 
+    @MainActor
+    func testARefreshRepairsAMissedProfileEventForLoadedAuthors() async throws {
+        PictureURLProtocol.handler = { request in
+            guard request.url?.path == "/api/dms" else { return (404, Data(#"{"error":"not found"}"#.utf8)) }
+            return (200, Data(#"{"conversations":[{"id":"Dm0000000001","peer":{"id":"maya","username":"maya_p2","displayName":"Maya P2","avatarId":31,"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", displayName: "Me")
+        model.phase = .ready
+        model.chat.messages = [ChatMessage(id: "m1", channelId: "Design123456", seq: "1", author: ChatAuthor(id: "maya", name: "Maya", isGuest: false),
+                                           content: ChatContent(version: 1, type: "text", text: "hi"), createdAt: "now", clientMessageId: "c1")]
+        // P1 arrives live.
+        model.receiveProfileFeed(["type": "profile.updated", "person": ["id": "maya", "username": "maya_p1", "displayName": "Maya P1", "avatarId": 31]])
+        XCTAssertEqual(model.chat.messages.first?.author.name, "Maya P1")
+        // P2 is missed while disconnected; the 15-second DM refresh carries it.
+        await model.refreshDirectMessages()
+        XCTAssertEqual(model.chat.messages.first?.author.name, "Maya P2")
+        XCTAssertEqual(model.chat.messages.first?.author.avatarPicture?.asset, pictureID)
+        XCTAssertEqual(model.chat.messages.first?.content.text, "hi")
+    }
+
     // MARK: Fixtures
 
     /// An opaque sRGB image from RGB values.

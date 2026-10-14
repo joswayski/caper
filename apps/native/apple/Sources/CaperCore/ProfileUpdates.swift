@@ -43,21 +43,52 @@ enum PictureMerge {
     }
 }
 
-/// Other people's newest identities from `profile.updated` events, by account
-/// ID. Applied over every retained copy of a person (members, invitations, DM
-/// peers, suggestions, authors and their nested copies, reactors, feedback
-/// reporters, blocked accounts), as the signed-in account's own profile is.
-/// Message text and cursors are never touched.
+/// People's newest known identities by account ID, from `profile.updated`
+/// events and from server lists that return current profiles (members and
+/// invitations, people, DM peers, blocks). Applied over every retained copy
+/// of a person (members, invitations, DM peers, suggestions, authors and
+/// their nested copies, reactors, feedback reporters, blocked accounts), as
+/// the signed-in account's own profile is. Message text and cursors are never
+/// touched. Because each refresh records what the server has now, a missed
+/// event is repaired by the next refresh; loaded message authors (snapshots
+/// from load time) never feed it.
 public struct ProfileDirectory: Equatable, Sendable {
+    /// Where a fetch started: only events recorded after it are newer than its result.
+    public struct Mark: Equatable, Sendable {
+        fileprivate let epoch: UUID
+        fileprivate let revision: Int
+    }
+
     private var people: [String: Person] = [:]
+    /// A directory from another session (before a logout) ignores old fetches.
+    private let epoch = UUID()
+    private var revision = 0
+    private var eventRevisions: [String: Int] = [:]
 
     public init(_ people: [Person] = []) { people.forEach { record($0) } }
 
     public var isEmpty: Bool { people.isEmpty }
     public subscript(id: String) -> Person? { people[id] }
 
-    /// The newest event for a person replaces any earlier one.
-    public mutating func record(_ person: Person) { people[person.id] = person }
+    /// Capture before a request whose result lists current profiles.
+    public var mark: Mark { Mark(epoch: epoch, revision: revision) }
+
+    /// A `profile.updated` event: the newest state for that person.
+    public mutating func record(_ person: Person) {
+        revision += 1
+        people[person.id] = person
+        eventRevisions[person.id] = revision
+    }
+
+    /// Current profiles from a server list fetched since `mark`: the newest
+    /// state for those IDs (absent picture fields mean none), except anyone
+    /// whose event arrived while the request was in flight.
+    public mutating func recordFetched(_ fetched: [Person], since mark: Mark) {
+        guard mark.epoch == epoch else { return }
+        for person in fetched where !person.id.isEmpty && (eventRevisions[person.id] ?? 0) <= mark.revision {
+            people[person.id] = person
+        }
+    }
 
     public func apply(_ author: ChatAuthor) -> ChatAuthor { people[author.id].map { author.applying($0) } ?? author }
     public func apply(_ member: Member) -> Member { people[member.id].map { member.applying($0) } ?? member }
@@ -85,6 +116,32 @@ public struct ProfileDirectory: Equatable, Sendable {
                               channel: report.channel, space: report.space, replyCount: report.replyCount,
                               answered: report.answered, archived: report.archived)
     }
+}
+
+// MARK: Current profiles in server lists
+
+extension Member {
+    /// This member's current profile, as a list endpoint returned it.
+    var profile: Person {
+        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+    }
+}
+
+extension DirectMessagePeer {
+    var profile: Person {
+        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+    }
+}
+
+extension BlockedAccount {
+    var profile: Person {
+        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+    }
+}
+
+extension SpaceDetail {
+    /// The members `GET /api/spaces/{id}` returned, as current profiles.
+    var profiles: [Person] { members.map(\.profile) }
 }
 
 // MARK: Applying one person
