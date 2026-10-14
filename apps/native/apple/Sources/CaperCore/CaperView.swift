@@ -6207,14 +6207,12 @@ private struct ProfileView: View {
                     .padding(.top, 20)
                 Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Your username is unique. Your display name is what people see in conversations.")
-                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                     .submitLabel(.next).onSubmit { displayNameFocused = true }
-                Text("3-32 lowercase letters, numbers, or underscores.")
+                Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
-                Text("Shown to other people. It does not need to be unique.")
+                Text("This is what people see in conversations.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error = model.error {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -7345,19 +7343,19 @@ private struct ProfileSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             // Web's Edit profile dialog; Log out lives in User Settings.
-            SheetHeader(title: "Edit profile", detail: "Your username is unique. Your display name is what people see in conversations.",
+            SheetHeader(title: "Edit profile",
                         closeLabel: "Close profile", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     pictureSection
                     CaperField(title: "Username", text: $username)
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
-                    Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                         // Return saves: on iPhone an error line can push Save
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
-                    Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("This is what people see in conversations.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     Text(model.error ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)

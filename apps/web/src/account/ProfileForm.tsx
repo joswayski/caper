@@ -50,6 +50,7 @@ export default function ProfileForm({
         <input
           className={fieldClass}
           id="username"
+          aria-describedby="username-hint"
           name="username"
           value={username}
           onChange={(event) => {
@@ -66,8 +67,8 @@ export default function ProfileForm({
           pattern="[a-z0-9_]{3,32}"
           required
         />
-        <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
-          3–32 lowercase letters, numbers, or underscores.
+        <small id="username-hint" className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
+          Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.
         </small>
         <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="display-name">
           Display name
@@ -75,6 +76,7 @@ export default function ProfileForm({
         <input
           className={fieldClass}
           id="display-name"
+          aria-describedby="display-name-hint"
           name="displayName"
           value={displayName}
           onChange={(event) => {
@@ -85,8 +87,8 @@ export default function ProfileForm({
           maxLength={64}
           required
         />
-        <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
-          Shown to other people. It does not need to be unique.
+        <small id="display-name-hint" className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
+          This is what people see in conversations.
         </small>
         <button
           className={`${primaryButtonClass} mt-7 min-w-[12.5rem]`}
