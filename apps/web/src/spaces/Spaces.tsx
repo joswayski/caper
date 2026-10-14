@@ -1851,10 +1851,12 @@ export default function Spaces({
       });
     });
   }, [account?.id]);
-  // The rendered detail, for the poll below whose effect tracks only the space id.
-  const shownDetail = useRef(detail);
+  // The shown detail as the server sent it, for the poll below whose effect
+  // tracks only the space id. Not `detail`: applying the saved account and live
+  // profiles reorders picture fields, so it never equals a fresh response.
+  const shownDetail = useRef(detailSnapshot);
   useEffect(() => {
-    shownDetail.current = detail;
+    shownDetail.current = detailSnapshot;
   });
   const [selected, setSelected] = useState<Selection>(() =>
     embedded ? {} : { ...selectedFromUrl(), ...initialSelection },
