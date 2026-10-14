@@ -58,9 +58,13 @@ import Observation
     }
 
     var controls: DesktopUpdateControls {
-        DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
-            check: isAvailable ? { self.check(manual: true) } : nil,
-            review: availableUpdate == nil ? nil : { self.review() })
+        // Built step by step: optional closures in ternaries defeat the type checker.
+        var checkNow: (@MainActor () -> Void)?
+        if isAvailable { checkNow = { self.check(manual: true) } }
+        var reviewNow: (@MainActor () -> Void)?
+        if availableUpdate != nil { reviewNow = { self.review() } }
+        return DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
+                                     check: checkNow, review: reviewNow)
     }
 
     /// Later closes the review; the mascot can reopen it without a network check.
