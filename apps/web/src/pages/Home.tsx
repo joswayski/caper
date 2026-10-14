@@ -1,18 +1,11 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
-import {
-  desktopRelease,
-  detectDownloadPlatform,
-  downloads,
-  mobileBetas,
-  playTestingUrl,
-  type DownloadPlatform,
-} from "../downloads";
+import { detectDownloadPlatform, downloads, mobileBetas, playTestingUrl, type DownloadPlatform } from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -93,9 +86,6 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
                 Join the testers group, then <a href={playTestingUrl}>install from Google Play</a>.
               </p>
             )}
-            <p>
-              {download ? "Also available for" : "Available for"} <PlatformLinks links={otherPlatforms(platform)} />.
-            </p>
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">
@@ -184,28 +174,6 @@ function ContactLinks() {
       </span>
     </>
   );
-}
-
-type PlatformLink = { label: string; url: string };
-
-// Every platform except the visitor's own; phone betas appear once their links accept testers.
-function otherPlatforms(platform: DownloadPlatform | null) {
-  const links: PlatformLink[] = [];
-  if (platform !== "macos") links.push({ label: "macOS", url: desktopRelease });
-  if (platform !== "windows") links.push({ label: "Windows", url: desktopRelease });
-  if (platform !== "linux" && platform !== "linux-deb") links.push({ label: "Linux", url: desktopRelease });
-  if (platform !== "ios" && mobileBetas.ios) links.push({ label: "iOS", url: mobileBetas.ios.url });
-  if (platform !== "android" && mobileBetas.android) links.push({ label: "Android", url: mobileBetas.android.url });
-  return links;
-}
-
-function PlatformLinks({ links }: { links: readonly PlatformLink[] }) {
-  return links.map((link, index) => (
-    <Fragment key={link.label}>
-      {index === 0 ? "" : links.length === 2 ? " and " : index === links.length - 1 ? ", and " : ", "}
-      <a href={link.url}>{link.label}</a>
-    </Fragment>
-  ));
 }
 
 function formatRelativeTime(committedAt: string, now: number) {
