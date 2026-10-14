@@ -99,7 +99,7 @@ class HighlightsTests(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.base = self.commit("Already shipped", {"apps/web/src/chat.ts": "old\n"})
         self.environment = patch.dict(
-            os.environ, {"ANTHROPIC_API_KEY": "fake-api-key", "ANTHROPIC_MODEL": "claude-haiku-5-5"}
+            os.environ, {"ANTHROPIC_API_KEY": "fake-api-key", "ANTHROPIC_MODEL": "", "ANTHROPIC_EFFORT": ""}
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -148,8 +148,11 @@ class HighlightsTests(unittest.TestCase):
         self.requests.append(body)
         self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
         self.assertEqual(request.get_header("X-api-key"), "fake-api-key")
-        self.assertEqual(timeout, 60)
-        self.assertEqual(body["max_tokens"], 4096)
+        self.assertEqual(request.get_header("Anthropic-beta"), "server-side-fallback-2026-07-01")
+        self.assertEqual(timeout, 300)
+        self.assertEqual(body["max_tokens"], 16000)
+        self.assertEqual(body["fallbacks"], "default")
+        self.assertNotIn("thinking", body)
         self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
         schema = json.dumps(body["output_config"]["format"]["schema"])
         for unsupported in ("minLength", "maxLength", "maxItems"):
@@ -373,6 +376,12 @@ class HighlightsTests(unittest.TestCase):
             {"type": "message", "stop_reason": "max_tokens", "content": []},
             {"type": "error", "error": {"message": "secret error body"}},
             {"type": "message", "stop_reason": "end_turn", "content": [{"type": "refusal"}]},
+            {"type": "message", "stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""}]},
+            {
+                "type": "message",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": '{"highlights":[]}'}, {"type": "text", "text": "extra"}],
+            },
             {
                 "type": "message",
                 "stop_reason": "end_turn",
@@ -429,6 +438,43 @@ class HighlightsTests(unittest.TestCase):
             newest = self.commit("Improve channel controls")
             self.assert_cli_failure(newest, "ANTHROPIC_API_KEY")
         self.assertEqual(self.requests, [])
+
+    def test_defaults_to_opus_high_effort_and_variables_override(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        self.generate(newest)
+        self.assertEqual(self.requests[0]["model"], "claude-opus-5-5")
+        self.assertEqual(self.requests[0]["output_config"]["effort"], "high")
+        later = self.commit("Improve channel search")
+        with patch.dict(os.environ, {"ANTHROPIC_MODEL": "claude-sonnet-5-5", "ANTHROPIC_EFFORT": "xhigh"}):
+            self.generate(later)
+        self.assertEqual(self.requests[1]["model"], "claude-sonnet-5-5")
+        self.assertEqual(self.requests[1]["output_config"]["effort"], "xhigh")
+
+    def test_invalid_effort_fails_before_any_provider_call(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        with patch.dict(os.environ, {"ANTHROPIC_EFFORT": "extreme"}):
+            self.assert_cli_failure(newest, "ANTHROPIC_EFFORT")
+        self.assertEqual(self.requests, [])
+
+    def test_thinking_and_fallback_blocks_surround_the_single_answer(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        self.message = {
+            "type": "message",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "", "signature": "opaque"},
+                {"type": "fallback", "from": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"}},
+                {"type": "text", "text": json.dumps({"highlights": [highlight([newest])]})},
+            ],
+        }
+        result = self.generate(newest)["web"]
+        self.assertEqual(
+            result["releases"][-1]["highlights"],
+            [{"title": "Easier channel navigation", "body": "Move between channels with clearer controls."}],
+        )
 
     def test_zero_highlights_is_a_valid_silent_release(self):
         self.seed()

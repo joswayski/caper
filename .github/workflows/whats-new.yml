@@ -64,7 +64,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL || 'claude-haiku-5-5' }}
+          # Empty variables fall back to the generator defaults (Opus 5.5, high effort).
+          ANTHROPIC_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL }}
+          ANTHROPIC_EFFORT: ${{ vars.CAPER_RELEASE_NOTES_EFFORT }}
           RELEASE_SHA: ${{ inputs.git_sha }}
           AUDIENCE: ${{ inputs.audience }}
         run: |

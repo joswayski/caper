@@ -30,6 +30,11 @@ PLATFORMS = ("web", "android", "ios", "macos", "windows", "linux")
 MAX_SNAPSHOT_BYTES = 64 * 1024
 MAX_INPUT_CHARS = 120_000
 MAX_RESPONSE_BYTES = 128 * 1024
+DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_EFFORT = "high"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+NON_ANSWER_BLOCKS = ("thinking", "redacted_thinking", "fallback")
+PROVIDER_TIMEOUT_SECONDS = 300
 SHA = re.compile(r"[0-9a-f]{40}")
 SECRET_PATH = re.compile(
     r"(?:^|/)(?:\.env[^/]*|secrets?|credentials?|private[-_]keys?)(?:[./_-]|$)"
@@ -311,12 +316,21 @@ def ask_claude(prompt):
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise GenerationError("ANTHROPIC_API_KEY is required for product changes")
+    effort = os.environ.get("ANTHROPIC_EFFORT") or DEFAULT_EFFORT
+    if effort not in EFFORTS:
+        raise GenerationError(f"ANTHROPIC_EFFORT must be one of {', '.join(EFFORTS)}")
+    # Adaptive thinking shares max_tokens with the answer; "default" fallbacks
+    # retry a classifier decline on Anthropic's recommended model.
     body = {
-        "model": os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5"),
-        "max_tokens": 4096,
+        "model": os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL,
+        "max_tokens": 16000,
         "system": SYSTEM,
         "messages": [{"role": "user", "content": prompt}],
-        "output_config": {"format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
+        "output_config": {
+            "effort": effort,
+            "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
+        },
+        "fallbacks": "default",
     }
     payload = encode(body)
     if len(payload.decode("utf-8")) > MAX_INPUT_CHARS:
@@ -325,10 +339,15 @@ def ask_claude(prompt):
         "https://api.anthropic.com/v1/messages",
         data=payload,
         method="POST",
-        headers={"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "server-side-fallback-2026-07-01",
+            "Content-Type": "application/json",
+        },
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError):
         raise GenerationError("Claude request failed; no snapshots published") from None
@@ -338,14 +357,13 @@ def ask_claude(prompt):
     if not isinstance(message, dict) or message.get("type") != "message" or message.get("stop_reason") != "end_turn":
         raise GenerationError("Claude refused, errored, or did not finish the response")
     blocks = message.get("content")
-    if (
-        not isinstance(blocks, list)
-        or len(blocks) != 1
-        or not isinstance(blocks[0], dict)
-        or blocks[0].get("type") != "text"
-    ):
+    if not isinstance(blocks, list) or not all(isinstance(block, dict) for block in blocks):
         raise GenerationError("Claude returned unexpected content")
-    value = blocks[0].get("text")
+    # Thinking and fallback-switch blocks carry no notes; exactly one text block must.
+    texts = [block for block in blocks if block.get("type") not in NON_ANSWER_BLOCKS]
+    if len(texts) != 1 or texts[0].get("type") != "text":
+        raise GenerationError("Claude returned unexpected content")
+    value = texts[0].get("text")
     if not isinstance(value, str):
         raise GenerationError("Claude returned no structured text")
     return parse_json(value)
