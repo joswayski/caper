@@ -165,7 +165,9 @@ pub fn watch(
     .expect("WebSocket scheme");
     std::thread::spawn(move || {
         let mut cursor: Option<u64> = None;
+        let mut attempt = 0_u32;
         while !stop.load(Ordering::Relaxed) {
+            let mut proven = false;
             let result = (|| {
                 let mut connection = Connection::open(&url, Some(&token), &stop)?;
                 while !stop.load(Ordering::Relaxed) {
@@ -173,6 +175,7 @@ pub fn watch(
                         continue;
                     };
                     match frame["type"].as_str() {
+                        Some("heartbeat") => proven = true,
                         Some("hello") => {
                             connection.hello = true;
                             let mut subscription = json!({"type":"subscribe","id":"notifications","kind":"notifications"});
@@ -229,7 +232,12 @@ pub fn watch(
             if matches!(result, Err(Failure::Denied(_))) {
                 break;
             }
-            for _ in 0..5 {
+            // The chat gateway's backoff: an outage is not retried twice a
+            // second for the whole sign-in, and a connection a server
+            // heartbeat proved healthy starts again from the shortest wait.
+            attempt = if proven { 1 } else { attempt.saturating_add(1) };
+            let delay = Duration::from_millis((250_u64 << attempt.min(4)).min(5_000));
+            for _ in 0..delay.as_millis().div_ceil(100) {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
