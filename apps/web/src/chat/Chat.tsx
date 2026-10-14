@@ -542,6 +542,9 @@ export default function Chat({
   const goToMessage = async (message: FocusTarget) => {
     const client = clientRef.current;
     if (!client || jumping) return false;
+    // Pins shows its own error; elsewhere (a reply's original, a notification) a
+    // failed jump must still say so instead of doing nothing.
+    const fail = showPins ? setJumpError : setActionStatus;
     setJumping(message.id);
     setJumpError(undefined);
     setActionTarget(undefined);
@@ -556,10 +559,9 @@ export default function Chat({
           setScrollTarget(message.id);
         }
         return true;
-      } else if (clientRef.current === client) setJumpError("Message could not be loaded. Try again.");
+      } else if (clientRef.current === client) fail("Message could not be loaded. Try again.");
     } catch (error) {
-      if (clientRef.current === client)
-        setJumpError(error instanceof Error ? error.message : "Message could not be loaded.");
+      if (clientRef.current === client) fail(error instanceof Error ? error.message : "Message could not be loaded.");
     } finally {
       if (clientRef.current === client) setJumping(undefined);
     }
