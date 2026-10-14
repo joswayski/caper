@@ -6243,7 +6243,7 @@ private struct ProfileView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                     .submitLabel(.next).onSubmit { displayNameFocused = true }
-                Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.")
+                Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                 Text("This is what people see in conversations.")
@@ -7384,7 +7384,7 @@ private struct ProfileSheet: View {
                     pictureSection
                     CaperField(title: "Username", text: $username)
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
-                    Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                         // Return saves: on iPhone an error line can push Save
                         // profile under the keyboard.
