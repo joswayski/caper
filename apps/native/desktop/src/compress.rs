@@ -375,6 +375,12 @@ fn decode(bytes: &[u8]) -> Option<Decoded> {
     })
 }
 
+/// Decode within memory limits, upright (EXIF orientation applied), with its
+/// embedded colour profile. Profile pictures and space icons start here.
+pub fn decode_upright(bytes: &[u8]) -> Option<(DynamicImage, Option<Vec<u8>>)> {
+    decode(bytes).map(|decoded| (decoded.image, decoded.icc))
+}
+
 /// Re-encoded files keep an embedded profile only when it describes RGB, the
 /// colour model they are written in; anything else uploads unchanged.
 fn rgb_profile(icc: Option<&[u8]>) -> bool {

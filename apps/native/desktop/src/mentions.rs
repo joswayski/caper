@@ -66,9 +66,17 @@ pub struct Person {
     pub username: String,
     pub display_name: String,
     pub avatar_id: Option<i32>,
+    pub avatar_asset: Option<String>,
+    pub avatar_url: Option<String>,
     /// Already has a pending invitation to the space or channel being
     /// managed; the username field's row says so.
     pub invited: bool,
+}
+
+impl Person {
+    pub fn picture(&self) -> Option<crate::pictures::Source<'_>> {
+        crate::pictures::Source::new(&self.avatar_asset, &self.avatar_url)
+    }
 }
 
 impl From<&Member> for Person {
@@ -77,6 +85,8 @@ impl From<&Member> for Person {
             username: member.username.clone(),
             display_name: member.display_name.clone(),
             avatar_id: member.avatar_id,
+            avatar_asset: member.avatar_asset.clone(),
+            avatar_url: member.avatar_url.clone(),
             invited: false,
         }
     }
@@ -88,6 +98,8 @@ impl From<&KnownPerson> for Person {
             username: person.username.clone(),
             display_name: person.display_name.clone(),
             avatar_id: person.avatar_id,
+            avatar_asset: person.avatar_asset.clone(),
+            avatar_url: person.avatar_url.clone(),
             invited: false,
         }
     }
@@ -381,10 +393,16 @@ pub struct Profile {
     /// `None` when nothing loaded knows the id: the card is titled `@username`.
     pub display_name: Option<String>,
     pub avatar_id: Option<i32>,
+    pub avatar_asset: Option<String>,
+    pub avatar_url: Option<String>,
     pub me: bool,
 }
 
 impl Profile {
+    pub fn picture(&self) -> Option<crate::pictures::Source<'_>> {
+        crate::pictures::Source::new(&self.avatar_asset, &self.avatar_url)
+    }
+
     /// Display name, or `@username` for someone unknown.
     pub fn title(&self) -> String {
         self.display_name.clone().unwrap_or_else(|| {
@@ -409,34 +427,68 @@ pub fn profile(
         return None;
     }
     let id = entry.id.as_deref();
-    let known = id.and_then(|id| {
+    type Known<'a> = (
+        &'a String,
+        &'a String,
+        Option<i32>,
+        &'a Option<String>,
+        &'a Option<String>,
+    );
+    let known: Option<Known<'_>> = id.and_then(|id| {
         members
             .iter()
             .find(|member| member.id == id)
-            .map(|member| (&member.username, &member.display_name, member.avatar_id))
+            .map(|member| {
+                (
+                    &member.username,
+                    &member.display_name,
+                    member.avatar_id,
+                    &member.avatar_asset,
+                    &member.avatar_url,
+                )
+            })
             .or_else(|| {
-                people
-                    .iter()
-                    .find(|person| person.id == id)
-                    .map(|person| (&person.username, &person.display_name, person.avatar_id))
+                people.iter().find(|person| person.id == id).map(|person| {
+                    (
+                        &person.username,
+                        &person.display_name,
+                        person.avatar_id,
+                        &person.avatar_asset,
+                        &person.avatar_url,
+                    )
+                })
             })
             .or_else(|| {
                 directs
                     .iter()
                     .find(|direct| direct.peer.id == id)
-                    .map(|direct| (&direct.peer.username, &direct.peer.display_name, None))
+                    .map(|direct| {
+                        (
+                            &direct.peer.username,
+                            &direct.peer.display_name,
+                            direct.peer.avatar_id,
+                            &direct.peer.avatar_asset,
+                            &direct.peer.avatar_url,
+                        )
+                    })
             })
     });
-    let (username, display_name, avatar_id) = match known {
-        Some((username, display_name, avatar_id)) => {
-            (username.clone(), Some(display_name.clone()), avatar_id)
-        }
-        None => (entry.username.clone()?, None, None),
+    let (username, display_name, avatar_id, avatar_asset, avatar_url) = match known {
+        Some((username, display_name, avatar_id, asset, url)) => (
+            username.clone(),
+            Some(display_name.clone()),
+            avatar_id,
+            asset.clone(),
+            url.clone(),
+        ),
+        None => (entry.username.clone()?, None, None, None, None),
     };
     Some(Profile {
         username: Some(username),
         display_name,
         avatar_id,
+        avatar_asset,
+        avatar_url,
         me: id.is_some() && id == me,
     })
 }
@@ -465,6 +517,8 @@ pub fn author_profile(
         username: None,
         display_name: Some(author.name.clone()),
         avatar_id: author.avatar_id,
+        avatar_asset: author.avatar_asset.clone(),
+        avatar_url: author.avatar_url.clone(),
         me: Some(author.id.as_str()) == me,
     })
 }
@@ -496,6 +550,8 @@ mod tests {
             username: username.into(),
             display_name: display_name.into(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             invited: false,
         }
     }
@@ -854,6 +910,8 @@ mod tests {
             username: username.into(),
             display_name: username.to_uppercase(),
             avatar_id: Some(4),
+            avatar_asset: None,
+            avatar_url: None,
         }
     }
 
@@ -861,6 +919,8 @@ mod tests {
         Member {
             id: id.into(),
             avatar_id: Some(5),
+            avatar_asset: None,
+            avatar_url: None,
             username: username.into(),
             display_name: username.to_uppercase(),
             owner: false,
@@ -887,6 +947,8 @@ mod tests {
                 username: "sam".into(),
                 display_name: "SAM".into(),
                 avatar_id: Some(4),
+                avatar_asset: None,
+                avatar_url: None,
                 invited: false,
             }
         );
@@ -1063,6 +1125,8 @@ mod tests {
         let member = |id: &str, username: &str, display_name: &str| Member {
             id: id.into(),
             avatar_id: Some(3),
+            avatar_asset: None,
+            avatar_url: None,
             username: username.into(),
             display_name: display_name.into(),
             owner: false,
@@ -1072,6 +1136,8 @@ mod tests {
             username: username.into(),
             display_name: display_name.into(),
             avatar_id: Some(9),
+            avatar_asset: None,
+            avatar_url: None,
         };
         let direct = |id: &str, username: &str, display_name: &str| DirectConversation {
             id: format!("dm-{id}"),
@@ -1080,6 +1146,8 @@ mod tests {
                 username: username.into(),
                 display_name: display_name.into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "0".into(),
@@ -1103,6 +1171,8 @@ mod tests {
                 username: Some("alex".into()),
                 display_name: Some("Alex (space)".into()),
                 avatar_id: Some(3),
+                avatar_asset: None,
+                avatar_url: None,
                 me: false,
             }),
             "members first, with their current username"
@@ -1122,6 +1192,8 @@ mod tests {
                 username: Some("zed".into()),
                 display_name: None,
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 me: false,
             }
         );
@@ -1140,11 +1212,54 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_and_profile_cards_carry_custom_pictures() {
+        let member = Member {
+            id: "u1".into(),
+            avatar_id: Some(3),
+            avatar_asset: Some("member-picture".into()),
+            avatar_url: Some("https://cdn.caper.chat/assets/member-picture?exp=1&sig=a".into()),
+            username: "alex".into(),
+            display_name: "Alex".into(),
+            owner: false,
+        };
+        let direct = DirectConversation {
+            id: "dm".into(),
+            peer: crate::model::DirectPeer {
+                id: "u2".into(),
+                username: "sam".into(),
+                display_name: "Sam".into(),
+                avatar_id: Some(7),
+                avatar_asset: Some("peer-picture".into()),
+                avatar_url: None,
+                team: false,
+            },
+            last_seq: "0".into(),
+            read_seq: "0".into(),
+            status: crate::model::DirectStatus::Accepted,
+            blocked: false,
+        };
+        let row = Person::from(&member);
+        assert_eq!(row.picture(), member.picture());
+        let members = [member.clone()];
+        let directs = [direct];
+        let card = |id: &str, username: &str| {
+            profile(&user(id, username), None, &members, &[], &directs).unwrap()
+        };
+        assert_eq!(card("u1", "alex").picture(), member.picture());
+        let peer = card("u2", "sam");
+        assert_eq!(peer.avatar_id, Some(7), "DM peers keep their mascot too");
+        assert_eq!(peer.picture().unwrap().asset, "peer-picture");
+        assert_eq!(card("u9", "zed").picture(), None);
+    }
+
+    #[test]
     fn pinner_profiles_match_ids_and_keep_unknown_author_metadata() {
         let author = Author {
             id: "pinner".into(),
             name: "Same Name".into(),
             avatar_id: Some(7),
+            avatar_asset: None,
+            avatar_url: None,
             is_guest: false,
             admin: false,
         };
@@ -1154,6 +1269,8 @@ mod tests {
                 username: "wrong_person".into(),
                 display_name: "Same Name".into(),
                 avatar_id: Some(2),
+                avatar_asset: None,
+                avatar_url: None,
                 owner: false,
             },
             Member {
@@ -1161,6 +1278,8 @@ mod tests {
                 username: "renamed_pinner".into(),
                 display_name: "Current Name".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 owner: false,
             },
         ];
@@ -1170,6 +1289,8 @@ mod tests {
                 username: Some("renamed_pinner".into()),
                 display_name: Some("Current Name".into()),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 me: false,
             }
         );
@@ -1179,6 +1300,8 @@ mod tests {
                 username: None,
                 display_name: Some("Same Name".into()),
                 avatar_id: Some(7),
+                avatar_asset: None,
+                avatar_url: None,
                 me: false,
             }
         );

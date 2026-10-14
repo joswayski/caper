@@ -81,8 +81,20 @@ pub struct LinkChannel {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceName {
     pub name: String,
+    /// The space's custom icon; old servers omit it.
+    #[serde(default)]
+    pub icon_asset: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+}
+
+impl SpaceName {
+    pub fn icon(&self) -> Option<crate::pictures::Source<'_>> {
+        crate::pictures::Source::new(&self.icon_asset, &self.icon_url)
+    }
 }
 
 /// One live link from `GET /api/spaces/{space}/invite-links`.
@@ -361,6 +373,9 @@ mod tests {
                 name: "feedback".into(),
             }),
             created_by: Inviter {
+                avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 username: "owner".into(),
                 display_name: "Owner".into(),
             },

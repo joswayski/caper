@@ -36,6 +36,8 @@ pub struct UploadError {
     pub message: String,
     pub storage_full: bool,
     pub status: Option<u16>,
+    /// The server's machine-readable `code`, such as `picture_too_large`.
+    pub code: Option<String>,
 }
 
 impl UploadError {
@@ -44,6 +46,7 @@ impl UploadError {
             message: message.into(),
             storage_full: false,
             status: None,
+            code: None,
         }
     }
 }
@@ -471,9 +474,83 @@ fn upload_with_delays(
     cancel: Arc<AtomicBool>,
     delays: &[Duration],
 ) -> Result<Attachment, UploadError> {
+    let request = reservation(channel, &prepared);
+    transfer(
+        api,
+        token,
+        request,
+        prepared,
+        progress,
+        cancel,
+        delays,
+        |id, completed| Attachment::parse(completed).filter(|attachment| attachment.id == id),
+    )
+}
+
+/// Upload a profile picture or space icon (`pictures`): the same presigned
+/// PUT and confirmation as attachments, with a `purpose` reservation. The
+/// server applies the picture on completion; returns the asset id and the
+/// completion response (with `account` or `space`).
+pub fn upload_picture(
+    api: &Api,
+    token: &str,
+    request: Value,
+    bytes: Vec<u8>,
+) -> Result<(String, Value), UploadError> {
+    upload_picture_with_delays(api, token, request, bytes, &COMPLETE_RETRY_DELAYS)
+}
+
+fn upload_picture_with_delays(
+    api: &Api,
+    token: &str,
+    request: Value,
+    bytes: Vec<u8>,
+    delays: &[Duration],
+) -> Result<(String, Value), UploadError> {
+    let size = bytes.len() as u64;
+    let prepared = Prepared {
+        name: request["filename"].as_str().unwrap_or("picture").into(),
+        content_type: request["contentType"].as_str().unwrap_or_default().into(),
+        kind: AttachmentKind::Image,
+        source_size: size,
+        size,
+        body: Body::Memory(bytes.into()),
+        width: None,
+        height: None,
+        duration_ms: None,
+        preview: None,
+        thumbnail: None,
+    };
+    transfer(
+        api,
+        token,
+        request,
+        prepared,
+        Arc::new(|_| {}),
+        Arc::new(AtomicBool::new(false)),
+        delays,
+        |id, completed| {
+            (completed["id"].as_str() == Some(id)).then(|| (id.to_owned(), completed.clone()))
+        },
+    )
+}
+
+/// Reserve with `request`, PUT the preview and then the file to storage with
+/// exactly the returned headers, and confirm (retrying while storage has not
+/// seen it). Any failure after the reservation cancels it.
+#[allow(clippy::too_many_arguments)]
+fn transfer<T>(
+    api: &Api,
+    token: &str,
+    request: Value,
+    prepared: Prepared,
+    progress: Arc<dyn Fn(f32) + Send + Sync>,
+    cancel: Arc<AtomicBool>,
+    delays: &[Duration],
+    finish: impl FnOnce(&str, &Value) -> Option<T>,
+) -> Result<T, UploadError> {
     let invalid = || UploadError::new("The upload service returned an invalid response.");
     cancelled(&cancel)?;
-    let request = reservation(channel, &prepared);
     let Prepared {
         name,
         size,
@@ -561,12 +638,10 @@ fn upload_with_delays(
                 result => break result?,
             }
         };
-        let attachment = Attachment::parse(&completed)
-            .filter(|attachment| attachment.id == id)
-            .ok_or_else(invalid)?;
+        let finished = finish(&id, &completed).ok_or_else(invalid)?;
         cancelled(&cancel)?;
         progress(1.0);
-        Ok(attachment)
+        Ok(finished)
     })();
     if result.is_err() {
         api.cancel_asset(token, &id);
@@ -780,6 +855,109 @@ mod tests {
         assert!(
             !copy_path.exists(),
             "the last owner removes its working copy"
+        );
+    }
+
+    #[test]
+    fn pictures_upload_with_their_purpose_and_cancel_when_refused() {
+        let bytes = b"GIF89a\x30\x00\x30\x00 fixture bytes".to_vec();
+        let request = json!({
+            "purpose": "avatar", "filename": "avatar.gif", "contentType": "image/gif",
+            "byteSize": bytes.len(), "width": 48, "height": 48
+        });
+        let reserved = |base: &str| {
+            json!({
+                "id": "pic00000001",
+                "kind": "image",
+                "upload": {"method": "PUT", "url": format!("{base}/r2/original/pic00000001?X-Amz-Signature=s"), "headers": {
+                    "content-type": "image/gif",
+                    "content-disposition": "inline; filename=\"avatar.gif\""
+                }}
+            })
+            .to_string()
+        };
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (409, r#"{"error":"upload not finished"}"#.into()),
+                (
+                    200,
+                    json!({"id": "pic00000001", "kind": "image", "account": {
+                        "id": "u1", "avatarId": 4, "avatarAsset": "pic00000001",
+                        "avatarUrl": "https://cdn.caper.chat/assets/pic00000001?exp=1&sig=x"
+                    }})
+                    .to_string(),
+                ),
+            ]
+        });
+        let (id, completed) = upload_picture_with_delays(
+            &Api::new(&base).unwrap(),
+            "account-token",
+            request.clone(),
+            bytes.clone(),
+            &[Duration::from_millis(1)],
+        )
+        .unwrap();
+        assert_eq!(id, "pic00000001");
+        assert_eq!(completed["account"]["avatarAsset"], "pic00000001");
+        let requests = server.join().unwrap();
+        let lines: Vec<_> = requests
+            .iter()
+            .map(|request| request.line.as_str())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "POST /api/assets HTTP/1.1",
+                "PUT /r2/original/pic00000001?X-Amz-Signature=s HTTP/1.1",
+                "POST /api/assets/pic00000001/complete HTTP/1.1",
+                "POST /api/assets/pic00000001/complete HTTP/1.1",
+            ]
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+            request
+        );
+        let put = &requests[1];
+        assert_eq!(put.body, bytes, "GIFs go up byte for byte");
+        assert_eq!(put.headers["content-type"], "image/gif");
+        assert_eq!(
+            put.headers["content-disposition"],
+            "inline; filename=\"avatar.gif\""
+        );
+        assert_eq!(put.headers["content-length"], bytes.len().to_string());
+        assert_no_credentials(put);
+        // A picture the server refuses is cancelled and explained.
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (
+                    422,
+                    r#"{"error":"invalid picture","code":"picture_invalid"}"#.into(),
+                ),
+                (200, String::new()),
+            ]
+        });
+        let error = upload_picture_with_delays(
+            &Api::new(&base).unwrap(),
+            "account-token",
+            request,
+            bytes,
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error.status, Some(422));
+        assert_eq!(error.code.as_deref(), Some("picture_invalid"));
+        assert_eq!(
+            crate::pictures::upload_failure(&error, &crate::pictures::Target::Avatar).message,
+            crate::pictures::INVALID
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[3].line,
+            "POST /api/assets/pic00000001/cancel HTTP/1.1"
         );
     }
 

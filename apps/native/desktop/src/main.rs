@@ -32,6 +32,7 @@ mod motion;
 mod navigation;
 mod notifications;
 mod os_notifications;
+mod pictures;
 mod player;
 mod profile_dm;
 mod startup;
@@ -838,6 +839,22 @@ impl DraftUpload {
     }
 }
 
+/// Changing a profile picture or space icon from settings.
+#[derive(Default)]
+struct PictureEdit {
+    /// The image picker is open for this target.
+    picking: Option<(
+        pictures::Target,
+        std::sync::mpsc::Receiver<Option<std::path::PathBuf>>,
+    )>,
+    /// A change in flight: its target, and whether it removes the picture.
+    busy: Option<(pictures::Target, bool)>,
+    /// The last failure and the target it concerns.
+    error: Option<(pictures::Target, String)>,
+    /// The server has no picture storage (`503`): uploads step back.
+    unavailable: bool,
+}
+
 /// The native dialog may finish after its conversation or thread closes.
 struct FilePicker {
     channel: String,
@@ -1213,6 +1230,13 @@ struct CaperApp {
     file_picker: Option<FilePicker>,
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
+    /// Decoded profile pictures and space icons, shared with the free
+    /// avatar painters through the egui context.
+    pictures: pictures::Shared,
+    /// Pictures this client just uploaded, decoded locally: shown without a
+    /// download once the next frame inserts them.
+    local_pictures: Vec<(String, pictures::Frames)>,
+    picture_edit: PictureEdit,
     open_after_refresh: Option<String>,
     /// The Caper team's inbox (`feedbackTeam` accounts only), and whether it
     /// covers the conversation pane.
@@ -1237,8 +1261,10 @@ impl CaperApp {
         configure(context);
         let voice = Voice::new(api.base().clone(), context.clone());
         let api_base = api.base().clone();
-        // Fixtures never fetch attachment media.
+        // Fixtures never fetch attachment media or pictures.
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
+        let pictures = pictures::Shared::of(context);
+        pictures.install(fixture.is_none().then(|| api.clone()));
         let whats_new = whats_new::WhatsNew::new(
             &api.base().origin().ascii_serialization(),
             whats_new::PLATFORM,
@@ -1456,6 +1482,9 @@ impl CaperApp {
             media_proxy: None,
             file_picker: None,
             local_media: Vec::new(),
+            pictures,
+            local_pictures: Vec::new(),
+            picture_edit: PictureEdit::default(),
             open_after_refresh: None,
             feedback: feedback::Inbox::default(),
             feedback_open: false,
@@ -1544,6 +1573,8 @@ impl CaperApp {
                             is_guest: false,
                             admin: false,
                             avatar_id: Some(0),
+                            avatar_asset: None,
+                            avatar_url: None,
                         },
                     });
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
@@ -1798,6 +1829,8 @@ impl CaperApp {
                             username: username.into(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: Some(avatar),
+                            avatar_asset: None,
+                            avatar_url: None,
                             team: false,
                         };
                     let direct =
@@ -1814,6 +1847,8 @@ impl CaperApp {
                         username: "maya".into(),
                         display_name: "Maya".into(),
                         avatar_id: Some(15),
+                        avatar_asset: None,
+                        avatar_url: None,
                     };
                     app.directs = vec![
                         direct(
@@ -1867,6 +1902,8 @@ impl CaperApp {
                         message.author = Author {
                             id: author.into(),
                             avatar_id: Some(avatar),
+                            avatar_asset: None,
+                            avatar_url: None,
                             name: author_name.into(),
                             is_guest: false,
                             admin: false,
@@ -1891,6 +1928,8 @@ impl CaperApp {
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
                             avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                             team: false,
                         },
                         last_seq: "2".into(),
@@ -1916,6 +1955,8 @@ impl CaperApp {
                                 username: member.username.clone(),
                                 display_name: member.display_name.clone(),
                                 avatar_id: member.avatar_id,
+                                avatar_asset: None,
+                                avatar_url: None,
                             })
                             .collect()
                     });
@@ -1933,6 +1974,8 @@ impl CaperApp {
                     // channel, a muted DM with unread messages (no dot) and
                     // a DM with notifications off (still dotted).
                     let quiet = model::Space {
+                        icon_asset: None,
+                        icon_url: None,
                         id: "space0000002".into(),
                         name: "TEST FIXTURE · Quiet Room".into(),
                         owner_id: "fixture-maya".into(),
@@ -1947,6 +1990,8 @@ impl CaperApp {
                             username: name.to_lowercase(),
                             display_name: format!("TEST FIXTURE {name}"),
                             avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                             team: false,
                         },
                         last_seq: "4".into(),
@@ -1981,11 +2026,16 @@ impl CaperApp {
                     }
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
+                        icon_asset: None,
+                        icon_url: None,
                         id: "invite000001".into(),
                         name: "TEST FIXTURE · Invited Studio".into(),
                         owner_id: "fixture-inviter".into(),
                         demo: false,
                         inviter: Some(model::Inviter {
+                            avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                             username: "fixture_host".into(),
                             display_name: "TEST FIXTURE host".into(),
                         }),
@@ -2007,6 +2057,9 @@ impl CaperApp {
                     detail.channel_invitations.push(model::ChannelInvitation {
                         channel: private,
                         inviter: model::Inviter {
+                            avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                             username: "fixture_host".into(),
                             display_name: "TEST FIXTURE host".into(),
                         },
@@ -2029,6 +2082,8 @@ impl CaperApp {
                         app.managed_invitations.push(Member {
                             id: "invited00001".into(),
                             avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                             username: "fixture_invitee".into(),
                             display_name: "TEST FIXTURE invitee".into(),
                             owner: false,
@@ -2050,6 +2105,8 @@ impl CaperApp {
                             username: username.into(),
                             display_name: display_name.into(),
                             avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                         })
                         .into(),
                     );
@@ -2064,12 +2121,17 @@ impl CaperApp {
                         app.invite_join.preview = Some(invites::InvitePreview {
                             code: "TESTfixt01".into(),
                             space: invites::SpaceName {
+                                icon_asset: None,
+                                icon_url: None,
                                 name: "TEST FIXTURE · Invited Studio".into(),
                             },
                             channel: Some(invites::NamedChannel {
                                 name: "feedback".into(),
                             }),
                             inviter: model::Inviter {
+                                avatar_id: Some(3),
+                                avatar_asset: None,
+                                avatar_url: None,
                                 username: "fixture_host".into(),
                                 display_name: "TEST FIXTURE host".into(),
                             },
@@ -2078,6 +2140,8 @@ impl CaperApp {
                             already_member: name == "parity-invite-member",
                         });
                     }
+                } else if name.starts_with("parity-pictures") {
+                    app.install_pictures_fixture(name);
                 } else if name == "parity-channel" {
                     app.form_name = "planning".into();
                     app.form_private = true;
@@ -2117,6 +2181,8 @@ impl CaperApp {
                             model::VoiceOccupant {
                                 id: "fixture-maya".into(),
                                 avatar_id: Some(15),
+                                avatar_asset: None,
+                                avatar_url: None,
                                 name: "Maya".into(),
                                 muted: false,
                                 deafened: false,
@@ -2124,6 +2190,8 @@ impl CaperApp {
                             model::VoiceOccupant {
                                 id: "fixture-alex".into(),
                                 avatar_id: Some(16),
+                                avatar_asset: None,
+                                avatar_url: None,
                                 name: "Alex".into(),
                                 muted: true,
                                 deafened: false,
@@ -2142,6 +2210,8 @@ impl CaperApp {
                             author: Author {
                                 id: "fixture-maya".into(),
                                 avatar_id: Some(15),
+                                avatar_asset: None,
+                                avatar_url: None,
                                 name: "Maya".into(),
                                 is_guest: false,
                                 admin: false,
@@ -2252,6 +2322,8 @@ impl CaperApp {
                             .map(|member| media::Participant {
                                 id: member.id.clone(),
                                 avatar_id: member.avatar_id,
+                                avatar_asset: None,
+                                avatar_url: None,
                                 name: member.display_name.clone(),
                                 muted: false,
                                 deafened: false,
@@ -2313,9 +2385,142 @@ impl CaperApp {
         app
     }
 
+    /// TEST FIXTURE pictures, generated here and decoded through the real
+    /// upload preparation and display decoders: Maya has an animated GIF,
+    /// Alex a still, your own picture never loads (the saved mascot shows),
+    /// and Fixture Studio has an icon. `-profile` opens Edit profile with an
+    /// animated picture of your own; `-space` opens Manage space.
+    fn install_pictures_fixture(&mut self, name: &str) {
+        let wedge = |turn: f32, edge: u32| {
+            image::RgbaImage::from_fn(edge, edge, |x, y| {
+                let (dx, dy) = (x as f32 - edge as f32 / 2.0, y as f32 - edge as f32 / 2.0);
+                let angle = (dy.atan2(dx) / std::f32::consts::TAU + 0.5 + turn).fract();
+                if angle < 0.25 {
+                    image::Rgba([182, 77, 50, 255])
+                } else {
+                    image::Rgba([99, 122, 67, 255])
+                }
+            })
+        };
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            let _ = encoder.set_repeat(image::codecs::gif::Repeat::Infinite);
+            for frame in 0..12 {
+                let _ = encoder.encode_frame(image::Frame::from_parts(
+                    wedge(frame as f32 / 12.0, 96),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(80, 1),
+                ));
+            }
+        }
+        let still = |colors: [[u8; 3]; 2], width: u32, height: u32| {
+            let mut source = Vec::new();
+            let _ =
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(width, height, |x, y| {
+                    let t = (x + y) as f32 / (width + height) as f32;
+                    image::Rgb(std::array::from_fn(|channel| {
+                        (f32::from(colors[0][channel]) * (1.0 - t)
+                            + f32::from(colors[1][channel]) * t) as u8
+                    }))
+                }))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut source),
+                    image::ImageFormat::Png,
+                );
+            pictures::prepare(source)
+                .ok()
+                .and_then(|prepared| pictures::decode(&prepared.bytes, false))
+        };
+        let animate = !motion::reduced();
+        let pictures = [
+            ("fixture-gif", pictures::decode(&gif, animate)),
+            (
+                "fixture-still",
+                still([[241, 237, 228], [52, 56, 59]], 900, 600),
+            ),
+            (
+                "fixture-icon",
+                still([[99, 122, 67], [21, 23, 25]], 640, 640),
+            ),
+        ];
+        for (asset, frames) in pictures {
+            if let Some(frames) = frames {
+                self.local_pictures.push((asset.into(), frames));
+            }
+        }
+        // Your own picture never loads in this fixture: the mascot shows.
+        let own = if name == "parity-pictures-profile" {
+            "fixture-gif"
+        } else {
+            "fixture-missing"
+        };
+        let picture = |id: &str| match id {
+            "fixture-maya" => Some("fixture-gif"),
+            "fixture-alex" => Some("fixture-still"),
+            "fixture-owner" => Some(own),
+            _ => None,
+        };
+        if let Some(account) = &mut self.account {
+            account.avatar_asset = Some(own.into());
+        }
+        for member in self
+            .detail
+            .iter_mut()
+            .flat_map(|detail| &mut detail.members)
+        {
+            member.avatar_asset = picture(&member.id).map(Into::into);
+        }
+        for space in self
+            .spaces
+            .iter_mut()
+            .chain(self.detail.iter_mut().map(|detail| &mut detail.space))
+            .filter(|space| !space.demo)
+        {
+            space.icon_asset = Some("fixture-icon".into());
+        }
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        for message in &mut messages {
+            message.author.avatar_asset = picture(&message.author.id).map(Into::into);
+        }
+        self.timeline.reset(messages, "4").expect("valid fixture");
+        self.channel_rosters.insert(
+            "chan00000002".into(),
+            ["fixture-maya", "fixture-alex"]
+                .into_iter()
+                .zip(["Maya", "Alex"])
+                .map(|(id, name)| model::VoiceOccupant {
+                    id: id.into(),
+                    avatar_id: Some(15),
+                    avatar_asset: picture(id).map(Into::into),
+                    avatar_url: None,
+                    name: name.into(),
+                    muted: false,
+                    deafened: false,
+                })
+                .collect(),
+        );
+        self.members_visible = true;
+        match name {
+            "parity-pictures-profile" => {
+                self.username = "fixture_owner".into();
+                self.display_name = "Fixture Owner".into();
+                self.dialog = Some(Dialog::Profile);
+            }
+            "parity-pictures-space" => {
+                self.form_name = "Fixture Studio".into();
+                self.dialog = Some(Dialog::ManageSpace);
+            }
+            _ => {}
+        }
+    }
+
     fn install_fixture(&mut self) {
         use model::{Channel, Content, Message, Space};
         let demo = Space {
+            icon_asset: None,
+            icon_url: None,
             id: "demo00000002".into(),
             name: "General".into(),
             owner_id: String::new(),
@@ -2323,6 +2528,8 @@ impl CaperApp {
             demo: true,
         };
         let space = Space {
+            icon_asset: None,
+            icon_url: None,
             id: "space0000001".into(),
             name: "Fixture Studio".into(),
             owner_id: "fixture-owner".into(),
@@ -2339,6 +2546,8 @@ impl CaperApp {
         self.account = Some(Account {
             id: "fixture-owner".into(),
             avatar_id: Some(0),
+            avatar_asset: None,
+            avatar_url: None,
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
@@ -2376,6 +2585,8 @@ impl CaperApp {
                 Member {
                     id: "fixture-owner".into(),
                     avatar_id: Some(0),
+                    avatar_asset: None,
+                    avatar_url: None,
                     username: "fixture_owner".into(),
                     display_name: "Fixture Owner".into(),
                     owner: true,
@@ -2383,6 +2594,8 @@ impl CaperApp {
                 Member {
                     id: "fixture-maya".into(),
                     avatar_id: Some(15),
+                    avatar_asset: None,
+                    avatar_url: None,
                     username: "maya".into(),
                     display_name: "Maya".into(),
                     owner: false,
@@ -2390,6 +2603,8 @@ impl CaperApp {
                 Member {
                     id: "fixture-alex".into(),
                     avatar_id: Some(16),
+                    avatar_asset: None,
+                    avatar_url: None,
                     username: "alex".into(),
                     display_name: "Alex".into(),
                     owner: false,
@@ -2440,6 +2655,8 @@ impl CaperApp {
                 author: Author {
                     id: id.into(),
                     avatar_id: Some(index as i32),
+                    avatar_asset: None,
+                    avatar_url: None,
                     name: name.into(),
                     is_guest: false,
                     admin: false,
@@ -2488,6 +2705,9 @@ impl CaperApp {
     /// created on a server.
     fn fixture_invite_links(&self) -> Vec<invites::InviteLink> {
         let owner = model::Inviter {
+            avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             username: "fixture_owner".into(),
             display_name: "Fixture Owner".into(),
         };
@@ -2531,6 +2751,8 @@ impl CaperApp {
                 is_guest: false,
                 admin: false,
                 avatar_id: Some(0),
+                avatar_asset: None,
+                avatar_url: None,
             },
         });
         self.uploads = Some(compress::Compression::default());
@@ -2813,6 +3035,11 @@ impl CaperApp {
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
+                Event::Picture {
+                    epoch,
+                    target,
+                    result,
+                } if epoch == self.account_epoch => self.picture_changed(target, result),
                 Event::ProfileStatus {
                     epoch,
                     person,
@@ -3578,12 +3805,16 @@ impl CaperApp {
             if member.id == account.id {
                 member.username.clone_from(username);
                 member.display_name.clone_from(name);
+                member.avatar_asset.clone_from(&account.avatar_asset);
+                member.avatar_url.clone_from(&account.avatar_url);
             }
         }
         for direct in &mut self.directs {
             if direct.peer.id == account.id {
                 direct.peer.username.clone_from(username);
                 direct.peer.display_name.clone_from(name);
+                direct.peer.avatar_asset.clone_from(&account.avatar_asset);
+                direct.peer.avatar_url.clone_from(&account.avatar_url);
             }
         }
         for person in self
@@ -3595,20 +3826,37 @@ impl CaperApp {
             if person.id == account.id {
                 person.username = Some(username.clone());
                 person.display_name = Some(name.clone());
+                person.avatar_asset.clone_from(&account.avatar_asset);
+                person.avatar_url.clone_from(&account.avatar_url);
             }
         }
-        if let Some(session) = &mut self.session
-            && session.author.id == account.id
-        {
-            session.author.name.clone_from(name);
+        for occupant in self.channel_rosters.values_mut().flatten() {
+            if occupant.id == account.id {
+                occupant.name.clone_from(name);
+                occupant.avatar_asset.clone_from(&account.avatar_asset);
+                occupant.avatar_url.clone_from(&account.avatar_url);
+            }
+        }
+        for report in &mut self.feedback.reports {
+            if report.reporter.id == account.id {
+                report.reporter.username.clone_from(username);
+                report.reporter.display_name.clone_from(name);
+                report
+                    .reporter
+                    .avatar_asset
+                    .clone_from(&account.avatar_asset);
+                report.reporter.avatar_url.clone_from(&account.avatar_url);
+            }
+        }
+        if let Some(session) = &mut self.session {
+            session.author.refresh_profile(account);
         }
         self.timeline.refresh_profile(account);
+        self.navigation_cache.refresh_profile(account);
         for (message, pin) in self.mutations.pins.values_mut() {
             message.refresh_profile(account);
-            if let Some(pin) = pin
-                && pin.author.id == account.id
-            {
-                pin.author.name.clone_from(name);
+            if let Some(pin) = pin {
+                pin.author.refresh_profile(account);
             }
         }
     }
@@ -3727,6 +3975,7 @@ impl CaperApp {
         }
         self.profile_drafts.clear();
         self.profile_picker = None;
+        self.picture_edit = PictureEdit::default();
         self.composer_emoji = None;
         self.profile_navigation = None;
         self.unread_spaces.clear();
@@ -3994,6 +4243,8 @@ impl CaperApp {
             username,
             display_name: author.name.clone(),
             avatar_id: author.avatar_id,
+            avatar_asset: author.avatar_asset.clone(),
+            avatar_url: author.avatar_url.clone(),
         })
     }
 
@@ -4003,6 +4254,8 @@ impl CaperApp {
             username: peer.username.clone(),
             display_name: peer.display_name.clone(),
             avatar_id: peer.avatar_id,
+            avatar_asset: peer.avatar_asset.clone(),
+            avatar_url: peer.avatar_url.clone(),
         }
     }
 
@@ -4780,6 +5033,8 @@ impl CaperApp {
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
+                icon_asset: None,
+                icon_url: None,
                 id: history.space.id.clone(),
                 name: history.space.name.clone(),
                 owner_id: String::new(),
@@ -6224,6 +6479,8 @@ impl CaperApp {
         self.uploads_checked = None;
         self.uploads_pending = false;
         self.media.clear();
+        self.pictures.clear();
+        self.local_pictures.clear();
         self.viewer = None;
         self.attachment_progress.clear();
         self.local_media.clear();
@@ -9142,15 +9399,29 @@ impl CaperApp {
                         let spaces: Vec<_> = self
                             .spaces
                             .iter()
-                            .map(|space| (space.id.clone(), space.name.clone(), space.demo))
+                            .map(|space| {
+                                (
+                                    space.id.clone(),
+                                    space.name.clone(),
+                                    space.demo,
+                                    (space.icon_asset.clone(), space.icon_url.clone()),
+                                )
+                            })
                             .collect();
-                        for (id, name, demo) in spaces {
+                        for (id, name, demo, (icon_asset, icon_url)) in spaces {
                             let active = self.selected_space.as_deref() == Some(&id);
                             let unread = self.unread_spaces.iter().any(|space| space.id == id);
                             let muted = (!demo && self.account.is_some())
                                 .then(|| self.muted_label(&Scope::Space(id.clone())))
                                 .flatten();
-                            let text = if demo {
+                            // A ready icon fills the tile; the initial shows
+                            // while it loads or when it fails.
+                            let icon = pictures::Source::new(&icon_asset, &icon_url)
+                                .filter(|_| !demo)
+                                .and_then(|icon| pictures::texture(ui, icon));
+                            let text = if icon.is_some() {
+                                String::new()
+                            } else if demo {
                                 "C".into()
                             } else {
                                 name.chars()
@@ -9187,6 +9458,9 @@ impl CaperApp {
                                     toned_rounded(ui, tone, 12, true, button)
                                 })
                                 .inner;
+                            if let Some(texture) = icon {
+                                paint_rail_icon(ui, &response, texture, muted.is_some());
+                            }
                             // A muted space gets a bell-slash badge and says so on hover.
                             let response = match &muted {
                                 Some(label) => {
@@ -9248,14 +9522,21 @@ impl CaperApp {
                             ui.add_space(10.0);
                         }
                         for invitation in self.invitations.clone() {
+                            let icon = invitation
+                                .icon()
+                                .and_then(|icon| pictures::texture(ui, icon));
                             // The space's initial, matching web, Apple and Android.
-                            let initial = invitation
-                                .name
-                                .trim()
-                                .chars()
-                                .next()
-                                .map(|letter| letter.to_uppercase().to_string())
-                                .unwrap_or_default();
+                            let initial = if icon.is_some() {
+                                String::new()
+                            } else {
+                                invitation
+                                    .name
+                                    .trim()
+                                    .chars()
+                                    .next()
+                                    .map(|letter| letter.to_uppercase().to_string())
+                                    .unwrap_or_default()
+                            };
                             let invited = (SURFACE, TERRACOTTA, TERRACOTTA_BRIGHT);
                             let response = toned_rounded(
                                 ui,
@@ -9267,8 +9548,12 @@ impl CaperApp {
                                 12,
                                 true,
                                 egui::Button::new(initial).min_size(egui::vec2(40.0, 40.0)),
-                            )
-                            .on_hover_text(format!("Invitation to {}", invitation.name));
+                            );
+                            if let Some(texture) = icon {
+                                paint_rail_icon(ui, &response, texture, false);
+                            }
+                            let response = response
+                                .on_hover_text(format!("Invitation to {}", invitation.name));
                             if response.clicked() {
                                 self.dialog = Some(Dialog::Invitation(invitation));
                             }
@@ -10008,6 +10293,7 @@ impl CaperApp {
                     ),
                     display_name,
                     account.avatar_id,
+                    account.picture(),
                 );
                 // Inside the row, so its highlight spans the whole width.
                 if self_unread {
@@ -10103,6 +10389,7 @@ impl CaperApp {
                         ),
                         &direct.peer.display_name,
                         direct.peer.avatar_id,
+                        direct.peer.picture(),
                     );
                     if opened {
                         self.load_notifications();
@@ -10414,6 +10701,7 @@ impl CaperApp {
                 ),
                 &request.peer.display_name,
                 request.peer.avatar_id,
+                request.peer.picture(),
             );
             // The @username shortens (then goes) before the display name.
             paint_row_name(
@@ -10448,12 +10736,28 @@ impl CaperApp {
         self.voice
             .participants
             .iter()
-            .map(|participant| model::VoiceOccupant {
-                id: participant.id.clone(),
-                avatar_id: participant.avatar_id,
-                name: participant.name.clone(),
-                muted: participant.muted,
-                deafened: participant.deafened,
+            .map(|participant| {
+                // Your own tile shows the picture you just saved, without
+                // leaving the call.
+                let own = self
+                    .account
+                    .as_ref()
+                    .filter(|_| participant.id == self.voice.self_id);
+                model::VoiceOccupant {
+                    id: participant.id.clone(),
+                    avatar_id: participant.avatar_id,
+                    avatar_asset: own.map_or_else(
+                        || participant.avatar_asset.clone(),
+                        |account| account.avatar_asset.clone(),
+                    ),
+                    avatar_url: own.map_or_else(
+                        || participant.avatar_url.clone(),
+                        |account| account.avatar_url.clone(),
+                    ),
+                    name: participant.name.clone(),
+                    muted: participant.muted,
+                    deafened: participant.deafened,
+                }
             })
             .collect()
     }
@@ -10584,6 +10888,7 @@ impl CaperApp {
                     egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
                     &person.name,
                     person.avatar_id,
+                    person.picture(),
                 );
                 if speaking {
                     // Web: caper border plus a 1px caper ring.
@@ -11136,6 +11441,7 @@ impl CaperApp {
                 ),
                 &person.name,
                 person.avatar_id,
+                person.picture(),
             );
         }
         if let Some(count) = count {
@@ -11198,6 +11504,7 @@ impl CaperApp {
                             ui,
                             &participant.name,
                             participant.avatar_id,
+                            participant.picture(),
                             28.0,
                             own && self.voice.speaking(&participant.id, muted, now),
                         );
@@ -11554,6 +11861,7 @@ impl CaperApp {
                     ui,
                     &self.identity_name(),
                     self.account.as_ref().and_then(|account| account.avatar_id),
+                    self.account.as_ref().and_then(Account::picture),
                     30.0,
                     if self.live == "Live" {
                         "online"
@@ -12393,7 +12701,7 @@ impl CaperApp {
                         .presence
                         .get(&member.id)
                         .map_or("unknown", String::as_str);
-                    presence_avatar_on(ui, &member.display_name, member.avatar_id, 30.0, status, ring);
+                    presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
                     if quiet {
                         ui.add(egui::Label::new(RichText::new(&member.display_name).size(12.0).color(MUTED)).truncate());
                     } else {
@@ -12407,7 +12715,7 @@ impl CaperApp {
                     ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
                 }
                 if response.clicked() {
-                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, is_guest: false, admin: false }, &response, true);
+                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: false }, &response, true);
                 }
 
             }
@@ -13698,6 +14006,7 @@ impl CaperApp {
                             |session| session.author.name.clone(),
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
+                        let (avatar_asset, avatar_url) = self.account.as_ref().map_or((None, None), |account| (account.avatar_asset.clone(), account.avatar_url.clone()));
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
@@ -13709,7 +14018,7 @@ impl CaperApp {
                                     reply_connector(ui, source, ui.cursor().top() + 11.0, &pending.id);
                                 }
                             }
-                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, 0.0, |ui| {
+                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, avatar_asset, avatar_url, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, 0.0, |ui| {
                                 // File-only messages have no text row.
                                 if !pending.text.is_empty() {
                                     ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -13953,6 +14262,7 @@ impl CaperApp {
                                     avatar,
                                     &reference.author.name,
                                     reference.author.avatar_id,
+                                    reference.author.picture(),
                                 );
                             }
                             ui.add_enabled(
@@ -15012,7 +15322,14 @@ impl CaperApp {
                 {
                     ui.horizontal(|ui| {
                         for author in &summary.participants {
-                            avatar(ui, &author.name, author.avatar_id, 24.0, false);
+                            avatar(
+                                ui,
+                                &author.name,
+                                author.avatar_id,
+                                author.picture(),
+                                24.0,
+                                false,
+                            );
                         }
                         if thread_summary_link(ui, summary.reply_count).clicked() {
                             self.open_thread(message.id.clone());
@@ -15670,6 +15987,7 @@ impl CaperApp {
     /// Picker results, abandoned drafts, local previews, image loads and
     /// URL refreshes.
     fn attachment_housekeeping(&mut self, context: &egui::Context) {
+        self.picture_housekeeping(context);
         if let Some((person, receiver)) = &self.profile_picker {
             match receiver.try_recv() {
                 Ok(files) => {
@@ -15831,6 +16149,8 @@ impl CaperApp {
                                 username: member.map(|member| member.username.clone()),
                                 display_name: member.map(|member| member.display_name.clone()),
                                 avatar_id: member.and_then(|member| member.avatar_id),
+                                avatar_asset: member.and_then(|member| member.avatar_asset.clone()),
+                                avatar_url: member.and_then(|member| member.avatar_url.clone()),
                             }
                         })
                         .collect(),
@@ -15957,6 +16277,8 @@ impl CaperApp {
                             username: account.username.clone(),
                             display_name: account.display_name.clone(),
                             avatar_id: account.avatar_id,
+                            avatar_asset: account.avatar_asset.clone(),
+                            avatar_url: account.avatar_url.clone(),
                         }
                     }
                     _ => author,
@@ -16033,7 +16355,14 @@ impl CaperApp {
                                     let name = model::reactor_name(author);
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 10.0;
-                                        avatar(ui, &name, author.avatar_id, 28.0, false);
+                                        avatar(
+                                            ui,
+                                            &name,
+                                            author.avatar_id,
+                                            author.picture(),
+                                            28.0,
+                                            false,
+                                        );
                                         ui.vertical(|ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
                                             ui.label(bold(name.as_str()).size(13.0));
@@ -16759,6 +17088,7 @@ impl CaperApp {
                         &person.username,
                         &person.display_name,
                         person.avatar_id,
+                        (&person.avatar_asset, &person.avatar_url),
                     )
                 });
             let reporter = visit.reporter.as_ref().map(|person| {
@@ -16767,9 +17097,12 @@ impl CaperApp {
                     &person.username,
                     &person.display_name,
                     person.avatar_id,
+                    (&person.avatar_asset, &person.avatar_url),
                 )
             });
-            for (id, username, display_name, avatar_id) in reporter.into_iter().chain(known) {
+            for (id, username, display_name, avatar_id, (asset, url)) in
+                reporter.into_iter().chain(known)
+            {
                 if Some(id.as_str()) != me
                     && !people.iter().any(|person| &person.username == username)
                 {
@@ -16777,6 +17110,8 @@ impl CaperApp {
                         username: username.clone(),
                         display_name: display_name.clone(),
                         avatar_id,
+                        avatar_asset: asset.clone(),
+                        avatar_url: url.clone(),
                         invited: false,
                     });
                 }
@@ -16796,7 +17131,9 @@ impl CaperApp {
                     id: peer.id.clone(),
                     username: peer.username.clone(),
                     display_name: peer.display_name.clone(),
-                    avatar_id: None,
+                    avatar_id: peer.avatar_id,
+                    avatar_asset: peer.avatar_asset.clone(),
+                    avatar_url: peer.avatar_url.clone(),
                 });
             let people = known
                 .iter()
@@ -17001,7 +17338,14 @@ impl CaperApp {
                                 .as_deref()
                                 .or(profile.username.as_deref())
                                 .unwrap_or("Profile");
-                            avatar(ui, initial, profile.avatar_id, 48.0, false);
+                            avatar(
+                                ui,
+                                initial,
+                                profile.avatar_id,
+                                profile.picture(),
+                                48.0,
+                                false,
+                            );
                             ui.add_space(4.0);
                             let can_block = !profile.me
                                 && card.pill.entry.id.is_some()
@@ -17230,6 +17574,8 @@ impl CaperApp {
                 username: profile.username.clone().unwrap_or_default(),
                 display_name: profile.title(),
                 avatar_id: profile.avatar_id,
+                avatar_asset: profile.avatar_asset.clone(),
+                avatar_url: profile.avatar_url.clone(),
             };
             if blocked {
                 if let Some(open) = &mut self.mention_card {
@@ -17369,6 +17715,8 @@ impl CaperApp {
             username: username.to_owned(),
             display_name: username.to_owned(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             invited: false,
         }];
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
@@ -17782,8 +18130,9 @@ impl CaperApp {
         } else {
             440.0
         };
+        // Profile and Manage space open with their picture row.
         let dialog_height: f32 = if matches!(dialog, Dialog::ManageSpace) {
-            658.0
+            744.0
         } else if matches!(dialog, Dialog::ManageChannel(_)) {
             618.0
         } else if matches!(dialog, Dialog::Audio) {
@@ -17791,10 +18140,10 @@ impl CaperApp {
         } else if matches!(dialog, Dialog::Connection | Dialog::Diagnostics) {
             520.0
         } else if matches!(dialog, Dialog::Profile) {
-            460.0
+            560.0
         } else if matches!(dialog, Dialog::JoinInvite) {
             // Room for the preview card without resizing the shell.
-            340.0
+            364.0
         } else if settings {
             560.0
         } else if matches!(
@@ -18445,7 +18794,14 @@ impl CaperApp {
             Some(blocks) => {
                 for account in blocks {
                     ui.horizontal(|ui| {
-                        avatar(ui, &account.display_name, account.avatar_id, 24.0, false);
+                        avatar(
+                            ui,
+                            &account.display_name,
+                            account.avatar_id,
+                            account.picture(),
+                            24.0,
+                            false,
+                        );
                         ui.label(&account.display_name);
                         if !account.username.is_empty() {
                             ui.label(
@@ -18478,6 +18834,22 @@ impl CaperApp {
     }
 
     fn profile_dialog(&mut self, ui: &mut egui::Ui) {
+        if let Some(account) = self
+            .account
+            .clone()
+            .filter(|account| account.username.is_some() && account.display_name.is_some())
+        {
+            let name = self.identity_name();
+            self.picture_settings(
+                ui,
+                pictures::Target::Avatar,
+                account.picture().is_some(),
+                |ui, rect| {
+                    paint_avatar(ui, rect, &name, account.avatar_id, account.picture());
+                },
+            );
+            ui.add_space(14.0);
+        }
         ui.label(
             RichText::new(
                 "Your username is unique. Your display name is what people see in conversations.",
@@ -18558,7 +18930,231 @@ impl CaperApp {
         }
     }
 
+    /// Picker results, local previews of uploaded pictures, and picture loads.
+    fn picture_housekeeping(&mut self, context: &egui::Context) {
+        if let Some((target, receiver)) = &self.picture_edit.picking {
+            match receiver.try_recv() {
+                Ok(path) => {
+                    let target = target.clone();
+                    self.picture_edit.picking = None;
+                    if let Some(path) = path {
+                        self.change_picture(target, Some(path));
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.picture_edit.picking = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        for (asset, frames) in std::mem::take(&mut self.local_pictures) {
+            self.pictures.insert(context, &asset, frames);
+        }
+        self.pictures.poll(context);
+    }
+
+    /// The system image picker (the attachment dialog: Win32, or the XDG
+    /// portal on Linux), off the UI thread.
+    fn pick_picture(&mut self, context: &egui::Context, target: pictures::Target) {
+        if self.picture_edit.picking.is_some() || self.picture_edit.busy.is_some() {
+            return;
+        }
+        let title = match target {
+            pictures::Target::Avatar => "Choose a profile picture",
+            pictures::Target::SpaceIcon(_) => "Choose a space icon",
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let context = context.clone();
+        std::thread::spawn(move || {
+            let file = rfd::FileDialog::new()
+                .set_title(title)
+                .add_filter("Pictures", pictures::PICKER_EXTENSIONS)
+                .pick_file();
+            let _ = sender.send(file);
+            context.request_repaint();
+        });
+        self.picture_edit.error = None;
+        self.picture_edit.picking = Some((target, receiver));
+    }
+
+    /// Upload the picture at `path`, or remove the current one (`None`).
+    fn change_picture(&mut self, target: pictures::Target, path: Option<std::path::PathBuf>) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.picture_edit.error = None;
+        self.picture_edit.busy = Some((target.clone(), path.is_none()));
+        self.worker.send(Command::Picture {
+            epoch: self.account_epoch,
+            token,
+            target,
+            path,
+            animate: !motion::reduced(),
+        });
+    }
+
+    fn picture_changed(
+        &mut self,
+        target: pictures::Target,
+        result: Result<pictures::Changed, pictures::Failure>,
+    ) {
+        self.picture_edit.busy = None;
+        match result {
+            Ok(changed) => {
+                self.local_pictures.extend(changed.local);
+                match changed.applied {
+                    pictures::Applied::Account(account) => self.account_changed(account),
+                    pictures::Applied::Space(space) => self.space_icon_changed(&space),
+                }
+            }
+            Err(failure) => {
+                self.picture_edit.unavailable |= failure.unavailable;
+                self.picture_edit.error = Some((target, failure.message));
+            }
+        }
+    }
+
+    /// The account the server returned after a picture change, applied
+    /// everywhere through the own-profile refresh.
+    fn account_changed(&mut self, account: Account) {
+        if self
+            .account
+            .as_ref()
+            .is_some_and(|current| current.id == account.id)
+        {
+            self.account = Some(account);
+            self.refresh_profile_snapshots();
+        }
+    }
+
+    /// A new or removed icon in the rail, the space list and the open space.
+    fn space_icon_changed(&mut self, space: &model::Space) {
+        for listed in self
+            .spaces
+            .iter_mut()
+            .chain(self.detail.iter_mut().map(|detail| &mut detail.space))
+            .filter(|listed| listed.id == space.id)
+        {
+            listed.icon_asset.clone_from(&space.icon_asset);
+            listed.icon_url.clone_from(&space.icon_url);
+        }
+        self.navigation_cache.forget_space(&space.id);
+    }
+
+    /// The picture row of Profile and Manage space settings: the current
+    /// picture shown large, Change, Remove (only with a custom picture), and
+    /// progress or an inline error.
+    fn picture_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        target: pictures::Target,
+        custom: bool,
+        face: impl FnOnce(&egui::Ui, egui::Rect),
+    ) {
+        let (title, change_label, remove_label) = match target {
+            pictures::Target::Avatar => ("Profile picture", "Change picture", "Remove picture"),
+            pictures::Target::SpaceIcon(_) => ("Space icon", "Change icon", "Remove icon"),
+        };
+        let edit = &self.picture_edit;
+        let busy = edit
+            .busy
+            .as_ref()
+            .filter(|(busy, _)| *busy == target)
+            .map(|(_, removing)| *removing);
+        let idle = edit.busy.is_none() && edit.picking.is_none() && self.token.is_some();
+        let error = edit
+            .error
+            .as_ref()
+            .filter(|(failed, _)| *failed == target)
+            .map(|(_, error)| error.clone());
+        let unavailable = edit.unavailable;
+        let (mut change, mut remove) = (false, false);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(72.0, 72.0), egui::Sense::hover());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Image,
+                    true,
+                    if custom {
+                        format!("Current {}", title.to_lowercase())
+                    } else {
+                        format!("No custom {}", title.to_lowercase())
+                    },
+                )
+            });
+            face(ui, rect);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(bold(title).size(13.0));
+                ui.label(
+                    RichText::new("PNG, JPEG, WebP or GIF. GIFs animate.")
+                        .size(11.5)
+                        .color(MUTED),
+                );
+                ui.horizontal(|ui| {
+                    change = secondary_button(ui, change_label, idle && !unavailable).clicked();
+                    if custom {
+                        ui.spacing_mut().button_padding.x = 12.0;
+                        remove = toned(
+                            ui,
+                            REMOVE_TONE,
+                            idle,
+                            egui::Button::new(bold(remove_label).size(12.0))
+                                .min_size(egui::vec2(0.0, 36.0)),
+                        )
+                        .clicked();
+                    }
+                });
+            });
+        });
+        if let Some(removing) = busy {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0).color(MUTED));
+                ui.label(
+                    RichText::new(if removing {
+                        "Removing…"
+                    } else {
+                        "Uploading…"
+                    })
+                    .size(12.0)
+                    .color(MUTED),
+                );
+            });
+        } else if let Some(error) = error {
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        } else if unavailable {
+            ui.label(RichText::new(pictures::UNAVAILABLE).size(12.0).color(MUTED));
+        }
+        if change {
+            self.pick_picture(ui.ctx(), target);
+        } else if remove {
+            self.change_picture(target, None);
+        }
+    }
+
     fn space_dialog(&mut self, ui: &mut egui::Ui, manage: bool) {
+        if manage
+            && self.owner()
+            && let Some(space) = self.detail.as_ref().map(|detail| {
+                // The rail's copy changes first; the open space follows.
+                self.spaces
+                    .iter()
+                    .find(|listed| listed.id == detail.space.id)
+                    .unwrap_or(&detail.space)
+                    .clone()
+            })
+        {
+            let custom = space.icon().is_some();
+            self.picture_settings(
+                ui,
+                pictures::Target::SpaceIcon(space.id.clone()),
+                custom,
+                |ui, rect| paint_space_tile(ui, rect, 16.0, &space.name, space.icon()),
+            );
+            ui.add_space(14.0);
+        }
         let name = name_field(ui, "Space name", &mut self.form_name, "Studio", None);
         if !manage && self.focus_dialog_field {
             name.request_focus();
@@ -18649,6 +19245,7 @@ impl CaperApp {
                         ui,
                         &invitation.display_name,
                         invitation.avatar_id,
+                        invitation.picture(),
                         24.0,
                         false,
                     );
@@ -18912,13 +19509,37 @@ impl CaperApp {
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(bold(&preview.space.name).size(16.0));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let (tile, _) =
+                            ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+                        paint_space_tile(ui, tile, 12.0, &preview.space.name, preview.space.icon());
+                        ui.label(bold(&preview.space.name).size(16.0));
+                    });
                     ui.add_space(4.0);
+                    // As tall as the text lines below it.
+                    ui.spacing_mut().interact_size.y = 18.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let inviter = &preview.inviter;
+                        avatar(
+                            ui,
+                            &inviter.display_name,
+                            inviter.avatar_id,
+                            inviter.picture(),
+                            18.0,
+                            false,
+                        );
+                        ui.label(
+                            RichText::new(format!("Invited by {}", inviter.display_name))
+                                .size(12.8)
+                                .color(MUTED),
+                        );
+                    });
                     for line in [
                         preview
                             .already_member
                             .then(|| "You’re already a member".into()),
-                        Some(format!("Invited by {}", preview.inviter.display_name)),
                         Some(invites::plural(preview.member_count, "member")),
                         preview
                             .channel
@@ -19168,6 +19789,7 @@ impl CaperApp {
                         ui,
                         &invitation.display_name,
                         invitation.avatar_id,
+                        invitation.picture(),
                         24.0,
                         false,
                     );
@@ -19361,7 +19983,14 @@ impl CaperApp {
             .show(ui, |ui| {
                 for member in members {
                     ui.horizontal(|ui| {
-                        avatar(ui, &member.display_name, member.avatar_id, 30.0, false);
+                        avatar(
+                            ui,
+                            &member.display_name,
+                            member.avatar_id,
+                            member.picture(),
+                            30.0,
+                            false,
+                        );
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&member.display_name).strong());
                             ui.label(
@@ -20960,6 +21589,7 @@ fn feedback_row(
                     rect,
                     &report.reporter.display_name,
                     report.reporter.avatar_id,
+                    report.reporter.picture(),
                 );
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -21175,7 +21805,7 @@ fn message_row<R>(
                         egui::Sense::hover()
                     },
                 );
-                paint_avatar(ui, rect, &author.name, author.avatar_id);
+                paint_avatar(ui, rect, &author.name, author.avatar_id, author.picture());
                 if profile {
                     if response.hovered() {
                         ui.painter()
@@ -21986,7 +22616,7 @@ fn person_suggestion(
 ) -> egui::Response {
     suggestion_row(
         ui,
-        Some((&person.display_name, person.avatar_id)),
+        Some((&person.display_name, person.avatar_id, person.picture())),
         &person.display_name,
         &if person.invited {
             format!("@{} · Already invited", person.username)
@@ -22021,7 +22651,7 @@ fn suggestion_fill(ui: &egui::Ui, width: f32, index: usize, selected: &mut usize
 /// detail, each truncated to the row.
 fn suggestion_row(
     ui: &mut egui::Ui,
-    avatar: Option<(&str, Option<i32>)>,
+    avatar: Option<(&str, Option<i32>, Option<pictures::Source<'_>>)>,
     title: &str,
     detail: &str,
     width: f32,
@@ -22046,7 +22676,7 @@ fn suggestion_row(
         egui::vec2(24.0, 24.0),
     );
     match avatar {
-        Some((name, avatar_id)) => paint_avatar(ui, slot, name, avatar_id),
+        Some((name, avatar_id, picture)) => paint_avatar(ui, slot, name, avatar_id, picture),
         None => {
             painter.circle_filled(slot.center(), slot.width() / 2.0, RAISED);
             painter.text(
@@ -22227,11 +22857,91 @@ fn date_divider(ui: &mut egui::Ui, label: &str) {
     });
 }
 
+/// A space's tile: its icon covering the rounded square when one is ready,
+/// else its initial on neutral chrome (also while the icon loads or after it
+/// failed).
+fn paint_space_tile(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    corner: f32,
+    name: &str,
+    icon: Option<pictures::Source<'_>>,
+) {
+    if let Some(icon) = icon
+        && ui.is_rect_visible(rect)
+        && pictures::paint(ui, rect, corner, icon)
+    {
+        return;
+    }
+    ui.painter().rect(
+        rect,
+        corner,
+        SURFACE,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        space_initial(name),
+        egui::FontId::proportional(rect.height() * 0.4),
+        TEXT,
+    );
+}
+
+/// A space icon over its rail tile, inside the tile's border so selection
+/// and invitation outlines still show; badges are painted after it.
+fn paint_rail_icon(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    texture: egui::TextureId,
+    muted: bool,
+) {
+    let face = response.rect.shrink(1.0);
+    egui::Image::new((texture, face.size()))
+        .corner_radius(11)
+        .tint(if muted {
+            Color32::from_gray(150)
+        } else {
+            Color32::WHITE
+        })
+        .paint_at(ui, face);
+    if response.hovered() || response.has_focus() {
+        ui.painter()
+            .rect_filled(face, 11.0, Color32::from_white_alpha(14));
+    }
+}
+
+/// The space's initial, matching web, Apple and Android.
+fn space_initial(name: &str) -> String {
+    name.trim()
+        .chars()
+        .next()
+        .unwrap_or('C')
+        .to_uppercase()
+        .to_string()
+}
+
 fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
     avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
 }
 
-fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
+/// A person's custom picture filling the circle when it is ready, else their
+/// saved mascot (also while the picture loads or after it failed), else the
+/// initial of `name`.
+fn paint_avatar(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    name: &str,
+    avatar_id: Option<i32>,
+    picture: Option<pictures::Source<'_>>,
+) {
+    if let Some(picture) = picture
+        && ui.is_rect_visible(rect)
+        && pictures::paint(ui, rect, rect.width() / 2.0, picture)
+    {
+        return;
+    }
     if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
         egui::Image::from_bytes(
             format!("bytes://caper-avatars-v3/{index}.svg"),
@@ -22259,11 +22969,12 @@ fn avatar(
     ui: &mut egui::Ui,
     name: &str,
     avatar_id: Option<i32>,
+    picture: Option<pictures::Source<'_>>,
     size: f32,
     speaking: bool,
 ) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    paint_avatar(ui, rect, name, avatar_id);
+    paint_avatar(ui, rect, name, avatar_id, picture);
     if speaking {
         // Web: caper border with a soft 3px caper halo.
         ui.painter().circle_stroke(
@@ -22277,8 +22988,15 @@ fn avatar(
     rect
 }
 
-fn presence_avatar(ui: &mut egui::Ui, name: &str, avatar_id: Option<i32>, size: f32, status: &str) {
-    presence_avatar_on(ui, name, avatar_id, size, status, SIDEBAR);
+fn presence_avatar(
+    ui: &mut egui::Ui,
+    name: &str,
+    avatar_id: Option<i32>,
+    picture: Option<pictures::Source<'_>>,
+    size: f32,
+    status: &str,
+) {
+    presence_avatar_on(ui, name, avatar_id, picture, size, status, SIDEBAR);
 }
 
 /// `presence_avatar` on another background, so the dot's ring matches it.
@@ -22286,11 +23004,12 @@ fn presence_avatar_on(
     ui: &mut egui::Ui,
     name: &str,
     avatar_id: Option<i32>,
+    picture: Option<pictures::Source<'_>>,
     size: f32,
     status: &str,
     ring: Color32,
 ) {
-    let rect = avatar(ui, name, avatar_id, size, false);
+    let rect = avatar(ui, name, avatar_id, picture, size, false);
     let dot = egui::pos2(rect.right() - 2.0, rect.bottom() - 3.0);
     ui.painter().circle_filled(dot, 5.0, ring);
     ui.painter().circle_filled(
@@ -25150,6 +25869,8 @@ mod tests {
                 username: "kim".into(),
                 display_name: "TEST FIXTURE Kim".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "1".into(),
@@ -25226,6 +25947,8 @@ mod tests {
             author: crate::model::Author {
                 id: "fixture-maya".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Maya".into(),
                 is_guest: false,
                 admin: false,
@@ -26970,6 +27693,8 @@ mod tests {
         owner.admin_result(crate::worker::AdminResult::InvitationCreated(Member {
             id: "invited00001".into(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             username: "fixture_invitee".into(),
             display_name: "TEST FIXTURE invitee".into(),
             owner: false,
@@ -27276,12 +28001,16 @@ mod tests {
                             username: Some("maya".into()),
                             display_name: Some(maya.into()),
                             avatar_id: Some(15),
+                            avatar_asset: None,
+                            avatar_url: None,
                         },
                         model::Reactor {
                             id: "fixture-owner".into(),
                             username: Some("fixture_owner".into()),
                             display_name: Some("Fixture Owner".into()),
                             avatar_id: Some(0),
+                            avatar_asset: None,
+                            avatar_url: None,
                         },
                     ],
                 }],
@@ -28329,6 +29058,8 @@ mod tests {
                 username: "maya".into(),
                 display_name: "TEST FIXTURE Maya".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "0".into(),
@@ -28789,6 +29520,8 @@ mod tests {
                         vec![crate::model::VoiceOccupant {
                             id: "spectator".into(),
                             avatar_id: Some(15),
+                            avatar_asset: None,
+                            avatar_url: None,
                             name: "Maya".into(),
                             muted: false,
                             deafened: false,
@@ -28953,6 +29686,8 @@ mod tests {
         let person = |id: &str, name: &str| crate::model::VoiceOccupant {
             id: id.into(),
             avatar_id: Some(15),
+            avatar_asset: None,
+            avatar_url: None,
             name: name.into(),
             muted: false,
             deafened: false,
@@ -29208,6 +29943,8 @@ mod tests {
                     vec![crate::model::VoiceOccupant {
                         id: "maya".into(),
                         avatar_id: Some(15),
+                        avatar_asset: None,
+                        avatar_url: None,
                         name: "Maya".into(),
                         muted: false,
                         deafened: false,
@@ -29307,6 +30044,8 @@ mod tests {
             vec![crate::model::VoiceOccupant {
                 id: "maya".into(),
                 avatar_id: Some(15),
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Maya".into(),
                 muted: false,
                 deafened: false,
@@ -31043,6 +31782,8 @@ mod tests {
             .map(|index| model::Member {
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
+                avatar_asset: None,
+                avatar_url: None,
                 username: format!("member_{index}"),
                 display_name: format!("Member {index}"),
                 owner: false,
@@ -31215,6 +31956,8 @@ mod tests {
                 result: Ok(crate::worker::AdminResult::InvitationCreated(Member {
                     id: "invited00002".into(),
                     avatar_id: None,
+                    avatar_asset: None,
+                    avatar_url: None,
                     username: "newperson".into(),
                     display_name: "New Person".into(),
                     owner: false,
@@ -31464,6 +32207,8 @@ mod tests {
         app.token = Some("fixture-token".into());
         let open = app.detail.clone().unwrap();
         let invited = Space {
+            icon_asset: None,
+            icon_url: None,
             id: "space0000002".into(),
             name: "Invited Studio".into(),
             owner_id: "someone".into(),
@@ -31613,6 +32358,8 @@ mod tests {
             username: Some("maya".into()),
             display_name: Some("Maya B".into()),
             avatar_id: Some(15),
+            avatar_asset: None,
+            avatar_url: None,
         };
         events
             .send(answer(Ok(model::Reactors {
@@ -31628,6 +32375,8 @@ mod tests {
                                 username: Some("fixture_owner".into()),
                                 display_name: Some("Fixture Owner".into()),
                                 avatar_id: Some(0),
+                                avatar_asset: None,
+                                avatar_url: None,
                             },
                         ],
                     },
@@ -31642,6 +32391,8 @@ mod tests {
                             username: Some("alex".into()),
                             display_name: None,
                             avatar_id: None,
+                            avatar_asset: None,
+                            avatar_url: None,
                         }],
                     },
                 ],
@@ -31725,6 +32476,8 @@ mod tests {
             username: username.into(),
             display_name: username.to_uppercase(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
         };
         let loaded = |generation, result| crate::worker::Event::PeopleLoaded { generation, result };
         events
@@ -31760,6 +32513,8 @@ mod tests {
             username: "newbie".into(),
             display_name: "Newbie".into(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             team: false,
         };
         assert_eq!(
@@ -31811,6 +32566,8 @@ mod tests {
                 username: "zoe".into(),
                 display_name: "Zoe".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
             }),
             origin: crate::feedback::Origin::Inbox,
         });
@@ -31849,6 +32606,8 @@ mod tests {
                         username: "maya".into(),
                         display_name: "TEST FIXTURE Maya".into(),
                         avatar_id: None,
+                        avatar_asset: None,
+                        avatar_url: None,
                         team: false,
                     },
                     last_seq: "0".into(),
@@ -32245,6 +33004,216 @@ mod tests {
             .and_then(|card| card.pill.entry.id.as_deref())
     }
 
+    /// Painted rectangles filled with `texture`.
+    fn painted(
+        output: &egui::FullOutput,
+        texture: egui::TextureId,
+    ) -> Vec<egui::epaint::RectShape> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect
+                        .brush
+                        .as_ref()
+                        .is_some_and(|brush| brush.fill_texture_id == texture) =>
+                {
+                    Some(rect.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn custom_pictures_replace_mascots_everywhere_with_the_mascot_as_fallback() {
+        let (context, mut app) = fixture("parity-pictures");
+        app.attachment_housekeeping(&context);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let gif = app.pictures.texture_id("fixture-gif").expect("decoded GIF");
+        let still = app
+            .pictures
+            .texture_id("fixture-still")
+            .expect("decoded still");
+        let icon = app
+            .pictures
+            .texture_id("fixture-icon")
+            .expect("decoded icon");
+        // Maya: her message rows, member row and the voice roster faces.
+        let maya = painted(&output, gif);
+        assert!(maya.len() >= 3, "{} GIF faces", maya.len());
+        for face in &maya {
+            assert_eq!(
+                f32::from(face.corner_radius.nw),
+                (face.rect.width() / 2.0).round(),
+                "pictures keep the round avatar shape"
+            );
+        }
+        assert!(painted(&output, still).len() >= 2, "Alex's still");
+        // The rail tile, inside its border, with the tile's corners.
+        let tiles = painted(&output, icon);
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].rect.size(), egui::vec2(38.0, 38.0));
+        assert_eq!(tiles[0].corner_radius, egui::CornerRadius::same(11));
+        assert!(!shows(&output, "F"), "no initial under a ready icon");
+        // Your own picture never loads here: no texture, the mascot shows.
+        assert!(app.pictures.texture_id("fixture-missing").is_none());
+        assert!(shows(
+            &output,
+            "TEST FIXTURE — local sample data, not a live conversation."
+        ));
+    }
+
+    #[test]
+    fn profile_pictures_change_remove_and_refresh_every_own_identity() {
+        use crate::pictures::{Applied, Changed, Failure, Target};
+        let (context, mut app) = fixture("parity-pictures-profile");
+        app.attachment_housekeeping(&context);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Profile picture"));
+        assert!(shows(&output, "Change picture") && shows(&output, "Remove picture"));
+        let gif = app.pictures.texture_id("fixture-gif").unwrap();
+        assert!(
+            painted(&output, gif)
+                .iter()
+                .any(|face| face.rect.size() == egui::vec2(72.0, 72.0)),
+            "the current picture, large"
+        );
+        app.session = Some(model::ChatSession {
+            token: "fixture-chat".into(),
+            author: app
+                .timeline
+                .messages()
+                .find(|message| message.author.id == "fixture-owner")
+                .unwrap()
+                .author
+                .clone(),
+        });
+        // Removing: progress, then the mascot everywhere and no Remove.
+        app.picture_edit.busy = Some((Target::Avatar, true));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Removing…"));
+        let mut account = app.account.clone().unwrap();
+        account.avatar_asset = None;
+        app.picture_changed(
+            Target::Avatar,
+            Ok(Changed {
+                applied: Applied::Account(account.clone()),
+                local: None,
+            }),
+        );
+        let own_members = |app: &CaperApp| {
+            app.detail
+                .as_ref()
+                .unwrap()
+                .members
+                .iter()
+                .find(|member| member.id == "fixture-owner")
+                .unwrap()
+                .avatar_asset
+                .clone()
+        };
+        assert_eq!(own_members(&app), None);
+        assert!(
+            app.timeline
+                .messages()
+                .filter(|message| message.author.id == "fixture-owner")
+                .all(|message| message.author.avatar_asset.is_none())
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        // An upload shows its own decoded picture at once, everywhere you appear.
+        account.avatar_asset = Some("new-picture".into());
+        account.avatar_url = Some("https://cdn.caper.chat/assets/new-picture?exp=1&sig=x".into());
+        let frames = vec![(
+            egui::ColorImage::filled([4, 4], egui::Color32::WHITE),
+            Duration::ZERO,
+        )];
+        app.picture_changed(
+            Target::Avatar,
+            Ok(Changed {
+                applied: Applied::Account(account),
+                local: Some(("new-picture".into(), frames)),
+            }),
+        );
+        assert_eq!(own_members(&app).as_deref(), Some("new-picture"));
+        assert!(
+            app.timeline
+                .messages()
+                .filter(|message| message.author.id == "fixture-owner")
+                .all(|message| message.author.avatar_asset.as_deref() == Some("new-picture"))
+        );
+        assert_eq!(
+            app.session.as_ref().unwrap().author.avatar_asset.as_deref(),
+            Some("new-picture")
+        );
+        app.attachment_housekeeping(&context);
+        let picture = app
+            .pictures
+            .texture_id("new-picture")
+            .expect("shown without a download");
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            painted(&output, picture).len() >= 3,
+            "settings, account bar and your messages"
+        );
+        // Failures stay inline; a 503 steps the upload control back.
+        app.picture_changed(Target::Avatar, Err(Failure::new(crate::pictures::INVALID)));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, crate::pictures::INVALID));
+        app.picture_changed(
+            Target::Avatar,
+            Err(crate::pictures::failure(
+                Some(503),
+                None,
+                "",
+                &Target::Avatar,
+            )),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(app.picture_edit.unavailable);
+        assert!(shows(&output, crate::pictures::UNAVAILABLE));
+    }
+
+    #[test]
+    fn space_icons_are_owner_only_and_update_the_rail_and_open_space() {
+        use crate::pictures::{Applied, Changed, Target};
+        let (context, mut app) = fixture("parity-pictures-space");
+        app.attachment_housekeeping(&context);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Space icon"));
+        assert!(shows(&output, "Change icon") && shows(&output, "Remove icon"));
+        let icon = app.pictures.texture_id("fixture-icon").unwrap();
+        assert!(
+            painted(&output, icon)
+                .iter()
+                .any(|tile| tile.rect.size() == egui::vec2(72.0, 72.0)),
+            "the current icon, large"
+        );
+        let mut space = app.spaces[1].clone();
+        space.icon_asset = None;
+        app.picture_changed(
+            Target::SpaceIcon(space.id.clone()),
+            Ok(Changed {
+                applied: Applied::Space(space),
+                local: None,
+            }),
+        );
+        assert_eq!(app.spaces[1].icon(), None);
+        assert_eq!(app.detail.as_ref().unwrap().space.icon(), None);
+        let output = render(&mut app, &context, vec![]);
+        assert!(painted(&output, icon).is_empty(), "back to the initial");
+        assert!(shows(&output, "F") && !shows(&output, "Remove icon"));
+        // Members who don't own the space never see icon controls.
+        app.account.as_mut().unwrap().id = "fixture-maya".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Space icon") && !shows(&output, "Change icon"));
+    }
+
     #[test]
     fn author_avatars_names_and_member_rows_open_profiles() {
         let context = egui::Context::default();
@@ -32456,6 +33425,8 @@ mod tests {
         app.token = Some("account-token".into());
         app.spaces.extend([
             model::Space {
+                icon_asset: None,
+                icon_url: None,
                 id: "another-space".into(),
                 name: "Another owned space".into(),
                 owner_id: "fixture-owner".into(),
@@ -32463,6 +33434,8 @@ mod tests {
                 demo: false,
             },
             model::Space {
+                icon_asset: None,
+                icon_url: None,
                 id: "someone-elses-space".into(),
                 name: "Not owned".into(),
                 owner_id: "fixture-maya".into(),
@@ -32470,6 +33443,8 @@ mod tests {
                 demo: false,
             },
             model::Space {
+                icon_asset: None,
+                icon_url: None,
                 id: "demo-space".into(),
                 name: "Owned demo".into(),
                 owner_id: "fixture-owner".into(),
@@ -32648,6 +33623,8 @@ mod tests {
         );
         app.token = Some("account-token".into());
         app.spaces.push(model::Space {
+            icon_asset: None,
+            icon_url: None,
             id: "another-space".into(),
             name: "Another owned space".into(),
             owner_id: "fixture-owner".into(),
@@ -33017,6 +33994,8 @@ mod tests {
                 username: "alex".into(),
                 display_name: "Alex".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "0".into(),
@@ -34588,6 +35567,8 @@ mod tests {
         Account {
             id: "account".into(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
@@ -34689,6 +35670,8 @@ mod tests {
             author: Author {
                 id: "account".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Member".into(),
                 is_guest: false,
                 admin: false,
@@ -35062,6 +36045,8 @@ mod tests {
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "3".into(),
@@ -35120,6 +36105,8 @@ mod tests {
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "0".into(),
@@ -35274,9 +36261,9 @@ mod tests {
         );
     }
 
-    /// Like `text_position`, scrolling the open dialog down until `label` is
-    /// painted: Manage space's Invite link section can push Members below
-    /// the fold at the test window size.
+    /// Like `text_position`, scrolling the open dialog down until `label`'s
+    /// click point is inside its clip: Manage space's icon and Invite link
+    /// sections can push Members below the fold at the test window size.
     fn scrolled_text_position(
         app: &mut CaperApp,
         context: &egui::Context,
@@ -35284,7 +36271,12 @@ mod tests {
     ) -> egui::Pos2 {
         for _ in 0..12 {
             let output = render(app, context, vec![]);
-            if shows(&output, label) {
+            let unclipped = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == label
+                        && shape.clip_rect.contains(text.pos + egui::vec2(4.0, 4.0)))
+            });
+            if unclipped {
                 return text_position(&output, label);
             }
             render(
@@ -36780,6 +37772,8 @@ mod tests {
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
         let mut app = CaperApp::new(&context, api, Some("signed-out"));
         let first = Space {
+            icon_asset: None,
+            icon_url: None,
             id: "first-account-space".into(),
             name: "First".into(),
             owner_id: "account".into(),
@@ -36823,6 +37817,8 @@ mod tests {
             account(true),
             Spaces {
                 spaces: vec![Space {
+                    icon_asset: None,
+                    icon_url: None,
                     id: "first-account-space".into(),
                     name: "First".into(),
                     owner_id: "account".into(),
@@ -36985,6 +37981,8 @@ mod tests {
             .map(|index| Member {
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
+                avatar_asset: None,
+                avatar_url: None,
                 username: format!("member_{index}"),
                 display_name: format!("Member {index}"),
                 owner: index == 0,
@@ -36992,6 +37990,8 @@ mod tests {
             .collect();
         let detail = SpaceDetail {
             space: Space {
+                icon_asset: None,
+                icon_url: None,
                 id: "space".into(),
                 name: "Space".into(),
                 owner_id: "member-0".into(),
@@ -37030,6 +38030,8 @@ mod tests {
             author: Author {
                 id: "author".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Member".into(),
                 is_guest: false,
                 admin: false,
@@ -37099,6 +38101,8 @@ mod tests {
             author: Author {
                 id: "self".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Self".into(),
                 is_guest: false,
                 admin: false,
@@ -37107,6 +38111,8 @@ mod tests {
         let author = Author {
             id: "other".into(),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
             name: "Other".into(),
             is_guest: false,
             admin: false,
@@ -37739,6 +38745,8 @@ mod tests {
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 team: false,
             },
             last_seq: "9".into(),

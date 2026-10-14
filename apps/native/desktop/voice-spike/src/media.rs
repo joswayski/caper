@@ -133,6 +133,11 @@ pub struct Participant {
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture (`avatarAsset`/`avatarUrl`); old servers omit it.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub name: String,
     pub muted: bool,
     pub deafened: bool,
@@ -2307,6 +2312,8 @@ mod tests {
             participants: vec![Participant {
                 id: "p1".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "Test fixture".into(),
                 muted: false,
                 deafened: false,

@@ -201,6 +201,13 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   about** sets the account level. Settings load after sign-in and when
   Settings or a menu opens; changes apply at once and revert with an inline
   error if saving fails.
+- Custom profile pictures and space icons: **Change picture**/**Remove picture**
+  in Edit profile and **Change icon**/**Remove icon** in Manage space (owners),
+  through the native file dialog. GIFs upload unchanged (≤ 5 MB, ≤ 1024 px);
+  other images become a 512 px square WebP; HEIC/AVIF are refused locally.
+  Pictures replace the mascot in every avatar and icons fill rail tiles, cached by
+  asset ID (≤ 128 px, 64 MiB of frames). GIFs animate; reduced motion shows the
+  first frame. `--fixture parity-pictures` (also `-profile`, `-space`) shows them.
 - Message reactions. Hovering or keyboard-focusing a reaction chip shows who
   reacted (large emoji plus the shared summary wording); names load on demand
   with history's read access and are cached per message reaction revision.

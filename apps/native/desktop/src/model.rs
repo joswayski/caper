@@ -1,7 +1,54 @@
 #![allow(dead_code)] // Complete API contracts retain fields not yet rendered by this client.
 
+use crate::pictures::Source;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// `picture()` on every person shape that carries `avatarId`.
+macro_rules! pictured {
+    ($($kind:ty),* $(,)?) => {$(
+        impl $kind {
+            /// The custom picture shown instead of the saved mascot, if any.
+            pub fn picture(&self) -> Option<Source<'_>> {
+                Source::new(&self.avatar_asset, &self.avatar_url)
+            }
+        }
+    )*};
+}
+
+pictured!(
+    Account,
+    Inviter,
+    DirectPeer,
+    BlockedAccount,
+    VoiceOccupant,
+    Member,
+    Person,
+    Author,
+    Reactor,
+);
+
+impl Space {
+    /// The custom icon shown instead of the space's initial, if any.
+    pub fn icon(&self) -> Option<Source<'_>> {
+        Source::new(&self.icon_asset, &self.icon_url)
+    }
+}
+
+impl Author {
+    /// Your saved name and picture on one of your own identities. The saved
+    /// mascot (`avatarId`) never changes with a picture.
+    pub fn refresh_profile(&mut self, account: &Account) {
+        if self.id != account.id {
+            return;
+        }
+        if let Some(name) = &account.display_name {
+            self.name.clone_from(name);
+        }
+        self.avatar_asset.clone_from(&account.avatar_asset);
+        self.avatar_url.clone_from(&account.avatar_url);
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +56,12 @@ pub struct Account {
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub username: Option<String>,
     pub display_name: Option<String>,
     #[serde(default)]
@@ -24,6 +77,14 @@ pub struct Account {
 pub struct Inviter {
     pub username: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -53,6 +114,12 @@ pub struct Space {
     pub inviter: Option<Inviter>,
     #[serde(default)]
     pub demo: bool,
+    /// A custom icon replacing the initial: `iconAsset` is its stable cache
+    /// key and `iconUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub icon_asset: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -86,6 +153,12 @@ pub struct DirectPeer {
     pub display_name: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     /// The server's "Caper" account: messages there reach the feedback team.
     /// Old servers omit it.
     #[serde(default)]
@@ -138,6 +211,12 @@ pub struct BlockedAccount {
     pub display_name: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -221,6 +300,12 @@ pub struct VoiceOccupant {
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub name: String,
     pub muted: bool,
     pub deafened: bool,
@@ -232,6 +317,12 @@ pub struct Member {
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub username: String,
     pub display_name: String,
     pub owner: bool,
@@ -248,6 +339,12 @@ pub struct Person {
     pub display_name: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -313,6 +410,12 @@ pub struct Author {
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_asset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub name: String,
     pub is_guest: bool,
     /// A Caper admin (feedback team member) wrote it, stamped by the server
@@ -551,6 +654,12 @@ pub struct Reactor {
     pub display_name: Option<String>,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// A custom picture replacing the mascot: `avatarAsset` is its stable
+    /// cache key and `avatarUrl` its signed URL. Old servers omit both.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -609,6 +718,8 @@ pub fn reactor_list(
                 username: None,
                 display_name: None,
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
             });
         } else {
             authors.push(
@@ -921,20 +1032,16 @@ impl MessageVersions {
 
 impl Message {
     pub fn refresh_profile(&mut self, account: &Account) {
-        let Some(name) = &account.display_name else {
-            return;
-        };
-        let author = |value: &mut Author| {
-            if value.id == account.id {
-                value.name.clone_from(name);
-            }
-        };
+        let author = |value: &mut Author| value.refresh_profile(account);
         author(&mut self.author);
         if let Some(pin) = &mut self.pin {
             author(&mut pin.author);
         }
         if let Some(thread) = &mut self.thread {
             thread.participants.iter_mut().for_each(author);
+        }
+        if let Some(reply) = &mut self.reply_to {
+            author(&mut reply.author);
         }
         if let Some(original) = self
             .forward
@@ -1201,13 +1308,9 @@ impl Timeline {
         {
             message.refresh_profile(account);
         }
-        if let Some(name) = &account.display_name {
-            for summary in self.thread_summaries.values_mut() {
-                for author in &mut summary.participants {
-                    if author.id == account.id {
-                        author.name.clone_from(name);
-                    }
-                }
+        for summary in self.thread_summaries.values_mut() {
+            for author in &mut summary.participants {
+                author.refresh_profile(account);
             }
         }
     }
@@ -1956,6 +2059,156 @@ mod tests {
         assert_eq!(saved.avatar_id, Some(16));
     }
 
+    #[test]
+    fn custom_pictures_and_space_icons_parse_and_stay_optional() {
+        let url = "https://cdn.caper.chat/assets/pic00000001?exp=1790000000&sig=abc";
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "id": "u1", "avatarId": 16, "avatarAsset": "pic00000001", "avatarUrl": url
+        }))
+        .unwrap();
+        assert_eq!(
+            account.picture(),
+            Some(Source {
+                asset: "pic00000001",
+                url: Some(url)
+            })
+        );
+        assert_eq!(account.avatar_id, Some(16), "the saved mascot stays");
+        // Old servers, and servers without CDN signing.
+        let old: Member = serde_json::from_value(serde_json::json!({
+            "id": "u2", "avatarId": 3, "username": "maya", "displayName": "Maya", "owner": false
+        }))
+        .unwrap();
+        assert_eq!(old.picture(), None);
+        let unsigned: Person = serde_json::from_value(serde_json::json!({
+            "id": "u3", "username": "alex", "displayName": "Alex", "avatarAsset": "pic3"
+        }))
+        .unwrap();
+        assert_eq!(
+            unsigned.picture(),
+            Some(Source {
+                asset: "pic3",
+                url: None
+            })
+        );
+        // Authors round-trip without adding fields old payloads never had.
+        let author: Author = serde_json::from_value(serde_json::json!({
+            "id": "u1", "name": "Ana", "isGuest": false, "avatarAsset": "pic1", "avatarUrl": url
+        }))
+        .unwrap();
+        assert_eq!(author.avatar_asset.as_deref(), Some("pic1"));
+        let plain: Author =
+            serde_json::from_value(serde_json::json!({"id":"u2","name":"Bo","isGuest":false}))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"id":"u2","avatarId":null,"name":"Bo","isGuest":false})
+        );
+        let reactors: Reactors = serde_json::from_value(serde_json::json!({
+            "messageId": "m", "reactionSeq": "1",
+            "reactions": [{"emoji": "👍", "authors": [{"id": "u1", "avatarAsset": "pic1"}]}]
+        }))
+        .unwrap();
+        assert_eq!(
+            reactors.reactions[0].authors[0].picture().unwrap().asset,
+            "pic1"
+        );
+        let peer: DirectConversations = serde_json::from_value(serde_json::json!({
+            "conversations": [{"id": "dm", "peer": {"id": "u1", "username": "ana",
+                "displayName": "Ana", "avatarAsset": "pic1", "avatarUrl": url},
+                "lastSeq": "1", "readSeq": "1"}]
+        }))
+        .unwrap();
+        assert_eq!(peer.conversations[0].peer.picture().unwrap().url, Some(url));
+        let roster: Vec<VoiceOccupant> = serde_json::from_value(serde_json::json!([
+            {"id": "u1", "name": "Ana", "muted": false, "deafened": false, "avatarAsset": "pic1"}
+        ]))
+        .unwrap();
+        assert!(roster[0].picture().is_some());
+        // Spaces: the list, invitations (with the inviter's picture) and detail.
+        let spaces: Spaces = serde_json::from_value(serde_json::json!({
+            "spaces": [{"id": "s1", "name": "Studio", "ownerId": "u1",
+                "iconAsset": "icon1", "iconUrl": url}],
+            "invitations": [{"id": "s2", "name": "Den", "ownerId": "u2",
+                "inviter": {"username": "bo", "displayName": "Bo", "avatarId": 4,
+                    "avatarAsset": "pic2"}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            spaces.spaces[0].icon(),
+            Some(Source {
+                asset: "icon1",
+                url: Some(url)
+            })
+        );
+        assert_eq!(spaces.invitations[0].icon(), None);
+        let inviter = spaces.invitations[0].inviter.as_ref().unwrap();
+        assert_eq!(
+            (inviter.avatar_id, inviter.picture().unwrap().asset),
+            (Some(4), "pic2")
+        );
+        let detail: SpaceDetail = serde_json::from_value(serde_json::json!({
+            "space": {"id": "s1", "name": "Studio", "ownerId": "u1", "iconAsset": ""},
+            "channels": [], "members": []
+        }))
+        .unwrap();
+        assert_eq!(detail.space.icon(), None, "an empty asset is no icon");
+    }
+
+    #[test]
+    fn profile_refresh_applies_and_clears_your_picture_on_own_identities() {
+        let url = "https://cdn.caper.chat/assets/pic00000009?exp=1&sig=x";
+        let mut account: Account = serde_json::from_value(serde_json::json!({
+            "id": "author", "username": "ana", "displayName": "Ana", "avatarId": 4,
+            "avatarAsset": "pic00000009", "avatarUrl": url
+        }))
+        .unwrap();
+        let mut own = message("self", 3);
+        let mut other = message("other", 4);
+        other.author.id = "other".into();
+        other.author.avatar_asset = Some("their-picture".into());
+        other.reply_to = Some(MessageReply::from_message(&own));
+        own.thread = Some(ThreadSummary {
+            reply_count: 1,
+            participants: vec![own.author.clone(), other.author.clone()],
+            seq: "4".into(),
+        });
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![own, other], "4").unwrap();
+        timeline.refresh_profile(&account);
+        let messages: Vec<_> = timeline.messages().collect();
+        assert_eq!(messages[0].author.picture().unwrap().asset, "pic00000009");
+        assert_eq!(
+            messages[0].author.avatar_id, None,
+            "the mascot is untouched"
+        );
+        let participants = &messages[0].thread.as_ref().unwrap().participants;
+        assert_eq!(participants[0].avatar_url.as_deref(), Some(url));
+        assert_eq!(
+            participants[1].avatar_asset.as_deref(),
+            Some("their-picture"),
+            "other people keep theirs"
+        );
+        let reply = messages[1].reply_to.as_ref().unwrap();
+        assert_eq!(reply.author.picture().unwrap().asset, "pic00000009");
+        assert_eq!(
+            messages[1].author.avatar_asset.as_deref(),
+            Some("their-picture")
+        );
+        // Removing the picture returns every own identity to the mascot.
+        account.avatar_asset = None;
+        account.avatar_url = None;
+        timeline.refresh_profile(&account);
+        let messages: Vec<_> = timeline.messages().collect();
+        assert_eq!(messages[0].author.picture(), None);
+        assert_eq!(
+            messages[1].reply_to.as_ref().unwrap().author.picture(),
+            None
+        );
+        assert_eq!(messages[0].author.name, "Ana");
+        assert_eq!(timeline.cursor(), "4");
+    }
+
     fn message(id: &str, seq: u64) -> Message {
         Message {
             id: id.into(),
@@ -1966,6 +2219,8 @@ mod tests {
             author: Author {
                 id: "author".into(),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
                 name: "A".into(),
                 is_guest: false,
                 admin: false,
@@ -2921,6 +3176,8 @@ mod tests {
             username: username.map(str::to_owned),
             display_name: display_name.map(str::to_owned),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
         }
     }
 
@@ -3018,6 +3275,8 @@ mod tests {
             username: None,
             display_name: name.map(Into::into),
             avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
         };
         let groups = vec![
             ReactorGroup {
@@ -3056,6 +3315,8 @@ mod tests {
                 username: Some("x_user".into()),
                 display_name: Some("  ".into()),
                 avatar_id: None,
+                avatar_asset: None,
+                avatar_url: None,
             }),
             "x_user"
         );
@@ -3137,6 +3398,8 @@ mod tests {
                 username: "alex".into(),
                 display_name: "Alex".into(),
                 avatar_id: Some(16),
+                avatar_asset: None,
+                avatar_url: None,
             }
         );
         assert_eq!(people.people[1].avatar_id, None);

@@ -164,6 +164,34 @@ impl Api {
         Ok(account)
     }
 
+    /// `DELETE /api/account/avatar`: back to the saved mascot.
+    pub fn remove_avatar(&self, token: &str) -> Result<Account, ApiError> {
+        self.request(
+            Method::DELETE,
+            "api/account/avatar",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// `DELETE /api/spaces/{space}/icon` (owners): back to the initial.
+    pub fn remove_space_icon(&self, token: &str, space: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::DELETE,
+            &format!("api/spaces/{space}/icon"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    /// The next conversation mints a session carrying the account's current
+    /// name and picture.
+    pub fn reset_chat_session(&self) {
+        *self.chat_session.lock().unwrap() = None;
+    }
+
     pub fn spaces(&self, token: &str) -> Result<Spaces, ApiError> {
         self.request(Method::GET, "api/spaces", Some(token), None, None)
     }
@@ -1232,11 +1260,16 @@ pub(crate) fn media_url(url: &str) -> Option<Url> {
 fn upload_failure(response: Response) -> UploadError {
     let status = response.status();
     let body = response.json::<Value>().ok();
-    if body.as_ref().and_then(|body| body["code"].as_str()) == Some("storage_full") {
+    let code = body
+        .as_ref()
+        .and_then(|body| body["code"].as_str())
+        .map(str::to_owned);
+    if code.as_deref() == Some("storage_full") {
         return UploadError {
             message: "You’ve used all of your file storage.".into(),
             storage_full: true,
             status: Some(status.as_u16()),
+            code,
         };
     }
     let mut error = if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -1249,6 +1282,7 @@ fn upload_failure(response: Response) -> UploadError {
         )
     };
     error.status = Some(status.as_u16());
+    error.code = code;
     error
 }
 

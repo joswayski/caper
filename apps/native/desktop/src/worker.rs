@@ -18,6 +18,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    /// Upload (`path`) or remove (`None`) a profile picture or space icon.
+    /// `animate` decodes an uploaded GIF's frames for immediate display.
+    Picture {
+        epoch: u64,
+        token: String,
+        target: crate::pictures::Target,
+        path: Option<PathBuf>,
+        animate: bool,
+    },
     SendProfile {
         epoch: u64,
         person: String,
@@ -549,6 +558,11 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    Picture {
+        epoch: u64,
+        target: crate::pictures::Target,
+        result: Result<crate::pictures::Changed, crate::pictures::Failure>,
+    },
     ProfileStatus {
         epoch: u64,
         person: String,
@@ -1366,6 +1380,20 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 result,
             }
         }
+        Command::Picture {
+            epoch,
+            token,
+            target,
+            path,
+            animate,
+        } => Event::Picture {
+            result: match path {
+                Some(path) => crate::pictures::upload(api, &token, &target, &path, animate),
+                None => crate::pictures::remove(api, &token, &target),
+            },
+            epoch,
+            target,
+        },
         Command::WhatsNew => Event::WhatsNew(api.whats_new()),
         Command::Upload {
             key,

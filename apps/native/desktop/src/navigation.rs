@@ -1,4 +1,4 @@
-use crate::model::{History, SpaceDetail};
+use crate::model::{Account, History, SpaceDetail};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -162,6 +162,46 @@ impl NavigationCache {
                 .space
                 .as_ref()
                 .and_then(|space| self.last_channel.get(space).cloned()),
+        }
+    }
+
+    /// Your saved name and picture in retained conversations and prefetched
+    /// member lists, so navigating back never shows the old ones.
+    pub fn refresh_profile(&mut self, account: &Account) {
+        let (visited, reads) = (
+            self.visited.values_mut(),
+            self.prefetches
+                .values_mut()
+                .filter_map(|prefetch| prefetch.read.as_mut()),
+        );
+        let mut details = Vec::new();
+        let mut histories: Vec<&mut History> = visited.collect();
+        for read in reads {
+            histories.extend(read.history.as_mut());
+            details.extend(read.detail.as_mut());
+        }
+        for history in histories {
+            for message in history
+                .messages
+                .iter_mut()
+                .chain(history.pinned_messages.iter_mut())
+            {
+                message.refresh_profile(account);
+            }
+        }
+        for member in details
+            .into_iter()
+            .flat_map(|detail| &mut detail.members)
+            .filter(|member| member.id == account.id)
+        {
+            if let Some(name) = &account.display_name {
+                member.display_name.clone_from(name);
+            }
+            if let Some(username) = &account.username {
+                member.username.clone_from(username);
+            }
+            member.avatar_asset.clone_from(&account.avatar_asset);
+            member.avatar_url.clone_from(&account.avatar_url);
         }
     }
 

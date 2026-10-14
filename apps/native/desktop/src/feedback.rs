@@ -15,6 +15,17 @@ pub struct Reporter {
     pub display_name: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
+    /// Their custom picture (`avatarAsset`/`avatarUrl`); old servers omit it.
+    #[serde(default)]
+    pub avatar_asset: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+}
+
+impl Reporter {
+    pub fn picture(&self) -> Option<crate::pictures::Source<'_>> {
+        crate::pictures::Source::new(&self.avatar_asset, &self.avatar_url)
+    }
 }
 
 /// Where a report was written. A DM is named after both people in it ("Alice
