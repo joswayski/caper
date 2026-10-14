@@ -298,6 +298,12 @@ extension SlideDrawer {
     /// recorded for it (a model change) slides there from where it was.
     func position(rest: CGFloat, fallback: DrawerSettle.Timing, reduceMotion: Bool, at date: Date = Date()) -> CGFloat {
         if let drag { return drag }
+        // A released swipe records its slide just before it switches views. Until
+        // the switch reaches this view, keep drawing the slide: drawing the rest it
+        // leaves jumped the layer back for a frame.
+        if let settle, settle.leads, settle.to != rest, self.rest == rest, !settle.finished(at: date) {
+            return settle.value(at: date)
+        }
         if let previous = self.rest, previous != rest, settle?.to != rest {
             let from = settle.flatMap { $0.finished(at: date) ? nil : $0.value(at: date) } ?? previous
             settle = reduceMotion ? nil : DrawerSettle(from: from, to: rest, start: date, timing: fallback)
@@ -336,12 +342,15 @@ struct DrawerSettle {
     let to: CGFloat
     let start: Date
     let timing: Timing
+    /// Recorded by a released swipe just before the switch that rests it at `to`.
+    let leads: Bool
 
-    init(from: CGFloat, to: CGFloat, start: Date = Date(), timing: Timing) {
+    init(from: CGFloat, to: CGFloat, start: Date = Date(), timing: Timing, leads: Bool = false) {
         self.from = from
         self.to = to
         self.start = start
         self.timing = timing
+        self.leads = leads
     }
 
     func value(at date: Date = Date()) -> CGFloat {
@@ -446,7 +455,8 @@ private struct SideClip: Shape {
 /// its recorded slide, or at rest. SwiftUI's own curves add up where they
 /// overlap: a release's drag and navigation changes each animated the layer,
 /// which could draw it past its rest, on the far side, before it eased back.
-/// One recorded curve, evaluated per frame, stays between its ends.
+/// One recorded curve, evaluated per frame, stays between its ends, and the
+/// layer moves by `DrawnOffset`, which no SwiftUI animation can interpolate.
 private struct DrawerPose<Drawer: SlideDrawer & Observable>: ViewModifier {
     /// Where it rests: 1 open, 0 closed.
     let rest: CGFloat
@@ -469,7 +479,7 @@ private struct DrawerPose<Drawer: SlideDrawer & Observable>: ViewModifier {
         TimelineView(.animation(paused: !sliding)) { context in
             let drawn = pose(sliding ? position(at: context.date) : current)
             // Nothing else animates the pose: it is already where it belongs this frame.
-            content.transaction { $0.animation = nil } body: { $0.offset(drawn.offset).opacity(drawn.opacity) }
+            content.transaction { $0.animation = nil } body: { $0.modifier(DrawnOffset(offset: drawn.offset)).opacity(drawn.opacity) }
         }
         .task(id: sliding ? settle?.start : nil) {
             guard sliding else { return }
@@ -480,6 +490,22 @@ private struct DrawerPose<Drawer: SlideDrawer & Observable>: ViewModifier {
 
     private func position(at date: Date) -> CGFloat {
         drawer?.position(rest: rest, fallback: fallback, reduceMotion: reduceMotion, at: date) ?? rest
+    }
+}
+
+/// Moves a drawer's layer exactly where `DrawerPose` puts it. Unlike `offset`,
+/// it has no animatable data, so a transaction that still carries an animation
+/// to the layer (a swipe's release) can't interpolate it past either end:
+/// releasing a swipe toward the conversation drew it left of the screen's edge,
+/// over Browse's far side, before it eased back.
+private struct DrawnOffset: GeometryEffect {
+    let offset: CGSize
+    var animatableData: EmptyAnimatableData {
+        get { EmptyAnimatableData() }
+        set {}
+    }
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: offset.width, y: offset.height))
     }
 }
 
@@ -652,7 +678,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                                     distance: Drawer.opening * value.translation.width, travel: drawer.travel,
                                     shadow: drawerShadowRoom)
         let timing = DrawerSettle.Timing.release(release)
-        drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
+        drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing, leads: release.commit)
         SwipeTapGuard.release()
         withAnimation(reduceMotion ? nil : timing.animation) {
             drawer.drag = nil

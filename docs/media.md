@@ -8237,3 +8237,32 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs \
    completed pictures as unsent files and purges their objects after 24 hours.
    For a rollback longer than that, fix forward or clear `users.avatar_asset` and
    `spaces.icon_asset` first. Leave the migration in place.
+
+## iOS drawer releases still bounced off the far side (October 14, 2026)
+
+On an iPhone build that has `DrawerPose`, releasing a swipe from Browse toward
+the conversation past halfway still drew the conversation left of the screen's
+edge, with Browse showing on its right, before it eased back. The October 12
+fix assumed the scoped `transaction` kept every SwiftUI animation off the pose;
+it was never checked on a device. Positions computed per frame stay between 0
+and 1, so a pose past the edge can only come from SwiftUI interpolating the
+layer's offset.
+
+- **Apple:** drawer layers move by `DrawnOffset`, a geometry effect with no
+  animatable data. Whatever transaction reaches the layer, SwiftUI draws it
+  exactly where `DrawerPose` puts it and can't interpolate past either end.
+- **Apple:** a released swipe's recorded slide `leads` its view switch. If the
+  layer is drawn before the switch reaches it, it keeps drawing the slide
+  instead of the rest it is leaving. Before, that drew Browse's pose for a
+  frame, a jump an animation could then carry past the conversation's rest.
+- Web, Android and the Rust desktop keep one position per drawer animated by a
+  single curve. They were reviewed again and have no counterpart.
+
+| Client | Validation |
+| --- | --- |
+| Apple iOS/macOS | Swift 6.1.2 on Linux: the drawer logic from `CaperView.swift` and all 17 `DrawerMotionTests` (2 new) compile and pass against a bezier `UnitCurve` stand-in. The new release test fails without the `leads` guard. `DrawnOffset` and its SwiftUI use were not compiled (no Xcode). No simulator or device run. |
+
+Verify on an iPhone: drag from Browse past the middle toward the conversation,
+slowly and with a flick, and let go. The conversation carries on to the left edge
+and stops there, never passing it. Do the same back to Browse and for the member
+list, and check that a finger still catches a moving slide.

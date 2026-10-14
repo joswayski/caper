@@ -149,6 +149,41 @@ final class DrawerMotionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(drawn.min() ?? -1, 0, "Never drawn past the conversation's rest, on Browse's side")
     }
 
+    func testReleasedSwipeKeepsSlidingUntilItsSwitchArrives() {
+        // Browse open, dragged 70% of the way closed, then released past halfway.
+        let start = Date(timeIntervalSinceReferenceDate: 2500)
+        let drawer = TestDrawer()
+        _ = drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start)
+        drawer.drag = 0.3
+        _ = drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start)
+        let release = DrawerRelease(open: true, position: 0.3, velocity: -600, distance: -280, travel: drawer.travel)
+        XCTAssertTrue(release.commit)
+        drawer.settle = DrawerSettle(from: 0.3, to: release.target, start: start, timing: .release(release), leads: true)
+        drawer.drag = nil
+        // Drawn before the switch reaches it: still on the slide, not back on Browse.
+        XCTAssertEqual(drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start), 0.3, accuracy: 0.0001)
+        let early = drawer.position(rest: 1, fallback: .tap, reduceMotion: false, at: start.addingTimeInterval(0.02))
+        XCTAssertLessThan(early, 0.3)
+        // Once it arrives, the same slide carries on to the conversation.
+        let drawn = frames(drawer, rest: 0, from: start.addingTimeInterval(0.02))
+        XCTAssertEqual(drawn.first ?? -1, early, accuracy: 0.0001)
+        XCTAssertEqual(drawn.last ?? -1, 0, accuracy: 0.0001)
+        for (earlier, later) in zip(drawn, drawn.dropFirst()) {
+            XCTAssertLessThanOrEqual(later, earlier + 0.0001, "Only moves toward the conversation")
+        }
+        XCTAssertTrue(drawn.allSatisfy { (0...1).contains($0) })
+    }
+
+    func testButtonSlideStillWaitsForItsRest() {
+        // Only a released swipe leads its switch; a slide whose view never
+        // changes stays at rest, as before.
+        let start = Date(timeIntervalSinceReferenceDate: 2700)
+        let drawer = TestDrawer()
+        _ = drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: start)
+        drawer.settle = DrawerSettle(from: 0, to: 1, start: start, timing: .tap)
+        XCTAssertEqual(drawer.position(rest: 0, fallback: .tap, reduceMotion: false, at: start.addingTimeInterval(0.1)), 0)
+    }
+
     func testModelChangeSlidesFromWhereTheDrawerWas() {
         let start = Date(timeIntervalSinceReferenceDate: 3000)
         let drawer = TestDrawer()
