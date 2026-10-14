@@ -7,7 +7,11 @@ public struct VoiceSpectator: Decodable, Identifiable, Equatable, Sendable {
     public let name: String
     public let muted: Bool
     public let deafened: Bool
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 }
+
+extension VoiceSpectator: AvatarPictureCarrying {}
 
 /// Read-only occupancy. Its one Gateway multiplexes at most 24 token-free media
 /// subscriptions; VoiceClient's participant-token subscription owns actual tracks.

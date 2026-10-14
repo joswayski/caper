@@ -17,8 +17,9 @@ internal fun usernameSuggestions(people: List<MentionCandidate>, text: String, l
     return if (query.isEmpty()) emptyList() else rankPeople(people, query).take(limit)
 }
 
-private fun Person.candidate() = MentionCandidate(username, displayName, avatarId = avatarId)
-private fun Member.candidate(invited: Boolean = false) = MentionCandidate(username, displayName, avatarId = avatarId, invited = invited)
+private fun Person.candidate() = MentionCandidate(username, displayName, avatarId = avatarId, avatarAsset = avatarAsset, avatarUrl = avatarUrl)
+private fun Member.candidate(invited: Boolean = false) =
+    MentionCandidate(username, displayName, avatarId = avatarId, invited = invited, avatarAsset = avatarAsset, avatarUrl = avatarUrl)
 
 /** Pending invitees stay suggestible so the owner sees they're already invited. */
 private fun List<Member>.invitedCandidates() = map { it.candidate(invited = true) }

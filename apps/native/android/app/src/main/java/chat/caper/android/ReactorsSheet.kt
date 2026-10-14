@@ -129,7 +129,10 @@ internal const val ShowReactorsLabel = "Show who reacted"
     }
 
     val authors = list?.reactions?.firstOrNull { it.emoji == current.emoji }?.authors?.map { author ->
-        if (account != null && author.id == account.id) author.copy(username = account.username, displayName = account.displayName) else author
+        if (account != null && author.id == account.id) {
+            val (asset, url) = ownPicture(account, author.avatarAsset, author.avatarUrl)
+            author.copy(username = account.username, displayName = account.displayName, avatarAsset = asset, avatarUrl = url)
+        } else author
     }
     val name = remember(current.emoji) { EmojiArtwork.name(context, current.emoji) }
     val summary = authors?.let { reactionSummary(it, selfId, name, current.emoji) }
@@ -217,7 +220,7 @@ internal const val ShowReactorsLabel = "Show who reacted"
         Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 18.dp, vertical = 6.dp).semantics(mergeDescendants = true) {},
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(name, 34.dp, avatarId = reactor.avatarId)
+        Avatar(name, 34.dp, avatarId = reactor.avatarId, avatarAsset = reactor.avatarAsset, avatarUrl = reactor.avatarUrl)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(name, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)

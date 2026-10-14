@@ -16,15 +16,24 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
 @Serializable data class MediaStatus(val enabled: Boolean = false)
-/** [feedbackTeam]: a Caper feedback team member, who gets the Feedback inbox; absent (false) for everyone else. */
+/**
+ * [feedbackTeam]: a Caper feedback team member, who gets the Feedback inbox; absent (false) for everyone else.
+ * [avatarAsset]/[avatarUrl]: a custom picture in place of the saved mascot (see [pictureOf]); every
+ * person object below that carries `avatarId` may carry them too.
+ */
 @Serializable data class Account(
     val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null,
     val feedbackTeam: Boolean = false,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
 )
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
 @Serializable data class Inviter(val username: String, val displayName: String)
-@Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null)
+/** [iconAsset]/[iconUrl]: the owner's icon in place of the initial (see [pictureOf]). */
+@Serializable data class Space(
+    val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null,
+    val iconAsset: String? = null, val iconUrl: String? = null,
+)
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
 @Serializable data class UnreadChannel(val id: String, val lastSeq: String)
@@ -39,7 +48,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val joined: Boolean = true,
 )
 /** [team]: the server's "Caper" account; every top-level message to it reaches the Caper team. */
-@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false)
+@Serializable data class DirectPeer(
+    val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means
@@ -56,13 +68,19 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val incoming: Boolean get() = status == "incoming"
     val outgoing: Boolean get() = status == "outgoing"
 }
-@Serializable data class BlockedAccount(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class BlockedAccount(
+    val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 @Serializable data class BlockList(val blocks: List<BlockedAccount>)
 /** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
 @Serializable data class DirectPrivacy(val directMessages: String)
 @Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
 /** `GET /api/people`: accounts sharing a space or a DM with you (never you), by username. */
-@Serializable data class Person(val id: String, val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class Person(
+    val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
 /**
@@ -87,12 +105,17 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 )
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 /** An invite link's inviter or creator: public identity only. */
-@Serializable data class InvitePerson(val username: String, val displayName: String, val avatarId: Int? = null)
+@Serializable data class InvitePerson(
+    val username: String, val displayName: String, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 @Serializable data class InviteNamed(val name: String)
+/** The previewed space: its name and, when the owner set one, its icon. */
+@Serializable data class InviteSpace(val name: String, val iconAsset: String? = null, val iconUrl: String? = null)
 /** `GET /api/invites/{code}`: what a live link shares before joining. [channel] is its public landing channel. */
 @Serializable data class InvitePreview(
     val code: String,
-    val space: InviteNamed,
+    val space: InviteSpace,
     val channel: InviteNamed? = null,
     val inviter: InvitePerson,
     val memberCount: Int = 0,
@@ -113,7 +136,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val createdAt: String,
 )
 @Serializable data class InviteLinkList(val links: List<InviteLink>)
-@Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
+@Serializable data class Member(
+    val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 @Serializable data class SpaceDetail(
     val space: Space,
     val channels: List<Channel>,
@@ -132,7 +158,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     fun memberOrder(channelId: String?): List<Member> = memberGroups(channelId)?.let { it.first + it.second } ?: members
 }
 /** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
-@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null, val admin: Boolean = false)
+@Serializable data class ChatAuthor(
+    val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null, val admin: Boolean = false,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 /**
  * One `content.mentions` entry: `user` (with `id` and `username`), `everyone`, `here` or
  * `feedback` (the message asked the Caper team to look: `@feedback`/`@caper`).
@@ -234,6 +263,8 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
 @Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
 @Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
+/** A completed picture upload, already applied: the [account] (profile picture) or the [space] (icon) with it. */
+@Serializable data class PictureCompletion(val id: String, val account: Account? = null, val space: Space? = null)
 
 /** Keeps a malformed or future-shaped mention entry from failing the whole message. */
 object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(ListSerializer(MessageMention.serializer())) {
@@ -251,7 +282,10 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
 /** `GET /api/feedback` (feedback team only): who wrote `@feedback`. */
-@Serializable data class FeedbackReporter(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null) {
+@Serializable data class FeedbackReporter(
+    val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+) {
     val name: String get() = displayName ?: username ?: "Someone"
 }
 /** Where a report was written: a space channel, or a DM named after its people ([direct]). */
@@ -282,7 +316,10 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 @Serializable data class MessageVersions(val messageId: String, val versions: List<MessageVersion>, val hasMore: Boolean)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 /** One person who reacted; `id` matches the snapshot's `authorIds`. */
-@Serializable data class Reactor(val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null)
+@Serializable data class Reactor(
+    val id: String, val username: String? = null, val displayName: String? = null, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
+)
 @Serializable data class ReactorGroup(val emoji: String, val authors: List<Reactor>)
 /** Who reacted to a message, per emoji in snapshot order and people in reaction order. */
 @Serializable data class ReactorList(val messageId: String, val reactionSeq: String, val reactions: List<ReactorGroup>)
@@ -395,6 +432,8 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
     val deafened: Boolean,
     val tracks: List<MediaTrack>,
     val avatarId: Int? = null,
+    val avatarAsset: String? = null,
+    val avatarUrl: String? = null,
 )
 @Serializable data class MediaSnapshot(
     val participants: List<Participant>,
@@ -404,8 +443,9 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
 @Serializable data class SpectatorParticipant(
     val id: String, val name: String,
     val muted: Boolean, val deafened: Boolean, val avatarId: Int? = null,
+    val avatarAsset: String? = null, val avatarUrl: String? = null,
 ) {
-    fun asParticipant() = Participant(id, name, muted, deafened, emptyList(), avatarId)
+    fun asParticipant() = Participant(id, name, muted, deafened, emptyList(), avatarId, avatarAsset, avatarUrl)
 }
 @Serializable data class SpectatorSnapshot(
     val participants: List<SpectatorParticipant>,
@@ -444,6 +484,33 @@ fun voiceRootKey(demo: Boolean, channelId: String) = if (demo) "" else channelId
 
 /** A valid persisted v1 atlas tile, or null for old/invalid API data. */
 fun caperAvatarIndex(avatarId: Int?): Int? = avatarId?.takeIf { it in 0..799 }
+
+/**
+ * A custom profile picture or space icon. [asset] is stable until the picture changes and keys
+ * every cache; the signed [url] re-signs daily, so it never does.
+ */
+data class Picture(val asset: String, val url: String)
+
+/**
+ * The picture to show, or null to keep the saved mascot / space initial: old servers send
+ * neither field, and a server without CDN signing sends the asset without a URL.
+ */
+fun pictureOf(asset: String?, url: String?): Picture? {
+    if (asset.isNullOrBlank() || url.isNullOrBlank() || asset.length > 64 || asset.any { it.isWhitespace() || it.isISOControl() }) return null
+    if (!url.startsWith("https://") && !url.startsWith("http://")) return null
+    return Picture(asset, url)
+}
+
+/**
+ * Your current picture for a retained snapshot of you ([asset], [url]): the account's, keeping
+ * the snapshot's URL when it names the same asset (it may be signed more recently), and none
+ * once you removed it, which brings back the same saved mascot.
+ */
+internal fun ownPicture(own: Account, asset: String?, url: String?): Pair<String?, String?> = when {
+    own.avatarAsset == null -> null to null
+    asset == own.avatarAsset && url != null -> asset to url
+    else -> own.avatarAsset to own.avatarUrl
+}
 
 /** Web's Join tooltip while availability is unknown or false; null once available. */
 fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
@@ -555,27 +622,42 @@ data class AppUiState(
     val visit: VisitUi? = null,
     /** Ask Android 13+ for notification permission now; set once per account by app open. */
     val pushPrompt: Boolean = false,
+    /** Your picture ([PROFILE_PICTURE_KEY]) or a space's icon (by space ID) being changed, or why that failed. */
+    val pictureSaves: Map<String, PictureSaveUi> = emptyMap(),
     val busy: Boolean = false,
     val error: String? = null,
 ) {
     val drafts: List<DraftAttachmentUi> get() = selectedChannel?.id?.let { attachmentDrafts[AttachmentDraftTarget(it)] }.orEmpty()
     val attachmentError: String? get() = selectedChannel?.id?.let { attachmentErrors[AttachmentDraftTarget(it)] }
 
-    /** Resolve retained identity snapshots from the account without touching conversation state. */
+    /**
+     * Resolve retained identity snapshots from the account without touching conversation state:
+     * your saved name and your current picture ([ownPicture]) wherever you appear.
+     */
     fun withAccountProfile(): AppUiState {
         val own = account ?: return this
         val username = own.username ?: return this
         val name = own.displayName ?: return this
-        fun member(value: Member) = if (value.id == own.id) value.copy(username = username, displayName = name) else value
-        fun author(value: ChatAuthor) = if (value.id == own.id) value.copy(name = name) else value
+        fun member(value: Member) = if (value.id == own.id) {
+            val (asset, url) = ownPicture(own, value.avatarAsset, value.avatarUrl)
+            value.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url)
+        } else value
+        fun author(value: ChatAuthor) = if (value.id == own.id) {
+            val (asset, url) = ownPicture(own, value.avatarAsset, value.avatarUrl)
+            value.copy(name = name, avatarAsset = asset, avatarUrl = url)
+        } else value
         fun message(value: ChatMessage): ChatMessage = value.copy(
             author = author(value.author),
             pin = value.pin?.let { it.copy(author = author(it.author)) },
             thread = value.thread?.let { it.copy(participants = it.participants.map(::author)) },
             forward = value.forward?.let { it.copy(message = it.message?.let(::message)) },
+            replyTo = value.replyTo?.let { it.copy(author = author(it.author)) },
         )
         val directs = directConversations.map { conversation ->
-            if (conversation.peer.id == own.id) conversation.copy(peer = conversation.peer.copy(username = username, displayName = name)) else conversation
+            if (conversation.peer.id == own.id) {
+                val (asset, url) = ownPicture(own, conversation.peer.avatarAsset, conversation.peer.avatarUrl)
+                conversation.copy(peer = conversation.peer.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url))
+            } else conversation
         }
         return copy(
             selectedSpace = selectedSpace?.let { it.copy(members = it.members.map(::member)) },
@@ -588,6 +670,13 @@ data class AppUiState(
             pinnedMessages = pinnedMessages.map(::message),
             pendingMessage = pendingMessage?.let { it.copy(author = it.author?.let(::author)) },
             pinIntents = pinIntents.mapValues { (_, intent) -> intent.copy(message = message(intent.message), pin = intent.pin?.let { it.copy(author = author(it.author)) }) },
+            replyTargets = replyTargets.mapValues { (_, reply) -> reply.copy(author = author(reply.author)) },
+            feedback = if (feedback.reports.none { it.reporter.id == own.id }) feedback else feedback.copy(reports = feedback.reports.map { report ->
+                if (report.reporter.id != own.id) report else {
+                    val (asset, url) = ownPicture(own, report.reporter.avatarAsset, report.reporter.avatarUrl)
+                    report.copy(reporter = report.reporter.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url))
+                }
+            }),
         )
     }
 
@@ -704,6 +793,14 @@ data class DraftAttachmentUi(
     val attachment: ChatAttachment? = null,
     val uploadedAt: Long? = null,
 )
+
+/** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */
+const val PROFILE_PICTURE_KEY = "avatar"
+
+/** A picture change in flight, [uploading] a new one or [removing] it, or the inline [error] it ended with. */
+data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null) {
+    val busy: Boolean get() = uploading || removing
+}
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)
 data class PinSaveUi(val active: Boolean, val saving: Boolean = true, val error: String? = null)

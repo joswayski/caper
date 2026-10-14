@@ -1731,7 +1731,10 @@ final class CaperParityUITests: XCTestCase {
         // The dialog is capped to the window, so Delete sits below its fold. A
         // Mac click is not scrolled into view: it would land on the backdrop,
         // which dismisses the dialog. Scroll to it as a person would.
-        app.scrollViews["space-settings-scroll"].scroll(byDeltaX: 0, deltaY: -600)
+        // The space icon section sits above, so it can take more than one scroll.
+        for _ in 0..<3 where !delete.isHittable {
+            app.scrollViews["space-settings-scroll"].scroll(byDeltaX: 0, deltaY: -600)
+        }
         XCTAssertTrue(delete.isHittable, "Delete space must be reachable by scrolling the dialog")
         #endif
         delete.tap()
@@ -2381,7 +2384,15 @@ final class CaperParityUITests: XCTestCase {
         capture("manage-space", app: app)
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
-        app.buttons["Remove"].firstMatch.tap()
+        let remove = app.buttons["Remove"].firstMatch
+        #if os(macOS)
+        // The space icon section above can push members below the fold, and a
+        // Mac click is not scrolled into view.
+        for _ in 0..<3 where !remove.isHittable {
+            app.scrollViews["space-settings-scroll"].scroll(byDeltaX: 0, deltaY: -200)
+        }
+        #endif
+        remove.tap()
         // Removal asks first, naming the person and the space.
         let confirmRemove = app.buttons["confirm-destructive-action"]
         XCTAssertTrue(confirmRemove.waitForExistence(timeout: 5), "Remove must ask for confirmation")

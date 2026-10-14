@@ -227,13 +227,18 @@ import kotlinx.coroutines.delay
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(Modifier.size(48.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, Border)) {
-                    Box(contentAlignment = Alignment.Center) { Text(initialOf(shown.space.name), fontWeight = FontWeight.Black, color = TextMuted) }
+                    SpaceTileFace(shown.space.name, shown.space.iconAsset, shown.space.iconUrl, 48.dp, TextMuted)
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(shown.space.name, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     if (shown.alreadyMember) Text("You’re already a member", color = TextMuted, fontSize = 12.sp)
-                    Text("Invited by ${shown.inviter.displayName}", color = TextMuted, fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(shown.inviter.displayName, 16.dp, avatarId = shown.inviter.avatarId,
+                            avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Invited by ${shown.inviter.displayName}", color = TextMuted, fontSize = 12.sp)
+                    }
                     Text(listOfNotNull(inviteMemberCount(shown.memberCount), shown.channel?.let { "Opens in #${it.name}" }).joinToString(" · "),
                         color = TextMuted, fontSize = 12.sp)
                 }

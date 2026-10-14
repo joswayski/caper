@@ -44,7 +44,7 @@ import java.util.UUID
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId)
+            Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId, avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl)
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (message.author.admin) AdminBadge()
             if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)

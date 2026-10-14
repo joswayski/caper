@@ -223,7 +223,7 @@ struct MentionSuggestionLabel: View {
         let member = candidate.kind == .member
         HStack(spacing: 10) {
             if member {
-                Avatar(name: candidate.displayName, size: 28, avatarID: candidate.avatarId)
+                Avatar(name: candidate.displayName, size: 28, avatarID: candidate.avatarId, picture: candidate.picture)
             } else {
                 Image(systemName: "at").font(.system(size: 13, weight: .semibold)).foregroundStyle(CaperTheme.muted)
                     .frame(width: 28, height: 28)

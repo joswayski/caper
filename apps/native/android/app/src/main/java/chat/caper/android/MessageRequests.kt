@@ -70,7 +70,8 @@ import kotlinx.coroutines.launch
                 .clickable { select(request) }.padding(horizontal = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Avatar(request.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = request.peer.avatarId)
+            Avatar(request.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = request.peer.avatarId,
+                avatarAsset = request.peer.avatarAsset, avatarUrl = request.peer.avatarUrl)
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Text(request.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -100,7 +101,7 @@ import kotlinx.coroutines.launch
         }
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     }
-    if (confirmBlock) BlockConfirmDialog(BlockedAccount(peer.id, peer.username, peer.displayName, peer.avatarId), viewModel, { confirmBlock = false }) { left() }
+    if (confirmBlock) BlockConfirmDialog(BlockedAccount(peer.id, peer.username, peer.displayName, peer.avatarId, peer.avatarAsset, peer.avatarUrl), viewModel, { confirmBlock = false }) { left() }
 }
 
 /** Replaces the composer in a DM whose peer you blocked. */
@@ -218,7 +219,7 @@ import kotlinx.coroutines.launch
     }, color = TextMuted, fontSize = 12.sp)
     state.blocks.forEach { account ->
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(account.displayName.ifBlank { account.username }, 28.dp, avatarId = account.avatarId)
+            Avatar(account.displayName.ifBlank { account.username }, 28.dp, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(account.displayName.ifBlank { "@${account.username}" }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)

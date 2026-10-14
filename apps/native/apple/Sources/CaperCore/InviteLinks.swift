@@ -5,11 +5,21 @@ public struct InvitePerson: Codable, Equatable, Sendable {
     public let username: String
     public let displayName: String
     public var avatarId: Int?
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 }
+
+extension InvitePerson: AvatarPictureCarrying {}
 
 /// `GET /api/invites/{code}`: what anyone holding a live link may see.
 public struct InvitePreview: Codable, Equatable, Sendable {
-    public struct SpaceName: Codable, Equatable, Sendable { public let name: String }
+    public struct SpaceName: Codable, Equatable, Sendable {
+        public let name: String
+        public var iconAsset: String? = nil
+        public var iconUrl: String? = nil
+        /// The space's icon, or nil for its initial.
+        public var iconPicture: CaperPicture? { CaperPicture(asset: iconAsset, url: iconUrl) }
+    }
     public struct ChannelName: Codable, Equatable, Sendable { public let name: String }
     public let code: String
     public let space: SpaceName

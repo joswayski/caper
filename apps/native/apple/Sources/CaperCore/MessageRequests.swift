@@ -16,7 +16,11 @@ public struct BlockedAccount: Codable, Equatable, Identifiable, Sendable {
     public let username: String
     public let displayName: String
     public var avatarId: Int? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 }
+
+extension BlockedAccount: AvatarPictureCarrying {}
 
 public struct BlocksResponse: Codable, Sendable {
     public let blocks: [BlockedAccount]
@@ -58,15 +62,20 @@ public struct BlockTarget: Equatable, Identifiable, Sendable {
     public let username: String?
     public let displayName: String
     public var avatarId: Int? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
-    public init(id: String, username: String?, displayName: String, avatarId: Int? = nil) {
+    public init(id: String, username: String?, displayName: String, avatarId: Int? = nil, avatarAsset: String? = nil, avatarUrl: String? = nil) {
         self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
+        self.avatarAsset = avatarAsset; self.avatarUrl = avatarUrl
     }
     public init(peer: DirectMessagePeer) {
-        self.init(id: peer.id, username: peer.username, displayName: peer.displayName, avatarId: peer.avatarId)
+        self.init(id: peer.id, username: peer.username, displayName: peer.displayName, avatarId: peer.avatarId,
+                  avatarAsset: peer.avatarAsset, avatarUrl: peer.avatarUrl)
     }
     public init(author: ChatAuthor) {
-        self.init(id: author.id, username: nil, displayName: author.name, avatarId: author.avatarId)
+        self.init(id: author.id, username: nil, displayName: author.name, avatarId: author.avatarId,
+                  avatarAsset: author.avatarAsset, avatarUrl: author.avatarUrl)
     }
 
     public var confirmationTitle: String { "Block \(displayName)?" }

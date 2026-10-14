@@ -11,6 +11,8 @@ struct MentionCardPerson: Equatable, Sendable {
     let avatarId: Int?
     /// The signed-in account: a muted "You" line instead of **Message**.
     let isSelf: Bool
+    /// Their custom picture over the mascot, when known.
+    var picture: CaperPicture? = nil
 
     var title: String { displayName ?? username.map { "@\($0)" } ?? "Profile" }
     var subtitle: String? { displayName == nil ? nil : username.map { "@\($0)" } }
@@ -52,28 +54,29 @@ enum MentionCard {
                         account: Account?, viewerID: String?) -> MentionCardPerson {
         let person = resolve(id: author.id, username: nil, members: members, people: people, peers: peers, account: account, viewerID: viewerID)
         return MentionCardPerson(id: author.id, username: person.username, displayName: person.displayName ?? author.name,
-                                 avatarId: person.username == nil ? author.avatarId : person.avatarId, isSelf: person.isSelf)
+                                 avatarId: person.username == nil ? author.avatarId : person.avatarId, isSelf: person.isSelf,
+                                 picture: person.username == nil ? author.avatarPicture : person.picture)
     }
 
     private static func resolve(id: String, username: String?, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                                 account: Account?, viewerID: String?) -> MentionCardPerson {
         let isSelf = (viewerID ?? account?.id) == id
-        func person(_ knownUsername: String?, _ displayName: String?, _ avatarId: Int?) -> MentionCardPerson {
+        func person(_ knownUsername: String?, _ displayName: String?, _ avatarId: Int?, _ picture: CaperPicture?) -> MentionCardPerson {
             let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
             return MentionCardPerson(id: id, username: knownUsername?.isEmpty == false ? knownUsername : username,
-                                     displayName: name?.isEmpty == false ? name : nil, avatarId: avatarId, isSelf: isSelf)
+                                     displayName: name?.isEmpty == false ? name : nil, avatarId: avatarId, isSelf: isSelf, picture: picture)
         }
         if let member = members.first(where: { $0.id == id }) {
-            return person(member.username, member.displayName, member.avatarId)
+            return person(member.username, member.displayName, member.avatarId, member.avatarPicture)
         }
         if let known = people?.first(where: { $0.id == id }) {
-            return person(known.username, known.displayName, known.avatarId)
+            return person(known.username, known.displayName, known.avatarId, known.avatarPicture)
         }
         if let peer = peers.first(where: { $0.id == id }) {
-            return person(peer.username, peer.displayName, nil)
+            return person(peer.username, peer.displayName, nil, nil)
         }
         if let account, account.id == id {
-            return person(account.username, account.displayName, account.avatarId)
+            return person(account.username, account.displayName, account.avatarId, account.avatarPicture)
         }
         return MentionCardPerson(id: id, username: username, displayName: nil, avatarId: nil, isSelf: isSelf)
     }

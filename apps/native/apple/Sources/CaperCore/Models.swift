@@ -4,6 +4,32 @@ public enum CaperAvatar {
     public static func index(for avatarID: Int?) -> Int? { avatarID.flatMap { (0...799).contains($0) ? $0 : nil } }
 }
 
+/// A custom profile picture or space icon: the stable asset id, which keys
+/// every cache, and its signed CDN URL, which re-signs daily. Absent unless
+/// the server sent both (old servers send neither): show the saved mascot or
+/// the space initial instead.
+public struct CaperPicture: Equatable, Hashable, Sendable {
+    public let asset: String
+    public let url: URL
+
+    public init?(asset: String?, url: String?) {
+        guard let asset, !asset.isEmpty, let url, ChatAttachment.isWebURL(url), let parsed = URL(string: url) else { return nil }
+        self.asset = asset
+        self.url = parsed
+    }
+}
+
+/// A person carrying `avatarAsset`/`avatarUrl` beside `avatarId`.
+public protocol AvatarPictureCarrying {
+    var avatarAsset: String? { get }
+    var avatarUrl: String? { get }
+}
+
+extension AvatarPictureCarrying {
+    /// Their custom picture, or nil for the saved mascot.
+    public var avatarPicture: CaperPicture? { CaperPicture(asset: avatarAsset, url: avatarUrl) }
+}
+
 public struct Account: Codable, Equatable, Sendable {
     public let id: String
     public var username: String?
@@ -13,9 +39,23 @@ public struct Account: Codable, Equatable, Sendable {
     /// `true` for Caper's feedback team, who get the Feedback inbox. Absent for
     /// everyone else.
     public var feedbackTeam: Bool? = nil
+    /// The custom profile picture (`avatarAsset`/`avatarUrl`); absent for the saved mascot.
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
     public var isFeedbackTeam: Bool { feedbackTeam == true }
+
+    /// The account's own picture for a retained snapshot of the same person:
+    /// the snapshot's URL while it signs the same asset (it may be newer),
+    /// otherwise the account's. No account picture means the mascot.
+    func ownPicture(asset snapshotAsset: String?, url snapshotURL: String?) -> (asset: String?, url: String?) {
+        guard let avatarAsset else { return (nil, nil) }
+        if snapshotAsset == avatarAsset, let snapshotURL { return (avatarAsset, snapshotURL) }
+        return (avatarAsset, avatarUrl)
+    }
 }
+
+extension Account: AvatarPictureCarrying {}
 
 public struct Inviter: Codable, Equatable, Sendable {
     public let username: String
@@ -28,6 +68,12 @@ public struct Space: Codable, Equatable, Identifiable, Sendable {
     public let ownerId: String
     public var demo: Bool?
     public var inviter: Inviter?
+    /// The owner's custom icon (`iconAsset`/`iconUrl`); absent for the initial.
+    public var iconAsset: String? = nil
+    public var iconUrl: String? = nil
+
+    /// The space's icon, or nil for its initial. The demo space never has one.
+    public var iconPicture: CaperPicture? { demo == true ? nil : CaperPicture(asset: iconAsset, url: iconUrl) }
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {
@@ -79,9 +125,13 @@ public struct DirectMessagePeer: Codable, Equatable, Sendable {
     /// The server-side "Caper" account: every top-level message sent to it is
     /// a feedback report. Missing means false.
     public var team: Bool? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
     public var isTeam: Bool { team == true }
 }
+
+extension DirectMessagePeer: AvatarPictureCarrying {}
 
 public struct DirectMessageConversation: Codable, Equatable, Identifiable, Sendable {
     public let id: String
@@ -132,7 +182,11 @@ public struct Person: Codable, Equatable, Identifiable, Sendable {
     public let username: String
     public let displayName: String
     public var avatarId: Int? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 }
+
+extension Person: AvatarPictureCarrying {}
 
 public struct PeopleResponse: Codable, Sendable {
     public let people: [Person]
@@ -148,12 +202,18 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     public let displayName: String
     public let owner: Bool
     public var avatarId: Int? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
     func withProfile(_ account: Account?) -> Member {
-        guard id == account?.id, let username = account?.username, let name = account?.displayName else { return self }
-        return Member(id: id, username: username, displayName: name, owner: owner, avatarId: avatarId)
+        guard let account, id == account.id, let username = account.username, let name = account.displayName else { return self }
+        let picture = account.ownPicture(asset: avatarAsset, url: avatarUrl)
+        return Member(id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
+                      avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
+
+extension Member: AvatarPictureCarrying {}
 
 public struct SpaceLimits: Codable, Equatable, Sendable {
     public let ownedSpaces: Int
@@ -297,9 +357,13 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     /// Sent by a Caper feedback team member, stamped by the server at send
     /// time. Missing means not an admin.
     public var admin: Bool? = nil
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
     public var isAdmin: Bool { admin == true }
 }
+
+extension ChatAuthor: AvatarPictureCarrying {}
 
 /// One `content.mentions` entry, as resolved by the server on send.
 public enum MessageMention: Codable, Equatable, Hashable, Sendable {
@@ -489,9 +553,21 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
 
     func withProfile(_ own: ChatAuthor?) -> ChatMessage {
         guard let own, !own.isGuest else { return self }
-        func author(_ value: ChatAuthor) -> ChatAuthor { value.id == own.id ? own : value }
+        func author(_ value: ChatAuthor) -> ChatAuthor {
+            guard value.id == own.id else { return value }
+            // A snapshot's signature for the same picture may be newer.
+            var result = own
+            if value.avatarAsset == own.avatarAsset, let url = value.avatarUrl { result.avatarUrl = url }
+            return result
+        }
         var result = self
         result.author = author(self.author)
+        if var reply = replyTo, reply.author.id == own.id {
+            let admin = reply.author.admin
+            reply.author = author(reply.author)
+            reply.author.admin = admin
+            result.replyTo = reply
+        }
         if let pin { result.pin = MessagePin(author: author(pin.author), createdAt: pin.createdAt) }
         if let thread { result.thread = ThreadSummary(replyCount: thread.replyCount, participants: thread.participants.map(author), seq: thread.seq) }
         if let forward { result.forward = MessageForward(message: forward.message?.withProfile(own), seq: forward.seq) }
@@ -501,7 +577,8 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
 
 public struct MessageReply: Codable, Equatable, Sendable {
     public let id: String
-    public let author: ChatAuthor
+    /// Variable so the viewer's own name and picture refresh in place.
+    public var author: ChatAuthor
     public let text: String
     public let fullText: String?
     public let hasAttachments: Bool
@@ -588,9 +665,13 @@ public struct ReactorPerson: Codable, Equatable, Identifiable, Sendable {
     public let username: String?
     public let displayName: String?
     public let avatarId: Int?
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 
-    public init(id: String, username: String? = nil, displayName: String? = nil, avatarId: Int? = nil) {
+    public init(id: String, username: String? = nil, displayName: String? = nil, avatarId: Int? = nil,
+                avatarAsset: String? = nil, avatarUrl: String? = nil) {
         self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
+        self.avatarAsset = avatarAsset; self.avatarUrl = avatarUrl
     }
 
     /// Display name, then username, then "Someone".
@@ -600,6 +681,8 @@ public struct ReactorPerson: Codable, Equatable, Identifiable, Sendable {
         return "Someone"
     }
 }
+
+extension ReactorPerson: AvatarPictureCarrying {}
 
 public struct ReactorGroup: Codable, Equatable, Sendable {
     public let emoji: String

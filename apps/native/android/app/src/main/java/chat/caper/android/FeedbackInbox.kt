@@ -121,7 +121,7 @@ import chat.caper.android.ui.*
                 onLongClick = { menuOpen = true }, onClick = open)
             .semantics { customActions = listOf(CustomAccessibilityAction(actionLabel) { toggleArchive(); true }) }
             .padding(start = 18.dp, end = if (hovered) 4.dp else 18.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.Top) {
-            Avatar(name, 34.dp, avatarId = report.reporter.avatarId)
+            Avatar(name, 34.dp, avatarId = report.reporter.avatarId, avatarAsset = report.reporter.avatarAsset, avatarUrl = report.reporter.avatarUrl)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

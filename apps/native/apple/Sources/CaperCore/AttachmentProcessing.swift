@@ -307,6 +307,22 @@ public enum AttachmentPreparer {
         return AttachmentPolicy.webPAddingICCProfile(webP, profile: profile, width: pixels.width, height: pixels.height, hasAlpha: hasAlpha)
     }
 
+    /// Lossy WebP through libwebp's simple API (`WebPEncodeRGBA`, `quality`
+    /// 0...100), for profile pictures and space icons. ImageIO cannot encode
+    /// WebP. Expects sRGB pixels (no ICC profile is written); nil on failure.
+    static func encodeLossyWebP(_ pixels: RGBAPixels, quality: Float) -> Data? {
+        guard (1...AttachmentPolicy.webPMaxDimension).contains(pixels.width), (1...AttachmentPolicy.webPMaxDimension).contains(pixels.height),
+              pixels.straight.count == pixels.width * pixels.height * 4, (0...100).contains(quality) else { return nil }
+        var output: UnsafeMutablePointer<UInt8>?
+        let size = pixels.straight.withUnsafeBufferPointer { buffer -> Int in
+            guard let base = buffer.baseAddress else { return 0 }
+            return Int(WebPEncodeRGBA(base, Int32(pixels.width), Int32(pixels.height), Int32(pixels.width * 4), quality, &output))
+        }
+        defer { if let output { WebPFree(output) } }
+        guard size > 0, let encoded = output else { return nil }
+        return Data(bytes: encoded, count: size)
+    }
+
     /// libavif's encoder speed (0 slowest ... 10 fastest). At 6 libavif runs
     /// aom in its all-intra still-image mode with constant-quality rate
     /// control, so `quality` sets the quantizer exactly as `avifenc -q` does.

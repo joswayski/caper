@@ -30,6 +30,9 @@ internal data class MentionCandidate(
     val avatarId: Int? = null,
     /** Already has a pending invitation to the space or channel being managed; the row says so. */
     val invited: Boolean = false,
+    /** The person's custom picture, over the [avatarId] mascot. */
+    val avatarAsset: String? = null,
+    val avatarUrl: String? = null,
 )
 
 internal val mentionSpecials = listOf(
@@ -96,14 +99,17 @@ internal fun mentionSource(state: AppUiState): MentionSource {
     val feedback = state.account != null
     state.visit?.let { return MentionSource(visitMentionPeople(state, self), false, feedback) }
     if (channel.direct) {
-        val people = state.people?.filter { it.id != self }?.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }
-            ?: listOfNotNull(state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
-                ?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName) })
+        val people = state.people?.filter { it.id != self }?.map {
+            MentionCandidate(it.username, it.displayName, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+        } ?: listOfNotNull(state.directConversations.firstOrNull { it.id == (state.selectedDirectId ?: channel.id) }?.peer
+                ?.takeIf { it.id != self }?.let { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) })
         return MentionSource(people, false, feedback)
     }
     // Members not loaded yet (or another space's): only the specials.
     val members = state.selectedSpace?.takeIf { detail -> detail.space.id == channel.spaceId || detail.channels.any { it.id == channel.id } }?.members.orEmpty()
-    return MentionSource(members.filter { it.id != self }.map { MentionCandidate(it.username, it.displayName, avatarId = it.avatarId) }, true, feedback)
+    return MentionSource(members.filter { it.id != self }.map {
+        MentionCandidate(it.username, it.displayName, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+    }, true, feedback)
 }
 
 /**
@@ -115,19 +121,19 @@ internal fun visitMentionPeople(state: AppUiState, self: String?): List<MentionC
     val known = state.people.orEmpty().associateBy { it.id }
     val peers = state.directConversations.associate { it.peer.id to it.peer }
     val people = linkedMapOf<String, MentionCandidate>()
-    fun add(id: String?, username: String?, name: String?, avatarId: Int?) {
+    fun add(id: String?, username: String?, name: String?, avatarId: Int?, avatarAsset: String? = null, avatarUrl: String? = null) {
         if (username.isNullOrEmpty() || id == self || username.lowercase(Locale.ROOT) in FEEDBACK_NAMES) return
         val key = id ?: "@${username.lowercase(Locale.ROOT)}"
-        if (key !in people) people[key] = MentionCandidate(username, name ?: username, avatarId = avatarId)
+        if (key !in people) people[key] = MentionCandidate(username, name ?: username, avatarId = avatarId, avatarAsset = avatarAsset, avatarUrl = avatarUrl)
     }
-    state.visit?.reporter?.let { add(it.id, it.username, it.displayName, it.avatarId) }
+    state.visit?.reporter?.let { add(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
     state.messages.flatMap { it.content.mentions }.filter { it.type == "user" }.forEach { mention ->
         val author = mention.id?.let(authors::get)
-        add(mention.id, mention.username, author?.name, author?.avatarId)
+        add(mention.id, mention.username, author?.name, author?.avatarId, author?.avatarAsset, author?.avatarUrl)
     }
     authors.values.forEach { author ->
         val username = known[author.id]?.username ?: peers[author.id]?.username
-        add(author.id, username, author.name, author.avatarId)
+        add(author.id, username, author.name, author.avatarId, author.avatarAsset, author.avatarUrl)
     }
     return people.values.toList()
 }
@@ -248,6 +254,9 @@ internal data class MentionCard(
     val displayName: String?,
     val avatarId: Int? = null,
     val self: Boolean = false,
+    /** The person's custom picture, over the [avatarId] mascot. */
+    val avatarAsset: String? = null,
+    val avatarUrl: String? = null,
 ) {
     val title: String get() = displayName ?: username?.let { "@$it" } ?: "Profile"
     val subtitle: String? get() = if (displayName != null) username?.let { "@$it" } else null
@@ -258,13 +267,13 @@ internal fun mentionCard(id: String?, username: String?, state: AppUiState): Men
     val selfId = state.account?.id ?: state.chatAuthorId
     val self = if (id != null) id == selfId else username != null && state.account?.username?.equals(username, ignoreCase = true) == true
     if (id != null) {
-        state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
-        state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self) }
-        state.directConversations.firstOrNull { it.peer.id == id }?.peer?.let { return MentionCard(id, it.username, it.displayName, null, self) }
+        state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
+        state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
+        state.directConversations.firstOrNull { it.peer.id == id }?.peer?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
     }
     val account = state.account
     if (self && account?.username != null && account.displayName != null) {
-        return MentionCard(account.id, account.username, account.displayName, account.avatarId, true)
+        return MentionCard(account.id, account.username, account.displayName, account.avatarId, true, account.avatarAsset, account.avatarUrl)
     }
     return MentionCard(id, username, null, null, self)
 }
@@ -272,7 +281,8 @@ internal fun mentionCard(id: String?, username: String?, state: AppUiState): Men
 /** A pinner has an account id and real name/avatar, but no username in pin metadata. */
 internal fun authorCard(author: ChatAuthor, state: AppUiState): MentionCard {
     val card = mentionCard(author.id, null, state)
-    return card.copy(displayName = card.displayName ?: author.name, avatarId = if (card.username == null) author.avatarId else card.avatarId)
+    return if (card.username == null) card.copy(displayName = card.displayName ?: author.name, avatarId = author.avatarId, avatarAsset = author.avatarAsset, avatarUrl = author.avatarUrl)
+    else card.copy(displayName = card.displayName ?: author.name)
 }
 
 /** You are mentioned by id, or by `@everyone`/`@here` in someone else's message. */

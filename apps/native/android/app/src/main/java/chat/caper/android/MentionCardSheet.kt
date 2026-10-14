@@ -76,7 +76,7 @@ import kotlinx.coroutines.launch
     // Block closes the card first, as on web: only the confirmation stays.
     if (!confirmBlock) ProfileBottomSheet(card.title, profileDraft, picking || pending != null, onDismiss, header = {
         // Identity, then Open conversation (and the sheet's Close) at the end, as on web.
-        Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId)
+        Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId, avatarAsset = card.avatarAsset, avatarUrl = card.avatarUrl)
         Column(Modifier.weight(1f)) {
             Text(
                 card.title, Modifier.semantics { heading() }, color = Text, fontSize = 16.sp,
@@ -147,7 +147,7 @@ import kotlinx.coroutines.launch
         }
     }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
-        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId),
+        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId, card.avatarAsset, card.avatarUrl),
         viewModel, onDismiss,
     )
 }

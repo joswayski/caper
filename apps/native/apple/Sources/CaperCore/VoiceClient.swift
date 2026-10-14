@@ -44,7 +44,12 @@ public struct VoiceParticipant: Decodable, Identifiable, Sendable {
     public let muted: Bool
     public let deafened: Bool
     fileprivate let tracks: [VoiceTrack]
+    public var avatarAsset: String? = nil
+    public var avatarUrl: String? = nil
 }
+
+extension VoiceParticipant: AvatarPictureCarrying {}
+
 struct VoiceSnapshot: Decodable {
     let participants: [VoiceParticipant]
     let revision: Int?

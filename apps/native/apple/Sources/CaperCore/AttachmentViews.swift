@@ -68,52 +68,70 @@ final class AttachmentImageLoader: @unchecked Sendable {
         if let hit = cached(key) { return AttachmentOriginal(images: [hit], durations: []) }
         let data = try await fetch(url)
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw AttachmentLoadError.undecodable }
-        let count = CGImageSourceGetCount(source)
-        if count > 1, count <= Self.maxAnimationFrames, Self.frameDelay(source, at: 0) != nil {
-            let byteLimit = animationByteLimit ?? Self.maxAnimationBytes
-            var edge = maxPixelSize
-            while edge > 0 {
-                try Task.checkCancellation()
-                let frameOptions: [CFString: Any] = [
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceThumbnailMaxPixelSize: edge,
-                ]
-                guard let first = CGImageSourceCreateThumbnailAtIndex(source, 0, frameOptions as CFDictionary) else { break }
-                let firstBytes = first.bytesPerRow * first.height
-                if firstBytes > byteLimit / count {
-                    // Use the actual row stride, not width × 4; ImageIO may
-                    // align rows or use a wider pixel representation.
-                    let scale = sqrt(Double(max(0, byteLimit / count)) / Double(firstBytes))
-                    edge = min(edge - 1, Int(Double(max(first.width, first.height)) * scale))
-                    continue
-                }
-                var images = [first]
-                var durations = [MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: 0))]
-                var bytes = firstBytes
-                for index in 1..<count {
-                    try Task.checkCancellation()
-                    guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
-                    bytes += image.bytesPerRow * image.height
-                    guard bytes <= byteLimit else { break }
-                    images.append(image)
-                    durations.append(MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: index)))
-                }
-                if images.count == count { return AttachmentOriginal(images: images, durations: durations) }
-                // If later frames need more space than the first, retry at a
-                // smaller size. Never loop only the prefix that happened to fit.
-                edge /= 2
-            }
+        if let animation = try Self.decodeAnimation(source, maxPixelSize: maxPixelSize, maxFrames: Self.maxAnimationFrames,
+                                                    byteLimit: animationByteLimit ?? Self.maxAnimationBytes) {
+            return animation
         }
+        guard let image = Self.decodeStill(source, maxPixelSize: maxPixelSize) else { throw AttachmentLoadError.undecodable }
+        cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
+        return AttachmentOriginal(images: [image], durations: [])
+    }
+
+    /// Every frame of an animated GIF, WebP or PNG, each at most
+    /// `maxPixelSize` on its longest edge, with how long it shows. When the
+    /// frames would retain more than `byteLimit` bytes, playback resolution
+    /// drops until they fit rather than turning an ordinary GIF into a still.
+    /// nil for a still or an animation with more than `maxFrames` frames:
+    /// callers then show one still, never a truncated loop. Shared by
+    /// inline/viewer attachments and profile pictures.
+    static func decodeAnimation(_ source: CGImageSource, maxPixelSize: Int, maxFrames: Int, byteLimit: Int) throws -> AttachmentOriginal? {
+        let count = CGImageSourceGetCount(source)
+        guard count > 1, count <= maxFrames, frameDelay(source, at: 0) != nil else { return nil }
+        var edge = maxPixelSize
+        while edge > 0 {
+            try Task.checkCancellation()
+            let frameOptions: [CFString: Any] = [
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: edge,
+            ]
+            guard let first = CGImageSourceCreateThumbnailAtIndex(source, 0, frameOptions as CFDictionary) else { return nil }
+            let firstBytes = first.bytesPerRow * first.height
+            if firstBytes > byteLimit / count {
+                // Use the actual row stride, not width × 4; ImageIO may
+                // align rows or use a wider pixel representation.
+                let scale = sqrt(Double(max(0, byteLimit / count)) / Double(firstBytes))
+                edge = min(edge - 1, Int(Double(max(first.width, first.height)) * scale))
+                continue
+            }
+            var images = [first]
+            var durations = [MediaViewerPolicy.frameDuration(frameDelay(source, at: 0))]
+            var bytes = firstBytes
+            for index in 1..<count {
+                try Task.checkCancellation()
+                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
+                bytes += image.bytesPerRow * image.height
+                guard bytes <= byteLimit else { break }
+                images.append(image)
+                durations.append(MediaViewerPolicy.frameDuration(frameDelay(source, at: index)))
+            }
+            if images.count == count { return AttachmentOriginal(images: images, durations: durations) }
+            // If later frames need more space than the first, retry at a
+            // smaller size. Never loop only the prefix that happened to fit.
+            edge /= 2
+        }
+        return nil
+    }
+
+    /// The first image, orientation applied, at most `maxPixelSize` on its longest edge.
+    static func decodeStill(_ source: CGImageSource, maxPixelSize: Int) -> CGImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw AttachmentLoadError.undecodable }
-        cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
-        return AttachmentOriginal(images: [image], durations: [])
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// A frame's GIF, WebP or APNG delay in seconds; nil when the image is

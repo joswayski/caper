@@ -379,6 +379,7 @@ targets:
       - Tests/CaperCoreTests/CodeResendTests.swift
       - Tests/CaperCoreTests/MediaViewerTests.swift
       - Tests/CaperCoreTests/WhatsNewTests.swift
+      - Tests/CaperCoreTests/ProfilePictureTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

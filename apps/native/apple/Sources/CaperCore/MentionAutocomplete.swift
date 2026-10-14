@@ -15,6 +15,8 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
     /// Already has a pending invitation to the space or channel being
     /// managed; the username field's row says so.
     var invited = false
+    /// A person's custom picture over their mascot.
+    var picture: CaperPicture? = nil
 
     static let everyone = MentionCandidate(kind: .everyone, id: "everyone", username: "everyone",
                                            displayName: "Everyone in this channel")
@@ -27,17 +29,19 @@ struct MentionCandidate: Equatable, Identifiable, Sendable {
     }
     static let feedback = team("feedback")
 
-    static func member(id: String, username: String, displayName: String, avatarId: Int? = nil) -> MentionCandidate {
-        MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId)
+    static func member(id: String, username: String, displayName: String, avatarId: Int? = nil, picture: CaperPicture? = nil) -> MentionCandidate {
+        MentionCandidate(kind: .member, id: id, username: username, displayName: displayName, avatarId: avatarId, picture: picture)
     }
 }
 
 extension MentionCandidate {
     init(_ person: Person) {
-        self = .member(id: person.id, username: person.username, displayName: person.displayName, avatarId: person.avatarId)
+        self = .member(id: person.id, username: person.username, displayName: person.displayName, avatarId: person.avatarId,
+                       picture: person.avatarPicture)
     }
     init(_ member: Member, invited: Bool = false) {
-        self = .member(id: member.id, username: member.username, displayName: member.displayName, avatarId: member.avatarId)
+        self = .member(id: member.id, username: member.username, displayName: member.displayName, avatarId: member.avatarId,
+                       picture: member.avatarPicture)
         self.invited = invited
     }
 }
@@ -82,10 +86,12 @@ struct MentionSource: Equatable, Sendable {
         }
         let known = Dictionary((people ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func person(_ id: String) -> MentionCandidate? {
-            known[id].map { MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId) }
+            known[id].map { MentionCandidate.member(id: $0.id, username: $0.username, displayName: $0.displayName, avatarId: $0.avatarId,
+                                                    picture: $0.avatarPicture) }
         }
         if let reporter {
-            add(.member(id: reporter.id, username: reporter.username, displayName: reporter.displayName, avatarId: reporter.avatarId))
+            add(.member(id: reporter.id, username: reporter.username, displayName: reporter.displayName, avatarId: reporter.avatarId,
+                        picture: reporter.avatarPicture))
         }
         for message in messages {
             if !message.author.isGuest, let author = person(message.author.id) { add(author) }

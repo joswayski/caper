@@ -9,9 +9,13 @@ public struct FeedbackReport: Decodable, Equatable, Identifiable, Sendable {
         public let username: String
         public let displayName: String
         public var avatarId: Int? = nil
+        public var avatarAsset: String? = nil
+        public var avatarUrl: String? = nil
 
-        public init(id: String, username: String, displayName: String, avatarId: Int? = nil) {
+        public init(id: String, username: String, displayName: String, avatarId: Int? = nil,
+                    avatarAsset: String? = nil, avatarUrl: String? = nil) {
             self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
+            self.avatarAsset = avatarAsset; self.avatarUrl = avatarUrl
         }
     }
 
@@ -262,3 +266,5 @@ public enum FeedbackInbox {
         return existing + page.filter { seen.insert($0.id).inserted }
     }
 }
+
+extension FeedbackReport.Reporter: AvatarPictureCarrying {}

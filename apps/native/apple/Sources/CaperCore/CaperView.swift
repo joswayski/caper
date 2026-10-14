@@ -1061,9 +1061,7 @@ private struct SpaceRail: View {
                         .accessibilityLabel("Pending invitations")
                     ForEach(model.invitations) { invitation in
                         Button { if !SwipeTapGuard.swiping { openInvitation(invitation) } } label: {
-                            Text(String(invitation.name.prefix(1)).uppercased()).font(CaperTheme.font(13, weight: .black))
-                                .frame(width: 40, height: 40).background(CaperTheme.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            SpaceIconTile(name: invitation.name, picture: invitation.iconPicture, size: 40, fill: CaperTheme.surface)
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.terracottaBright, style: StrokeStyle(lineWidth: 1, dash: [3])))
                         }.buttonStyle(.plain).modifier(ControlHover()).help("Invitation to \(invitation.name)").accessibilityLabel("Invitation to \(invitation.name)")
                     }
@@ -1105,12 +1103,9 @@ private struct SpaceRailButton: View {
 
     var body: some View {
         Button { if !SwipeTapGuard.swiping { Task { await model.select(space: space) } } } label: {
-            Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
-                .font(CaperTheme.font(13, weight: .black))
-                .opacity(muted ? 0.5 : 1)
-                .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
-                .background(fill)
-                .clipShape(RoundedRectangle(cornerRadius: corner))
+            // The space's icon fills the tile; badges stay on top of it.
+            SpaceIconTile(name: space.demo == true ? "C" : space.name, picture: space.iconPicture, size: narrow ? 44 : 40,
+                          fill: fill, corner: corner, dimmed: muted)
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
@@ -1364,7 +1359,7 @@ private struct ChannelSidebar: View {
                                 let selfConversation = model.directMessages.first { $0.peer.id == account.id }
                                 Button { if !SwipeTapGuard.swiping { Task { await model.openSelfDirectMessage() } } } label: {
                                     HStack(spacing: 9) {
-                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId).frame(width: 24, height: 20)
+                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId, picture: account.avatarPicture).frame(width: 24, height: 20)
                                         Text(account.displayName ?? account.username ?? "You").lineLimit(1)
                                         Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                                             .fixedSize(horizontal: true, vertical: false)
@@ -1470,7 +1465,7 @@ private struct DirectMessageSidebarRow: View {
 
     private var rowLabel: some View {
         HStack(spacing: 9) {
-            Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId).frame(width: 24, height: 20)
+            Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId, picture: conversation.peer.avatarPicture).frame(width: 24, height: 20)
             Text(conversation.peer.displayName).lineLimit(1)
             if muted { MutedBell() }
             Spacer()
@@ -1708,8 +1703,12 @@ private struct SidebarIconButton: ButtonStyle {
 @MainActor private func voiceOccupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] {
     // `voiceRoster` also covers a visited space channel, outside the open space.
     guard model.voice.isActive(channelID: channelID) else { return model.voiceRoster(for: channelID) }
-    return model.voice.participants.map {
-        VoiceSpectator(id: $0.id, avatarId: $0.avatarId, name: $0.name, muted: $0.muted, deafened: $0.deafened)
+    return model.voice.participants.map { participant -> VoiceSpectator in
+        // Your own picture follows a change made during the call.
+        let own = model.voice.isSelf(participantID: participant.id) ? model.account : nil
+        return VoiceSpectator(id: participant.id, avatarId: participant.avatarId, name: participant.name, muted: participant.muted,
+                              deafened: participant.deafened, avatarAsset: own != nil ? own?.avatarAsset : participant.avatarAsset,
+                              avatarUrl: own != nil ? own?.avatarUrl : participant.avatarUrl)
     }
 }
 
@@ -1769,7 +1768,7 @@ private struct ChannelVoiceSlot: View {
                             HStack(spacing: 6) {
                                 HStack(spacing: -6) {
                                     ForEach(occupants.prefix(2)) { person in
-                                        Avatar(name: person.name, size: 20, avatarID: person.avatarId,
+                                        Avatar(name: person.name, size: 20, avatarID: person.avatarId, picture: person.avatarPicture,
                                                speaking: active && model.voice.speakingParticipants.contains(person.id))
                                     }
                                 }
@@ -1801,7 +1800,7 @@ private struct ChannelVoiceSlot: View {
                     } else {
                         ForEach(occupants) { person in
                             HStack(spacing: 7) {
-                                Avatar(name: person.name, size: 23, avatarID: person.avatarId)
+                                Avatar(name: person.name, size: 23, avatarID: person.avatarId, picture: person.avatarPicture)
                                 Text(person.name).lineLimit(1)
                                 if person.muted { CaperIcon(name: "mic-off", size: 13) }
                                 if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
@@ -1912,7 +1911,7 @@ private struct HeaderVoice: View {
         HStack(spacing: 6) {
             HStack(spacing: -6) {
                 ForEach(people.prefix(limit)) { person in
-                    Avatar(name: person.name, size: 24, avatarID: person.avatarId,
+                    Avatar(name: person.name, size: 24, avatarID: person.avatarId, picture: person.avatarPicture,
                            speaking: active && model.voice.speakingParticipants.contains(person.id))
                 }
             }
@@ -2172,7 +2171,9 @@ private struct MemberPresenceView: View {
             .padding(.horizontal, 6).padding(.top, 6).padding(.bottom, 2)
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
     }
-    @ViewBuilder private func memberRow(_ member: Member, quiet: Bool, ring: Color) -> some View {
+    @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
+        // Your own row shows your latest saved name and picture.
+        let member = listed.withProfile(model.account)
         Button {
             // Swiping the phone panel closed lifts on the row it started on.
             guard !SwipeTapGuard.swiping else { return }
@@ -2180,7 +2181,7 @@ private struct MemberPresenceView: View {
         } label: {
             HStack(spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
-                    Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                    Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture)
                     Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
                         .overlay(Circle().stroke(ring, lineWidth: 2))
                 }
@@ -2323,8 +2324,11 @@ private struct VoiceRoster: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
                 let name = voice.isSelf(participantID: participant.id) ? (model.account?.displayName ?? participant.name) : participant.name
+                // Your own picture follows a change made during the call.
+                let own = voice.isSelf(participantID: participant.id) ? model.account : nil
+                let picture: CaperPicture? = own != nil ? own?.avatarPicture : participant.avatarPicture
                 HStack(spacing: 8) {
-                    Avatar(name: name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
+                    Avatar(name: name, size: 20, avatarID: participant.avatarId, picture: picture, speaking: voice.speakingParticipants.contains(participant.id))
                         .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
                         Text(name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
@@ -2505,7 +2509,7 @@ private struct AccountBar: View {
                     #endif
                     Button { sheet = model.account == nil ? .login : .profile } label: {
                         HStack(spacing: 7) {
-                            Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId)
+                            Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
                                 .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
                             if showsName {
                                 Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
@@ -2682,8 +2686,20 @@ private struct AccountAudioMenu: View {
 struct Avatar: View {
     let name: String; let size: CGFloat
     var avatarID: Int? = nil
+    /// A custom picture replaces the saved mascot once it loads; the mascot
+    /// (or initials) shows meanwhile and whenever it fails.
+    var picture: CaperPicture? = nil
     var speaking = false
     var body: some View {
+        PictureImage(picture: picture, size: size) { saved }
+            .frame(width: size, height: size).clipShape(Circle())
+            // Web: caper-green border with a soft outer ring while speaking.
+            .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
+            .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
+    }
+
+    /// The saved mascot, or initials when it is missing.
+    private var saved: some View {
         Group {
             if let image = CaperAvatar.image(for: avatarID) {
                 #if os(iOS)
@@ -2701,10 +2717,7 @@ struct Avatar: View {
                 Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
                     .frame(width: size, height: size).background(CaperTheme.raised)
             }
-        }.frame(width: size, height: size).clipShape(Circle())
-            // Web: caper-green border with a soft outer ring while speaking.
-            .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
-            .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
+        }.frame(width: size, height: size)
     }
 }
 
@@ -4132,7 +4145,7 @@ private struct MessageRow: View {
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
-                    authorProfile { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId) }
+                    authorProfile { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
                 }
                 VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
@@ -4189,7 +4202,7 @@ private struct MessageRow: View {
                     Button { if !SwipeTapGuard.swiping { Task { await chat.openThread(message.threadRootId ?? message.id) } } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
-                                ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
+                                ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId, picture: $0.avatarPicture) }
                                 // As on web: the count in terracotta, then a quiet "View thread".
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")")
                                     .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
@@ -4691,7 +4704,7 @@ private struct MentionCardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
                 HStack(alignment: .center, spacing: 12) {
-                    Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId).accessibilityHidden(true)
+                    Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId, picture: person.picture).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
                             .accessibilityIdentifier("mention-card-title")
@@ -4818,7 +4831,8 @@ private struct MentionCardView: View {
         .onDisappear {
             draft.presentingDialog = false
             if blockRequested {
-                requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId))
+                requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
+                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString))
             }
         }
         // Contain, so this identifier does not replace each child's own.
@@ -5316,7 +5330,7 @@ private struct ReactorRow: View {
     let person: ReactorPerson
     var body: some View {
         HStack(spacing: 10) {
-            Avatar(name: person.name, size: 34, avatarID: person.avatarId)
+            Avatar(name: person.name, size: 34, avatarID: person.avatarId, picture: person.avatarPicture)
             VStack(alignment: .leading, spacing: 2) {
                 Text(person.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
                 if let username = person.username, !username.isEmpty {
@@ -5900,7 +5914,7 @@ private struct NativeReplyContext: View {
                     HStack(spacing: 6) {
                         if hidden { Text("Blocked message").lineLimit(1) }
                         else {
-                            Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId)
+                            Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
                             Text(reference.author.name).fontWeight(.bold).lineLimit(1)
                             if reference.hasAttachments { CaperIcon(name: "paperclip", size: 13) }
                         }
@@ -6093,7 +6107,7 @@ private struct PendingMessageRow: View {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(10)).lineLimit(1)
                     .foregroundStyle(Color.clear).frame(width: 34)
             } else {
-                Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId)
+                Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId, picture: author?.avatarPicture)
             }
             VStack(alignment: .leading, spacing: 4) {
                 if !grouped { Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold)) }
@@ -6533,7 +6547,7 @@ private struct FeedbackReportRow: View {
         let preview = FeedbackInbox.preview(report)
         return Button { Task { await model.openFeedback(report) } } label: {
             HStack(alignment: .top, spacing: 9) {
-                Avatar(name: report.reporter.displayName, size: pushed ? 32 : 22, avatarID: report.reporter.avatarId)
+                Avatar(name: report.reporter.displayName, size: pushed ? 32 : 22, avatarID: report.reporter.avatarId, picture: report.reporter.avatarPicture)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(report.reporter.displayName).font(CaperTheme.font(13, weight: .medium))
@@ -6613,7 +6627,7 @@ private struct MessageRequestsList: View {
                 let selected = model.selectedDirectMessageID == request.id
                 Button { Task { await model.select(directMessage: request) } } label: {
                     HStack(spacing: 9) {
-                        Avatar(name: request.peer.displayName, size: pushed ? 32 : 22, avatarID: request.peer.avatarId)
+                        Avatar(name: request.peer.displayName, size: pushed ? 32 : 22, avatarID: request.peer.avatarId, picture: request.peer.avatarPicture)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(request.peer.displayName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                             Text("@\(request.peer.username)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
@@ -6794,7 +6808,7 @@ private struct PrivacySheet: View {
                     }
                     ForEach(model.blockedAccounts) { account in
                         HStack(spacing: 10) {
-                            Avatar(name: account.displayName, size: 30, avatarID: account.avatarId)
+                            Avatar(name: account.displayName, size: 30, avatarID: account.avatarId, picture: account.avatarPicture)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(account.displayName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                                 if !account.username.isEmpty {
@@ -7282,6 +7296,7 @@ private struct ProfileSheet: View {
                         closeLabel: "Close profile", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    pictureSection
                     CaperField(title: "Username", text: $username)
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
                     Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -7300,7 +7315,7 @@ private struct ProfileSheet: View {
                         .disabled(!canSave)
                         .accessibilityIdentifier("profile-save")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
+            }.frame(maxHeight: 620).scrollDismissesKeyboard(.interactively)
         }.background(CaperTheme.surface)
             .onAppear {
                 username = model.account?.username ?? ""
@@ -7310,6 +7325,18 @@ private struct ProfileSheet: View {
 
     private var canSave: Bool {
         !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
+    }
+
+    /// The current picture, large, with Change and (for a custom one) Remove.
+    @ViewBuilder private var pictureSection: some View {
+        if let account = model.account {
+            PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil,
+                          upload: { try await model.changeAvatar($0) }, remove: { try await model.removeAvatar() }) {
+                Avatar(name: account.displayName ?? account.username ?? "You", size: 72, avatarID: account.avatarId,
+                       picture: account.avatarPicture)
+            }
+            Divider().overlay(CaperTheme.border)
+        }
     }
 
     private func save() {
@@ -7467,9 +7494,7 @@ private struct InvitePreviewCard: View {
     let preview: InvitePreview
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            Text(String(preview.space.name.prefix(1)).uppercased()).font(CaperTheme.font(18, weight: .black))
-                .frame(width: 52, height: 52).background(CaperTheme.raised)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+            SpaceIconTile(name: preview.space.name, picture: preview.space.iconPicture, size: 52, fontSize: 18)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
@@ -7477,7 +7502,7 @@ private struct InvitePreviewCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if preview.alreadyMember == true { Text("You’re already a member") }
                 HStack(spacing: 6) {
-                    Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId)
+                    Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId, picture: preview.inviter.avatarPicture)
                     Text("Invited by \(preview.inviter.displayName)").lineLimit(1)
                 }
                 Text(InviteLinks.memberCount(preview.memberCount))
@@ -7750,6 +7775,7 @@ private struct SpaceEditor: View {
                         .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
                     if !managing { createFooter }
                     if managing {
+                        iconSection
                         Divider().overlay(CaperTheme.border)
                         InviteLinksSection(model: model)
                         Divider().overlay(CaperTheme.border)
@@ -7779,11 +7805,11 @@ private struct SpaceEditor: View {
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                         ForEach(model.detail?.members ?? []) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
                         }
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(model.pendingMembers) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Delete space").font(CaperTheme.font(14, weight: .bold))
@@ -7815,6 +7841,18 @@ private struct SpaceEditor: View {
             .modifier(ConfirmationPresentation())
         }
     }
+    /// Owners only: the space's icon (or its initial tile), Change and Remove.
+    @ViewBuilder private var iconSection: some View {
+        if model.isOwner, let space = model.detail?.space, space.demo != true {
+            Divider().overlay(CaperTheme.border)
+            PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil,
+                          upload: { try await model.changeSpaceIcon($0) }, remove: { try await model.removeSpaceIcon() }) {
+                SpaceIconTile(name: space.name, picture: space.iconPicture, size: 64, fontSize: 22, corner: 14)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.border))
+            }
+        }
+    }
+
     /// Create a space: the space limit, and joining by invite link instead.
     @ViewBuilder private var createFooter: some View {
         if model.limits != nil && !model.canCreateSpace {
@@ -7954,7 +7992,7 @@ private struct ChannelEditor: View {
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                         ForEach(members) { member in
                             HStack {
-                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(member.displayName).font(CaperTheme.font(12, weight: .bold))
                                     Text("@\(member.username)\(member.owner ? " · Owner" : "")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
@@ -7966,7 +8004,7 @@ private struct ChannelEditor: View {
                         Text("Pending invitations  \(invitations.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(invitations) { member in
                             HStack {
-                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(member.displayName).font(CaperTheme.font(12, weight: .bold))
                                     Text("@\(member.username)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)

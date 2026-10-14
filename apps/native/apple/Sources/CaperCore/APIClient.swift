@@ -40,6 +40,10 @@ private struct SendInput: Encodable {
     let replyToId: String?
 }
 private struct AttachmentURLsInput: Encodable { let ids: [String] }
+/// A completed profile picture: the account it now belongs to, already applied.
+private struct AvatarCompletion: Decodable { let account: Account }
+/// A completed space icon: the space it now belongs to, already applied.
+private struct SpaceIconCompletion: Decodable { let space: Space }
 private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
 private struct PinInput: Encodable { let active: Bool }
 private struct EditInput: Encodable { let text: String; let expectedRevision: Int }
@@ -513,6 +517,41 @@ public actor APIClient {
         await Task {
             let _: Empty? = try? await request("api/assets/\(id)/cancel", method: "POST")
         }.value
+    }
+
+    // MARK: Profile pictures and space icons
+
+    /// Reserves a picture upload (`docs/media.md`); the same presigned PUT
+    /// and completion as attachments follow.
+    public func createPicture(_ input: PictureCreateInput) async throws -> AssetReservation {
+        let reservation: AssetReservation = try await request("api/assets", method: "POST", body: input)
+        guard Self.validAssetID(reservation.id) else { throw APIError(status: 502, message: "The upload service returned an invalid response.") }
+        return reservation
+    }
+
+    /// Completing a profile picture applies it; the server returns the
+    /// updated account (`GET /api/account/me`'s shape).
+    public func completeAvatar(id: String) async throws -> Account {
+        guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
+        let completed: AvatarCompletion = try await request("api/assets/\(id)/complete", method: "POST")
+        return completed.account
+    }
+
+    /// Completing a space icon applies it; the server returns the space.
+    public func completeSpaceIcon(id: String) async throws -> Space {
+        guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
+        let completed: SpaceIconCompletion = try await request("api/assets/\(id)/complete", method: "POST")
+        return completed.space
+    }
+
+    /// Back to the same saved mascot (`avatarId` never changes).
+    public func removeAvatar() async throws -> Account {
+        try await request("api/account/avatar", method: "DELETE")
+    }
+
+    /// Back to the space's initial. Owner only (404 otherwise).
+    public func removeSpaceIcon(spaceID: String) async throws -> Space {
+        try await request("api/spaces/\(try pathID(spaceID))/icon", method: "DELETE")
     }
 
     /// Fresh signed URLs for up to 100 attachments; ids the account can no

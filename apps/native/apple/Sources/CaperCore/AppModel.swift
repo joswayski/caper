@@ -26,9 +26,11 @@ public final class AppModel {
     public var directMessages: [DirectMessageConversation] {
         get {
             directMessageSnapshots.map { conversation in
-                guard conversation.peer.id == account?.id, let username = account?.username, let name = account?.displayName else { return conversation }
+                guard let account, conversation.peer.id == account.id, let username = account.username, let name = account.displayName else { return conversation }
+                let picture = account.ownPicture(asset: conversation.peer.avatarAsset, url: conversation.peer.avatarUrl)
                 return DirectMessageConversation(id: conversation.id,
-                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId),
+                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId,
+                                            avatarAsset: picture.asset, avatarUrl: picture.url),
                     lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
             }
         }
@@ -341,13 +343,42 @@ public final class AppModel {
             self.account = account
             self.phase = .ready
             if onboarding { await self.loadSpaces(); self.startDirectMessageRefresh() }
-            else {
-                self.chat.updateAuthor(account: account)
-                if self.selectedDirectMessage?.peer.id == account.id {
-                    self.chat.channelName = account.displayName ?? self.chat.channelName
-                }
-            }
+            else { self.refreshOwnIdentity(account) }
         }
+    }
+
+    /// Own profile refresh (docs/media.md): retained self identities read
+    /// `account` (members, invitations, self-DMs, authors, pins, threads,
+    /// forwards, replies, reactions, profile cards, the voice roster); the
+    /// open conversation's session author and self-DM title follow it here
+    /// without reopening chat or touching drafts.
+    private func refreshOwnIdentity(_ account: Account) {
+        chat.updateAuthor(account: account)
+        if selectedDirectMessage?.peer.id == account.id {
+            chat.channelName = account.displayName ?? chat.channelName
+        }
+    }
+
+    /// Uploads a prepared picture as the account's profile picture. The
+    /// server applies it on completion; the returned account then replaces
+    /// the signed-in identity everywhere in this client.
+    public func changeAvatar(_ picture: PreparedPicture) async throws {
+        guard let current = account else { return }
+        let attempt = generation
+        let updated = try await ProfilePictureUploader.uploadAvatar(picture, api: api)
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
+    /// Back to the same saved mascot everywhere.
+    public func removeAvatar() async throws {
+        guard let current = account else { return }
+        let attempt = generation
+        let updated = try await api.removeAvatar()
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
     }
 
     public func logout() async {
@@ -778,7 +809,7 @@ public final class AppModel {
         }
         if !blockedIDs.contains(target.id) {
             blockedAccounts.insert(BlockedAccount(id: target.id, username: target.username ?? "", displayName: target.displayName,
-                                                  avatarId: target.avatarId), at: 0)
+                                                  avatarId: target.avatarId, avatarAsset: target.avatarAsset, avatarUrl: target.avatarUrl), at: 0)
         }
         blockedIDs.insert(target.id); chat.setBlockedAuthors(blockedIDs)
         directMessages = MessageRequests.applying(blocked: true, peerID: target.id, to: directMessages)
@@ -1294,6 +1325,45 @@ public final class AppModel {
         let updated = try await api.updateSpace(id: detail.space.id, name: name)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
         replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members, channelInvitations: detail.channelInvitations, channelMembers: detail.channelMembers))
+    }
+
+    /// Owner only: uploads a prepared picture as the open space's icon,
+    /// then shows it in the rail, list and header.
+    public func changeSpaceIcon(_ picture: PreparedPicture) async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
+        guard let detail else { return }
+        clearNavigationCache()
+        let attempt = generation
+        let updated = try await ProfilePictureUploader.uploadSpaceIcon(picture, spaceID: detail.space.id, api: api)
+        applySpaceIcon(updated, to: detail, attempt: attempt)
+    }
+
+    /// Owner only: back to the space's initial.
+    public func removeSpaceIcon() async throws {
+        membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
+        guard let detail else { return }
+        clearNavigationCache()
+        let attempt = generation
+        let updated = try await api.removeSpaceIcon(spaceID: detail.space.id)
+        applySpaceIcon(updated, to: detail, attempt: attempt)
+    }
+
+    /// The changed space everywhere it shows, even if another space is open by now.
+    private func applySpaceIcon(_ updated: Space, to detail: SpaceDetail, attempt: Int) {
+        guard generation == attempt, updated.id == detail.space.id else { return }
+        // The completion's space may omit fields the list carries (`demo`, `inviter`).
+        func merged(_ space: Space) -> Space {
+            var space = space
+            space.iconAsset = updated.iconAsset
+            space.iconUrl = updated.iconUrl
+            return space
+        }
+        if let current = self.detail, current.space.id == updated.id {
+            replace(detail: SpaceDetail(space: merged(current.space), channels: current.channels, members: current.members,
+                                        channelInvitations: current.channelInvitations))
+        } else {
+            spaces = spaces.map { $0.id == updated.id ? merged($0) : $0 }
+        }
     }
 
     public func deleteCurrentSpace() async throws {
@@ -2383,7 +2453,8 @@ public final class ChatModel {
     }
     private var profileAuthor: ChatAuthor? {
         guard let account = viewerProfile(), let name = account.displayName else { return session?.author }
-        return ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId)
+        return ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId,
+                          avatarAsset: account.avatarAsset, avatarUrl: account.avatarUrl)
     }
     public var currentAuthor: ChatAuthor? {
         guard let author = session?.author else { return nil }
@@ -2554,7 +2625,8 @@ public final class ChatModel {
               let name = account.displayName else { return }
         // Account-backed sends resolve the current name server-side. Updating
         // this presentation snapshot must not reopen chat or discard its draft.
-        self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId))
+        self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId,
+                                                                            avatarAsset: account.avatarAsset, avatarUrl: account.avatarUrl))
     }
 
     /// A token-free copy of only the timeline currently retained by this model.
@@ -3086,8 +3158,10 @@ public final class ChatModel {
             if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) {
                 let account = viewerProfile()
                 return .loaded(people.map { person in
-                    guard person.id == account?.id else { return person }
-                    return ReactorPerson(id: person.id, username: account?.username, displayName: account?.displayName, avatarId: person.avatarId)
+                    guard let account, person.id == account.id else { return person }
+                    let picture = account.ownPicture(asset: person.avatarAsset, url: person.avatarUrl)
+                    return ReactorPerson(id: person.id, username: account.username, displayName: account.displayName, avatarId: person.avatarId,
+                                         avatarAsset: picture.asset, avatarUrl: picture.url)
                 })
             }
         }
@@ -3158,7 +3232,7 @@ public final class ChatModel {
     private func reactorViewer(_ id: String?) -> ReactorPerson? {
         guard let id else { return nil }
         guard let author = profileAuthor, author.id == id else { return ReactorPerson(id: id) }
-        return ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId)
+        return ReactorPerson(id: id, displayName: author.name, avatarId: author.avatarId, avatarAsset: author.avatarAsset, avatarUrl: author.avatarUrl)
     }
 
     private func fixtureReactors(for message: ChatMessage) -> ReactorList {

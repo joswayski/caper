@@ -226,6 +226,34 @@ class CaperApi(
     suspend fun completeAsset(token: String, id: String): ChatAttachment =
         post("/api/assets/${id.assetPathId()}/complete", token = token)
 
+    /**
+     * Reserves your profile picture ([spaceId] null) or the icon of a space you own: the exact
+     * bytes, type and pixel size to upload. No channel, preview or source size.
+     */
+    suspend fun createPicture(
+        token: String, spaceId: String?, filename: String, contentType: String, byteSize: Long, width: Int, height: Int,
+    ): AssetReservation {
+        val reservation: AssetReservation = post("/api/assets", buildJsonObject {
+            put("purpose", if (spaceId == null) "avatar" else "spaceIcon")
+            if (spaceId != null) put("spaceId", spaceId.pathId())
+            put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
+            put("width", width); put("height", height)
+        }, token)
+        reservation.id.assetPathId()
+        require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
+        return reservation
+    }
+
+    /** Confirms a picture upload; the server applies it at once. `409` means storage has not seen it yet. */
+    suspend fun completePicture(token: String, id: String): PictureCompletion =
+        post("/api/assets/${id.assetPathId()}/complete", token = token)
+
+    /** Back to the saved mascot; returns the account without a picture. */
+    suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)
+
+    /** Owner only (404 otherwise): back to the space's initial; returns the space without an icon. */
+    suspend fun removeSpaceIcon(token: String, space: String): Space = request("/api/spaces/${space.pathId()}/icon", "DELETE", token)
+
     /** Best effort and independent of the cancelled upload job; expiry is the fallback. */
     suspend fun cancelAsset(token: String, id: String) {
         withContext(NonCancellable) {

@@ -392,7 +392,7 @@ internal data class VoiceJoinIntent(
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify, viewModel::resendCode)
-                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
+                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, submit = viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces ->
                     // Launch stays on the brand screen until the first conversation is ready.
                     if (state.restoring) BrandLoading()
@@ -450,7 +450,11 @@ internal data class VoiceJoinIntent(
             }
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
+        Overlay.Profile -> state.account?.let { account ->
+            ProfileScreen(account, state.busy, state.error, { overlay = null }, picture = { ProfilePictureSection(state, viewModel) }) { username, display ->
+                viewModel.updateProfile(username, display) { overlay = null }
+            }
+        }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
             notifications = { NotificationSettingsSection(state, viewModel) },
             openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() }) { overlay = Overlay.Privacy }
@@ -696,7 +700,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                    ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(space.name), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
@@ -709,7 +713,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
-            ) { Box(contentAlignment = Alignment.Center) { Text(initialOf(invitation.name), color = TerracottaBright, fontWeight = FontWeight.Black) } }
+            ) { SpaceTileFace(invitation.name, invitation.iconAsset, invitation.iconUrl, 48.dp, TerracottaBright) }
         }
         val limits = state.limits
         val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
@@ -928,7 +932,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             if (activeChannel == channel.id) VoiceRoster(voice, state.account)
                             else people.forEach { participant ->
                                 Row(Modifier.fillMaxWidth().padding(start = 42.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Avatar(participant.name, 28.dp, avatarId = participant.avatarId)
+                                    Avatar(participant.name, 28.dp, avatarId = participant.avatarId, avatarAsset = participant.avatarAsset, avatarUrl = participant.avatarUrl)
                                     Spacer(Modifier.width(8.dp))
                                     Text(participant.name, Modifier.weight(1f, fill = false), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     // Web: MicOff and/or HeadphoneOff, announced as one status.
@@ -992,7 +996,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     .background(if (selfSelected) TerracottaWash else Color.Transparent)
                     .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId)
+                    Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId,
+                        avatarAsset = state.account.avatarAsset, avatarUrl = state.account.avatarUrl)
                     Spacer(Modifier.width(9.dp))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1018,7 +1023,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             }.padding(start = 9.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Row(Modifier.weight(1f).alpha(if (muted) MUTED_ALPHA else 1f).semantics { if (muted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId)
+                                Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId,
+                                    avatarAsset = direct.peer.avatarAsset, avatarUrl = direct.peer.avatarUrl)
                                 Spacer(Modifier.width(9.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1120,7 +1126,11 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
     if (voice.participants.isEmpty()) return
     val context = LocalContext.current
     voice.participants.forEach { participant ->
-        val name = if (participant.id == voice.selfId) account?.displayName ?: participant.name else participant.name
+        val self = participant.id == voice.selfId
+        val name = if (self) account?.displayName ?: participant.name else participant.name
+        // Your own row follows your saved picture at once; others' come with the roster.
+        val (pictureAsset, pictureUrl) = if (self && account != null) ownPicture(account, participant.avatarAsset, participant.avatarUrl)
+            else participant.avatarAsset to participant.avatarUrl
         key(participant.id) {
             var audioOpen by remember(voice.channelId) { mutableStateOf(false) }
             // Long-press opens the audio menu, like a browser's context menu on touch.
@@ -1128,7 +1138,8 @@ internal fun formatVoiceSessionDuration(startedAt: Long, now: Long): String {
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp)
                 .then(if (menuAvailable) Modifier.clip(MaterialTheme.shapes.small).combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
                 .padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
+                Avatar(name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants,
+                    avatarAsset = pictureAsset, avatarUrl = pictureUrl)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1239,7 +1250,8 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
             key(participant.id) {
                 // The ring in the surrounding surface colour separates overlapping faces.
                 Avatar(participant.name, size, Modifier.offset(x = step * index).border(1.5.dp, ring, CircleShape),
-                    avatarId = participant.avatarId, speaking = participant.id in speaking)
+                    avatarId = participant.avatarId, speaking = participant.id in speaking,
+                    avatarAsset = participant.avatarAsset, avatarUrl = participant.avatarUrl)
             }
         }
     }
@@ -1459,7 +1471,7 @@ internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabl
                     .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
                     .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
-                        Avatar(member.displayName, 30.dp, avatarId = member.avatarId)
+                        Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
                         PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, ring, Modifier.align(Alignment.BottomEnd))
                     }
                     Spacer(Modifier.width(10.dp))
@@ -1517,7 +1529,7 @@ internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabl
         while (true) { local = viewModel.localPresence(); kotlinx.coroutines.delay(1_000) }
     }
     Box {
-        Avatar(name, 30.dp, avatarId = state.account?.avatarId)
+        Avatar(name, 30.dp, avatarId = state.account?.avatarId, avatarAsset = state.account?.avatarAsset, avatarUrl = state.account?.avatarUrl)
         PresenceDot(if (accountPresence) state.presence[state.account?.id] else local,
             live = !accountPresence || state.gateway == GatewayStatus.LIVE, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
     }
@@ -1824,7 +1836,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
-    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId), viewModel, { confirmBlock = false })
+    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
     val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
@@ -2207,7 +2219,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     SuggestionRow(selected, "$action $primary, $secondary", choose) {
         if (candidate.special) Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.lucide_users), null, Modifier.size(18.dp), tint = TextMuted)
-        } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId)
+        } else Avatar(candidate.label, 28.dp, avatarId = candidate.avatarId, avatarAsset = candidate.avatarAsset, avatarUrl = candidate.avatarUrl)
         Column(Modifier.weight(1f)) {
             Text(primary, color = Text, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(secondary, color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2430,7 +2442,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
-                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
+                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }
                         TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) {
                             val summary = message.thread?.takeIf { message.threadRootId == null }
                             // As on web: the reply count in bold terracotta, then a quiet "View thread".
@@ -2458,7 +2470,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
                     pending.replyTo?.let { ReplyContext(it, state, pending.clientMessageId) }
-                    MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped)
+                    MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
+                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
             }
@@ -3113,7 +3126,10 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                 Column(Modifier.padding(bottom = if (expanded && canExpand) (buttonHeight / density).dp + 6.dp else 0.dp)
                     .fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (!hidden) { Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId); Spacer(Modifier.width(6.dp)) }
+                        if (!hidden) {
+                            Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId, avatarAsset = reference.author.avatarAsset, avatarUrl = reference.author.avatarUrl)
+                            Spacer(Modifier.width(6.dp))
+                        }
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
@@ -3191,6 +3207,7 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
     openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
     admin = message.author.admin,
+    avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -3203,6 +3220,8 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     openAuthor: (() -> Unit)? = null,
     /** A feedback team member's message (`author.admin`): an ADMIN badge after the name. */
     admin: Boolean = false,
+    /** The author's custom picture, over their [avatarId] mascot. */
+    avatarAsset: String? = null, avatarUrl: String? = null,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -3227,7 +3246,7 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
             contentAlignment = Alignment.TopCenter,
         ) {
             if (hovered) Text(shortTimeLabel(createdAt, hour24), color = TextMuted, fontSize = 10.sp, lineHeight = 21.sp, maxLines = 1, softWrap = false)
-        } else Avatar(author, 34.dp, modifier = avatarProfile, avatarId = avatarId)
+        } else Avatar(author, 34.dp, modifier = avatarProfile, avatarId = avatarId, avatarAsset = avatarAsset, avatarUrl = avatarUrl)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3451,8 +3470,19 @@ internal fun counterTone(count: Int): Color = when {
     else -> TextMuted
 }
 
-@Composable internal fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
+/**
+ * A person's circle: their custom picture ([avatarAsset]/[avatarUrl], see [pictureOf]) aspect-filled
+ * over the saved mascot ([avatarId]), which shows while the picture loads, when it fails and when
+ * there is none; initials only without a valid mascot. Rings and presence dots stay outside.
+ */
+@Composable internal fun Avatar(
+    name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false,
+    avatarAsset: String? = null, avatarUrl: String? = null,
+) {
     val index = caperAvatarIndex(avatarId)
+    val picture = pictureOf(avatarAsset, avatarUrl)
+    // The picture is on screen: transparent pixels in it must not reveal the mascot.
+    var pictureShown by remember(picture) { mutableStateOf(false) }
     Box(
         modifier
             // Web: caper-green border with a soft outer ring while speaking.
@@ -3466,14 +3496,17 @@ internal fun counterTone(count: Int): Color = when {
             .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        if (index == null) Text(initialOf(name), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
-        else {
-            Image(
-                painter = painterResource(caperAvatarResources[index]),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-            )
+        if (!pictureShown) {
+            if (index == null) Text(initialOf(name), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+            else {
+                Image(
+                    painter = painterResource(caperAvatarResources[index]),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
+        if (picture != null) PictureImage(picture, size, Modifier.fillMaxSize()) { pictureShown = it }
     }
 }
 
@@ -3604,7 +3637,11 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable internal fun ProfileScreen(account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, submit: (String, String) -> Unit) {
+/** [picture] (Edit profile only) shows and changes your profile picture above the fields. */
+@Composable internal fun ProfileScreen(
+    account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, picture: (@Composable () -> Unit)? = null,
+    submit: (String, String) -> Unit,
+) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
@@ -3612,6 +3649,7 @@ internal fun counterTone(count: Int): Color = when {
             Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
             Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
+        if (picture != null) { picture(); HorizontalDivider(color = Border) }
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -3736,6 +3774,7 @@ internal fun counterTone(count: Int): Color = when {
     LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
     CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        SpaceIconSection(state, detail, viewModel)
         val canRename = !state.busy && name.isNotBlank() && name.trim() != detail.space.name
         // Web validates on submit and says why (spaces/client.ts spaceNameError); Done saves too.
         fun rename() { spaceNameError(name)?.let { nameError = it } ?: viewModel.renameSpace(name) }
@@ -3792,7 +3831,7 @@ internal fun counterTone(count: Int): Color = when {
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(member.displayName, 30.dp, avatarId = member.avatarId); Spacer(Modifier.width(9.dp))
+            Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text("@${member.username}", color = TextMuted, fontSize = 10.sp)
@@ -3872,7 +3911,7 @@ internal fun counterTone(count: Int): Color = when {
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(member.displayName, 30.dp, avatarId = member.avatarId); Spacer(Modifier.width(9.dp))
+            Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text("@${member.username}${if (member.owner) " · Owner" else ""}", color = TextMuted, fontSize = 10.sp)

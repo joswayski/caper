@@ -108,6 +108,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var foreground = false
     private val uploader = AttachmentUploader(api)
     private val preparer by lazy { AttachmentPreparer(application) }
+    private val pictureUploader = PictureUploader(api)
+    /** Profile picture and space icon changes in flight, by [AppUiState.pictureSaves] key. */
+    private val pictureJobs = mutableMapOf<String, Job>()
     /** Client compression settings from `GET /api/assets/usage`. */
     private var compression = CompressionSettings()
     private val uploadJobs = mutableMapOf<String, Job>()
@@ -291,7 +294,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         invalidate()
         // Signing out gives up every conversation's staged files.
         mutable.value.attachmentDrafts.values.flatten().forEach { abandonDraft(it) }
-        mutable.value = mutable.value.copy(attachmentDrafts = emptyMap(), attachmentErrors = emptyMap())
+        mutable.value = mutable.value.copy(attachmentDrafts = emptyMap(), attachmentErrors = emptyMap(), pictureSaves = emptyMap())
+        pictureJobs.values.forEach { it.cancel() }; pictureJobs.clear()
         accountToken = null
         chatToken = null
         chatAuthor = null
@@ -979,9 +983,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Who a message's author is, for blocking: the best name this client already has. */
     fun blockTarget(author: ChatAuthor): BlockedAccount {
         val state = mutable.value
-        state.selectedSpace?.members?.firstOrNull { it.id == author.id }?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId) }
-        state.directConversations.firstOrNull { it.peer.id == author.id }?.peer?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId) }
-        return BlockedAccount(author.id, "", author.name, author.avatarId)
+        state.selectedSpace?.members?.firstOrNull { it.id == author.id }?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
+        state.directConversations.firstOrNull { it.peer.id == author.id }?.peer?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
+        return BlockedAccount(author.id, "", author.name, author.avatarId, author.avatarAsset, author.avatarUrl)
     }
 
     /** Blocks [account] everywhere you share; a pending request from them is declined too. */
@@ -1599,7 +1603,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
         if (pinWorkers[messageId]?.isActive == true) return
         val target = (mutable.value.messages + mutable.value.pinnedMessages).firstOrNull { it.id == messageId } ?: return
-        val own = chatAuthor ?: mutable.value.account?.let { ChatAuthor(it.id, it.displayName ?: it.username ?: "You", false, it.avatarId) } ?: return
+        val own = chatAuthor ?: mutable.value.account?.let {
+            ChatAuthor(it.id, it.displayName ?: it.username ?: "You", false, it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+        } ?: return
         val request = generation
         mutable.value = mutable.value.copy(
             pinSaves = mutable.value.pinSaves + (messageId to PinSaveUi(active)),
@@ -2557,6 +2563,103 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val space = api.updateSpace(requireAccountToken(), detail.space.id, name)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(space = space)); done()
+    }
+
+    // --- Profile pictures and space icons -------------------------------------------------------
+
+    /**
+     * A photo picked for your profile picture ([spaceId] null) or the icon of a space you own:
+     * prepared on the device (GIFs unchanged, anything else a WebP square), uploaded, and applied
+     * by the server. Runs on with its dialog closed; the state shows progress and the error.
+     */
+    fun changePicture(uri: Uri, spaceId: String? = null, epoch: Long = accountGeneration) {
+        if (epoch != accountGeneration) return
+        val key = spaceId ?: PROFILE_PICTURE_KEY
+        if (mutable.value.pictureSaves[key]?.busy == true) return
+        val token = accountToken ?: return
+        val request = accountGeneration
+        val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
+        setPictureSave(key, PictureSaveUi(uploading = true))
+        pictureJobs[key] = viewModelScope.launch {
+            val directory = File(uploadSession, "picture-${UUID.randomUUID()}")
+            try {
+                val picked = preparer.copy(uri, directory)
+                val picture = PicturePreparer.prepare(picked.source)
+                val result = pictureUploader.upload(token, target, picture)
+                if (request != accountGeneration) return@launch
+                result.account?.takeIf { spaceId == null }?.let(::applyOwnAccount)
+                result.space?.takeIf { spaceId != null }?.let(::applySpace)
+                setPictureSave(key, null)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error = pictureError(error, target)))
+            } finally {
+                viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() }
+            }
+        }
+    }
+
+    /** Back to your saved mascot ([spaceId] null) or the space's initial. */
+    fun removePicture(spaceId: String? = null) {
+        val key = spaceId ?: PROFILE_PICTURE_KEY
+        if (mutable.value.pictureSaves[key]?.busy == true) return
+        val token = accountToken ?: return
+        val request = accountGeneration
+        val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
+        setPictureSave(key, PictureSaveUi(removing = true))
+        pictureJobs[key] = viewModelScope.launch {
+            try {
+                if (spaceId == null) {
+                    val account = api.removeAvatar(token)
+                    if (request != accountGeneration) return@launch
+                    applyOwnAccount(account)
+                } else {
+                    val space = api.removeSpaceIcon(token, spaceId)
+                    if (request != accountGeneration) return@launch
+                    applySpace(space)
+                }
+                setPictureSave(key, null)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error = pictureError(error, target)))
+            }
+        }
+    }
+
+    /** Clears a finished picture change's error ([key]: [PROFILE_PICTURE_KEY] or a space ID); one in flight stays. */
+    fun dismissPictureError(key: String) {
+        if (mutable.value.pictureSaves[key]?.busy == false) setPictureSave(key, null)
+    }
+
+    private fun setPictureSave(key: String, value: PictureSaveUi?) {
+        val saves = mutable.value.pictureSaves
+        mutable.value = mutable.value.copy(pictureSaves = if (value == null) saves - key else saves + (key to value))
+    }
+
+    /**
+     * The server's account after a picture change. [state] resolves it into every retained
+     * snapshot of you (members, authors, DMs, pins, threads, replies) through the same own-profile
+     * refresh as a profile save, so the picture changes everywhere without a reload.
+     */
+    private fun applyOwnAccount(saved: Account) {
+        val current = mutable.value.account ?: return
+        if (saved.id != current.id) return
+        // Only `GET /api/account/me` reports the feedback team; a picture change keeps it.
+        mutable.value = mutable.value.copy(account = saved.copy(feedbackTeam = saved.feedbackTeam || current.feedbackTeam))
+    }
+
+    /** A space whose icon changed: its rail tile and, when it is open, the open space (Manage space, header). */
+    private fun applySpace(changed: Space) {
+        fun merge(space: Space) = if (space.id != changed.id) space else space.copy(name = changed.name, iconAsset = changed.iconAsset, iconUrl = changed.iconUrl)
+        // A background reconcile that started before this change must not put the old icon back.
+        membershipRevision++
+        val current = mutable.value
+        mutable.value = current.copy(
+            spaces = current.spaces.map(::merge),
+            selectedSpace = current.selectedSpace?.let { it.copy(space = merge(it.space)) },
+        )
     }
     fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
