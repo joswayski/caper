@@ -981,8 +981,12 @@ have at most 100 live links. Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block
-rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
-an owner's block returns 403 until the owner invites the account by username.
+rejoining by link, but an owner removal or an owner's block returns 403 until the
+owner invites the account by username. A removal is recorded in
+`space_invitations.removed_at` (migration `202610140002_space_removals.sql`,
+backfilled from `status='removed'`) and holds until an invitation is accepted:
+a live re-invitation can be fulfilled through a link, but one that was
+cancelled, declined or expired leaves the 403 in place.
 Expired, revoked and exhausted links return the same 404 to outsiders; existing
 members can still preview and open them as shortcuts. Unknown links and deleted
 spaces return 404 for everyone. The preview checks active membership using the

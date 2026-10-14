@@ -374,7 +374,12 @@ pub(crate) async fn accept(
         if !live {
             return Err(invalid_link());
         }
-        let removed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_invitations WHERE space_id=$1 AND user_id=$2 AND status='removed')")
+        // An owner removal holds until a new invitation is accepted. A live
+        // re-invitation may be fulfilled here instead; one that was cancelled,
+        // declined or expired leaves the removal in force. `status='removed'`
+        // also covers rows written by code that predates `removed_at`.
+        let removed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_invitations WHERE space_id=$1 AND user_id=$2
+            AND (status='removed' OR (removed_at IS NOT NULL AND NOT (status='pending' AND updated_at > now()-interval '7 days'))))")
             .bind(space_id).bind(user).fetch_one(&mut *tx).await.map_err(database_error)?;
         // An owner who blocked this account has excluded them as surely as a
         // removal; answer identically so neither is confirmed to the joiner.
@@ -410,7 +415,7 @@ pub(crate) async fn accept(
             .await
             .map_err(database_error)?;
         // A pending username invitation is fulfilled by joining.
-        sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now() WHERE space_id=$1 AND user_id=$2 AND status='pending'")
+        sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now(),removed_at=NULL WHERE space_id=$1 AND user_id=$2 AND status='pending'")
             .bind(space_id).bind(user).execute(&mut *tx).await.map_err(database_error)?;
     }
     if let Some(channel) = channel_id {

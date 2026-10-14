@@ -867,7 +867,7 @@ async fn accept_invitation(
         .map_err(database_error)?;
     sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE space_id=$1 AND NOT private AND deleted_at IS NULL ORDER BY (name='general') DESC,id LIMIT 1")
         .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
-    sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now() WHERE space_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now(),removed_at=NULL WHERE space_id=$1 AND user_id=$2")
         .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok(Json(Space {
@@ -970,9 +970,12 @@ async fn remove_space_member(
     } else {
         "removed"
     };
+    // `removed_at` outlives later invitation states until one is accepted.
     sqlx::query(
-        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,$3)
-        ON CONFLICT(space_id,user_id) DO UPDATE SET status=$3,updated_at=now()",
+        "INSERT INTO public.space_invitations(space_id,user_id,status,removed_at)
+        VALUES($1,$2,$3,CASE WHEN $3='removed' THEN now() END)
+        ON CONFLICT(space_id,user_id) DO UPDATE SET status=$3,updated_at=now(),
+            removed_at=COALESCE(EXCLUDED.removed_at,space_invitations.removed_at)",
     )
     .bind(space_id)
     .bind(target)
