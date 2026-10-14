@@ -12676,7 +12676,18 @@ impl CaperApp {
         let member_count = detail.members.len();
         let channel = self.selected_channel.as_deref();
         // A private channel's readers lead the list in their own group.
-        let groups = detail.member_groups(channel).map(|(readers, others)| {
+        // Grouped once per frame: the order below comes from the same split.
+        let split = detail.member_groups(channel);
+        let members: Vec<_> = match &split {
+            Some((readers, others)) => readers.iter().chain(others).copied().collect::<Vec<_>>(),
+            None => detail.members.iter().collect(),
+        }
+        .into_iter()
+        .skip(self.member_page * MEMBER_PAGE_SIZE)
+        .take(MEMBER_PAGE_SIZE)
+        .cloned()
+        .collect();
+        let groups = split.map(|(readers, others)| {
             let name = detail
                 .channels
                 .iter()
@@ -12692,13 +12703,6 @@ impl CaperApp {
                 others.len(),
             )
         });
-        let members: Vec<_> = detail
-            .member_order(channel)
-            .into_iter()
-            .skip(self.member_page * MEMBER_PAGE_SIZE)
-            .take(MEMBER_PAGE_SIZE)
-            .cloned()
-            .collect();
         let demo = detail.space.demo;
         let frame = egui::Frame::new().fill(SIDEBAR);
         let frame = if overlay {

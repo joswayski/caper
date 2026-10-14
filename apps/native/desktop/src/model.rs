@@ -545,11 +545,16 @@ impl SpaceDetail {
     /// A private channel's readers, then the rest of the space, each in the
     /// space's order; `None` for public channels and older APIs.
     pub fn member_groups(&self, channel: Option<&str>) -> Option<(Vec<&Member>, Vec<&Member>)> {
-        let ids = self.channel_members.get(channel?)?;
+        let ids: std::collections::HashSet<&str> = self
+            .channel_members
+            .get(channel?)?
+            .iter()
+            .map(String::as_str)
+            .collect();
         Some(
             self.members
                 .iter()
-                .partition(|member| ids.contains(&member.id)),
+                .partition(|member| ids.contains(member.id.as_str())),
         )
     }
 
