@@ -410,6 +410,8 @@ export default function Chat({
     if (state.phase === "error") {
       setEditTarget(undefined);
       setHistoryTarget(undefined);
+      // Pins close with the conversation rather than reopening after Try again.
+      setShowPins(false);
     }
   }, [state.phase]);
   const isTouchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
@@ -1958,7 +1960,7 @@ export default function Chat({
               {viewer}
             </PinsDialog>
           )}
-          <div className="chat-timeline" inert={showPins} aria-hidden={showPins} {...keyboardDismiss}>
+          <div className="chat-timeline" inert={pinsOpen} aria-hidden={pinsOpen} {...keyboardDismiss}>
             {state.phase === "loading" && <MessageSkeleton />}
             {state.phase === "error" && (
               <div className="chat-state" role="alert">
