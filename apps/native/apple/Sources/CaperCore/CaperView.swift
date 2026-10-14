@@ -4132,8 +4132,14 @@ private struct MessageRow: View {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
-                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread") }
+                                // As on web: the count in terracotta, then a quiet "View thread".
+                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")")
+                                    .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
+                                    .padding(.leading, 3)
+                                Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
+                            } else {
+                                CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread")
+                            }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                     }.buttonStyle(.plain).frame(minHeight: 32)
                         #if os(macOS)
