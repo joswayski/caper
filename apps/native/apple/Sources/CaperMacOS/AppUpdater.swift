@@ -26,6 +26,7 @@ import Foundation
 
     private let updater: URL?
     private let build: Int
+    private let version: String?
     private let sourceRevision: String?
     private var declined: Set<String> = []
     private var timer: Timer?
@@ -52,10 +53,18 @@ import Foundation
             && FileManager.default.isExecutableFile(atPath: updater.path)
         self.updater = enabled ? updater : nil
         self.build = build
+        version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         sourceRevision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
     }
 
     var isAvailable: Bool { updater != nil }
+
+    /// Identify this app even when there is no newer published release.
+    var installedVersion: String {
+        let label = version.map { "Caper \($0) (build \(build))" } ?? "Development build"
+        let revision = sourceRevision.map { " · \($0.prefix(7))" } ?? ""
+        return "Installed: \(label)\(revision)"
+    }
 
     /// Signed downloads must be installed before opening the account UI. Finder
     /// owns the move and Gatekeeper handling; never strip quarantine or guess
@@ -152,7 +161,7 @@ import Foundation
         switch result {
         case let .success(data):
             guard let update = Self.parse(data) else {
-                if manual { inform("Caper is up to date", "") }
+                if manual { inform("Caper is up to date", "\(installedVersion)\n\nNo newer published release is available.") }
                 return
             }
             if manual || !declined.contains(update.version) { offer(update) }

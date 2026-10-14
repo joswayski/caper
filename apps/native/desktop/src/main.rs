@@ -18149,6 +18149,7 @@ impl CaperApp {
         ui.add_space(18.0);
         ui.label(bold("Updates").size(12.0).color(MUTED));
         ui.add_space(6.0);
+        ui.label(RichText::new(updates::installed_version()).color(MUTED));
         let status = self.updates.status();
         let checking = status == updates::Status::Checking;
         let label = if checking {
@@ -18161,7 +18162,7 @@ impl CaperApp {
         }
         match &status {
             updates::Status::UpToDate => {
-                ui.label(RichText::new("Caper is up to date.").color(MUTED));
+                ui.label(RichText::new("No newer published release is available.").color(MUTED));
             }
             updates::Status::Available => {
                 ui.label(

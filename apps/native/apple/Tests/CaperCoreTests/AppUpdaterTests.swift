@@ -45,6 +45,26 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertTrue(updater.prepareInstallation())
     }
 
+    @MainActor
+    func testInstalledVersionComesFromTheRunningBundleNotTheLatestRelease() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).app")
+        let contents = folder.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let info: [String: String] = [
+            "CFBundleIdentifier": "chat.caper.version-fixture",
+            "CFBundleShortVersionString": "0.2.7",
+            "CFBundleVersion": "42",
+            "CaperSourceRevision": String(repeating: "abcdef0123", count: 4),
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: contents.appendingPathComponent("Info.plist"))
+        let bundle = try XCTUnwrap(Bundle(url: folder))
+        let updater = AppUpdater(bundle: bundle, environment: ["CAPER_TEST_MODE": "parity"])
+        XCTAssertEqual(updater.installedVersion, "Installed: Caper 0.2.7 (build 42) · abcdef0")
+        XCTAssertFalse(updater.isAvailable, "Showing the installed version must not enable update checks")
+    }
+
     func testStackedNotesAndLegacyOutputRemainReadable() throws {
         let data = Data(#"{"update":true,"version":"0.1.42","notes":"Latest only","changelog":[{"build":42,"version":"0.1.42","notes":"Newest"},{"build":39,"version":"0.1.39","notes":"Skipped"}],"history_complete":true,"can_apply":true}"#.utf8)
         let update = try XCTUnwrap(AppUpdater.parse(data))
