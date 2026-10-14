@@ -18,6 +18,8 @@ function Profile() {
   const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
   // Only a missing session means signed out; an outage keeps you here to retry.
   const [failed, setFailed] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string>();
 
   useEffect(() => {
     if (account || failed) return;
@@ -73,13 +75,30 @@ function Profile() {
         />
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
-        <div className="mt-8 flex justify-end border-t border-border pt-3 text-[.85rem]">
+        <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 border-t border-border pt-3 text-[.85rem]">
+          {logoutError && (
+            <p className="m-0 text-[var(--error-text)]" role="alert">
+              {logoutError}
+            </p>
+          )}
           <button
-            className="-mr-2 min-h-11 cursor-pointer rounded-control border-0 bg-transparent px-2 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
+            className="-mr-2 min-h-11 cursor-pointer rounded-control border-0 bg-transparent px-2 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 disabled:cursor-wait"
             type="button"
-            onClick={() => void logout().then(() => window.location.assign("/"))}
+            disabled={loggingOut}
+            onClick={() => {
+              setLoggingOut(true);
+              setLogoutError(undefined);
+              logout().then(
+                () => window.location.assign("/"),
+                () => {
+                  // Stay signed in and say so, instead of a click that silently did nothing.
+                  setLoggingOut(false);
+                  setLogoutError("Couldn’t log out. Check your connection and try again.");
+                },
+              );
+            }}
           >
-            Log out
+            {loggingOut ? "Logging out…" : "Log out"}
           </button>
         </div>
       </section>
