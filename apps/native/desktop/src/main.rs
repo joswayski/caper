@@ -24520,7 +24520,8 @@ mod tests {
                     .iter()
                     .find_map(|shape| match &shape.shape {
                         egui::Shape::Rect(rect)
-                            if rect.fill == super::COMPOSER && rect.rect.width() > width - 100.0 =>
+                            if rect.fill == super::COMPOSER
+                                && rect.rect.width() > width - 100.0 =>
                         {
                             Some(rect.rect)
                         }
