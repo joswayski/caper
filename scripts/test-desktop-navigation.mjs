@@ -223,26 +223,26 @@ try {
   browser("set", "viewport", "390", "844", "2");
   evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert.equal(evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
-  // Close the member panel carried across from the desktop layout.
-  browser("click", ".member-list-close");
+  // Narrowing closes the desktop member column instead of opening a phone drawer.
   wait('!document.querySelector(".space-member-presence")');
   assert.equal(evaluate('document.body.textContent.includes("TEST FIXTURE design history")'), true);
   assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu")'),
-    null,
-    "The mobile channel title has no dropdown",
+    evaluate('getComputedStyle(document.querySelector(".chat-title-menu")).display'),
+    "block",
+    "The mobile channel title opens the channel menu",
   );
-  assert.ok(
+  assert.deepEqual(
     evaluate(
-      '["chat-pins-toggle", "member-list-toggle"].map(name => document.querySelector(`.chat-heading .${name}`).getBoundingClientRect().left).reduce((pins, members) => members > pins)',
+      '["chat-pins-toggle", "member-list-toggle"].map(name => getComputedStyle(document.querySelector(`.chat-heading .${name}`)).display)',
     ),
-    "Mobile Members is a header button right of Pins",
+    ["none", "none"],
+    "Mobile Pins and Members move into the channel menu",
   );
-  // Pins is an icon-only header control on every layout (#363).
+  // The desktop Pins control stays mounted but is hidden on phones.
   assert.equal(
     evaluate('document.querySelectorAll(".chat-heading .chat-pins-toggle").length'),
     1,
-    "Mobile Pins is one header control",
+    "There is only one desktop Pins control",
   );
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getAttribute("aria-label")'), "Back to Browse");
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getBoundingClientRect().width'), 44);
@@ -422,7 +422,8 @@ try {
     evaluate('document.querySelector(".chat-heading .chat-pins-toggle").getAttribute("aria-label")'),
     "Pins",
   );
-  browser("click", ".chat-heading .chat-pins-toggle");
+  browser("click", ".chat-title-menu > summary");
+  browser("click", ".chat-header-menu button:first-child");
   wait('document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
   screenshot("mobile-empty-pins");
   await swipe(p.x - 60, p.y, 100);
@@ -440,9 +441,18 @@ try {
   const drawerOpen = () => evaluate(`!!document.querySelector("${drawer}:not([inert])")`);
   const drawerSettled = () => wait(`!document.querySelector("${drawer}")?.getAnimations().length`);
   const drawerGone = () => wait(`!document.querySelector("${drawer}")`);
+  browser("click", ".chat-title-menu > summary");
+  // Safari may leave focus nowhere when a menu item is tapped. That blur must
+  // not hide the item before the click has a chance to open Members.
+  evaluate('document.querySelector(".chat-title-menu > summary").focus(); document.activeElement.blur()');
+  assert.equal(
+    evaluate('document.querySelector(".chat-title-menu").open'),
+    true,
+    "A null-focus blur keeps the menu open",
+  );
   assert.equal(
     evaluate(`(async () => {
-      document.querySelector(".chat-heading .member-list-toggle").click();
+      document.querySelector(".chat-header-menu button[aria-expanded]").click();
       await new Promise((resolve) => setTimeout(resolve));
       return document.querySelector("${drawer}").getAnimations().length;
     })()`),
@@ -450,8 +460,9 @@ try {
     "Members slides in",
   );
   drawerSettled();
+  assert.equal(evaluate('document.querySelector(".chat-title-menu").open'), false, "Choosing Members closes the menu");
   assert.equal(
-    evaluate('document.querySelector(".chat-heading .member-list-toggle").getAttribute("aria-expanded")'),
+    evaluate('document.querySelector(".chat-header-menu button[aria-expanded]").getAttribute("aria-expanded")'),
     "true",
   );
   screenshot("mobile-members");
@@ -545,7 +556,8 @@ try {
   );
   browser("set", "viewport", "320", "568", "2");
   evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-  browser("click", ".chat-heading .member-list-toggle");
+  browser("click", ".chat-title-menu > summary");
+  browser("click", ".chat-header-menu button[aria-expanded]");
   drawerSettled();
   assert.equal(
     evaluate("document.documentElement.scrollWidth <= innerWidth"),
