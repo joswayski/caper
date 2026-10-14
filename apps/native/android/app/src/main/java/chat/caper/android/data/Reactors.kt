@@ -31,6 +31,9 @@ internal class ReactorCache(private val limit: Int = 64) {
             entries[list.messageId] = list
     }
 
+    /** Rewrites every cached list in place, keeping its revision: a live profile change. */
+    @Synchronized fun update(change: (ReactorList) -> ReactorList) { entries.replaceAll { _, list -> change(list) } }
+
     @Synchronized fun clear() { entries.clear() }
 }
 

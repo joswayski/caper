@@ -16,6 +16,25 @@ internal fun reactionSequence(event: JsonObject, channelId: String): String {
 internal fun pinSequence(event: JsonObject, channelId: String): String =
     Json.decodeFromJsonElement(PinUpdate.serializer(), event).validated(channelId).seq
 
+/** The fixed ID of the account-wide `profiles` subscription. */
+internal const val PROFILES_SUBSCRIPTION = "profiles"
+internal const val PROFILES_SUBSCRIBE = """{"type":"subscribe","id":"$PROFILES_SUBSCRIPTION","kind":"profiles"}"""
+private val profileJson = Json { ignoreUnknownKeys = true }
+
+/**
+ * One `profiles` event: `profile.updated` (a person) or `space.updated`. Unknown types and
+ * malformed payloads are null, never fatal; absent picture or icon fields mean it was removed.
+ */
+internal fun profileEvent(event: JsonObject, json: Json = profileJson): ProfileEvent? = runCatching {
+    when ((event["type"] as? JsonPrimitive)?.content) {
+        "profile.updated" -> json.decodeFromJsonElement(ProfilePerson.serializer(), event.getValue("person"))
+            .takeIf { it.id.isNotEmpty() }?.let { ProfileEvent.Person(it) }
+        "space.updated" -> json.decodeFromJsonElement(Space.serializer(), event.getValue("space"))
+            .takeIf { it.id.isNotEmpty() && it.name.isNotEmpty() }?.let { ProfileEvent.SpaceChanged(it) }
+        else -> null
+    }
+}.getOrNull()
+
 class GatewayClient(
     private val baseUrl: String, private val token: String?, private val channelId: String,
     initialCursor: String, private val onMessage: (ChatMessage) -> Unit,
@@ -30,6 +49,9 @@ class GatewayClient(
     private val onMedia: (String, List<Participant>, Long?) -> Unit = { _, _, _ -> },
     private val onMediaDenied: (String) -> Unit = {}, private val onMediaDisconnected: () -> Unit = {},
     private val onAccessDenied: () -> Unit, private val onResync: () -> Unit,
+    /** Signed in: also subscribe to live profile and space changes ([PROFILES_SUBSCRIPTION]). */
+    profiles: Boolean = false,
+    private val onProfile: (ProfileEvent) -> Unit = {},
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val client: OkHttpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS)
         .followRedirects(false).followSslRedirects(false).build(),
@@ -58,6 +80,8 @@ class GatewayClient(
     private var closed = false
     private var attempts = 0
     @Volatile private var lastActivityAt = System.currentTimeMillis()
+    /** Cleared for good when an older gateway refuses the `profiles` kind: no retry loop, nothing torn down. */
+    @Volatile private var profilesWanted = profiles && token != null
     @Volatile private var cursor = initialCursor
     @Volatile private var serverOffsetMs = 0L
     @Volatile private var idleTimeoutMs = 600_000L
@@ -139,6 +163,7 @@ class GatewayClient(
                 s.socket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor"}""")
                 presenceSubscriptionId?.let { sendPresenceSubscription(s.socket) }
                 mediaSubscriptions.forEach { (id, channel) -> s.mediaPosition[id] = -1; sendMediaSubscription(s.socket, id, channel) }
+                if (profilesWanted) s.socket.send(PROFILES_SUBSCRIBE)
                 s.heartbeat = scope.launch { while (true) { delay(heartbeatIntervalMs); val age = (System.currentTimeMillis() - lastActivityAt).coerceAtLeast(0); s.socket.send("""{"type":"heartbeat","activityAgeMs":$age}""") } }
                 armWatchdog(s, receiveTimeoutMs)
             }
@@ -240,6 +265,9 @@ class GatewayClient(
             }
             "ready" -> { val checkpoint = event["cursor"]?.jsonPrimitive?.content ?: return; require(checkpoint == s.chatPosition); s.chatReady = true; maybePromote(s) }
             "resync_required" -> if (s === active) { fail(s, true); onResync() } else fail(s, false)
+        } else if (id == PROFILES_SUBSCRIPTION) {
+            // No replay and idempotent: only the live stream applies them, so a handoff can't reorder them.
+            if (s === active) profileEvent(event, json)?.let(onProfile)
         } else if (id == presenceSubscriptionId && event["type"]?.jsonPrimitive?.content == "snapshot") {
             val snapshot = json.decodeFromJsonElement(PresenceSnapshot.serializer(), event)
             if (s === active) onPresence(snapshot) else { s.pendingPresence = snapshot; maybePromote(s) }
@@ -260,6 +288,7 @@ class GatewayClient(
 
     private fun receiveError(s: Stream, frame: JsonObject) {
         val id = frame["id"]?.jsonPrimitive?.content ?: return
+        if (id == PROFILES_SUBSCRIPTION) { profilesWanted = false; return }
         val denied = frame["status"]?.jsonPrimitive?.content?.toIntOrNull() in setOf(401, 403, 404)
         if (s === candidate) return fail(s, false)
         if (id in mediaSubscriptions && denied) { val channel = mediaSubscriptions.remove(id) ?: return; mediaRevisions.remove(id); onMedia(channel, emptyList(), null); onMediaDenied(channel) }

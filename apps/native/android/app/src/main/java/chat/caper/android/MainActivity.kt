@@ -1249,9 +1249,9 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         shown.forEachIndexed { index, participant ->
             key(participant.id) {
                 // The ring in the surrounding surface colour separates overlapping faces.
-                Avatar(participant.name, size, Modifier.offset(x = step * index).border(1.5.dp, ring, CircleShape),
+                Avatar(participant.name, size, Modifier.offset(x = step * index),
                     avatarId = participant.avatarId, speaking = participant.id in speaking,
-                    avatarAsset = participant.avatarAsset, avatarUrl = participant.avatarUrl)
+                    avatarAsset = participant.avatarAsset, avatarUrl = participant.avatarUrl, outline = BorderStroke(1.5.dp, ring))
             }
         }
     }
@@ -2542,7 +2542,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val presented = state.messages.firstOrNull { it.id == messageId }
         if (presented == null) LaunchedEffect(messageId) { reactorsTarget = null }
         else key(messageId) {
-            ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors) { reactorsTarget = null }
+            ReactorsSheet(presented, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors, state.profileRevision) { reactorsTarget = null }
         }
     }
     mentionTarget?.let { card ->
@@ -2965,7 +2965,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     reactorsTarget?.let { (id, emoji) ->
         state.pinnedMessages.find { it.id == id }?.let { current ->
-            ReactorsSheet(current, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors) { reactorsTarget = null }
+            ReactorsSheet(current, emoji, state.chatAuthorId ?: state.account?.id, state.account, viewModel::reactors, state.profileRevision) { reactorsTarget = null }
         }
     }
     conversationTarget?.let { target ->
@@ -3471,29 +3471,40 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 /**
- * A person's circle: their custom picture ([avatarAsset]/[avatarUrl], see [pictureOf]) aspect-filled
- * over the saved mascot ([avatarId]), which shows while the picture loads, when it fails and when
- * there is none; initials only without a valid mascot. Rings and presence dots stay outside.
+ * A person's avatar: their custom picture ([avatarAsset]/[avatarUrl], see [pictureOf]) aspect-filled
+ * in a rounded square ([PictureShape]) over the saved mascot ([avatarId]), which shows (in its
+ * circle) while the picture loads, when it fails and when there is none; initials only without a
+ * valid mascot. The speaking ring and an [outline] (voice stacks) follow whichever shape shows;
+ * presence dots stay outside, at the bottom-right corner.
  */
 @Composable internal fun Avatar(
     name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false,
-    avatarAsset: String? = null, avatarUrl: String? = null,
+    avatarAsset: String? = null, avatarUrl: String? = null, outline: BorderStroke? = null,
 ) {
     val index = caperAvatarIndex(avatarId)
     val picture = pictureOf(avatarAsset, avatarUrl)
     // The picture is on screen: transparent pixels in it must not reveal the mascot.
     var pictureShown by remember(picture) { mutableStateOf(false) }
+    val shape = if (pictureShown) PictureShape else CircleShape
     Box(
         modifier
             // Web: caper-green border with a soft outer ring while speaking.
             .size(size)
             .then(if (speaking) Modifier.drawBehind {
-                drawCircle(CaperGreen.copy(alpha = .2f), radius = this.size.minDimension / 2 + 1.5.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
-            } else Modifier).clip(CircleShape)
+                val ring = CaperGreen.copy(alpha = .2f)
+                val gap = 1.5.dp.toPx()
+                if (pictureShown) {
+                    val outer = Size(this.size.width + gap * 2, this.size.height + gap * 2)
+                    drawRoundRect(ring, topLeft = Offset(-gap, -gap), size = outer,
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(outer.minDimension * .3f), style = Stroke(3.dp.toPx()))
+                } else drawCircle(ring, radius = this.size.minDimension / 2 + gap, style = Stroke(3.dp.toPx()))
+            } else Modifier)
+            .then(if (outline != null) Modifier.border(outline, shape) else Modifier)
+            .clip(shape)
             // Bundled image avatars retain their transparent backing. Initials
             // still need contrast against every surface.
             .then(if (index == null) Modifier.background(if (size > 32.dp) SurfaceRaised else SurfaceComposer) else Modifier)
-            .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
+            .then(if (speaking) Modifier.border(2.dp, CaperGreen, shape) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         if (!pictureShown) {

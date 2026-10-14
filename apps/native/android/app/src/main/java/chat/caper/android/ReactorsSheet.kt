@@ -96,6 +96,8 @@ internal const val ShowReactorsLabel = "Show who reacted"
     selfId: String?,
     account: Account?,
     load: suspend (ChatMessage) -> ReactorList,
+    /** [AppUiState.profileRevision]: a live profile change re-reads the (updated) list in place. */
+    profileRevision: Long = 0,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -126,6 +128,11 @@ internal const val ShowReactorsLabel = "Show who reacted"
             failed = true
             loading = false
         }
+    }
+    LaunchedEffect(profileRevision) {
+        if (profileRevision == 0L || list == null) return@LaunchedEffect
+        // From the cache the view model already rewrote, so no request and no loading flash.
+        try { list = load(message) } catch (error: CancellationException) { throw error } catch (_: Throwable) {}
     }
 
     val authors = list?.reactions?.firstOrNull { it.emoji == current.emoji }?.authors?.map { author ->

@@ -68,21 +68,23 @@ import kotlinx.coroutines.launch
         if (card.id != null) it.peer.id == card.id else it.peer.username.equals(card.username, ignoreCase = true)
     }
     val canMessage = !card.self && !blocked && card.username != null
+    // Name, username and picture follow live profile changes while the card is open.
+    val shown = state?.let { refreshedCard(card, it) } ?: card
     fun openConversation() {
         pending = "message"
         error = null
         message({ pending = null; onDismiss() }, { pending = null; error = it })
     }
     // Block closes the card first, as on web: only the confirmation stays.
-    if (!confirmBlock) ProfileBottomSheet(card.title, profileDraft, picking || pending != null, onDismiss, header = {
+    if (!confirmBlock) ProfileBottomSheet(shown.title, profileDraft, picking || pending != null, onDismiss, header = {
         // Identity, then Open conversation (and the sheet's Close) at the end, as on web.
-        Avatar(card.displayName ?: card.username ?: card.title, 48.dp, avatarId = card.avatarId, avatarAsset = card.avatarAsset, avatarUrl = card.avatarUrl)
+        Avatar(shown.displayName ?: shown.username ?: shown.title, 48.dp, avatarId = shown.avatarId, avatarAsset = shown.avatarAsset, avatarUrl = shown.avatarUrl)
         Column(Modifier.weight(1f)) {
             Text(
-                card.title, Modifier.semantics { heading() }, color = Text, fontSize = 16.sp,
+                shown.title, Modifier.semantics { heading() }, color = Text, fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
-            card.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            shown.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         if (!card.self && id != null && viewModel != null && state?.account != null) Box {
             ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }

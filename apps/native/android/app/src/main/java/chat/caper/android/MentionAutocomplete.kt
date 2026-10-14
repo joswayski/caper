@@ -278,6 +278,16 @@ internal fun mentionCard(id: String?, username: String?, state: AppUiState): Men
     return MentionCard(id, username, null, null, self)
 }
 
+/**
+ * An open card follows live profile changes (`profile.updated`) of someone this client knows by
+ * ID: their current name, username and picture. Anyone else keeps the card as it opened.
+ */
+internal fun refreshedCard(card: MentionCard, state: AppUiState): MentionCard {
+    val id = card.id ?: return card
+    val known = mentionCard(id, card.username, state)
+    return if (known.displayName == null) card else known.copy(self = card.self)
+}
+
 /** A pinner has an account id and real name/avatar, but no username in pin metadata. */
 internal fun authorCard(author: ChatAuthor, state: AppUiState): MentionCard {
     val card = mentionCard(author.id, null, state)

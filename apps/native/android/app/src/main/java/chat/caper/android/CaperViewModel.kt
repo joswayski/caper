@@ -2198,8 +2198,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
         durableReplayCursor = cursor
         markConversationRead(channel, cursor)
+        val profileAccount = accountGeneration
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
+            // Account-wide, so it outlives a channel switch within this sign-in; no replay (refetches repair).
+            profiles = accountToken != null,
+            onProfile = { event -> viewModelScope.launch { if (profileAccount == accountGeneration) receiveProfile(event) } },
             onMessage = { value -> viewModelScope.launch {
                 if (generation == request) {
                     durableReplayCursor = value.seq
@@ -2652,14 +2656,46 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** A space whose icon changed: its rail tile and, when it is open, the open space (Manage space, header). */
     private fun applySpace(changed: Space) {
-        fun merge(space: Space) = if (space.id != changed.id) space else space.copy(name = changed.name, iconAsset = changed.iconAsset, iconUrl = changed.iconUrl)
         // A background reconcile that started before this change must not put the old icon back.
         membershipRevision++
-        val current = mutable.value
-        mutable.value = current.copy(
-            spaces = current.spaces.map(::merge),
-            selectedSpace = current.selectedSpace?.let { it.copy(space = merge(it.space)) },
-        )
+        mutable.value = mutable.value.withSpace(changed)
+    }
+
+    /**
+     * A live `profiles` event. A person's new name or picture reaches every retained copy by
+     * account ID, including this view model's caches (cached conversations, who reacted, typing,
+     * message snapshots kept for reverts); your own account changed on another device runs the
+     * own-profile refresh. A space you're in takes its new name and icon; others are ignored.
+     */
+    private fun receiveProfile(event: ProfileEvent) {
+        when (event) {
+            is ProfileEvent.Person -> {
+                val person = event.person
+                val before = mutable.value.account
+                val current = mutable.value.withPerson(person)
+                mutable.value = current.copy(profileRevision = current.profileRevision + 1)
+                conversationHistories.replaceAll { _, history -> history.withPerson(person) }
+                reactorCache.update { it.withPerson(person) }
+                typers.replaceAll { _, typing -> typing.copy(author = typing.author.withPerson(person)) }
+                listOf(authoritativeReactionMessages, pinSnapshots, forwardSnapshots, editSnapshots).forEach { snapshots ->
+                    snapshots.replaceAll { _, message -> message.withPerson(person) }
+                }
+                chatAuthor = chatAuthor?.withPerson(person)
+                // Renamed on another device: like a profile save here, the chat session takes the new name.
+                if (before != null && person.id == before.id && person.displayName != null && person.displayName != before.displayName) {
+                    chatToken = null
+                    chatAuthor = null
+                    mutable.value = mutable.value.copy(chatAuthorId = null)
+                    viewModelScope.launch { createChatSession(accountGeneration) }
+                }
+            }
+            is ProfileEvent.SpaceChanged -> {
+                val current = mutable.value
+                val id = event.space.id
+                if (current.spaces.none { it.id == id } && current.invitations.none { it.id == id } && current.selectedSpace?.space?.id != id) return
+                applySpace(event.space)
+            }
+        }
     }
     fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)

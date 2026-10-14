@@ -7,6 +7,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +36,9 @@ import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import coil3.size.Scale
+
+/** Custom profile pictures are rounded squares: corner radius 30% of the side (`--radius-avatar`). */
+internal val PictureShape = RoundedCornerShape(percent = 30)
 
 /**
  * A custom profile picture or space icon request. Both caches are keyed by the picture's asset

@@ -624,6 +624,8 @@ data class AppUiState(
     val pushPrompt: Boolean = false,
     /** Your picture ([PROFILE_PICTURE_KEY]) or a space's icon (by space ID) being changed, or why that failed. */
     val pictureSaves: Map<String, PictureSaveUi> = emptyMap(),
+    /** Counts live `profile.updated` events, so views holding their own loaded copies (who reacted) refresh them. */
+    val profileRevision: Long = 0,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
@@ -632,52 +634,13 @@ data class AppUiState(
 
     /**
      * Resolve retained identity snapshots from the account without touching conversation state:
-     * your saved name and your current picture ([ownPicture]) wherever you appear.
+     * your saved name and your current picture wherever you appear ([withPerson] for your own
+     * ID, keeping a snapshot's URL when it already names your picture).
      */
     fun withAccountProfile(): AppUiState {
         val own = account ?: return this
-        val username = own.username ?: return this
-        val name = own.displayName ?: return this
-        fun member(value: Member) = if (value.id == own.id) {
-            val (asset, url) = ownPicture(own, value.avatarAsset, value.avatarUrl)
-            value.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url)
-        } else value
-        fun author(value: ChatAuthor) = if (value.id == own.id) {
-            val (asset, url) = ownPicture(own, value.avatarAsset, value.avatarUrl)
-            value.copy(name = name, avatarAsset = asset, avatarUrl = url)
-        } else value
-        fun message(value: ChatMessage): ChatMessage = value.copy(
-            author = author(value.author),
-            pin = value.pin?.let { it.copy(author = author(it.author)) },
-            thread = value.thread?.let { it.copy(participants = it.participants.map(::author)) },
-            forward = value.forward?.let { it.copy(message = it.message?.let(::message)) },
-            replyTo = value.replyTo?.let { it.copy(author = author(it.author)) },
-        )
-        val directs = directConversations.map { conversation ->
-            if (conversation.peer.id == own.id) {
-                val (asset, url) = ownPicture(own, conversation.peer.avatarAsset, conversation.peer.avatarUrl)
-                conversation.copy(peer = conversation.peer.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url))
-            } else conversation
-        }
-        return copy(
-            selectedSpace = selectedSpace?.let { it.copy(members = it.members.map(::member)) },
-            channelGrants = channelGrants.map(::member),
-            pendingChannelInvitations = pendingChannelInvitations.map(::member),
-            pendingSpaceInvitations = pendingSpaceInvitations.map(::member),
-            directConversations = directs,
-            selectedChannel = if (selectedDirect?.peer?.id == own.id) selectedChannel?.copy(name = name) else selectedChannel,
-            messages = messages.map(::message),
-            pinnedMessages = pinnedMessages.map(::message),
-            pendingMessage = pendingMessage?.let { it.copy(author = it.author?.let(::author)) },
-            pinIntents = pinIntents.mapValues { (_, intent) -> intent.copy(message = message(intent.message), pin = intent.pin?.let { it.copy(author = author(it.author)) }) },
-            replyTargets = replyTargets.mapValues { (_, reply) -> reply.copy(author = author(reply.author)) },
-            feedback = if (feedback.reports.none { it.reporter.id == own.id }) feedback else feedback.copy(reports = feedback.reports.map { report ->
-                if (report.reporter.id != own.id) report else {
-                    val (asset, url) = ownPicture(own, report.reporter.avatarAsset, report.reporter.avatarUrl)
-                    report.copy(reporter = report.reporter.copy(username = username, displayName = name, avatarAsset = asset, avatarUrl = url))
-                }
-            }),
-        )
+        if (own.username == null || own.displayName == null) return this
+        return withPerson(own.profile(), keepSignedUrls = true)
     }
 
     /** Local presentation never enters history, replay cursors or revision caches. */
