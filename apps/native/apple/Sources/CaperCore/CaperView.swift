@@ -4150,7 +4150,8 @@ private struct MessageRow: View {
     @State private var pressing = false
     #if os(macOS)
     /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
-    private var actionsInset: CGFloat { inThread ? 82 : 108 }
+    /// Read-only conversations leave out Reply and Add reaction.
+    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 48) }
     @State private var controlsHovered = false
     @State private var actionsTop: CGFloat = 6
     @FocusState private var replyFocused: Bool
@@ -4318,19 +4319,21 @@ private struct MessageRow: View {
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
-                    Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
-                        CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
-                        .modifier(ControlHover(isFocused: replyMessageFocused))
-                        .disabled(!chat.canInteract || chat.pendingMessage != nil)
-                    Button(action: showReactionPicker) {
-                        CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
-                            .contentShape(Rectangle())
-                    }.buttonStyle(.plain).frame(width: 24, height: 24)
-                        .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
-                        .modifier(ControlHover(isFocused: reactionFocused))
-                        .disabled(!chat.canInteract)
-                        .accessibilityIdentifier("add-reaction-\(message.id)")
+                    // As on desktop, read-only conversations hide what they can't do.
+                    if chat.canInteract {
+                        Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
+                            CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
+                        }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
+                            .modifier(ControlHover(isFocused: replyMessageFocused))
+                            .disabled(chat.pendingMessage != nil)
+                        Button(action: showReactionPicker) {
+                            CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).frame(width: 24, height: 24)
+                            .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
+                            .modifier(ControlHover(isFocused: reactionFocused))
+                            .accessibilityIdentifier("add-reaction-\(message.id)")
+                    }
                     Menu {
                         messageMenuItems
                     } label: {
