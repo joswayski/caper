@@ -12,13 +12,21 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Check, ChevronDown, Copy, Download, X } from "lucide-react";
+import { Check, ChevronDown, Copy, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
-import { desktopRelease, detectDownloadPlatform, downloadGroups, type DownloadPlatform } from "../downloads";
+import {
+  desktopRelease,
+  detectDownloadPlatform,
+  downloads,
+  linuxDownloads,
+  mobileBetas,
+  playTestingUrl,
+  type DownloadPlatform,
+} from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -38,6 +46,13 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "alwa
 export default function Home({ account, initialNow, latestChanges, downloadPlatform }: HomeProps) {
   const [now, setNow] = useState(initialNow);
   const [platform, setPlatform] = useState(downloadPlatform);
+  const isLinux = platform === "linux" || platform === "linux-deb";
+  const download =
+    !platform || isLinux
+      ? null
+      : platform === "ios" || platform === "android"
+        ? mobileBetas[platform]
+        : downloads[platform];
 
   useEffect(() => {
     // iPadOS can send a Mac user agent; touch points distinguish it after hydration.
@@ -78,12 +93,23 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
             <div className="download-actions">
-              <DownloadPicker platform={platform} />
+              {isLinux && <LinuxDownloadPicker />}
+              {download && platform && (
+                <a className="download-button" href={download.url}>
+                  <PlatformIcon platform={platform} />
+                  <span>{download.label}</span>
+                </a>
+              )}
               <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer">
                 <GitHubIcon />
                 View source
               </a>
             </div>
+            {download && platform === "android" && (
+              <p className="download-step">
+                Join the testers group, then <a href={playTestingUrl}>install from Google Play</a>.
+              </p>
+            )}
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">
@@ -174,15 +200,11 @@ function ContactLinks() {
   );
 }
 
-function DownloadPicker({ platform }: { platform: DownloadPlatform | null }) {
+function LinuxDownloadPicker() {
   const [open, setOpen] = useState(false);
-  const [selectedPlatform, setSelectedPlatform] = useState<string>("");
   const { refs, floatingStyles, context } = useFloating({
     open,
-    onOpenChange: (next) => {
-      if (next) setSelectedPlatform(platform === "linux-deb" ? "linux" : (platform ?? ""));
-      setOpen(next);
-    },
+    onOpenChange: setOpen,
     placement: "bottom-start",
     strategy: "fixed",
     middleware: [offset(8), flip(), shift({ padding: 12, crossAxis: true })],
@@ -193,13 +215,12 @@ function DownloadPicker({ platform }: { platform: DownloadPlatform | null }) {
     useDismiss(context),
     useRole(context),
   ]);
-  const group = downloadGroups.find((entry) => entry.platform === selectedPlatform);
 
   return (
     <>
       <button ref={refs.setReference} type="button" className="download-button" {...getReferenceProps()}>
-        <Download aria-hidden="true" />
-        Download
+        <PlatformIcon platform="linux" />
+        <span>Download for Linux</span>
         <ChevronDown aria-hidden="true" />
       </button>
       {open && (
@@ -209,38 +230,24 @@ function DownloadPicker({ platform }: { platform: DownloadPlatform | null }) {
               ref={refs.setFloating}
               className="download-picker"
               style={floatingStyles}
-              aria-label="Download Caper"
+              aria-label="Download for Linux"
               {...getFloatingProps()}
             >
               <div className="download-picker-content">
                 <div className="download-picker-heading">
-                  <strong>Download Caper</strong>
+                  <strong>Download for Linux</strong>
                   <button type="button" aria-label="Close downloads" onClick={() => setOpen(false)}>
                     <X size={18} aria-hidden="true" />
                   </button>
                 </div>
-                <label className="download-platform-select">
-                  Platform
-                  <select value={selectedPlatform} onChange={(event) => setSelectedPlatform(event.target.value)}>
-                    <option value="">Choose a platform</option>
-                    {downloadGroups.map((entry) => (
-                      <option key={entry.platform} value={entry.platform}>
-                        {entry.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {group && (
-                  <section className="download-platform" aria-label={group.label}>
-                    {group.links.map((link) => (
-                      <a key={link.url} href={link.url}>
-                        <PlatformIcon platform={group.platform} />
-                        {link.label}
-                      </a>
-                    ))}
-                    {group.note && <p>{group.note}</p>}
-                  </section>
-                )}
+                <div className="download-platform">
+                  {linuxDownloads.map((download) => (
+                    <a key={download.url} href={download.url}>
+                      <span>{download.label}</span>
+                      <small>{download.detail}</small>
+                    </a>
+                  ))}
+                </div>
                 <a className="download-release-notes" href={desktopRelease}>
                   Installation notes
                 </a>

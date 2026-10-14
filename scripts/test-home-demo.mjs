@@ -212,36 +212,25 @@ try {
     assert.equal(evaluate('return document.querySelector(".download-button").getAttribute("aria-expanded")'), "true");
     assert.equal(evaluate('return document.querySelector(".download-picker").getAttribute("role")'), "dialog");
     wait('document.activeElement.getAttribute("aria-label") === "Close downloads"');
+    const release = "https://github.com/joswayski/caper/releases/download/native-latest/";
     browser("press", "Tab");
     assert.equal(
-      evaluate("return document.activeElement.tagName"),
-      "SELECT",
-      "Platform selector is keyboard reachable",
+      evaluate("return document.activeElement.href"),
+      `${release}Caper-Linux-x64.deb`,
+      "Linux installer is keyboard reachable",
     );
-
-    const release = "https://github.com/joswayski/caper/releases/download/native-latest/";
-    for (const [platform, urls] of [
-      ["macos", [`${release}Caper-macOS-Apple-Silicon.dmg`, `${release}Caper-macOS-Intel.dmg`]],
-      ["windows", [`${release}Caper-Windows-x64-Setup.exe`]],
-      ["linux", [`${release}Caper-Linux-x64.deb`, `${release}Caper-Linux-x64.tar.gz`]],
-      ["ios", ["https://testflight.apple.com/join/khGQMuYP"]],
-      [
-        "android",
-        ["https://groups.google.com/g/caper-testers", "https://play.google.com/apps/testing/chat.caper.android"],
-      ],
-      ["", []],
-    ]) {
-      browser("select", ".download-platform-select select", platform);
-      assert.deepEqual(
-        evaluate('return [...document.querySelectorAll(".download-platform a")].map(el => el.href)'),
-        urls,
-        `${platform || "Unknown platform"} offers explicit downloads, not a release-page detour`,
-      );
-      assert.equal(
-        evaluate('return getComputedStyle(document.querySelector(".download-picker-content")).animationName'),
-        "none",
-      );
-    }
+    browser("press", "Tab");
+    assert.equal(evaluate("return document.activeElement.href"), `${release}Caper-Linux-x64.tar.gz`);
+    assert.deepEqual(
+      evaluate('return [...document.querySelectorAll(".download-platform a")].map(el => el.href)'),
+      [`${release}Caper-Linux-x64.deb`, `${release}Caper-Linux-x64.tar.gz`],
+      "Linux offers only its own package downloads",
+    );
+    assert.equal(evaluate('return document.querySelector(".download-picker select")'), null);
+    assert.equal(
+      evaluate('return getComputedStyle(document.querySelector(".download-picker-content")).animationName'),
+      "none",
+    );
     browser("press", "Escape");
     wait('!document.querySelector(".download-picker")');
     assert.equal(
@@ -257,7 +246,7 @@ try {
     wait('!document.querySelector(".download-picker")');
   }
   console.log(
-    "PASS: equal-size downloads/source controls, all five platform choices, keyboard and outside dismissal at 1280px and 320px",
+    "PASS: equal-size downloads/source controls, Linux-only package choices, keyboard and outside dismissal at 1280px and 320px",
   );
   browser("set", "viewport", "1280", "800", "2");
   browser("scroll", "up", "5000");

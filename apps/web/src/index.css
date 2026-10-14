@@ -237,7 +237,7 @@
   line-height: 1.55;
 }
 .app-downloads :is(a, button):focus-visible,
-.download-picker :is(a, button, select):focus-visible {
+.download-picker :is(a, button):focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 4px;
 }
@@ -260,7 +260,7 @@
   font-weight: 700;
   line-height: 1.55;
   text-decoration: none;
-  white-space: nowrap;
+  text-align: center;
   transition:
     background-color 0.2s ease,
     border-color 0.2s ease,
@@ -294,11 +294,23 @@
   border-color: var(--text-muted);
   background: var(--surface-raised);
 }
-.download-actions svg,
-.download-platform a svg {
+.download-actions svg {
   width: 18px;
   height: 18px;
   flex: none;
+}
+.app-downloads p {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.app-downloads .download-step {
+  color: var(--text);
+}
+.download-step a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 .download-picker {
   z-index: 100;
@@ -330,32 +342,14 @@
   border-radius: var(--radius);
   color: var(--text-muted);
 }
-.download-platform-select {
-  display: grid;
-  gap: 6px;
-  margin-block: 8px 12px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-.download-platform-select select {
-  width: 100%;
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--blackout);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.875rem;
-}
 .download-platform {
   padding-block: 12px;
   border-top: 1px solid var(--border);
 }
 .download-platform a {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
   min-height: 44px;
   margin-inline: -8px;
   padding: 8px;
@@ -364,8 +358,7 @@
   font-size: 0.8125rem;
   text-decoration: none;
 }
-.download-platform p {
-  margin: 4px 0 0;
+.download-platform small {
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.55;
