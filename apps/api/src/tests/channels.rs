@@ -379,6 +379,16 @@ async fn isolation_and_revocation(shared: bool) {
     );
     retry_backlog(&cleanup).await;
 
+    // Participants who still take part keep their calls.
+    cleanup.media_channel = Some("ChannelAlpha".into());
+    let present = cleanup.read(|r| Ok(r.participants.len())).await.unwrap();
+    assert!(present > 0);
+    cleanup.revoke_media_access().await.unwrap();
+    assert_eq!(
+        cleanup.read(|r| Ok(r.participants.len())).await.unwrap(),
+        present
+    );
+
     sqlx::query("UPDATE public.account_sessions SET revoked_at=now() WHERE user_id=$1")
         .bind(users[0])
         .execute(&pool)

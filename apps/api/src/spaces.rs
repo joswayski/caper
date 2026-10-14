@@ -197,6 +197,39 @@ pub(crate) async fn session_channel_access(
     .map_err(database_error)
 }
 
+/// For a voice room: which account sessions still belong to someone taking
+/// part in the space channel. The same checks as `session_user` followed by
+/// `channel_participation` with a space, in one round trip for all of them.
+pub(crate) async fn space_channel_participants(
+    pool: &PgPool,
+    channel: &str,
+    sessions: &[Vec<u8>],
+) -> Result<std::collections::HashSet<Vec<u8>>, ApiError> {
+    // The shared predicate, evaluated per session's account instead of for
+    // one bound user ($2 becomes the session list).
+    static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "SELECT t.token FROM unnest($2::bytea[]) AS t(token)
+             JOIN public.account_sessions a ON a.token_hash = t.token
+             JOIN public.users u ON u.id = a.user_id
+             WHERE a.revoked_at IS NULL AND a.expires_at > now()
+               AND u.deleted_at IS NULL AND u.username IS NOT NULL AND u.display_name IS NOT NULL
+               AND EXISTS (SELECT 1 FROM ({}) AS access(id, last_seq, space_id)
+                           WHERE access.space_id IS NOT NULL)",
+            channel_access_sql!().replace("$2", "u.id")
+        )
+    });
+    Ok(sqlx::query_scalar::<_, Vec<u8>>(&SQL)
+        .bind(channel)
+        .bind(sessions)
+        .bind(true)
+        .fetch_all(pool)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .collect())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Space {
