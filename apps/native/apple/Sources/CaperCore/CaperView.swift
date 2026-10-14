@@ -4175,10 +4175,18 @@ private struct MessageRow: View {
                 #if os(macOS)
                 // Without a header, the first line sits beside the hover actions.
                 .padding(.trailing, grouped ? actionsInset : 0)
+                // The 24pt targets start 6pt from the row top. A short caption
+                // needs their full height before the attachment's 4pt gap.
+                .frame(minHeight: grouped && !(message.content.attachments?.isEmpty ?? true) ? 28 : nil, alignment: .topLeading)
                 #endif
                 }
                 if let attachments = message.content.attachments, !attachments.isEmpty {
                     MessageAttachmentsView(attachments: attachments, chat: chat)
+                        #if os(macOS)
+                        // File-only follow-ups need the same action strip, even
+                        // without a caption or edited marker to reserve it.
+                        .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
+                        #endif
                 }
                 if MentionAutocomplete.asksFeedback(message) {
                     Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
