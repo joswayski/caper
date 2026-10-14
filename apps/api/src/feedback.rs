@@ -199,12 +199,24 @@ pub(crate) async fn page(
                 'archived', z.archived,
                 -- Answered while the newest message in its thread (in the
                 -- Caper DM, also the DM itself since) is the team's; anyone
-                -- else replying makes it wait again.
+                -- else replying makes it wait again. The newest reply, the
+                -- root and the newest later DM message are separate indexed
+                -- lookups (thread and channel timelines); the latest wins.
                 'answered', COALESCE((SELECT EXISTS(SELECT 1 FROM public.feedback_team t
                         WHERE t.user_id=cs.user_id AND t.deleted_at IS NULL)
-                    FROM public.messages a JOIN public.chat_sessions cs ON cs.id=a.session_id
-                    WHERE a.channel_id=r.channel_id AND (a.thread_root_id=r.thread_root_id OR a.id=r.thread_root_id
-                        OR (COALESCE(lo.team_account OR hi.team_account, false) AND a.thread_root_id IS NULL AND a.id>r.message_id))
+                    FROM (
+                        (SELECT a.session_id, a.channel_seq FROM public.messages a
+                         WHERE a.thread_root_id=r.thread_root_id AND a.channel_id=r.channel_id
+                         ORDER BY a.channel_seq DESC LIMIT 1)
+                        UNION ALL
+                        SELECT root.session_id, root.channel_seq WHERE root.channel_id=r.channel_id
+                        UNION ALL
+                        (SELECT a.session_id, a.channel_seq FROM public.messages a
+                         WHERE COALESCE(lo.team_account OR hi.team_account, false)
+                           AND a.channel_id=r.channel_id AND a.thread_root_id IS NULL
+                           AND a.channel_seq>m.channel_seq AND a.id>r.message_id
+                         ORDER BY a.channel_seq DESC LIMIT 1)
+                    ) a JOIN public.chat_sessions cs ON cs.id=a.session_id
                     ORDER BY a.channel_seq DESC LIMIT 1), false))
          FROM public.feedback_reports r
          JOIN public.messages m ON m.id=r.message_id
