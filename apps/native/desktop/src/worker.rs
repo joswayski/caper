@@ -831,10 +831,19 @@ pub struct LoadError {
 
 impl From<crate::api::ApiError> for LoadError {
     fn from(error: crate::api::ApiError) -> Self {
+        // A jump to a message or thread that is not in this conversation
+        // (`around`/thread anchors) is a 404 too, but the conversation itself
+        // is still readable: show the error rather than closing it.
+        let missing_message = error.status.is_some_and(|status| status.as_u16() == 404)
+            && matches!(
+                error.message.as_str(),
+                "Message not found." | "Thread not found."
+            );
         Self {
-            access_denied: error
-                .status
-                .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
+            access_denied: !missing_message
+                && error
+                    .status
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
             space_access_denied: false,
             message: error.to_string(),
         }
@@ -2962,5 +2971,22 @@ mod login_copy_tests {
             profile_error(&error(StatusCode::INTERNAL_SERVER_ERROR, None)),
             "Your profile could not be saved. Please try again."
         );
+    }
+
+    #[test]
+    fn a_missing_jump_target_is_an_error_not_lost_access() {
+        let not_found = |message: &str| {
+            super::LoadError::from(ApiError {
+                message: message.into(),
+                ..error(StatusCode::NOT_FOUND, None)
+            })
+        };
+        for missing in ["Message not found.", "Thread not found."] {
+            let error = not_found(missing);
+            assert!(!error.access_denied, "{missing}");
+            assert_eq!(error.message, missing);
+        }
+        assert!(not_found("This channel is no longer available.").access_denied);
+        assert!(super::LoadError::from(error(StatusCode::FORBIDDEN, None)).access_denied);
     }
 }
