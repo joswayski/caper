@@ -1000,6 +1000,56 @@ final class CaperParityUITests: XCTestCase {
     }
     #endif
 
+    #if os(iOS)
+    func testLatestReactionsStayAboveOpenKeyboard() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let messageID = "chan00000001m04"
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing composer")
+        type("Unsent reaction test draft", into: composer)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let timeline = try require(app.descendants(matching: .any)["chat-timeline"], timeout: 5,
+                                   "Missing timeline")
+
+        // A real fixture reaction event grows the latest row without touching
+        // keyboard focus. Use the normal session/PUT flow, never production.
+        var session = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/session")!)
+        session.httpMethod = "POST"
+        session.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        session.setValue("application/json", forHTTPHeaderField: "content-type")
+        session.httpBody = Data("{}".utf8)
+        let (data, response) = try await URLSession.shared.data(for: session)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let token = try XCTUnwrap(value["token"] as? String)
+        let reactions = app.descendants(matching: .any)["reaction-row-\(messageID)"]
+        for emoji in ["👍", "🎉", "🚀", "❤️", "😂", "🔥", "👏", "👀", "✅", "💯", "🙌", "🤔", "⭐"] {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages/\(messageID)/reactions")!)
+            request.httpMethod = "PUT"
+            request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+            request.setValue(token, forHTTPHeaderField: "x-caper-chat-token")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["emoji": emoji, "active": true])
+            let (_, saved) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((saved as? HTTPURLResponse)?.statusCode, 200)
+            let chip = reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(emoji) reaction,")).firstMatch
+            try require(chip, timeout: 5, "Missing reaction \(emoji)")
+            let fullyVisible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                chip.frame.minY >= timeline.frame.minY && chip.frame.maxY <= timeline.frame.maxY + 1
+            }, object: chip)
+            XCTAssertEqual(XCTWaiter.wait(for: [fullyVisible], timeout: 5), .completed,
+                           "The entire reaction must remain above the composer with the keyboard open")
+            XCTAssertTrue(app.keyboards.firstMatch.exists)
+            XCTAssertEqual(composer.value as? String, "Unsent reaction test draft")
+        }
+        XCTAssertLessThanOrEqual(reactions.frame.maxY, timeline.frame.maxY + 1,
+                                "Every wrapped reaction row must clear the composer")
+        capture("latest-reactions-open-keyboard-fixture", app: app)
+    }
+    #endif
+
     func testReactionPickerRetainsSearchAndTargetDuringLiveScroll() async throws {
         try await Self.fixtureControl(["reset": true])
         // Runs however this test ends, so its live messages and reaction never

@@ -82,6 +82,23 @@ class TimelineFollowTest {
         assertNull(follow.next(reacted.copy(jump = 1), near = true))
     }
 
+    @Test fun `first and wrapped reactions request the bottom in a keyboard-sized viewport`() {
+        val keys = listOf("a", "b")
+        val initial = FollowFrame(keys, reactions = listOf(emptyList(), emptyList()))
+        val follow = TimelineFollow().apply { next(initial) }
+        // The keyboard is already open. SideEffect reads this old layout
+        // before chips are measured, so a first reaction cannot clip the end.
+        val wasNear = nearBottom(2, 1, lastVisibleEnd = 300, contentEnd = 300, threshold = 80)
+        val first = initial.copy(reactions = listOf(emptyList(), listOf(MessageReaction("👍", listOf("me")))))
+        assertEquals(latest, follow.next(first, near = wasNear))
+        val wrapped = first.copy(reactions = listOf(emptyList(), listOf("👍", "🎉", "🚀", "❤️", "😂", "🔥", "👏", "👀")
+            .map { MessageReaction(it, listOf("me")) }))
+        assertEquals(latest, follow.next(wrapped, near = wasNear))
+        // Acknowledgement does not replace an explicit scroll up through history.
+        assertNull(follow.next(wrapped, near = false))
+        assertNull(follow.next(initial, near = false))
+    }
+
     @Test fun `older pages anchor before following`() {
         val follow = TimelineFollow().apply { next(FollowFrame(listOf("c"))); next(FollowFrame(listOf("c"), loadingOlder = true)) }
         assertEquals(4 to -120, follow.next(FollowFrame(listOf("a", "b", "c")), near = true, anchor = 4 to -120))
