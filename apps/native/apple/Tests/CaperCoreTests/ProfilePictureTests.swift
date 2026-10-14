@@ -362,6 +362,10 @@ final class ProfilePictureTests: XCTestCase {
         let resigned = await loader.load(asset: "AssetA", url: folder.appendingPathComponent("missing.gif"), pixelSize: 64)
         XCTAssertTrue(resigned === loaded)
         XCTAssertTrue(loader.cached(ProfilePictureLoader.key(asset: "AssetA", pixelSize: 64)) === loaded)
+        // Another size decodes the downloaded file again without fetching it.
+        let smaller = await loader.load(asset: "AssetA", url: folder.appendingPathComponent("missing.gif"), pixelSize: 32)
+        XCTAssertEqual(smaller?.images.count, 2)
+        XCTAssertFalse(smaller === loaded)
 
         let late = folder.appendingPathComponent("late.gif")
         let failed = await loader.load(asset: "AssetB", url: late, pixelSize: 64)

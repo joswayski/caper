@@ -86,6 +86,9 @@ public enum ProfilePicturePolicy {
     static let maxAnimationBytes = 16 * 1_024 * 1_024
     static let cacheBytes = 96 * 1_024 * 1_024
     static let cacheCount = 400
+    /// Downloaded files kept so an evicted or resized picture (an animation's
+    /// frames are the large part) decodes again without downloading.
+    static let fileCacheBytes = 24 * 1_024 * 1_024
     /// A downloaded picture is never larger than the biggest allowed GIF.
     static let maxDownloadBytes = 6 * 1_024 * 1_024
     /// A failed picture is retried with a fresh URL at once, else after this.
@@ -390,14 +393,16 @@ enum ProfilePictureDecoder {
 /// Decoded pictures cached by asset id and decode size, never by URL:
 /// signed URLs change daily while the asset stays the same. `NSCache`
 /// bounds memory for long member lists; concurrent requests for one picture
-/// share a single download and decode.
+/// share a single download and decode. The downloaded files are cached by
+/// asset too (the session is ephemeral), within a smaller budget.
 @MainActor
 final class ProfilePictureLoader {
     static let shared = ProfilePictureLoader()
 
     private let cache = NSCache<NSString, ProfilePictureFrames>()
+    private let files = NSCache<NSString, NSData>()
     private let session: URLSession
-    private var loading: [String: Task<ProfilePictureFrames?, Never>] = [:]
+    private var loading: [String: Task<(frames: ProfilePictureFrames, data: Data)?, Never>] = [:]
     /// The URL whose load last failed for a key, and when.
     private var failures: [String: (url: URL, at: Date)] = [:]
 
@@ -408,6 +413,7 @@ final class ProfilePictureLoader {
         session = URLSession(configuration: configuration)
         cache.totalCostLimit = ProfilePicturePolicy.cacheBytes
         cache.countLimit = ProfilePicturePolicy.cacheCount
+        files.totalCostLimit = ProfilePicturePolicy.fileCacheBytes
     }
 
     nonisolated static func key(asset: String, pixelSize: Int) -> String { "\(asset):\(pixelSize)" }
@@ -421,22 +427,25 @@ final class ProfilePictureLoader {
         if let hit = cached(key) { return hit }
         if let failure = failures[key],
            !ProfilePicturePolicy.retries(failedURL: failure.url, failedAt: failure.at, url: url, now: Date()) { return nil }
-        if let running = loading[key] { return await running.value }
+        if let running = loading[key] { return await running.value?.frames }
         let session = self.session
-        let task = Task.detached(priority: .utility) { () -> ProfilePictureFrames? in
-            guard let data = try? await ProfilePictureDecoder.fetch(url, session: session) else { return nil }
-            return try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize)
+        let downloaded = files.object(forKey: asset as NSString).map { $0 as Data }
+        let task = Task.detached(priority: .utility) { () -> (frames: ProfilePictureFrames, data: Data)? in
+            guard let data = downloaded ?? (try? await ProfilePictureDecoder.fetch(url, session: session)),
+                  let frames = try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize) else { return nil }
+            return (frames, data)
         }
         loading[key] = task
-        let frames = await task.value
+        let result = await task.value
         loading[key] = nil
-        if let frames {
-            cache.setObject(frames, forKey: key as NSString, cost: frames.cost)
+        if let result {
+            cache.setObject(result.frames, forKey: key as NSString, cost: result.frames.cost)
+            files.setObject(result.data as NSData, forKey: asset as NSString, cost: result.data.count)
             failures[key] = nil
         } else {
             if failures.count >= 512 { failures.removeAll() }
             failures[key] = (url, Date())
         }
-        return frames
+        return result?.frames
     }
 }
