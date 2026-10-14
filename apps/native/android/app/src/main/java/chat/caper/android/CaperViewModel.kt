@@ -2251,7 +2251,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val detail = mutable.value.selectedSpace ?: return
         if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
         val start = mutable.value.presencePage * PRESENCE_PAGE_SIZE
-        val ids = detail.members.drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
+        // A private channel's readers lead the member list's pages.
+        val ids = detail.memberOrder(mutable.value.selectedChannel?.id).drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
         if (ids.isNotEmpty()) gateway?.watchPresence(detail.space.id, ids)
     }
 

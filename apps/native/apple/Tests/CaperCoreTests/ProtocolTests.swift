@@ -6,6 +6,30 @@ import CaperRTCBridge
 #endif
 
 final class ProtocolTests: XCTestCase {
+    func testPrivateChannelReadersLeadTheMemberListInSpaceOrder() throws {
+        let json = Data(#"""
+        {"space":{"id":"space1234567","name":"Studio","ownerId":"ana"},
+         "channels":[{"id":"general00001","spaceId":"space1234567","name":"general","private":false,"joined":true},
+                     {"id":"leads0000001","spaceId":"space1234567","name":"leads","private":true,"joined":true}],
+         "members":[{"id":"ana","avatarId":1,"username":"ana","displayName":"Ana","owner":true},
+                    {"id":"bo","avatarId":2,"username":"bo","displayName":"Bo","owner":false},
+                    {"id":"cy","avatarId":3,"username":"cy","displayName":"Cy","owner":false},
+                    {"id":"dee","avatarId":4,"username":"dee","displayName":"Dee","owner":false}],
+         "channelMembers":{"leads0000001":["dee","ana","gone"]}}
+        """#.utf8)
+        let detail = try JSONDecoder().decode(SpaceDetail.self, from: json)
+        let groups = try XCTUnwrap(detail.memberGroups(channelID: "leads0000001"))
+        XCTAssertEqual(groups.inChannel.map(\.id), ["ana", "dee"], "Readers in the space's order; former members drop out")
+        XCTAssertEqual(groups.others.map(\.id), ["bo", "cy"])
+        XCTAssertEqual(detail.memberOrder(channelID: "leads0000001").map(\.id), ["ana", "dee", "bo", "cy"])
+        XCTAssertNil(detail.memberGroups(channelID: "general00001"), "Public channels keep one list")
+        XCTAssertEqual(detail.memberOrder(channelID: "general00001").map(\.id), ["ana", "bo", "cy", "dee"])
+        // An older API without the field keeps one list everywhere.
+        let older = try JSONDecoder().decode(SpaceDetail.self, from: JSONSerialization.data(withJSONObject:
+            (try JSONSerialization.jsonObject(with: json) as? [String: Any] ?? [:]).filter { $0.key != "channelMembers" }))
+        XCTAssertNil(older.memberGroups(channelID: "leads0000001"))
+    }
+
     func testOptimisticMutationsPreserveConfirmedRevisionsAndRollbackToLatestState() {
         let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
         let original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,

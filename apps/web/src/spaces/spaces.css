@@ -1081,6 +1081,10 @@
   font-size: 0.68rem;
   font-weight: 700;
 }
+.member-group-label .section-count {
+  /* Beside the label, as in the channel list's heading. */
+  margin-left: 0;
+}
 .member-group-channel .member-group-label {
   color: var(--text);
 }

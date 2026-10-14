@@ -32,6 +32,8 @@ val OnAction = Color(0xFF0C0D0F)
 val CaperGreen = Color(0xFF637A43)
 val VoiceSessionGreen = Color(0xFF4AA86B)
 val SurfaceSidebar = Color(0xFF151C1E)
+/** Web's --surface-hover (6% white) over the sidebar, opaque: a private channel's own members in the member list. */
+val SurfaceSidebarRaised = Color(0xFF232A2C)
 val SurfaceConversation = Color(0xFF192123)
 val SurfaceComposer = Color(0xFF283133)
 val SurfaceRaised = Color(0xFF1C1F21)

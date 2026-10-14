@@ -14,6 +14,9 @@ public enum CaperTheme {
     public static let surface = Color(red: 21/255, green: 23/255, blue: 25/255)
     public static let raised = Color(red: 28/255, green: 31/255, blue: 33/255)
     public static let sidebar = Color(red: 21/255, green: 28/255, blue: 30/255)
+    /// Web's --surface-hover (6% white) over the sidebar, opaque: a private
+    /// channel's own members in the member list.
+    public static let sidebarRaised = Color(red: 35/255, green: 42/255, blue: 44/255)
     public static let conversation = Color(red: 25/255, green: 33/255, blue: 35/255)
     public static let composer = Color(red: 40/255, green: 49/255, blue: 51/255)
     public static let border = Color(red: 52/255, green: 56/255, blue: 59/255)
@@ -2116,31 +2119,29 @@ private struct MemberPresenceView: View {
             } else if model.detail?.members.isEmpty != false {
                 Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else {
-                ForEach(presence.visibleMembers) { member in
-                    Button {
-                        // Swiping the phone panel closed lifts on the row it started on.
-                        guard !SwipeTapGuard.swiping else { return }
-                        profile = MentionCardTarget(pill: MentionPill(id: member.id, username: member.username), pointer: pointer.location)
-                    } label: {
-                        HStack(spacing: 10) {
-                            ZStack(alignment: .bottomTrailing) {
-                                Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
-                                Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
-                                    .overlay(Circle().stroke(CaperTheme.sidebar, lineWidth: 2))
-                            }
-                            Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                            Spacer(minLength: 0)
-                        }.frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-                    }.buttonStyle(ProfileButtonStyle())
-                        .accessibilityLabel("Open profile for \(member.displayName)")
-                        #if os(macOS)
-                        .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
-                            switch phase {
-                            case .active(let point): pointer.location = point
-                            case .ended: pointer.location = nil
-                            }
-                        }
-                        #endif
+                if let groups = model.detail?.memberGroups(channelID: model.selectedChannelID) {
+                    // A private channel's readers lead on a slightly brighter
+                    // neutral fill; the rest of the space follows, quieter.
+                    let ids = Set(groups.inChannel.map(\.id))
+                    let top = presence.visibleMembers.filter { ids.contains($0.id) }
+                    let rest = presence.visibleMembers.filter { !ids.contains($0.id) }
+                    if !top.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            groupLabel("In #\(channelName)", count: groups.inChannel.count, primary: true)
+                            ForEach(top) { memberRow($0, quiet: false, ring: CaperTheme.sidebarRaised) }
+                        }.padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(CaperTheme.sidebarRaised, in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityElement(children: .contain).accessibilityLabel("In #\(channelName)")
+                    }
+                    if !rest.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            groupLabel("Others in this space", count: groups.others.count, primary: false)
+                            ForEach(rest) { memberRow($0, quiet: true, ring: CaperTheme.sidebar) }
+                        }.padding(.horizontal, 6).padding(.top, top.isEmpty ? 0 : 4)
+                            .accessibilityElement(children: .contain).accessibilityLabel("Others in this space")
+                    }
+                } else {
+                    ForEach(presence.visibleMembers) { memberRow($0, quiet: false, ring: CaperTheme.sidebar) }
                 }
                 if presence.pageCount > 1 {
                     HStack {
@@ -2158,6 +2159,45 @@ private struct MemberPresenceView: View {
             .coordinateSpace(.named(MentionCard.timelineSpace))
             .modifier(MentionCardHost(target: $profile, model: model, viewerID: model.account?.id))
             .onChange(of: model.detail?.space.id) { _, _ in profile = nil }
+    }
+    private var channelName: String {
+        model.detail?.channels.first { $0.id == model.selectedChannelID }?.name ?? ""
+    }
+    private func groupLabel(_ title: String, count: Int, primary: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(title).lineLimit(1)
+            Text("\(count)").font(CaperTheme.font(10, weight: .bold))
+        }.font(CaperTheme.font(11, weight: .bold))
+            .foregroundStyle(primary ? CaperTheme.text : CaperTheme.muted)
+            .padding(.horizontal, 6).padding(.top, 6).padding(.bottom, 2)
+            .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+    }
+    @ViewBuilder private func memberRow(_ member: Member, quiet: Bool, ring: Color) -> some View {
+        Button {
+            // Swiping the phone panel closed lifts on the row it started on.
+            guard !SwipeTapGuard.swiping else { return }
+            profile = MentionCardTarget(pill: MentionPill(id: member.id, username: member.username), pointer: pointer.location)
+        } label: {
+            HStack(spacing: 10) {
+                ZStack(alignment: .bottomTrailing) {
+                    Avatar(name: member.displayName, size: 30, avatarID: member.avatarId)
+                    Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(ring, lineWidth: 2))
+                }
+                Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                    .foregroundStyle(quiet ? CaperTheme.muted : CaperTheme.text)
+                Spacer(minLength: 0)
+            }.frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+        }.buttonStyle(ProfileButtonStyle())
+            .accessibilityLabel("Open profile for \(member.displayName)")
+            #if os(macOS)
+            .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
+                switch phase {
+                case .active(let point): pointer.location = point
+                case .ended: pointer.location = nil
+                }
+            }
+            #endif
     }
     private func statusColor(_ status: PresenceStatus) -> Color {
         switch status { case .online: CaperTheme.green; case .idle: Color(red: 0.72, green: 0.60, blue: 0.35); case .offline, .unknown: CaperTheme.border }

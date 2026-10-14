@@ -183,14 +183,29 @@ public struct SpaceDetail: Codable, Sendable {
     public let channels: [Channel]
     public let members: [Member]
     public let channelInvitations: [ChannelInvitation]
+    /// Private channels you can read: who can read each (owner and grants).
+    public let channelMembers: [String: [String]]
 
     func withProfile(_ account: Account?) -> SpaceDetail {
-        SpaceDetail(space: space, channels: channels, members: members.map { $0.withProfile(account) }, channelInvitations: channelInvitations)
+        SpaceDetail(space: space, channels: channels, members: members.map { $0.withProfile(account) }, channelInvitations: channelInvitations, channelMembers: channelMembers)
     }
 
-    private enum CodingKeys: String, CodingKey { case space, channels, members, channelInvitations }
-    public init(space: Space, channels: [Channel], members: [Member], channelInvitations: [ChannelInvitation] = []) {
+    /// The member list for a channel: a private channel's readers first, then
+    /// the rest of the space, each in the space's order. Nil groups for public channels.
+    public func memberGroups(channelID: String?) -> (inChannel: [Member], others: [Member])? {
+        guard let channelID, let ids = channelMembers[channelID].map(Set.init) else { return nil }
+        return (members.filter { ids.contains($0.id) }, members.filter { !ids.contains($0.id) })
+    }
+
+    /// `members` in the order the member list shows them for `channelID`.
+    public func memberOrder(channelID: String?) -> [Member] {
+        memberGroups(channelID: channelID).map { $0.inChannel + $0.others } ?? members
+    }
+
+    private enum CodingKeys: String, CodingKey { case space, channels, members, channelInvitations, channelMembers }
+    public init(space: Space, channels: [Channel], members: [Member], channelInvitations: [ChannelInvitation] = [], channelMembers: [String: [String]] = [:]) {
         self.space = space; self.channels = channels; self.members = members; self.channelInvitations = channelInvitations
+        self.channelMembers = channelMembers
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -198,6 +213,7 @@ public struct SpaceDetail: Codable, Sendable {
         channels = try values.decode([Channel].self, forKey: .channels)
         members = try values.decode([Member].self, forKey: .members)
         channelInvitations = try values.decodeIfPresent([ChannelInvitation].self, forKey: .channelInvitations) ?? []
+        channelMembers = try values.decodeIfPresent([String: [String]].self, forKey: .channelMembers) ?? [:]
     }
 }
 

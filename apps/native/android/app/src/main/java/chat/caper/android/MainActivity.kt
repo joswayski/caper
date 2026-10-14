@@ -1437,7 +1437,10 @@ internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabl
     val detail = state.selectedSpace ?: return
     var profile by remember(detail.space.id) { mutableStateOf<MentionCard?>(null) }
     val pages = ((members.size + 24) / 25).coerceAtLeast(1)
-    val shown = members.drop(state.presencePage * 25).take(25)
+    // A private channel's readers lead the list in their own group.
+    val channel = state.selectedChannel
+    val groups = detail.memberGroups(channel?.id)
+    val shown = detail.memberOrder(channel?.id).drop(state.presencePage * 25).take(25)
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
         // The heading starts where the rows' avatars do (list and row insets, 8dp each).
         Row(Modifier.fillMaxWidth().height(54.dp).padding(start = 16.dp, end = if (close != null) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1451,17 +1454,44 @@ internal fun headerJoinGlows(occupied: Boolean, action: HeaderVoiceAction, enabl
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
-            items(shown, key = { it.id }) { member ->
+            @Composable fun MemberRow(member: Member, quiet: Boolean, ring: Color) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
                     .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         Avatar(member.displayName, 30.dp, avatarId = member.avatarId)
-                        PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, SurfaceSidebar, Modifier.align(Alignment.BottomEnd))
+                        PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, ring, Modifier.align(Alignment.BottomEnd))
                     }
-                    Spacer(Modifier.width(10.dp)); Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(10.dp))
+                    Text(member.displayName, color = if (quiet) TextMuted else Text, fontSize = 12.sp,
+                        fontWeight = if (quiet) FontWeight.Medium else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+            @Composable fun GroupLabel(title: String, count: Int, primary: Boolean) {
+                Row(Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 2.dp).semantics { heading() },
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(title, color = if (primary) Text else TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(count.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
+                }
+            }
+            if (groups != null) {
+                val readers = groups.first.map { it.id }.toSet()
+                val top = shown.filter { it.id in readers }
+                val rest = shown.filter { it.id !in readers }
+                // A private channel's readers lead on a slightly brighter neutral fill; the rest follow, quieter.
+                if (top.isNotEmpty()) item(key = "in-channel") {
+                    Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(SurfaceSidebarRaised).padding(vertical = 4.dp)) {
+                        GroupLabel("In #${channel?.name.orEmpty()}", groups.first.size, primary = true)
+                        top.forEach { MemberRow(it, quiet = false, ring = SurfaceSidebarRaised) }
+                    }
+                }
+                if (rest.isNotEmpty()) item(key = "others") {
+                    Column(Modifier.fillMaxWidth().padding(top = if (top.isEmpty()) 0.dp else 12.dp)) {
+                        GroupLabel("Others in this space", groups.second.size, primary = false)
+                        rest.forEach { MemberRow(it, quiet = true, ring = SurfaceSidebar) }
+                    }
+                }
+            } else items(shown, key = { it.id }) { member -> MemberRow(member, quiet = false, ring = SurfaceSidebar) }
         }
         if (pages > 1) Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }

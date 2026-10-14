@@ -59,7 +59,7 @@ for abi in arm64-v8a armeabi-v7a x86 x86_64; do
     -DCONFIG_AV1_DECODER=0 -DCONFIG_AV1_HIGHBITDEPTH=0 -DCONFIG_WEBM_IO=0 -DCONFIG_LIBYUV=0 -DCONFIG_DENOISE=0 \
     -DCONFIG_PIC=1 -DCONFIG_MULTITHREAD=1 -DCONFIG_RUNTIME_CPU_DETECT=1 \
     -DENABLE_DOCS=0 -DENABLE_EXAMPLES=0 -DENABLE_TESTS=0 -DENABLE_TESTDATA=0 -DENABLE_TOOLS=0 -DENABLE_APPS=0 \
-    "${cpu[@]}" >/dev/null
+    ${cpu[@]+"${cpu[@]}"} >/dev/null  # bash 3.2 (macOS) rejects an empty "${cpu[@]}" under set -u
   "$CMAKE" --build "$build" --target aom -j "$JOBS" >/dev/null
   mkdir -p "$AVIF/lib/$abi"
   cp "$build/libaom.a" "$lib.tmp" && mv "$lib.tmp" "$lib"
