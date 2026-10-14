@@ -4,7 +4,11 @@ A place for your people. Text and voice conversations at [caper.chat](https://ca
 Early-stage and actively in development.
 
 Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
-Custom photo/GIF avatars and an avatar gallery are not implemented yet.
+People can replace it with their own picture, and space owners can give a space an
+icon, on web, Android, iPhone/Mac and Windows/Linux desktop. Animated GIFs play for
+everyone who sees them (a still frame with reduced motion). Removing a picture brings
+back the same mascot or the space's initial. There is no avatar gallery. See
+[custom pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026).
 
 Signed-in members can attach up to 10 files per message on web, Android,
 iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.

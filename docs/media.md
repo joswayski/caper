@@ -1205,8 +1205,9 @@ from its own domain after checking a signature the API issued.
 
 ### Data model
 
-One `assets` row per logical file (`202610090010_assets.sql`), shared by future
-purposes such as avatars (`purpose`, today only `attachment`). An optional
+One `assets` row per logical file (`202610090010_assets.sql`). `purpose` is
+`attachment`, `avatar` or `space_icon` (see
+[Custom profile pictures and space icons](#custom-profile-pictures-and-space-icons-october-14-2026)). An optional
 preview is a fixed derived object beside the original, not another row:
 
 | Object | Key |
@@ -5849,72 +5850,13 @@ explicitly, preserves original colors and shows initials if asset lookup fails.
 The reported blank iPhone avatars have not been reproduced on a device; the new
 native resource/pixel tests must run before treating that report as resolved.
 
-Custom photo/GIF uploads, avatar selection and a public collection page are future
-work. A future validated uploaded-media reference should replace the displayed
-mascot everywhere, not create a second independent picture. Uploading, replacing
-or removing a custom picture must preserve `users.avatar_id`. Removing the upload
-must clear only the custom-media reference and restore that same saved mascot in
-account, member, chat and voice views; it must not reroll the mascot or show initials.
-This is the contract for the future upload feature, not implemented upload/delete
-functionality. This change neither accepts arbitrary image URLs nor exposes
-upload-looking controls.
-
-#### Custom-avatar implementation proposal (not implemented)
-
-The October 13 investigation confirms the R2 upload and signed-CDN machinery is
-reusable, but the current API/schema is **attachment-only**. `assets.purpose`
-only permits `attachment`, creation requires channel membership, URL refresh
-joins channels/messages, and cleanup expires every unlinked completed asset
-after 24 hours. Using that flow unchanged would eventually delete a profile
-picture. Profile writes currently accept only username and display name.
-
-The proposed implementation requires approval of an additive migration and API
-contract before implementation:
-
-1. Add an `avatar` asset purpose and a nullable `users.avatar_asset_id` reference.
-   Keep `users.avatar_id` unchanged as the durable fallback. Reuse the existing
-   owner, reservation, completion, quota and soft-deletion records; do not store
-   signed URLs in the database or repurpose channel attachment IDs as avatars.
-2. Extend `POST /api/assets` with an explicit avatar purpose (existing callers
-   keep the attachment default). Avatar reservations are account-owned and do
-   not require joining a channel. Restrict formats to validated still images and
-   ordinary GIFs; keep GIF bytes rather than flattening or converting them to
-   video. Add small avatar-specific byte/dimension/frame/decode limits, verified
-   from the uploaded bytes, not client metadata or only the current magic check.
-   Still-image resizing can reuse client preparation. Exact limits and any new
-   decoder dependency need to be settled with the implementation approval.
-3. Add `PUT /api/account/avatar {assetId}` to select only the caller's completed,
-   validated avatar upload, and `DELETE /api/account/avatar` to clear the custom
-   reference. Swap/clear atomically, retain prior rows using soft deletion, and
-   make cancellation/cleanup aware of current avatar references. Removing the
-   custom image restores the same saved mascot, not a newly assigned one.
-4. Enrich account, member, DM/people, chat-history/replay and voice identities
-   with the current custom asset descriptor and freshly signed delivery URLs.
-   Extend URL refresh with profile-visibility authorization rather than requiring
-   a channel/message link. Preserve private storage, bounded URL lifetimes and
-   versioned asset IDs for cache invalidation. Old clients can ignore the optional
-   descriptor and still show their saved mascot.
-5. Add change/remove controls to account settings and the user's own avatar on
-   web (wide/narrow), Android, iOS/macOS and Rust desktop. Reuse each platform's
-   file picker and GIF-capable renderer, including reduced motion and fallback
-   while a URL fails/refreshes. Propagate a successful change throughout the
-   current client; do not limit custom images to the settings page.
-
-Likely ownership: `apps/api/src/assets.rs` for upload/auth/cleanup,
-`accounts.rs` and account routes in `lib.rs` for atomic selection, identity
-enrichment in `chat.rs`, `gateway`, `spaces.rs`, `direct.rs` and voice snapshots;
-web `account/ProfileForm.tsx` and `components/Avatar.tsx`; each native client's
-account settings, account/author/member/voice models and shared avatar view.
-Reuse `apps/cdn/worker.mjs` signature validation and original/preview keys unless
-the approved avatar access policy requires a separate route.
-
-Acceptance must cover unauthorized/unfinished/non-avatar asset rejection,
-malformed and over-budget GIFs, concurrent replace/remove/cancel, cleanup beyond
-24 hours, expired URL refresh, unchanged mascot fallback, historical authors,
-active voice, and static/animated presentation on every client. Rollout would be
-migration → API/gateway identity and cleanup support → client releases; the
-cleanup fix must precede allowing avatar selection. None of this proposal is
-deployed or exposed by the GIF playback fix.
+People can replace the mascot with their own picture, including animated GIFs;
+see [Custom profile pictures and space icons](#custom-profile-pictures-and-space-icons-october-14-2026).
+A custom picture replaces the displayed mascot everywhere rather than adding a
+second picture, and never changes `users.avatar_id`: removing it restores that same
+saved mascot in account, member, chat and voice views, never a new one or initials.
+The fixed mascot collection stays bundled; there is still no gallery or public
+collection page, and arbitrary image URLs are never accepted.
 
 #### Saved-avatar validation
 
@@ -8159,3 +8101,93 @@ Before native distribution, check on a real iPhone and Android phone: slow,
 halfway and flick slides both ways; that the account bar never shows over the
 conversation mid-slide; Back and channel-choice slides; and the account bar's
 controls once Browse settles.
+
+## Custom profile pictures and space icons (October 14, 2026)
+
+People can replace their saved mascot with their own picture, and space owners can
+give a space an icon so spaces are easy to tell apart in the rail. Both may be still
+images or animated GIFs, and GIFs animate on everyone's screen: members, chat
+authors, replies, threads, DMs, reactions, voice tiles, invites and the rail.
+Reduced-motion settings show a still first frame. Removing a picture restores the
+same saved mascot (`users.avatar_id` never changes) or the space's initial.
+
+### Storage, delivery and retention
+
+Pictures reuse the [upload pipeline](#uploads-and-attachments) unchanged: an
+`assets` row (`purpose` `avatar` or `space_icon`), bytes `PUT` straight to the
+private R2 bucket at `original/{id}`, and delivery through the signed CDN Worker
+(`/assets/{id}?exp=&sig=`). Migration `202610140001_pictures.sql` adds the
+purposes, `assets.space_id`, and the current picture as `users.avatar_asset` and
+`spaces.icon_asset` (asset external IDs). Nothing stores a URL: responses carry
+`avatarAsset`/`iconAsset`, and the API's JSON responses and every gateway frame add
+a signed `avatarUrl`/`iconUrl` beside them as they leave (24–48 h, re-signed daily,
+like attachments). The Worker, bucket, CORS rule and secrets are unchanged.
+
+Message payloads never store a picture. Wherever messages leave (history, threads,
+pins, edits, forwards, send responses, the outbox and gateway replay) one batched
+lookup sets each person's current picture by account ID, including nested people
+(thread participants, reply and forward authors), so a changed or removed picture
+is never shown from an old snapshot. Voice participants carry the picture they
+joined with until they rejoin, as display names do. Other people see a change on
+their next load of that data (members, spaces, DMs) or immediately on new
+messages; there is no realtime profile event (see [own profile refresh](#own-profile-refresh-october-11-2026)).
+
+**Old pictures are kept.** Replacing or removing a picture leaves its row and R2
+object in place (rows were already retained; objects are small and changes are
+rare). They are never shown again, do not count toward the 10 GB file allowance,
+keep moderation history possible, and leave room for a later "recent pictures"
+picker. Abandoned, cancelled, rejected or orphaned (space deleted or transferred
+mid-upload) picture uploads are purged like any other unsent upload. Removing a
+user's pictures from storage on account deletion belongs with that future flow.
+
+### API
+
+| Call | Behavior |
+| --- | --- |
+| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIFs ≤ 5 MiB and other pictures ≤ 1 MiB (`413 picture_too_large`); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
+| `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. |
+| `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
+| `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
+| `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
+
+`avatarAsset`/`avatarUrl` join every person that has `avatarId`: the account,
+message/typing authors, members and invitations, DM peers, suggestions and blocks,
+reactors, voice participants, invite-link inviters and feedback reporters.
+`iconAsset`/`iconUrl` join spaces in the spaces list, space detail, invitations,
+create/rename/accept responses, the invite preview and feedback reports. Old
+clients ignore them and keep showing mascots and initials. Push notifications
+still show the sender's mascot (a custom picture there needs notification-service
+image downloads on each platform; follow-up).
+
+### Clients
+
+Every client applies the same preparation: a GIF (detected by its bytes) uploads
+unchanged so it keeps its animation, and is refused locally above 5 MB or 1024 ×
+1024; anything else the platform decodes is turned upright, center-cropped to a
+square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
+encoding is unavailable), which also drops location metadata. Pictures show
+aspect-filled in the existing circle or tile, over the mascot or initial, which
+stays visible while loading or if a URL fails. Decoded pictures are cached by asset
+ID, since URLs re-sign daily. **Change picture**/**Remove picture** live in the
+profile settings and **Change icon**/**Remove icon** in **Manage space** (owners
+only); a successful change updates the signed-in client everywhere through the
+existing own-profile refresh path.
+
+
+### Deployment order
+
+1. No infrastructure, R2, CORS, CDN Worker or secret change: pictures use the
+   existing bucket, `original/` keys and signed `/assets/` URLs.
+2. Deploy the API: startup applies the additive migration (new purposes, nullable
+   columns; no backfill). Then deploy the gateway so socket frames carry signed
+   picture URLs; until then new messages carry `avatarAsset` without a URL and
+   clients keep showing mascots.
+3. Deploy web, then release Android, iOS/macOS and desktop after their platform
+   builds and device checks. Clients are independent once the servers are out.
+4. Verify on staging/production: upload a still and an animated GIF avatar and a
+   space icon; check members, chat, DMs, voice and the rail on a second account;
+   reduced motion; remove both and confirm the same mascot and the initial return.
+5. Rollback: older API code ignores the new columns, but its cleanup treats
+   completed pictures as unsent files and purges their objects after 24 hours.
+   For a rollback longer than that, fix forward or clear `users.avatar_asset` and
+   `spaces.icon_asset` first. Leave the migration in place.
