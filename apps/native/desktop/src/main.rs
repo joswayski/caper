@@ -3929,6 +3929,15 @@ impl CaperApp {
                 space.name.clone_from(&update.name);
             }
         }
+        if let Some(visit) = self
+            .visit
+            .as_mut()
+            .filter(|visit| !visit.direct && visit.space_id == update.id)
+        {
+            visit.space_name.clone_from(&update.name);
+            visit.title = format!("#{} · {}", visit.name, update.name);
+        }
+        self.voice.rename_space(&update.id, &update.name);
         self.navigation_cache.apply_space(update);
     }
 
@@ -33633,9 +33642,19 @@ mod tests {
             icon_asset: icon.map(Into::into),
             icon_url: None,
         };
+        app.voice.active_space = Some("space0000001".into());
+        app.voice.state.phase = Phase::Connected(crate::CallContext {
+            channel_id: "chan00000002".into(),
+            channel_name: "lounge".into(),
+            space_name: "Fixture Studio".into(),
+        });
         app.profile_event(ProfileEvent::Space(space("space0000001", None)));
         assert_eq!(app.spaces[1].name, "Renamed Studio");
         assert_eq!(app.spaces[1].icon(), None);
+        let Phase::Connected(call) = &app.voice.state.phase else {
+            panic!("the call stays connected");
+        };
+        assert_eq!(call.space_name, "Renamed Studio", "the voice label follows");
         let open = &app.detail.as_ref().unwrap().space;
         assert_eq!((open.name.as_str(), open.icon()), ("Renamed Studio", None));
         assert_eq!(app.spaces[0].name, "General", "other spaces stay");

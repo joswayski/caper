@@ -873,6 +873,20 @@ impl Voice {
         }
     }
 
+    /// The call's space was renamed: its "channel / space" label follows.
+    pub fn rename_space(&mut self, id: &str, name: &str) {
+        if self.active_space.as_deref() != Some(id) {
+            return;
+        }
+        if let Phase::Joining(context)
+        | Phase::Connected(context)
+        | Phase::Reconnecting(context)
+        | Phase::Failed(context) = &mut self.state.phase
+        {
+            context.space_name = name.to_owned();
+        }
+    }
+
     fn select_device(&mut self, input: bool, guid: Option<String>) {
         if let Some(control) = &self.control {
             let result = match (input, guid.as_deref()) {
