@@ -3529,9 +3529,7 @@ The Docker target and service name are `api` and `caper-api`, respectively.
 This is the application control API, not a self-hosted audio relay. After
 publishing, the image run dispatches `Ship` in `joswayski/infrastructure`. Ship
 rolls the API, then the chat gateway, then the web forward to the newest
-published images on `main`, never backwards (see AGENTS.md, Shipping). Until
-the `DEPLOY_APP_*` secrets are configured, the run instead posts the Discord
-**Deploy Caper API** button for that exact SHA.
+published images on `main`, never backwards (see AGENTS.md, Shipping).
 Deployment/Service/ExternalSecret are named `caper-api`; the container is `api`.
 The application-wide AWS Secrets Manager record is `production/apps/caper`.
 All configured consumers use this record; legacy-secret retirement is managed
@@ -3547,9 +3545,8 @@ named `caper-web`; it runs with two replicas.
 Web and API images publish independently. `api-image.yml` runs only when
 `apps/api`, workspace Cargo files, or that workflow change. `aws-image.yml`
 runs only when the website Docker context, `apps/web`, `shared`, npm workspace
-manifests, or that workflow change. An API-only merge does not publish a website image or
-send a **Deploy Caper web** notification, and a website-only merge does not
-publish an API image. Ship handles a merge that touches both: it rolls out the
+manifests, or that workflow change. An API-only merge does not publish a website image,
+and a website-only merge does not publish an API image. Ship handles a merge that touches both: it rolls out the
 web only after the API build for that range has published and rolled out.
 Future workers or other services should get their own
 workflow and path allowlist instead of riding these two.

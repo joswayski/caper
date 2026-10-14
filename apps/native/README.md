@@ -204,8 +204,7 @@ followed it must have rolled the API and gateway out. If either failed, the
 release fails without reaching anyone; fix forward and the next native change
 releases again. A `git revert` of a native change releases the previous
 behavior the same way. The workflow can also be run by hand from the Actions tab
-(a blank `git_sha` releases the newest `main` commit) or from Godis's
-**Deploy Caper apps** button, though nothing posts that button any more.
+(a blank `git_sha` releases the newest `main` commit).
 
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure.

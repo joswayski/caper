@@ -17,7 +17,7 @@ name: Native release
 # to testers and publishing the self-update wait for the servers they need
 # (.github/actions/wait-for-servers: the API image and Ship for caper), so apps
 # never reach people before their API and gateway changes. It can also be started
-# by hand from the Actions tab or by Godis's "Deploy Caper apps" button.
+# by hand from the Actions tab.
 # Signing material comes from AWS Secrets Manager (joswayski/infrastructure,
 # docs/release-signing.md); none is stored in this repository.
 on:
@@ -46,16 +46,6 @@ on:
     inputs:
       git_sha:
         description: Commit to release. Leave blank for the newest main commit.
-        required: false
-        type: string
-        default: ""
-      discord_message_id:
-        description: Discord notification to update with the result (set by Godis).
-        required: false
-        type: string
-        default: ""
-      discord_started_at:
-        description: Unix time the Discord release started (set by Godis).
         required: false
         type: string
         default: ""
@@ -777,39 +767,3 @@ jobs:
       audience: native
       git_sha: ${{ needs.resolve.outputs.sha }}
     secrets: inherit
-
-  notify-discord:
-    name: Update Discord status
-    needs: [resolve, macos, testflight, android, desktop, publish]
-    if: ${{ always() && inputs.discord_message_id != '' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Report the release result on the Discord notification
-        env:
-          DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-          RELEASE_SHA: ${{ needs.resolve.outputs.sha || inputs.git_sha || github.sha }}
-          DISCORD_MESSAGE_ID: ${{ inputs.discord_message_id }}
-          DISCORD_STARTED_AT: ${{ inputs.discord_started_at }}
-        run: |
-          set -euo pipefail
-          # Every job must succeed; any failure wins over a cancellation.
-          result=success
-          for job_result in $RESULTS; do
-            case "$job_result" in
-              success) ;;
-              failure) result=failure ;;
-              *) [[ "$result" == failure ]] || result=cancelled ;;
-            esac
-          done
-          bash scripts/update-discord-release.sh \
-            --git-sha "$RELEASE_SHA" \
-            --message-id "$DISCORD_MESSAGE_ID" \
-            --result "$result" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --started-at "$DISCORD_STARTED_AT" \
-            --finished-at "$(date +%s)"
