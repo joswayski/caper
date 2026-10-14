@@ -24,6 +24,8 @@ const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 600;
 const WIDTH_KEY = "caper:thread-panel-width";
+/** Phones and tablets: opening a thread to read it must not raise the keyboard (Reply focuses on purpose). */
+const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 
 export default function ThreadPanel({
   state,
@@ -251,7 +253,7 @@ export default function ThreadPanel({
     olderAnchor.current = undefined;
     // A cached "go to message" page keeps the reader at that reply.
     follow.current = !state.thread?.focusMessageId;
-    composer.current?.focus();
+    if (!touchLayout()) composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
       // Escape closes the innermost layer first: a menu, popover or dialog
       // over the thread (including sidebar menus and space dialogs) keeps it open.
@@ -273,7 +275,7 @@ export default function ThreadPanel({
     };
   }, [rootId, onClose]);
   useEffect(() => {
-    if (rootId && !state.thread?.loading && !document.querySelector(".chat-edit-dialog[open]"))
+    if (rootId && !state.thread?.loading && !touchLayout() && !document.querySelector(".chat-edit-dialog[open]"))
       composer.current?.focus();
   }, [rootId, state.thread?.loading]);
   useEffect(() => {

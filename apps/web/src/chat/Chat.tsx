@@ -834,6 +834,8 @@ export default function Chat({
       // Also the ref: a cleanup before the next render must stash these again.
       latestDrafts.current = saved.drafts;
       setDrafts(saved.drafts);
+      // This page now owns their previews, so leaving without them revokes them.
+      for (const draft of saved.drafts) if (draft.localUrl) objectUrls.current.add(draft.localUrl);
       // Renew anything that expired or failed while the conversation was closed.
       for (const upload of saved.uploads.values())
         if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
@@ -934,6 +936,17 @@ export default function Chat({
 
   const removeDraft = (key: string) => {
     abandonUpload(key);
+    // A removed file is never sent, so its preview can go now rather than when the page closes.
+    const url = latestDrafts.current.find((item) => item.key === key)?.localUrl;
+    if (url) {
+      URL.revokeObjectURL(url);
+      objectUrls.current.delete(url);
+      setLocalPreviews((current) =>
+        Object.values(current).some((preview) => preview.url === url)
+          ? Object.fromEntries(Object.entries(current).filter(([, preview]) => preview.url !== url))
+          : current,
+      );
+    }
     setDrafts((current) => current.filter((item) => item.key !== key));
   };
 
@@ -1231,6 +1244,47 @@ export default function Chat({
       else composerRef.current?.focus();
     });
   };
+  /** Message text with links, and @mentions that open the person's profile card. */
+  const messageText = (message: ChatMessage) =>
+    mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
+      if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
+      const user = segment.user;
+      if (!user)
+        return (
+          <span
+            key={part}
+            className="chat-mention"
+            title={
+              feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
+                ? "Asks the Caper team to look at this conversation"
+                : undefined
+            }
+          >
+            {segment.text}
+          </span>
+        );
+      const known = mentionDirectory.find((candidate) => candidate.id === user.id);
+      return (
+        <button
+          type="button"
+          key={part}
+          className="chat-mention chat-mention-person"
+          aria-haspopup="dialog"
+          aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActionTarget(undefined);
+            setMentionCard({
+              person: mentionCardPerson(user, mentionDirectory, state.author?.id),
+              anchor: event.currentTarget,
+              drawer: isTouchLayout(),
+            });
+          }}
+        >
+          {segment.text}
+        </button>
+      );
+    });
   const renderMessage = (
     index: number,
     message: (typeof messages)[number],
@@ -1400,47 +1454,7 @@ export default function Chat({
               )}
               {(!("content" in message) || message.content.text) && (
                 <p>
-                  {"content" in message
-                    ? mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
-                        if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
-                        const user = segment.user;
-                        if (!user)
-                          return (
-                            <span
-                              key={part}
-                              className="chat-mention"
-                              title={
-                                feedbackAliases.some((alias) => segment.text.slice(1).toLowerCase() === alias)
-                                  ? "Asks the Caper team to look at this conversation"
-                                  : undefined
-                              }
-                            >
-                              {segment.text}
-                            </span>
-                          );
-                        const known = mentionDirectory.find((candidate) => candidate.id === user.id);
-                        return (
-                          <button
-                            type="button"
-                            key={part}
-                            className="chat-mention chat-mention-person"
-                            aria-haspopup="dialog"
-                            aria-label={`Open profile for ${known?.displayName ?? `@${user.username}`}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setActionTarget(undefined);
-                              setMentionCard({
-                                person: mentionCardPerson(user, mentionDirectory, state.author?.id),
-                                anchor: event.currentTarget,
-                                drawer: isTouchLayout(),
-                              });
-                            }}
-                          >
-                            {segment.text}
-                          </button>
-                        );
-                      })
-                    : message.text}
+                  {"content" in message ? messageText(message) : message.text}
                   {/* Compact rows have no header, so the marker follows the text. */}
                   {grouped && edited && <> {edited}</>}
                 </p>
@@ -1917,11 +1931,7 @@ export default function Chat({
                           {hydrated ? timeLabel(message.createdAt, pinTimeFormatter) : ""}
                         </time>
                       </header>
-                      {message.content.text && (
-                        <p>
-                          <LinkedText text={message.content.text} />
-                        </p>
-                      )}
+                      {message.content.text && <p>{messageText(message)}</p>}
                       <MessageAttachments
                         attachments={withFreshUrls(attachmentsOf(message))}
                         progress={state.attachmentProgress}
