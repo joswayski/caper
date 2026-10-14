@@ -7374,6 +7374,9 @@ private struct ProfileSheet: View {
     @Bindable var model: AppModel; let close: () -> Void
     @State private var username = ""
     @State private var displayName = ""
+    /// This sheet's own save failure. `model.error` is app-wide (the sidebar
+    /// shows it too), so an unrelated earlier error never shows here.
+    @State private var saveError: String?
     @FocusState private var displayNameFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
@@ -7391,9 +7394,9 @@ private struct ProfileSheet: View {
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
                     Text("This is what people see in conversations.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    Text(model.error ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                        .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)
+                        .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
                     Button(model.busy ? "Saving…" : "Save profile", action: save)
                         .buttonStyle(CaperPrimaryButton())
                         .frame(width: 148)
@@ -7406,6 +7409,11 @@ private struct ProfileSheet: View {
             .onAppear {
                 username = model.account?.username ?? ""
                 displayName = model.account?.displayName ?? ""
+            }
+            // A failed save's message belongs to this sheet: closing it must
+            // not leave the message in the sidebar.
+            .onDisappear {
+                if let saveError, model.error == saveError { model.error = nil }
             }
     }
 
@@ -7432,9 +7440,10 @@ private struct ProfileSheet: View {
 
     private func save() {
         guard canSave else { return }
+        saveError = nil
         Task {
             await model.saveProfile(username: username, displayName: displayName)
-            if model.error == nil { close() }
+            if let error = model.error { saveError = error } else { close() }
         }
     }
 }
