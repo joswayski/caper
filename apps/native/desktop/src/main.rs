@@ -15762,8 +15762,7 @@ impl CaperApp {
         let gif = !pending && !processing && attachment.content_type == "image/gif";
         let state = if gif && ui.is_rect_visible(rect) {
             static MOTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let playing =
-                *MOTION.get_or_init(reply_motion_enabled) && ui.style().animation_time > 0.0;
+            let playing = *MOTION.get_or_init(reply_motion_enabled) && pictures::playing(ui);
             self.media.gif(
                 ui.ctx(),
                 &attachment.id,

@@ -895,10 +895,11 @@ impl Shared {
     }
 }
 
-/// Animations play unless the system asks for less motion (then the first
-/// frame shows), as inline GIFs do.
+/// Animations play unless the system asks for less motion or the window is
+/// in the background (then the first frame shows and nothing repaints), as
+/// inline GIFs do.
 pub fn playing(ui: &egui::Ui) -> bool {
-    !crate::motion::reduced() && ui.style().animation_time > 0.0
+    crate::looping(ui) && ui.style().animation_time > 0.0
 }
 
 /// The texture to draw for `source` in `ui`, loading it if needed; `None`

@@ -305,16 +305,18 @@ struct Animation {
 }
 
 impl Animation {
-    fn frame_at(&self, elapsed: Duration) -> usize {
+    /// The frame `elapsed` into the loop, and how long until the next one.
+    fn frame_at(&self, elapsed: Duration) -> (usize, Duration) {
         let duration: Duration = self.frames.iter().map(|(_, delay)| *delay).sum();
         let mut time = elapsed.as_nanos() % duration.as_nanos().max(1);
         for (index, (_, delay)) in self.frames.iter().enumerate() {
-            if time < delay.as_nanos() {
-                return index;
+            let length = delay.as_nanos();
+            if time < length {
+                return (index, Duration::from_nanos((length - time) as u64));
             }
-            time -= delay.as_nanos();
+            time -= length;
         }
-        0
+        (0, Duration::from_millis(100))
     }
 }
 
@@ -497,10 +499,10 @@ impl Media {
         }) = self.images.get_mut(id)
         {
             *used = self.frame;
-            let index = if playing {
+            let (index, next) = if playing {
                 animation.frame_at(now.saturating_duration_since(animation.started))
             } else {
-                0
+                (0, Duration::MAX)
             };
             if animation.shown != index {
                 texture.set(
@@ -509,8 +511,9 @@ impl Media {
                 );
                 animation.shown = index;
             }
+            // Repaint when the next frame is due, not continuously.
             if playing && animation.frames.len() > 1 {
-                context.request_repaint_after(Duration::from_millis(20));
+                context.request_repaint_after(next);
             }
             return ImageState::Ready(texture.id());
         }
