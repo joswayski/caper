@@ -99,6 +99,17 @@ const initialState: ChatViewState = {
 };
 
 /** Ids of attachments the server is still processing. */
+/** The same list when `map` keeps every item, so unchanged timelines keep their identity. */
+function sameOrMapped<T>(items: T[], map: (item: T) => T) {
+  let changed = false;
+  const mapped = items.map((item) => {
+    const next = map(item);
+    if (next !== item) changed = true;
+    return next;
+  });
+  return changed ? mapped : items;
+}
+
 function processingIds(messages: ChatMessage[]) {
   const ids = new Set<string>();
   for (const message of messages)
@@ -1544,16 +1555,22 @@ export class ChatClient {
     const self = own && !own.isGuest ? own : undefined;
     if (self || profiles.size) {
       const author = (value: ChatAuthor) =>
-        self && value.id === self.id ? { ...value, name: self.name } : withAuthorProfile(value, profiles.get(value.id));
+        self && value.id === self.id
+          ? value.name === self.name
+            ? value
+            : { ...value, name: self.name }
+          : withAuthorProfile(value, profiles.get(value.id));
       const message = (value: ChatMessage) => withMessageAuthors(value, author);
       change = {
         ...change,
         ...(change.author ? { author: author(change.author) } : {}),
-        ...(change.messages ? { messages: change.messages.map(message) } : {}),
-        ...(change.pinnedMessages ? { pinnedMessages: change.pinnedMessages.map(message) } : {}),
+        ...(change.messages ? { messages: sameOrMapped(change.messages, message) } : {}),
+        ...(change.pinnedMessages ? { pinnedMessages: sameOrMapped(change.pinnedMessages, message) } : {}),
       };
       const pending = "pendingSend" in change ? change.pendingSend : this.state.pendingSend;
-      if (pending?.author) change.pendingSend = { ...pending, author: author(pending.author) };
+      const pendingAuthor = pending?.author && author(pending.author);
+      if (pending && pendingAuthor && pendingAuthor !== pending.author)
+        change.pendingSend = { ...pending, author: pendingAuthor };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)

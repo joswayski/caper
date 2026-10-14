@@ -105,7 +105,16 @@ export function pictureErrorMessage(
 
 /** `person` with the account's picture: a saved change wins over older snapshots. */
 export function withPicture<T extends object>(person: T, picture: PersonPicture): T {
-  const { avatarAsset: _asset, avatarUrl: _url, ...rest } = person as T & PersonPicture;
+  const held = person as T & PersonPicture;
+  const asset = picture.avatarAsset || undefined;
+  // Unchanged people keep their identity, so memoized rows don't re-render.
+  if (
+    (picture.avatarId === undefined || held.avatarId === picture.avatarId) &&
+    held.avatarAsset === asset &&
+    held.avatarUrl === (asset && picture.avatarUrl ? picture.avatarUrl : undefined)
+  )
+    return person;
+  const { avatarAsset: _asset, avatarUrl: _url, ...rest } = held;
   return {
     ...rest,
     ...(picture.avatarId !== undefined ? { avatarId: picture.avatarId } : {}),

@@ -73,28 +73,43 @@ export function withProfile<T extends { id: string; username?: string | null; di
   update: ProfileUpdate | undefined,
 ): T {
   if (!update || update.id !== person.id) return person;
-  return withPicture({ ...person, username: update.username, displayName: update.displayName }, update);
+  const named =
+    person.username === update.username && person.displayName === update.displayName
+      ? person
+      : { ...person, username: update.username, displayName: update.displayName };
+  return withPicture(named, update);
 }
 
 /** A message author (which has one `name`) with the latest profile; guests are never accounts. */
 export function withAuthorProfile<T extends ChatAuthor>(author: T, update: ProfileUpdate | undefined): T {
   if (!update || update.id !== author.id || author.isGuest) return author;
-  return withPicture({ ...author, name: update.displayName }, update);
+  return withPicture(author.name === update.displayName ? author : { ...author, name: update.displayName }, update);
 }
 
 /** Every author a message carries: its own, the reply reference's, the pin's,
  * thread participants' and (recursively) the forwarded original's. Text, content
  * and sequence fields are never touched. */
 export function withMessageAuthors(message: ChatMessage, author: (value: ChatAuthor) => ChatAuthor): ChatMessage {
+  // A message whose authors are all unchanged is returned as is.
+  let changed = false;
+  const latest = <T>(before: T, after: T) => {
+    if (before !== after) changed = true;
+    return after;
+  };
+  const own = latest(message.author, author(message.author));
+  const replyAuthor = message.replyTo && latest(message.replyTo.author, author(message.replyTo.author));
+  const pinAuthor = message.pin && latest(message.pin.author, author(message.pin.author));
+  const participants = message.thread?.participants.map((person) => latest(person, author(person)));
+  const forwarded =
+    message.forward?.message && latest(message.forward.message, withMessageAuthors(message.forward.message, author));
+  if (!changed) return message;
   return {
     ...message,
-    author: author(message.author),
-    ...(message.replyTo ? { replyTo: { ...message.replyTo, author: author(message.replyTo.author) } } : {}),
-    ...(message.pin ? { pin: { ...message.pin, author: author(message.pin.author) } } : {}),
-    ...(message.thread ? { thread: { ...message.thread, participants: message.thread.participants.map(author) } } : {}),
-    ...(message.forward?.message
-      ? { forward: { ...message.forward, message: withMessageAuthors(message.forward.message, author) } }
-      : {}),
+    author: own,
+    ...(message.replyTo ? { replyTo: { ...message.replyTo, author: replyAuthor! } } : {}),
+    ...(message.pin ? { pin: { ...message.pin, author: pinAuthor! } } : {}),
+    ...(message.thread ? { thread: { ...message.thread, participants: participants! } } : {}),
+    ...(message.forward?.message ? { forward: { ...message.forward, message: forwarded! } } : {}),
   };
 }
 
