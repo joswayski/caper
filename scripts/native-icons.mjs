@@ -86,6 +86,23 @@ for (const [file, name] of Object.entries(names)) {
     ],
   );
 }
+// Custom update mascot layers are original artwork, not Lucide icons. Rust
+// includes the canonical SVGs directly; Apple needs asset-catalog exports.
+for (const part of ["body", "wave", "feet"]) {
+  const svg = readFileSync(`assets/update-caper/${part}.svg`, "utf8");
+  const image = resolve(`apps/native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-update-${part}.imageset`);
+  files.push(
+    [`${image}/${part}.svg`, svg],
+    [
+      `${image}/Contents.json`,
+      json({
+        images: [{ filename: `${part}.svg`, idiom: "universal" }],
+        info,
+        properties: { "preserves-vector-representation": true, "template-rendering-intent": "original" },
+      }),
+    ],
+  );
+}
 const license = readFileSync("node_modules/lucide-react/LICENSE", "utf8");
 files.push([`${output}/LICENSE`, license], [resolve("apps/native/apple/Resources/Lucide-LICENSE.txt"), license]);
 for (const [file, content] of files) {

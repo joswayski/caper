@@ -70,6 +70,8 @@ pub enum Status {
 struct State {
     available: Option<Available>,
     status: Status,
+    reviewing: bool,
+    show_after_check: bool,
 }
 
 impl State {
@@ -81,10 +83,12 @@ impl State {
                 } else {
                     Status::UpToDate
                 };
+                self.reviewing = found.is_some() && (self.reviewing || self.show_after_check);
                 self.available = found;
             }
             Err(error) => self.status = Status::Failed(error),
         }
+        self.show_after_check = false;
     }
 }
 
@@ -92,7 +96,6 @@ pub struct Updates {
     install: Option<Install>,
     state: Arc<Mutex<State>>,
     requests: Option<mpsc::Sender<()>>,
-    dismissed: Option<String>,
     pub error: Option<String>,
 }
 
@@ -140,7 +143,6 @@ impl Updates {
             install,
             state,
             requests,
-            dismissed: None,
             error: None,
         }
     }
@@ -152,9 +154,10 @@ impl Updates {
             state: Arc::new(Mutex::new(State {
                 available: Some(available),
                 status: Status::Available,
+                reviewing: true,
+                show_after_check: false,
             })),
             requests: None,
-            dismissed: None,
             error: None,
         }
     }
@@ -167,16 +170,21 @@ impl Updates {
     }
 
     pub fn available(&self) -> Option<Available> {
-        self.state
-            .lock()
-            .unwrap()
-            .available
-            .clone()
-            .filter(|update| self.dismissed.as_ref() != Some(&update.version))
+        let state = self.state.lock().unwrap();
+        state.available.clone().filter(|_| state.reviewing)
+    }
+
+    /// Later hides the notice, not the account bar's update action.
+    pub fn known_available(&self) -> Option<Available> {
+        self.state.lock().unwrap().available.clone()
+    }
+
+    pub fn show_available(&mut self) {
+        self.state.lock().unwrap().reviewing = true;
     }
 
     pub fn dismiss(&mut self) {
-        self.dismissed = self.available().map(|update| update.version);
+        self.state.lock().unwrap().reviewing = false;
     }
 
     pub fn can_check(&self) -> bool {
@@ -192,9 +200,9 @@ impl Updates {
         let Some(requests) = &self.requests else {
             return;
         };
-        self.dismissed = None;
         self.error = None;
         let mut state = self.state.lock().unwrap();
+        state.show_after_check = true;
         if state.status != Status::Checking {
             state.status = match requests.send(()) {
                 Ok(()) => Status::Checking,
@@ -355,13 +363,22 @@ mod tests {
         assert!(updates.available().is_none());
 
         updates.check_now();
-        assert_eq!(updates.available(), Some(release("0.1.18")));
+        assert!(
+            updates.available().is_none(),
+            "manual review waits for completion"
+        );
         assert_eq!(updates.status(), Status::Checking);
         assert!(updates.error.is_none());
         receiver.try_recv().unwrap();
         updates.check_now();
         assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
 
+        updates
+            .state
+            .lock()
+            .unwrap()
+            .finish(Ok(Some(release("0.1.19"))));
+        assert_eq!(updates.available(), Some(release("0.1.19")));
         updates.state.lock().unwrap().finish(Ok(None));
         assert_eq!(updates.status(), Status::UpToDate);
         assert!(updates.available().is_none());
@@ -375,8 +392,12 @@ mod tests {
     }
 
     #[test]
-    fn later_hides_only_that_release_and_a_failed_check_keeps_known_updates() {
+    fn automatic_checks_advertise_quietly_and_failed_checks_keep_known_updates() {
         let mut updates = Updates::preview(release("0.1.18"));
+        updates.dismiss();
+        assert_eq!(updates.known_available(), Some(release("0.1.18")));
+        updates.show_available();
+        assert_eq!(updates.available(), Some(release("0.1.18")));
         updates.dismiss();
         updates
             .state
@@ -389,9 +410,11 @@ mod tests {
             .lock()
             .unwrap()
             .finish(Ok(Some(release("0.1.19"))));
-        assert_eq!(updates.available(), Some(release("0.1.19")));
+        assert!(updates.available().is_none());
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
         updates.state.lock().unwrap().finish(Err("Offline".into()));
-        assert_eq!(updates.available(), Some(release("0.1.19")));
+        assert!(updates.available().is_none());
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
         assert_eq!(updates.status(), Status::Failed("Offline".into()));
     }
 
@@ -433,14 +456,14 @@ mod tests {
     }
 
     #[test]
-    fn settings_manual_check_button_reports_progress_success_and_retryable_failure() {
+    fn account_menu_check_reports_progress_success_and_retryable_failure_in_settings() {
         let context = egui::Context::default();
+        context.enable_accesskit();
         let mut app = crate::CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
-        app.dialog = Some(crate::Dialog::Settings);
         let (sender, receiver) = mpsc::channel();
         app.updates.requests = Some(sender);
         let frame = |app: &mut crate::CaperApp, events| {
@@ -458,13 +481,38 @@ mod tests {
         };
         frame(&mut app, vec![]);
         let output = frame(&mut app, vec![]);
-        let installed = match option_env!("CAPER_BUILD_NUMBER") {
-            Some(build) => format!("Installed: Caper 0.1.{build} (build {build})"),
-            None => "Installed: Development build".into(),
-        };
-        assert!(output.shapes.iter().any(|shape| matches!(
-            &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&installed)
-        )), "the installed version is visible before checking for updates");
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("User Settings"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let settings = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(settings),
+                    egui::Event::PointerButton {
+                        pos: settings,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
         let pos = output
             .shapes
             .iter()
@@ -477,7 +525,7 @@ mod tests {
                     None
                 }
             })
-            .expect("manual check button is visible without scrolling");
+            .expect("manual check is directly in the account menu");
         for pressed in [true, false] {
             frame(
                 &mut app,
@@ -495,8 +543,18 @@ mod tests {
         receiver
             .try_recv()
             .expect("the button wakes the update worker");
-        context.enable_accesskit();
+        assert!(
+            matches!(app.dialog, Some(crate::Dialog::Settings)),
+            "check feedback is visible"
+        );
         let checking = frame(&mut app, vec![]);
+        let installed = match option_env!("CAPER_BUILD_NUMBER") {
+            Some(build) => format!("Installed: Caper 0.1.{build} (build {build})"),
+            None => "Installed: Development build".into(),
+        };
+        assert!(checking.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&installed)
+        )), "the installed version is visible while checking for updates");
         let button = checking
             .platform_output
             .accesskit_update

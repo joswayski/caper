@@ -1,16 +1,22 @@
+import AppKit
 import CaperCore
 import SwiftUI
 
 @main
 struct CaperMacOSApp: App {
     private let parity = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
-    private let updater = AppUpdater()
+    @State private var updater = AppUpdater()
     @State private var ready = false
     @State private var whatsNew: WhatsNewModel?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "caper-main") {
             CaperWindow(parity: parity, updater: updater, ready: $ready, whatsNew: $whatsNew)
+                .environment(\.desktopUpdates, updater.controls)
+                .onChange(of: updater.reviewRequest) { _, _ in
+                    bringReviewForward()
+                }
         }
         // Keep system window controls in their own title bar, outside the space rail.
         .windowStyle(.titleBar)
@@ -18,13 +24,30 @@ struct CaperMacOSApp: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { updater.check(manual: true) }
-                    .disabled(!ready || !updater.isAvailable)
+                    .disabled(!ready || !updater.isAvailable || updater.checking)
             }
         }
         Settings {
             if let whatsNew {
                 CaperSettingsView(whatsNew: whatsNew)
+                    .environment(\.desktopUpdates, updater.controls)
+                    // Settings can outlive the main window. Bring back the real
+                    // account window so the review uses its actual voice state.
+                    .onChange(of: updater.reviewRequest) { _, _ in
+                        bringReviewForward()
+                    }
             }
+        }
+    }
+
+    private func bringReviewForward() {
+        if let window = NSApp.windows.first(where: {
+            $0.identifier?.rawValue == "caper-main" && ($0.isVisible || $0.isMiniaturized)
+        }) {
+            window.deminiaturize(nil)
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "caper-main")
         }
     }
 }
@@ -41,14 +64,26 @@ private struct CaperWindow: View {
     @State private var model = CaperRuntime.makeModel()
 
     var body: some View {
-        Group {
-            if ready {
-                CaperRootView(model: model)
-            } else {
-                Color.clear
+        ZStack {
+            Group {
+                if ready {
+                    CaperRootView(model: model)
+                } else {
+                    Color.clear
+                }
+            }
+            .disabled(updater.offeredUpdate != nil)
+            .accessibilityElement(children: .contain)
+            .accessibilityHidden(updater.offeredUpdate != nil)
+            if let update = updater.offeredUpdate {
+                DesktopUpdateReview(update: update,
+                    inCall: model.voice.phase != .idle && model.voice.phase != .failed,
+                    close: updater.dismissReview, restart: updater.applyReviewedUpdate,
+                    download: updater.download)
             }
         }
         .frame(minWidth: parity ? 390 : 840, minHeight: 600)
+        .background(UpdateWindowRegistration())
         .onAppear {
             whatsNew = model.whatsNew
             guard !ready else { return }
@@ -63,4 +98,16 @@ private struct CaperWindow: View {
         // with every window closed, SwiftUI opens one for it.
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
     }
+}
+
+/// Identifies account windows without depending on SwiftUI's private window IDs.
+private struct UpdateWindowRegistration: NSViewRepresentable {
+    final class RegistrationView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.identifier = NSUserInterfaceItemIdentifier("caper-main")
+        }
+    }
+    func makeNSView(context: Context) -> RegistrationView { RegistrationView() }
+    func updateNSView(_ nsView: RegistrationView, context: Context) { }
 }

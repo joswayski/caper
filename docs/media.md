@@ -7881,13 +7881,23 @@ account-synced. Automatic presentation waits for the signed-in workspace and
 defers during calls or another modal. Missing publication retries at most once
 per minute while foregrounded; Settings offers immediate retry.
 
-The existing Mac/Windows/Linux **before-install** prompt remains. New clients pass
-their source revision to the bundled updater, which reads current/target exact
-snapshots and shows the same user-facing highlights for skipped releases. Missing
-editorial metadata never blocks installing the signed update. Older clients keep
-their signed commit-title changelog until updated once. Mac notes use an explicitly
-laid-out, read-only AppKit text view with a reserved scroller width; physical Mac
-scrolling/timing acceptance is still required.
+Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
+Automatic checks advertise a known update through a Caper mascot above the profile;
+they do not take focus. The mascot briefly peeks, waves and walks, then hides for
+a longer rest. Reduced motion/background windows keep a still clickable peek.
+Clicking it or completing a manual check with an available release opens a centered
+modal with **What’s new expanded by default**. Only the notes scroll; restart/Later
+and installer actions stay visible. Later, Escape or the backdrop close the review
+without forgetting the update. Covered conversation typing, sending and drops are
+blocked. Confirmed restart still leaves a call; non-writable copies use the installer.
+
+Desktop clients pass their source revision to the bundled updater, which reads
+current/target exact snapshots and shows the same user-facing highlights for skipped
+releases. Missing editorial metadata never blocks installing the signed update.
+Older clients keep their signed commit-title changelog until updated once. Linux
+fixture rendering and modal regressions cover narrow screens, errors, history gaps,
+call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
+and signed update/relaunch acceptance are still required.
 
 ### Generation and storage
 

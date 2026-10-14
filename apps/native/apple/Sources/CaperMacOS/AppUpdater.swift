@@ -1,36 +1,27 @@
 import AppKit
 import CaperCore
 import Foundation
+import Observation
 
 /// Self-updates through `caper-updater` (apps/native/updater), which release
 /// builds carry in Contents/MacOS. It checks the signed release manifest shortly
 /// after launch and every minute; when the user accepts, the updater waits
 /// for Caper to quit, swaps in the new notarized app and reopens it.
 ///
-/// Prompts are AppKit alerts rather than SwiftUI `.alert` modifiers, so they
-/// never compete with the confirmation dialogs inside the Caper window.
-@MainActor final class AppUpdater {
-    struct Update: Equatable {
-        let version: String
-        let notes: String
-        let changelog: [ChangelogEntry]
-        let historyComplete: Bool
-        let canApply: Bool
-        let lastError: String?
-    }
-
-    struct ChangelogEntry: Decodable, Equatable {
-        let version: String
-        let notes: String
-    }
+/// Update reviews live in the main window; operational failures remain alerts.
+@MainActor @Observable final class AppUpdater {
+    typealias Update = DesktopUpdate
+    typealias ChangelogEntry = DesktopUpdate.ChangelogEntry
 
     private let updater: URL?
     private let build: Int
     private let version: String?
     private let sourceRevision: String?
-    private var declined: Set<String> = []
     private var timer: Timer?
-    private var checking = false
+    private(set) var checking = false
+    private var availableUpdate: Update?
+    private(set) var offeredUpdate: Update?
+    private(set) var reviewRequest = 0
     private var manualCheck = false
 
     static let firstCheckDelay: TimeInterval = 20
@@ -64,6 +55,31 @@ import Foundation
         let label = version.map { "Caper \($0) (build \(build))" } ?? "Development build"
         let revision = sourceRevision.map { " · \($0.prefix(7))" } ?? ""
         return "Installed: \(label)\(revision)"
+    }
+
+    var controls: DesktopUpdateControls {
+        DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
+            check: isAvailable ? { self.check(manual: true) } : nil,
+            review: availableUpdate == nil ? nil : { self.review() })
+    }
+
+    /// Later closes the review; the mascot can reopen it without a network check.
+    private func review() {
+        guard let update = availableUpdate else { return }
+        offer(update)
+    }
+
+    func dismissReview() { offeredUpdate = nil }
+
+    func download() {
+        dismissReview()
+        NSWorkspace.shared.open(Self.downloadURL)
+    }
+
+    func applyReviewedUpdate() {
+        guard offeredUpdate?.canApply == true else { return }
+        dismissReview()
+        restart()
     }
 
     /// Signed downloads must be installed before opening the account UI. Finder
@@ -150,124 +166,34 @@ import Foundation
         }
     }
 
-    private func finish(_ result: Result<Data, Error>) {
+    /// Receives the subprocess result on the main actor, independently of presentation.
+    func finish(_ result: Result<Data, Error>) {
         let manual = manualCheck
         manualCheck = false
-        // Keep the check fenced while a modal prompt runs its nested event loop.
+        // Operational alerts still run nested event loops; keep checks fenced there.
         defer {
             checking = false
             manualCheck = false
         }
         switch result {
         case let .success(data):
-            guard let update = Self.parse(data) else {
+            availableUpdate = Self.parse(data)
+            guard let update = availableUpdate else {
+                offeredUpdate = nil
                 if manual { inform("Caper is up to date", "\(installedVersion)\n\nNo newer published release is available.") }
                 return
             }
-            if manual || !declined.contains(update.version) { offer(update) }
+            if manual { offer(update) }
+            else if offeredUpdate != nil { offeredUpdate = update }
         case let .failure(error):
             if manual { inform("Update failed", error.localizedDescription) }
         }
     }
 
     private func offer(_ update: Update) {
-        let alert = NSAlert()
-        alert.messageText = "Caper \(update.version) is available"
-        let detail = update.canApply
-            ? "Caper restarts to install it and leaves any voice call."
-            : "Caper can't update this copy in place. Download the installer and drag Caper into a writable Applications folder."
-        alert.informativeText = update.lastError == nil ? detail
-            : "The last update didn’t finish. Try again or download the installer.\n\n\(detail)"
-        alert.addButton(withTitle: update.canApply ? "Restart to Update" : "Download")
-        alert.addButton(withTitle: "Later")
-        if update.canApply { alert.addButton(withTitle: "Download Installer") }
-        // Measure the warning/buttons first. Only the accessory notes scroll.
-        alert.layout()
-        let screen = NSApp.mainWindow?.screen ?? NSScreen.main
-        let visibleSize = screen?.visibleFrame.size ?? NSSize(width: 800, height: 600)
-        alert.accessoryView = Self.notesView(update, size: Self.notesSize(
-            screen: visibleSize, chromeHeight: alert.window.frame.height
-        ))
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
-        if response == .alertThirdButtonReturn {
-            declined.insert(update.version)
-            NSWorkspace.shared.open(Self.downloadURL)
-            return
-        }
-        guard response == .alertFirstButtonReturn else {
-            declined.insert(update.version)
-            return
-        }
-        if update.canApply {
-            restart()
-        } else {
-            NSWorkspace.shared.open(Self.downloadURL)
-        }
-    }
-
-    nonisolated static func notesSize(screen: NSSize, chromeHeight: CGFloat) -> NSSize {
-        NSSize(width: min(420, max(160, screen.width - 160)),
-               height: min(340, max(60, screen.height - chromeHeight - 80)))
-    }
-
-    static func notesView(_ update: Update, size: NSSize) -> NSScrollView {
-        let scroll = NSScrollView(frame: NSRect(origin: .zero, size: size))
-        scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = false
-        // Reserve the gutter before measuring. Auto-hiding legacy scrollers
-        // can otherwise change the wrapping width once the document grows.
-        scroll.scrollerStyle = .legacy
-        scroll.autohidesScrollers = false
-        scroll.borderType = .bezelBorder
-        scroll.tile()
-        let contentSize = scroll.contentSize
-        // These immutable notes need an exact scroll range, not TextKit 2's
-        // viewport estimates that can change as more paragraphs are laid out.
-        let text = NSTextView(usingTextLayoutManager: false)
-        text.frame = NSRect(origin: .zero, size: contentSize)
-        text.isEditable = false
-        text.isSelectable = true
-        text.isVerticallyResizable = true
-        text.isHorizontallyResizable = false
-        text.autoresizingMask = [.width]
-        text.minSize = NSSize(width: 0, height: contentSize.height)
-        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        text.textContainerInset = NSSize(width: 8, height: 8)
-        text.textContainer?.containerSize = NSSize(width: contentSize.width - 2 * text.textContainerInset.width,
-                                                  height: .greatestFiniteMagnitude)
-        text.textContainer?.widthTracksTextView = true
-        let content = NSMutableAttributedString(string: "")
-        func append(_ string: String, heading: Bool = false) {
-            content.append(NSAttributedString(string: string, attributes: [
-                .font: heading ? NSFont.boldSystemFont(ofSize: 13) : NSFont.systemFont(ofSize: 13),
-                .foregroundColor: heading ? NSColor.labelColor : NSColor.secondaryLabelColor,
-            ]))
-        }
-        if let error = update.lastError {
-            append("Update details\n", heading: true)
-            append("\(error)\n\n")
-        }
-        append("WHAT’S NEW\n\n", heading: true)
-        append(update.historyComplete
-            ? "This update includes all of the following changes:\n\n"
-            : "Recorded changes are shown below. Earlier release notes aren’t available.\n\n")
-        let entries = update.changelog.isEmpty
-            ? [ChangelogEntry(version: update.version, notes: update.notes)] : update.changelog
-        for entry in entries {
-            append("\(entry.version)\n", heading: true)
-            append(entry.notes.isEmpty ? "Release notes aren’t available for this version.\n\n"
-                                      : "\(entry.notes)\n\n")
-        }
-        text.textStorage?.setAttributedString(content)
-        scroll.documentView = text
-        let container = text.textContainer!
-        let layout = text.layoutManager!
-        layout.ensureLayout(for: container)
-        let height = ceil(layout.usedRect(for: container).maxY + 2 * text.textContainerInset.height)
-        text.setFrameSize(NSSize(width: contentSize.width, height: max(contentSize.height, height)))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        return scroll
+        offeredUpdate = update
+        reviewRequest += 1
+        NSApp?.activate(ignoringOtherApps: true)
     }
 
     private func inform(_ title: String, _ detail: String) {
