@@ -37,6 +37,7 @@ mod profile_dm;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
+mod update_art;
 mod updates;
 mod uploads;
 mod viewer;
@@ -442,7 +443,6 @@ enum NavIcon {
     Send,
     MessageCircle,
     MessageSquare,
-    Sparkles,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -6474,7 +6474,8 @@ impl CaperApp {
 
     /// A dialog or modal layer covers the conversation and its composer.
     fn conversation_covered(&self) -> bool {
-        self.dialog.is_some()
+        self.updates.available().is_some()
+            || self.dialog.is_some()
             || self.showing_pins
             || self.message_editor.is_some()
             || self.edit_history.is_some()
@@ -7692,7 +7693,8 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.attachment_housekeeping(context);
         // Before the page: the viewer is modal and takes the keys it uses.
-        if let Some(mut viewer) = self.viewer.take()
+        if self.updates.available().is_none()
+            && let Some(mut viewer) = self.viewer.take()
             && viewer.show(
                 context,
                 &mut self.media,
@@ -7702,6 +7704,7 @@ impl eframe::App for CaperApp {
         {
             self.viewer = Some(viewer);
         }
+        self.update_notice(context);
         self.poll_whats_new(context);
         self.page(context);
         // Includes Escape, backdrop, close/Done, logout and navigation that
@@ -7716,7 +7719,6 @@ impl eframe::App for CaperApp {
         {
             self.whats_new.save(storage);
         }
-        self.update_notice(context);
         // A mouse close leaves focus alone, as `:focus-visible` would.
         let from_settings_menu = matches!(
             self.dialog,
@@ -7738,23 +7740,25 @@ impl eframe::App for CaperApp {
         self.settings_menu_dialog = from_settings_menu;
         // Only an open forward looks messages up: don't copy the whole
         // timeline every frame otherwise.
-        let messages = if self.forwarding.is_open() {
-            self.timeline
-                .messages()
-                .chain(self.timeline.pinned_messages())
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        self.forwarding.show(
-            context,
-            &self.worker,
-            self.generation,
-            self.token.as_deref(),
-            &messages,
-            &mut self.reaction_textures,
-        );
+        if self.updates.available().is_none() {
+            let messages = if self.forwarding.is_open() {
+                self.timeline
+                    .messages()
+                    .chain(self.timeline.pinned_messages())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            self.forwarding.show(
+                context,
+                &self.worker,
+                self.generation,
+                self.token.as_deref(),
+                &messages,
+                &mut self.reaction_textures,
+            );
+        }
         if !matches!(self.dialog, Some(Dialog::Audio)) {
             if !matches!(self.voice.microphone, MicrophoneState::Idle) {
                 self.voice.stop_mic_test();
@@ -7879,6 +7883,7 @@ impl CaperApp {
         } else {
             // Ctrl+, (⌘, on macOS) opens Settings, as in the Apple client.
             if self.dialog.is_none()
+                && self.updates.available().is_none()
                 && context.input_mut(|input| {
                     input.consume_shortcut(&egui::KeyboardShortcut::new(
                         egui::Modifiers::COMMAND,
@@ -7890,12 +7895,14 @@ impl CaperApp {
             }
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
-            self.pins_dialog(context);
-            self.dialogs(context, dialog_was_open);
-            self.message_edit_dialogs(context);
+            if self.updates.available().is_none() {
+                self.pins_dialog(context);
+                self.dialogs(context, dialog_was_open);
+                self.message_edit_dialogs(context);
+            }
             self.dismiss_emoji_picker_outside(context);
         }
-        if self.account.is_some() {
+        if self.account.is_some() && self.updates.available().is_none() {
             self.space_notice(context);
         }
         // egui's buttons and custom click targets do not set a hand cursor.
@@ -7931,28 +7938,38 @@ impl CaperApp {
 
     /// Only the release notes scroll; the install action always stays visible.
     fn update_notice(&mut self, context: &egui::Context) {
+        let focus_id = egui::Id::new("update-review-focused");
         let Some(update) = self.updates.available() else {
+            context.data_mut(|data| data.remove::<bool>(focus_id));
             return;
         };
+        let opening = context.data_mut(|data| {
+            let opening = !data.get_temp::<bool>(focus_id).unwrap_or(false);
+            data.insert_temp(focus_id, true);
+            opening
+        });
+        if opening {
+            context.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+        }
         let viewport = context.viewport_rect();
-        egui::Window::new("Update available")
-            .id(egui::Id::new("app-update"))
-            .default_width((viewport.width() - 72.0).min(420.0))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+        egui::Popup::close_all(context);
+        let modal = egui::Modal::new(egui::Id::new("app-update"))
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
                     .corner_radius(8)
-                    .inner_margin(20),
+                    .inner_margin(16),
             )
             .show(context, |ui| {
-                ui.set_width((viewport.width() - 72.0).min(420.0));
-                self.wordmark(ui);
-                ui.add_space(12.0);
+                ui.set_width((viewport.width() - 48.0).min(420.0));
+                let (mascot, _) =
+                    ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                update_art::paint(ui, mascot, 0.0, 0.0);
                 ui.label(bold("A fresh Caper is ready").size(20.0));
                 ui.label(RichText::new(format!("Version {}", update.version)).color(MUTED));
                 ui.add_space(12.0);
@@ -7970,52 +7987,47 @@ impl CaperApp {
                     ui.add_space(8.0);
                 }
                 ui.separator();
-                egui::CollapsingHeader::new("What’s new")
-                    .id_salt("update-changes")
+                ui.label(bold("What’s new"));
+                egui::ScrollArea::vertical()
+                    .id_salt("update-notes")
+                    .max_height((viewport.height() - 420.0).clamp(64.0, 260.0))
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("update-notes")
-                            .max_height((viewport.height() - 460.0).clamp(60.0, 220.0))
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                if !update.history_complete {
-                                    ui.label(
-                                        RichText::new("Earlier release notes aren’t available.")
-                                            .color(MUTED),
-                                    );
-                                    ui.add_space(8.0);
-                                }
-                                let fallback = updates::ChangelogEntry {
-                                    version: update.version.clone(),
-                                    notes: update.notes.clone(),
-                                };
-                                let entries = if update.changelog.is_empty() {
-                                    std::slice::from_ref(&fallback)
-                                } else {
-                                    &update.changelog
-                                };
-                                for (index, entry) in entries.iter().enumerate() {
-                                    if index > 0 {
-                                        ui.add_space(6.0);
-                                        ui.separator();
-                                        ui.add_space(6.0);
-                                    }
-                                    ui.label(bold(&entry.version).size(14.0));
-                                    if entry.notes.trim().is_empty() {
-                                        ui.label(
-                                            RichText::new(
-                                                "Release notes aren’t available for this version.",
-                                            )
-                                            .color(MUTED),
-                                        );
-                                    }
-                                    for line in
-                                        entry.notes.lines().filter(|line| !line.trim().is_empty())
-                                    {
-                                        ui.label(RichText::new(line).color(MUTED).size(14.0));
-                                    }
-                                }
-                            });
+                        if !update.history_complete {
+                            ui.label(
+                                RichText::new("Earlier release notes aren’t available.")
+                                    .color(MUTED),
+                            );
+                            ui.add_space(8.0);
+                        }
+                        let fallback = updates::ChangelogEntry {
+                            version: update.version.clone(),
+                            notes: update.notes.clone(),
+                        };
+                        let entries = if update.changelog.is_empty() {
+                            std::slice::from_ref(&fallback)
+                        } else {
+                            &update.changelog
+                        };
+                        for (index, entry) in entries.iter().enumerate() {
+                            if index > 0 {
+                                ui.add_space(6.0);
+                                ui.separator();
+                                ui.add_space(6.0);
+                            }
+                            ui.label(bold(&entry.version).size(14.0));
+                            if entry.notes.trim().is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "Release notes aren’t available for this version.",
+                                    )
+                                    .color(MUTED),
+                                );
+                            }
+                            for line in entry.notes.lines().filter(|line| !line.trim().is_empty()) {
+                                ui.label(RichText::new(line).color(MUTED).size(14.0));
+                            }
+                        }
                     });
                 ui.separator();
                 ui.add_space(12.0);
@@ -8046,7 +8058,11 @@ impl CaperApp {
                         } else if primary_button(ui, "Download", true).clicked() {
                             context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
                         }
-                        if secondary_button(ui, "Later", true).clicked() {
+                        let later = secondary_button(ui, "Later", true);
+                        if opening {
+                            later.request_focus();
+                        }
+                        if later.clicked() {
                             self.updates.dismiss();
                         }
                     });
@@ -8059,6 +8075,20 @@ impl CaperApp {
                     );
                 }
             });
+        if modal.should_close() {
+            self.updates.dismiss();
+        }
+        // Even the dismissal frame belongs to the review, not the composer.
+        context.input_mut(|input| {
+            input.raw.dropped_files.clear();
+            input.raw.hovered_files.clear();
+            input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Key { .. }
+                )
+            });
+        });
     }
 
     /// A signed-in account without a profile finishes it on its own page, as on web.
@@ -11377,45 +11407,6 @@ impl CaperApp {
     }
 
     fn account_bar(&mut self, ui: &mut egui::Ui) {
-        if let Some(update) = self.updates.known_available() {
-            let label = if update.can_apply {
-                "Restart to update"
-            } else {
-                "Download update"
-            };
-            let (rect, response) = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-            });
-            if response.hovered() || response.has_focus() {
-                ui.painter().rect_filled(rect, 8.0, COMPOSER);
-            }
-            let icon = egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 18.0, rect.center().y),
-                egui::vec2(18.0, 18.0),
-            );
-            let glow = ui.painter().add(egui::Shape::Noop);
-            join_glow(ui, glow, icon, 8.0);
-            paint_icon(ui.painter(), icon, NavIcon::Sparkles, TERRACOTTA_BRIGHT);
-            ui.painter().text(
-                egui::pos2(rect.left() + 36.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
-                TEXT,
-            );
-            if response
-                .on_hover_text(format!(
-                    "Caper {} is available. Review the update.",
-                    update.version
-                ))
-                .clicked()
-            {
-                self.updates.show_available();
-            }
-            ui.add_space(8.0);
-        }
         if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
             &self.voice.state.phase
         {
@@ -11514,6 +11505,11 @@ impl CaperApp {
             ui.add_space(8.0);
             self.voice_error_row(ui, error);
             ui.add_space(8.0);
+        }
+        if let Some(update) = self.updates.known_available()
+            && update_art::dock(ui, &update.version, self.updates.available().is_some()).clicked()
+        {
+            self.updates.show_available();
         }
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 42.0), egui::Sense::hover());
@@ -20296,7 +20292,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
         NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
         NavIcon::MessageSquare => egui::include_image!("../resources/icons/message-square.svg"),
-        NavIcon::Sparkles => egui::include_image!("../resources/icons/sparkles.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
@@ -24291,12 +24286,104 @@ mod tests {
     }
 
     #[test]
+    fn update_review_isolates_composer_and_dismisses_with_escape_or_backdrop() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update"),
+        );
+        app.updates.dismiss();
+        app.draft = "Keep this draft".into();
+        render(&mut app, &context, vec![]);
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+        app.updates.show_available();
+        let frame = |app: &mut CaperApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(960.0, 540.0),
+                    )),
+                    events,
+                    dropped_files: vec![egui::DroppedFile {
+                        path: Some(std::path::PathBuf::from("/tmp/update-review-drop.txt")),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                |context| {
+                    app.update_notice(context);
+                    app.page(context);
+                },
+            )
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        frame(
+            &mut app,
+            vec![
+                egui::Event::Text("must not type".into()),
+                key(egui::Key::Enter),
+            ],
+        );
+        assert_eq!(app.draft, "Keep this draft");
+        assert!(app.pending.is_none());
+        assert!(app.draft_files.is_empty(), "review must not accept drops");
+        assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
+        frame(&mut app, vec![]);
+        app.updates.show_available();
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        assert!(app.updates.available().is_some());
+        frame(
+            &mut app,
+            vec![
+                key(egui::Key::Escape),
+                egui::Event::Text("nor on dismissal".into()),
+            ],
+        );
+        assert!(app.updates.available().is_none());
+        assert!(app.updates.known_available().is_some());
+        assert_eq!(app.draft, "Keep this draft");
+        frame(&mut app, vec![]);
+        app.updates.show_available();
+        for _ in 0..4 {
+            frame(&mut app, vec![]);
+        }
+        let pos = egui::pos2(2.0, 2.0);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.updates.available().is_none());
+        assert_eq!(app.draft, "Keep this draft");
+    }
+
+    #[test]
     fn account_update_action_survives_later_and_reopens_review_without_installing() {
-        for (fixture, label) in [
-            ("parity-update", "Restart to update"),
-            ("parity-update-download", "Download update"),
-        ] {
+        for fixture in ["parity-update", "parity-update-download"] {
             let context = egui::Context::default();
+            context.enable_accesskit();
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -24305,7 +24392,50 @@ mod tests {
             app.updates.dismiss();
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
-            let pos = text_center(&output, label);
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Review Caper update"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            // The attention animation must not move its click target or resize
+            // the sidebar when Caper walks away and hides for its long rest.
+            for time in [1.5, 6.5, 15.0] {
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                );
+                let current = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some("Review Caper update"))
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap();
+                assert_eq!(current, bounds, "mascot target moved at {time}s");
+            }
+            let pos = egui::pos2(
+                (bounds.x0 + bounds.x1) as f32 / 2.0,
+                (bounds.y0 + bounds.y1) as f32 / 2.0,
+            );
             let output = click_at(&mut app, &context, pos);
             assert_eq!(app.updates.available().unwrap().version, "0.1.42");
             assert!(app.updates.error.is_none());
@@ -24461,29 +24591,14 @@ mod tests {
                     visible(&initial, "Later"),
                     "{fixture} {size:?}: Later clipped"
                 );
-                assert!(!visible(&initial, "0.1.42"), "notes start collapsed");
+                assert!(visible(&initial, "0.1.42"), "notes start expanded");
                 if fixture != "parity-update-download" {
                     assert!(visible(&initial, "Download installer instead"));
                 }
                 if fixture == "parity-update-error" {
                     assert!(visible(&initial, "The last update didn’t finish"));
                 }
-                let disclosure = text_position(&initial, "What’s new");
-                for pressed in [true, false] {
-                    frame(vec![
-                        egui::Event::PointerMoved(disclosure),
-                        egui::Event::PointerButton {
-                            pos: disclosure,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ]);
-                }
-                for _ in 0..60 {
-                    frame(vec![]);
-                }
-                let expanded = frame(vec![]);
+                let expanded = initial;
                 assert!(
                     visible(&expanded, action),
                     "expanded action clipped: {fixture} {size:?}"

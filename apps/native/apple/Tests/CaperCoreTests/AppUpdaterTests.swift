@@ -1,4 +1,5 @@
 import AppKit
+import CaperCore
 import XCTest
 
 final class AppUpdaterTests: XCTestCase {
@@ -66,49 +67,41 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     @MainActor
-    func testLongNotesScrollWithinTheSpaceLeftByAlertActions() throws {
-        let size = AppUpdater.notesSize(screen: NSSize(width: 800, height: 600), chromeHeight: 260)
-        XCTAssertEqual(size, NSSize(width: 420, height: 260))
-        XCTAssertEqual(AppUpdater.notesSize(screen: NSSize(width: 1920, height: 1080), chromeHeight: 260).height, 340)
+    func testReviewKeepsAllNotesNewestFirstAndPreservesErrorsAndHistoryGap() {
         let update = AppUpdater.Update(version: "0.1.42", notes: "Fallback",
-            changelog: [AppUpdater.ChangelogEntry(version: "0.1.42", notes: String(repeating: "• A long change that must wrap across multiple lines at the alert width without changing the scroll range as you read it.\n", count: 100)),
-                        AppUpdater.ChangelogEntry(version: "0.1.39", notes: "Skipped change")],
+            changelog: [AppUpdater.ChangelogEntry(version: "0.1.42", notes: String(repeating: "A long change\n", count: 100)),
+                        AppUpdater.ChangelogEntry(version: "0.1.9", notes: "Skipped change")],
             historyComplete: false, canApply: true, lastError: "Access denied")
-        let scroll = AppUpdater.notesView(update, size: size)
-        let text = try XCTUnwrap(scroll.documentView as? NSTextView)
-        XCTAssertEqual(scroll.frame.size, size)
-        XCTAssertTrue(scroll.hasVerticalScroller)
-        XCTAssertGreaterThan(text.frame.height, scroll.contentSize.height)
-        XCTAssertTrue(text.string.contains("0.1.39\nSkipped change"))
-        XCTAssertTrue(text.string.contains("Earlier release notes aren’t available"))
-        XCTAssertTrue(text.string.contains("Access denied"))
-        XCTAssertFalse(text.string.contains("Fallback"))
-        XCTAssertTrue(text.isSelectable)
-        XCTAssertFalse(text.isEditable)
-        XCTAssertFalse(scroll.hasHorizontalScroller)
-        XCTAssertEqual(text.frame.width, scroll.contentSize.width, accuracy: 0.5)
+        XCTAssertEqual(update.entries.map(\.version), ["0.1.42", "0.1.9"])
+        XCTAssertEqual(update.entries.first?.notes, String(repeating: "A long change\n", count: 100))
+        XCTAssertEqual(update.entries.last?.notes, "Skipped change")
+        XCTAssertTrue(update.historyNotice.contains("Earlier release notes aren’t available"))
+        XCTAssertEqual(update.lastError, "Access denied")
+    }
 
-        let documentSize = text.frame.size
-        let end = (text.string as NSString).range(of: "Skipped change")
-        XCTAssertNotEqual(end.location, NSNotFound)
-        text.scrollRangeToVisible(end)
-        let layout = try XCTUnwrap(text.layoutManager)
-        let container = try XCTUnwrap(text.textContainer)
-        let glyphs = layout.glyphRange(forCharacterRange: end, actualCharacterRange: nil)
-        let endRect = layout.boundingRect(forGlyphRange: glyphs, in: container)
-            .offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
-        let visible = scroll.contentView.documentVisibleRect
-        XCTAssertGreaterThanOrEqual(visible.maxY, endRect.maxY - 1, "The last release must be reachable")
-        XCTAssertLessThanOrEqual(visible.minY, endRect.minY)
-
-        let lastOffset = documentSize.height - scroll.contentSize.height
-        for offset in [CGFloat.zero, lastOffset / 2, lastOffset, CGFloat.zero] {
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: offset))
-            scroll.reflectScrolledClipView(scroll.contentView)
-            scroll.layoutSubtreeIfNeeded()
-            XCTAssertEqual(text.frame.width, documentSize.width, accuracy: 0.5, "Scrolling must not rewrap the document")
-            XCTAssertEqual(text.frame.height, documentSize.height, accuracy: 0.5, "Scrolling must not change the document height")
-            XCTAssertEqual(scroll.frame.size, size, "Update controls keep their reserved space")
-        }
+    @MainActor
+    func testAutomaticResultsAdvertiseQuietlyAndLaterDoesNotLoseReview() throws {
+        let updater = AppUpdater(environment: ["CAPER_TEST_MODE": "parity"])
+        updater.finish(.success(Data(#"{"update":true,"version":"0.1.42","notes":"Changes","can_apply":false}"#.utf8)))
+        XCTAssertNil(updater.offeredUpdate, "Automatic checks never take focus")
+        XCTAssertFalse(updater.checking)
+        let review = try XCTUnwrap(updater.controls.review)
+        review()
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.42")
+        XCTAssertEqual(updater.offeredUpdate?.entries.first?.notes, "Changes")
+        XCTAssertFalse(updater.controls.canApply)
+        updater.applyReviewedUpdate()
+        XCTAssertNotNil(updater.offeredUpdate, "Installer-only copies cannot apply")
+        updater.dismissReview()
+        XCTAssertNil(updater.offeredUpdate)
+        review()
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.42", "Later preserves the available update")
+        updater.finish(.success(Data(#"{"update":true,"version":"0.1.43","notes":"New changes"}"#.utf8)))
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.43", "An open review follows refreshed releases")
+        updater.finish(.failure(NSError(domain: "test", code: 1)))
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.43", "A failed automatic check preserves review")
+        updater.finish(.success(Data(#"{"update":false}"#.utf8)))
+        XCTAssertNil(updater.offeredUpdate)
+        XCTAssertNil(updater.controls.review)
     }
 }

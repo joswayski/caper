@@ -59,7 +59,6 @@ const names = {
   settings: "Settings",
   smile: "Smile",
   "smile-plus": "SmilePlus",
-  sparkles: "Sparkles",
   speech: "Speech",
   users: "Users",
   "volume-2": "Volume2",
@@ -83,6 +82,23 @@ for (const [file, name] of Object.entries(names)) {
         images: [{ filename: `${file}.svg`, idiom: "universal" }],
         info,
         properties: { "preserves-vector-representation": true, "template-rendering-intent": "template" },
+      }),
+    ],
+  );
+}
+// Custom update mascot layers are original artwork, not Lucide icons. Rust
+// includes the canonical SVGs directly; Apple needs asset-catalog exports.
+for (const part of ["body", "wave", "feet"]) {
+  const svg = readFileSync(`assets/update-caper/${part}.svg`, "utf8");
+  const image = resolve(`apps/native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-update-${part}.imageset`);
+  files.push(
+    [`${image}/${part}.svg`, svg],
+    [
+      `${image}/Contents.json`,
+      json({
+        images: [{ filename: `${part}.svg`, idiom: "universal" }],
+        info,
+        properties: { "preserves-vector-representation": true, "template-rendering-intent": "original" },
       }),
     ],
   );

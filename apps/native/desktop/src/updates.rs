@@ -70,6 +70,8 @@ pub enum Status {
 struct State {
     available: Option<Available>,
     status: Status,
+    reviewing: bool,
+    show_after_check: bool,
 }
 
 impl State {
@@ -81,10 +83,12 @@ impl State {
                 } else {
                     Status::UpToDate
                 };
+                self.reviewing = found.is_some() && (self.reviewing || self.show_after_check);
                 self.available = found;
             }
             Err(error) => self.status = Status::Failed(error),
         }
+        self.show_after_check = false;
     }
 }
 
@@ -92,7 +96,6 @@ pub struct Updates {
     install: Option<Install>,
     state: Arc<Mutex<State>>,
     requests: Option<mpsc::Sender<()>>,
-    dismissed: Option<String>,
     pub error: Option<String>,
 }
 
@@ -140,7 +143,6 @@ impl Updates {
             install,
             state,
             requests,
-            dismissed: None,
             error: None,
         }
     }
@@ -152,9 +154,10 @@ impl Updates {
             state: Arc::new(Mutex::new(State {
                 available: Some(available),
                 status: Status::Available,
+                reviewing: true,
+                show_after_check: false,
             })),
             requests: None,
-            dismissed: None,
             error: None,
         }
     }
@@ -167,8 +170,8 @@ impl Updates {
     }
 
     pub fn available(&self) -> Option<Available> {
-        self.known_available()
-            .filter(|update| self.dismissed.as_ref() != Some(&update.version))
+        let state = self.state.lock().unwrap();
+        state.available.clone().filter(|_| state.reviewing)
     }
 
     /// Later hides the notice, not the account bar's update action.
@@ -177,11 +180,11 @@ impl Updates {
     }
 
     pub fn show_available(&mut self) {
-        self.dismissed = None;
+        self.state.lock().unwrap().reviewing = true;
     }
 
     pub fn dismiss(&mut self) {
-        self.dismissed = self.available().map(|update| update.version);
+        self.state.lock().unwrap().reviewing = false;
     }
 
     pub fn can_check(&self) -> bool {
@@ -197,9 +200,9 @@ impl Updates {
         let Some(requests) = &self.requests else {
             return;
         };
-        self.dismissed = None;
         self.error = None;
         let mut state = self.state.lock().unwrap();
+        state.show_after_check = true;
         if state.status != Status::Checking {
             state.status = match requests.send(()) {
                 Ok(()) => Status::Checking,
@@ -348,13 +351,22 @@ mod tests {
         assert!(updates.available().is_none());
 
         updates.check_now();
-        assert_eq!(updates.available(), Some(release("0.1.18")));
+        assert!(
+            updates.available().is_none(),
+            "manual review waits for completion"
+        );
         assert_eq!(updates.status(), Status::Checking);
         assert!(updates.error.is_none());
         receiver.try_recv().unwrap();
         updates.check_now();
         assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
 
+        updates
+            .state
+            .lock()
+            .unwrap()
+            .finish(Ok(Some(release("0.1.19"))));
+        assert_eq!(updates.available(), Some(release("0.1.19")));
         updates.state.lock().unwrap().finish(Ok(None));
         assert_eq!(updates.status(), Status::UpToDate);
         assert!(updates.available().is_none());
@@ -368,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn later_hides_only_that_release_and_a_failed_check_keeps_known_updates() {
+    fn automatic_checks_advertise_quietly_and_failed_checks_keep_known_updates() {
         let mut updates = Updates::preview(release("0.1.18"));
         updates.dismiss();
         assert_eq!(updates.known_available(), Some(release("0.1.18")));
@@ -386,9 +398,11 @@ mod tests {
             .lock()
             .unwrap()
             .finish(Ok(Some(release("0.1.19"))));
-        assert_eq!(updates.available(), Some(release("0.1.19")));
+        assert!(updates.available().is_none());
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
         updates.state.lock().unwrap().finish(Err("Offline".into()));
-        assert_eq!(updates.available(), Some(release("0.1.19")));
+        assert!(updates.available().is_none());
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
         assert_eq!(updates.status(), Status::Failed("Offline".into()));
     }
 
