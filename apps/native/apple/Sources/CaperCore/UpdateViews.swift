@@ -125,13 +125,13 @@ private struct UpdateCharacter: View {
     var bounce: Double = 0
     var body: some View {
         ZStack {
-            Image("caper-update-feet", bundle: .module).renderingMode(.original).resizable()
+            Image("caper-update-feet", bundle: caperResourceBundle).renderingMode(.original).resizable()
                 .rotationEffect(.radians(bounce * 0.06), anchor: UnitPoint(x: 0.5, y: 0.84))
                 .offset(y: bounce)
-            Image("caper-update-wave", bundle: .module).renderingMode(.original).resizable()
+            Image("caper-update-wave", bundle: caperResourceBundle).renderingMode(.original).resizable()
                 .rotationEffect(.radians(wave), anchor: UnitPoint(x: 0.8, y: 0.66))
                 .offset(y: bounce)
-            Image("caper-update-body", bundle: .module).renderingMode(.original).resizable()
+            Image("caper-update-body", bundle: caperResourceBundle).renderingMode(.original).resizable()
                 .offset(y: bounce)
         }.aspectRatio(1, contentMode: .fit)
     }
