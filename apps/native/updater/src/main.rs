@@ -713,6 +713,12 @@ fn log(message: &str) {
 mod tests {
     use super::*;
 
+    // A parallel fork can inherit a fixture's write descriptor until exec,
+    // causing ETXTBSY even after fs::copy closes it in this process. Keep all
+    // child-process tests separate from each other's write-then-exec windows.
+    // https://github.com/rust-lang/rust/issues/114554
+    static CHILD_PROCESS_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn serve_metadata(
         responses: Vec<(&'static str, u16, Vec<u8>)>,
     ) -> (String, thread::JoinHandle<()>) {
@@ -925,6 +931,7 @@ mod tests {
 
     #[test]
     fn relocated_updater_runs_from_its_temporary_folder() {
+        let _child_process_test = CHILD_PROCESS_TEST.lock().unwrap();
         const REPORT: &str = "CAPER_TEST_RELOCATION_REPORT";
         const INSTALL: &str = "CAPER_TEST_RELOCATION_INSTALL";
         let args = [
@@ -1038,6 +1045,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn replaced_app_reopens_from_its_install_without_the_old_process_context() {
+        let _child_process_test = CHILD_PROCESS_TEST.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let install = root.path().join("Caper with spaces");
         fs::create_dir(&install).unwrap();
@@ -1092,6 +1100,7 @@ mv launch-report launch-report.ready
     #[cfg(target_os = "macos")]
     #[test]
     fn rejected_mac_launch_is_reported_as_an_error() {
+        let _child_process_test = CHILD_PROCESS_TEST.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("Missing Caper.app");
         assert!(relaunch(Layout::MacBundle, &missing).is_err());
@@ -1127,6 +1136,7 @@ mv launch-report launch-report.ready
 
     #[test]
     fn a_process_that_exited_is_not_waited_on() {
+        let _child_process_test = CHILD_PROCESS_TEST.lock().unwrap();
         let mut child = Command::new(if cfg!(windows) { "cmd" } else { "true" })
             .args(if cfg!(windows) {
                 &["/C", "exit"][..]

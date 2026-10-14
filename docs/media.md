@@ -1525,10 +1525,20 @@ passed, 12 existing ignored), as do formatting and Clippy. The rebuilt Linux
 client against the loopback chat/media fixture changes 9,308 GIF pixels between
 captures while the adjacent photo changes zero; playback resumes after switching
 channels and back. This is local fixture evidence, not a production-upload or
-Windows-device check. The published Linux package
-could not run in this orb because it requires glibc 2.39; the local source build
-was used instead. No web, Android, upload, API or schema change is required for
-this follow-up; only Apple and Rust desktop need the corrected native release.
+Windows-device check. The published Linux package could not run in this orb
+because it requires glibc 2.39; the local source build was used instead.
+
+The real Mac attachment renderer now animates the same 60-frame GIF: 28/28
+consecutive captures changed initially and 29/29 after remove/remount. The
+29-frame and small-GIF controls keep playing, the PNG stays unchanged, and
+Reduce Motion holds all three GIFs on frame 1 before and after reload. ImageIO
+retains 60 frames at 500×278 (33,360,000 bytes), trading some Retina sharpness
+for complete playback within 32 MiB. Focused GIF XCTest passes 3/3 on the final
+source; the full CaperCore suite passes 365/365 on identical attachment source.
+macOS and iOS-simulator Xcode builds pass. This is a local renderer harness,
+not an installed-release or physical-iPhone check; viewer open/close is not yet
+verified. No web, Android, upload, API or schema change is required for this
+follow-up; only Apple and Rust desktop need the corrected native release.
 
 Deployment order:
 
