@@ -1,7 +1,7 @@
 use eframe::egui;
 use serde::Deserialize;
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +75,44 @@ pub fn picker_rank(category: &str) -> usize {
 pub fn find(value: &str) -> Option<&'static Entry> {
     let id = unicode_id(value);
     catalog().iter().find(|entry| entry.id == id)
+}
+
+/// The catalog by Twemoji id, and by its emoji without U+FE0F, for text.
+fn index() -> &'static HashMap<String, usize> {
+    static INDEX: OnceLock<HashMap<String, usize>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut index = HashMap::new();
+        for (position, entry) in catalog().iter().enumerate() {
+            index.entry(entry.id.clone()).or_insert(position);
+            index
+                .entry(entry.emoji.replace('\u{fe0f}', ""))
+                .or_insert(position);
+        }
+        index
+    })
+}
+
+/// Byte ranges of the emoji graphemes in message text, with their artwork,
+/// so text can draw them in color like the other clients. Plain ASCII
+/// (digits, `#`, `*`) is never an emoji without its keycap or variation mark.
+pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
+    if text.is_ascii() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (start, grapheme) in text.grapheme_indices(true) {
+        if grapheme.is_ascii() {
+            continue;
+        }
+        let entry = index()
+            .get(&unicode_id(grapheme))
+            .or_else(|| index().get(&grapheme.replace('\u{fe0f}', "")))
+            .map(|&position| &catalog()[position]);
+        if let Some(entry) = entry {
+            found.push((start..start + grapheme.len(), entry));
+        }
+    }
+    found
 }
 
 /// The catalog's dash-separated name (`thumbs-up`) for a reaction emoji.
@@ -270,47 +308,72 @@ pub fn unicode_id(value: &str) -> String {
     }
 }
 
-#[derive(Default)]
-pub struct Textures(BTreeMap<usize, egui::TextureHandle>);
+/// The bundled sheets, uploaded once and shared: reactions, the picker and
+/// message text (through `shared`) draw from the same textures.
+#[derive(Default, Clone)]
+pub struct Textures(Arc<Mutex<BTreeMap<usize, egui::TextureHandle>>>);
 
 impl Textures {
-    fn texture(&mut self, context: &egui::Context, page: usize) -> &egui::TextureHandle {
-        self.0.entry(page).or_insert_with(|| {
-            let decoded = image::load_from_memory(sheet(page))
-                .expect("embedded emoji sheet is valid")
-                .to_rgba8();
-            let dimensions = [decoded.width() as usize, decoded.height() as usize];
-            context.load_texture(
-                format!("emoji-sheet-{page}"),
-                egui::ColorImage::from_rgba_unmultiplied(dimensions, decoded.as_raw()),
-                egui::TextureOptions::LINEAR,
-            )
-        })
+    /// The context's shared sheets, so free functions drawing text reuse them.
+    pub fn shared(context: &egui::Context) -> Self {
+        let id = egui::Id::new("emoji-textures");
+        context.data_mut(|data| data.get_temp_mut_or_default::<Self>(id).clone())
+    }
+
+    fn texture(&self, context: &egui::Context, page: usize) -> egui::TextureHandle {
+        let mut sheets = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        sheets
+            .entry(page)
+            .or_insert_with(|| {
+                let decoded = image::load_from_memory(sheet(page))
+                    .expect("embedded emoji sheet is valid")
+                    .to_rgba8();
+                let dimensions = [decoded.width() as usize, decoded.height() as usize];
+                context.load_texture(
+                    format!("emoji-sheet-{page}"),
+                    egui::ColorImage::from_rgba_unmultiplied(dimensions, decoded.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                )
+            })
+            .clone()
     }
 
     /// Decode/upload only the opening window's bundled sheets. Repeated load,
     /// hover and focus intent reuses the same textures, without network work.
-    pub fn preload(&mut self, context: &egui::Context, category: &str) {
+    pub fn preload(&self, context: &egui::Context, category: &str) {
         let mut entries: Vec<_> = catalog()
             .iter()
             .filter(|entry| entry.selectable && entry.category == category)
             .collect();
         entries.sort_by_key(|entry| picker_order(entry));
         for entry in entries.into_iter().take(128) {
-            self.texture(context, entry.sheet);
+            let _ = self.texture(context, entry.sheet);
         }
     }
 
-    pub fn image(&mut self, ui: &mut egui::Ui, entry: &Entry, size: f32) -> egui::Image<'static> {
+    pub fn image(&self, ui: &egui::Ui, entry: &Entry, size: f32) -> egui::Image<'static> {
         let texture = self.texture(ui.ctx(), entry.sheet);
-        let uv = egui::Rect::from_min_max(
+        let uv = Self::uv(entry);
+        egui::Image::new((texture.id(), egui::vec2(size, size))).uv(uv)
+    }
+
+    /// Paints `entry` in color over `rect`, as message text does.
+    pub fn paint(&self, painter: &egui::Painter, entry: &Entry, rect: egui::Rect) {
+        let texture = self.texture(painter.ctx(), entry.sheet);
+        painter.image(texture.id(), rect, Self::uv(entry), egui::Color32::WHITE);
+    }
+
+    fn uv(entry: &Entry) -> egui::Rect {
+        egui::Rect::from_min_max(
             egui::pos2(entry.x as f32 / 1024.0, entry.y as f32 / 1024.0),
             egui::pos2(
                 (entry.x + 64) as f32 / 1024.0,
                 (entry.y + 64) as f32 / 1024.0,
             ),
-        );
-        egui::Image::new((texture.id(), egui::vec2(size, size))).uv(uv)
+        )
     }
 }
 
@@ -338,6 +401,27 @@ fn sheet(page: usize) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_finds_emoji_graphemes_with_and_without_variation_marks() {
+        let text = "fixed ☕ then 🙌🏽 and 👍 and ☺️ at 3 # 1";
+        let found: Vec<_> = inline(text)
+            .into_iter()
+            .map(|(range, entry)| (&text[range], entry.id.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("☕", "2615"),
+                ("🙌🏽", "1f64c-1f3fd"),
+                ("👍", "1f44d"),
+                ("☺️", "263a"),
+            ]
+        );
+        // Plain digits and punctuation are text, not keycaps.
+        assert!(inline("Room 3 # 1 * 2").is_empty());
+        assert!(inline("café — naïve").is_empty());
+    }
 
     #[test]
     fn picker_order_starts_with_smileys_and_ends_with_flags() {

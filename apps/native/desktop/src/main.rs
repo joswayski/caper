@@ -1242,7 +1242,8 @@ impl CaperApp {
         );
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
-        let mut reaction_textures = emoji::Textures::default();
+        // Shared with message text, which draws inline emoji from the same sheets.
+        let reaction_textures = emoji::Textures::shared(context);
         reaction_textures.preload(context, emoji::CATEGORIES[0].0);
         let mut app = Self {
             daily_icon: None,
@@ -21396,6 +21397,10 @@ fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
     runs
 }
 
+/// Inline emoji are drawn a little larger than the text around them, as the
+/// color emoji fonts other clients use are.
+const INLINE_EMOJI_SCALE: f32 = 1.2;
+
 /// Message text in the 14px message style; see `rich_text`.
 fn message_body(
     ui: &mut egui::Ui,
@@ -21446,7 +21451,8 @@ fn rich_text(
     let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
     let runs = message_runs(text, &ranges);
     let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
-    if pills.is_empty() && !linked && !edited {
+    let emojis = emoji::inline(text);
+    if pills.is_empty() && !linked && !edited && emojis.is_empty() {
         ui.label(RichText::new(text).font(plain.font_id).color(plain.color));
         return Body::default();
     }
@@ -21482,8 +21488,41 @@ fn rich_text(
             Run::Pill(range, index) => (range, pill(hot[*index]), true),
         };
         // Pills keep 2px on either side for their background.
-        let gap = if is_pill || after_pill { 2.0 } else { 0.0 };
-        job.append(&text[range.clone()], gap, format);
+        let mut gap = if is_pill || after_pill { 2.0 } else { 0.0 };
+        // Emoji are laid out as invisible glyphs and drawn in color below.
+        let mut start = range.start;
+        for (emoji, _) in emojis
+            .iter()
+            .filter(|(emoji, _)| emoji.start >= range.start && emoji.end <= range.end)
+        {
+            if start < emoji.start {
+                job.append(&text[start..emoji.start], gap, format.clone());
+                gap = 0.0;
+            }
+            let hidden = |size: f32| egui::TextFormat {
+                font_id: egui::FontId::new(size, format.font_id.family.clone()),
+                color: Color32::TRANSPARENT,
+                valign: egui::Align::Center,
+                ..format.clone()
+            };
+            // The first code point holds the emoji's place; the rest of a
+            // sequence (skin tones, joiners) takes no room, so the text stays
+            // the original for copying while the space fits one emoji.
+            let first = emoji.start + text[emoji.clone()].chars().next().map_or(0, char::len_utf8);
+            job.append(
+                &text[emoji.start..first],
+                gap,
+                hidden(INLINE_EMOJI_SCALE * format.font_id.size),
+            );
+            if first < emoji.end {
+                job.append(&text[first..emoji.end], 0.0, hidden(0.01));
+            }
+            gap = 0.0;
+            start = emoji.end;
+        }
+        if start < range.end {
+            job.append(&text[start..range.end], gap, format);
+        }
         after_pill = is_pill;
     }
     let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
@@ -21503,6 +21542,21 @@ fn rich_text(
     let characters = |range: &std::ops::Range<usize>| {
         text[..range.start].chars().count()..text[..range.end].chars().count()
     };
+    if !emojis.is_empty() && ui.is_rect_visible(response.rect) {
+        let textures = emoji::Textures::shared(ui.ctx());
+        let size = INLINE_EMOJI_SCALE * plain.font_id.size;
+        for (range, entry) in &emojis {
+            let first = range.start + text[range.clone()].chars().next().map_or(0, char::len_utf8);
+            if let Some(glyph) = pill_rects(&galley, characters(&(range.start..first))).first() {
+                let center = glyph.translate(position.to_vec2()).center();
+                textures.paint(
+                    ui.painter(),
+                    entry,
+                    egui::Rect::from_center_size(center, egui::vec2(size, size)),
+                );
+            }
+        }
+    }
     let mut body = Body::default();
     for (((range, entry), id), was_hot) in pills.iter().zip(&ids).zip(&hot) {
         if entry.kind != "user" {
