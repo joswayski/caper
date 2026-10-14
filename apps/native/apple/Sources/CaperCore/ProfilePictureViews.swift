@@ -2,24 +2,87 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A custom profile picture or space icon filling a `size`-point square
-/// (aspect-fill, centred; callers clip it to their circle or tile). Shows
-/// `fallback` (the saved mascot, initials or the space initial) while the
-/// picture loads and whenever it fails, never a broken image. GIFs play,
-/// other people's included; Reduce Motion shows their first frame.
+/// Loads a custom profile picture or space icon at display size and hands
+/// `content` the decoded frames: nil while it loads, after a failure, or
+/// with no picture (show the saved mascot, initials or space initial then,
+/// never a broken image). Decoded frames are shared through the cache, so a
+/// picture another row already decoded shows at once.
+struct PictureLoading<Content: View>: View {
+    let picture: CaperPicture?
+    let size: CGFloat
+    private let content: (ProfilePictureFrames?) -> Content
+    @Environment(\.displayScale) private var displayScale
+    /// Holds the frames on screen even if the cache evicts them.
+    @State private var loaded: Loaded?
+
+    private struct Loaded { let key: String; let frames: ProfilePictureFrames }
+
+    init(picture: CaperPicture?, size: CGFloat, @ViewBuilder content: @escaping (ProfilePictureFrames?) -> Content) {
+        self.picture = picture
+        self.size = size
+        self.content = content
+    }
+
+    var body: some View {
+        // Read on the main actor; the task below uses these copies.
+        let picture = self.picture
+        let pixelSize = ProfilePicturePolicy.displayPixelSize(points: size, scale: displayScale)
+        let key = picture.map { ProfilePictureLoader.key(asset: $0.asset, pixelSize: pixelSize) }
+        let frames = key.flatMap { key in loaded?.key == key ? loaded?.frames : ProfilePictureLoader.shared.cached(key) }
+        content(frames.flatMap { $0.images.isEmpty ? nil : $0 })
+            // A new asset, decode size or signature (after a failure) loads again.
+            .task(id: picture.map { "\(pixelSize):\($0.asset):\($0.url.absoluteString)" }) {
+                guard let picture, let key else { if loaded != nil { loaded = nil }; return }
+                if loaded?.key == key { return }
+                guard let frames = await ProfilePictureLoader.shared.load(asset: picture.asset, url: picture.url, pixelSize: pixelSize),
+                      !Task.isCancelled else { return }
+                loaded = Loaded(key: key, frames: frames)
+            }
+            // Frames stay cached (bounded); the view lets go of them offscreen.
+            .onDisappear { loaded = nil }
+    }
+}
+
+/// Decoded picture frames aspect-filled in a `size`-point square over a
+/// neutral backdrop (never the mascot through transparent pixels). GIFs
+/// play, other people's included; Reduce Motion shows the first frame.
+struct PictureFrames: View {
+    let frames: ProfilePictureFrames
+    let size: CGFloat
+    /// A muted space's icon steps back.
+    var pictureOpacity: Double = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var started = Date()
+
+    var body: some View {
+        ZStack {
+            CaperTheme.raised
+            Group {
+                if let first = frames.images.first, reduceMotion || !frames.animated {
+                    Image(decorative: first, scale: 1).resizable().scaledToFill()
+                } else if frames.animated {
+                    TimelineView(.animation(minimumInterval: 0.02)) { timeline in
+                        let index = MediaViewerPolicy.frameIndex(at: timeline.date.timeIntervalSince(started), durations: frames.durations)
+                        Image(decorative: frames.images[index], scale: 1).resizable().scaledToFill()
+                    }
+                }
+            }
+            .frame(width: size, height: size)
+            .opacity(pictureOpacity)
+        }
+        .frame(width: size, height: size)
+        .clipped()
+    }
+}
+
+/// A picture filling a `size`-point square, or `fallback` while it loads and
+/// whenever it fails. Callers clip it to their shape (space tiles).
 struct PictureImage<Fallback: View>: View {
     let picture: CaperPicture?
     let size: CGFloat
     /// Applied to a loaded picture only (a muted space's tile).
     var pictureOpacity: Double = 1
     private let fallback: Fallback
-    @Environment(\.displayScale) private var displayScale
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Holds the frames on screen even if the cache evicts them.
-    @State private var loaded: Loaded?
-    @State private var started = Date()
-
-    private struct Loaded { let key: String; let frames: ProfilePictureFrames }
 
     init(picture: CaperPicture?, size: CGFloat, pictureOpacity: Double = 1, @ViewBuilder fallback: () -> Fallback) {
         self.picture = picture
@@ -28,51 +91,16 @@ struct PictureImage<Fallback: View>: View {
         self.fallback = fallback()
     }
 
-    private var pixelSize: Int { ProfilePicturePolicy.displayPixelSize(points: size, scale: displayScale) }
-
     var body: some View {
-        // Read on the main actor; the task below uses these copies.
-        let picture = self.picture
-        let pixelSize = self.pixelSize
-        let key = picture.map { ProfilePictureLoader.key(asset: $0.asset, pixelSize: pixelSize) }
-        // A picture decoded for another row shows at once, without the mascot first.
-        let frames = key.flatMap { key in loaded?.key == key ? loaded?.frames : ProfilePictureLoader.shared.cached(key) }
-        Color.clear
-            .frame(width: size, height: size)
-            .overlay {
-                if let frames, let first = frames.images.first {
-                    ZStack {
-                        // Behind transparent pixels, instead of the mascot.
-                        CaperTheme.raised
-                        Group {
-                            if reduceMotion || !frames.animated {
-                                Image(decorative: first, scale: 1).resizable().scaledToFill()
-                            } else {
-                                TimelineView(.animation(minimumInterval: 0.02)) { timeline in
-                                    let index = MediaViewerPolicy.frameIndex(at: timeline.date.timeIntervalSince(started), durations: frames.durations)
-                                    Image(decorative: frames.images[index], scale: 1).resizable().scaledToFill()
-                                }
-                            }
-                        }
-                        .frame(width: size, height: size)
-                        .opacity(pictureOpacity)
-                    }
-                } else {
-                    fallback
-                }
+        PictureLoading(picture: picture, size: size) { frames in
+            if let frames {
+                PictureFrames(frames: frames, size: size, pictureOpacity: pictureOpacity)
+            } else {
+                fallback.frame(width: size, height: size)
             }
-            .clipped()
-            // A new asset, decode size or signature (after a failure) loads again.
-            .task(id: picture.map { "\(pixelSize):\($0.asset):\($0.url.absoluteString)" }) {
-                guard let picture, let key else { if loaded != nil { loaded = nil }; return }
-                if loaded?.key == key { return }
-                guard let frames = await ProfilePictureLoader.shared.load(asset: picture.asset, url: picture.url, pixelSize: pixelSize),
-                      !Task.isCancelled else { return }
-                loaded = Loaded(key: key, frames: frames)
-                started = Date()
-            }
-            // Frames stay cached (bounded); the view lets go of them offscreen.
-            .onDisappear { loaded = nil }
+        }
+        .frame(width: size, height: size)
+        .clipped()
     }
 }
 

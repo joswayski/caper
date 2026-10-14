@@ -10,14 +10,17 @@ public final class AppModel {
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
+    /// Other people's newest names and pictures from the live `profiles`
+    /// feed, applied over every retained copy of them (your own come from `account`).
+    public private(set) var profileUpdates = ProfileDirectory()
     private var pendingMemberSnapshots: [Member] = []
     public var pendingMembers: [Member] {
-        get { pendingMemberSnapshots.map { $0.withProfile(account) } }
+        get { pendingMemberSnapshots.map { profiled($0) } }
         set { pendingMemberSnapshots = newValue }
     }
     private var detailSnapshot: SpaceDetail?
     public var detail: SpaceDetail? {
-        get { detailSnapshot?.withProfile(account) }
+        get { detailSnapshot.map { profileUpdates.apply($0) }?.withProfile(account) }
         set { detailSnapshot = newValue }
     }
     public var selectedSpaceID: String?
@@ -25,7 +28,8 @@ public final class AppModel {
     private var directMessageSnapshots: [DirectMessageConversation] = []
     public var directMessages: [DirectMessageConversation] {
         get {
-            directMessageSnapshots.map { conversation in
+            directMessageSnapshots.map { snapshot in
+                let conversation = profileUpdates.apply(snapshot)
                 guard let account, conversation.peer.id == account.id, let username = account.username, let name = account.displayName else { return conversation }
                 let picture = account.ownPicture(asset: conversation.peer.avatarAsset, url: conversation.peer.avatarUrl)
                 return DirectMessageConversation(id: conversation.id,
@@ -40,7 +44,11 @@ public final class AppModel {
     public var selectedDirectMessageID: String? { didSet { if selectedDirectMessageID != oldValue { removeShownNotifications() } } }
     /// `GET /api/people` for `@` suggestions in DMs; nil until the first load
     /// succeeds. A refresh keeps the previous list until it completes.
-    public private(set) var people: [Person]?
+    public private(set) var people: [Person]? {
+        get { peopleSnapshot.map { list in list.map { profileUpdates.apply($0) } } }
+        set { peopleSnapshot = newValue }
+    }
+    private var peopleSnapshot: [Person]?
     /// The main "Direct messages" list: accepted and outgoing conversations.
     public var visibleDirectMessages: [DirectMessageConversation] { MessageRequests.visible(directMessages) }
     /// Incoming message requests. They never count as unread or chime.
@@ -59,7 +67,11 @@ public final class AppModel {
         set { messageRequestsOpen = newValue }
     }
     /// Accounts you blocked, newest first, and their ids for every timeline.
-    public private(set) var blockedAccounts: [BlockedAccount] = []
+    public private(set) var blockedAccounts: [BlockedAccount] {
+        get { blockedAccountSnapshots.map { profileUpdates.apply($0) } }
+        set { blockedAccountSnapshots = newValue }
+    }
+    private var blockedAccountSnapshots: [BlockedAccount] = []
     public private(set) var blockedIDs: Set<String> = []
     public private(set) var blocksLoaded = false
     public var blocksError: String?
@@ -91,7 +103,11 @@ public final class AppModel {
     /// A tapped push that arrived before spaces loaded; opened in their place.
     @ObservationIgnored private var pendingNotificationRoute: NotificationRoute?
     /// The feedback team's inbox (`GET /api/feedback`), newest first.
-    public private(set) var feedbackReports: [FeedbackReport] = []
+    public private(set) var feedbackReports: [FeedbackReport] {
+        get { feedbackReportSnapshots.map { profileUpdates.apply($0) } }
+        set { feedbackReportSnapshots = newValue }
+    }
+    private var feedbackReportSnapshots: [FeedbackReport] = []
     /// `?before=` for the next page; nil when everything is listed.
     public private(set) var feedbackCursor: String?
     public private(set) var feedbackLoading = false
@@ -208,6 +224,10 @@ public final class AppModel {
     private var visited: [String: PreparedNavigation] = [:]
     private var visitedOrder: [String] = []
     private var lastChannelBySpace: [String: String] = [:]
+    /// The live `profiles` feed's own socket, open while signed in.
+    @ObservationIgnored private lazy var profileGateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
+    /// Keeps opening and closing the feed in order across sign-in and logout.
+    @ObservationIgnored private var profileFeedTask: Task<Void, Never>?
     private var directMessageRefreshTask: Task<Void, Never>?
     private var foreground = false
     #if os(macOS)
@@ -238,6 +258,7 @@ public final class AppModel {
         }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.viewerProfile = { [weak self] in self?.account }
+        chatModel.profileDirectory = { [weak self] in self?.profileUpdates ?? ProfileDirectory() }
         chatModel.onOpenForward = { [weak self] message in await self?.openForwardedConversation(message) ?? false }
         chatModel.blockAccount = { [weak self] target in try await self?.block(target) }
         chatModel.unblockAccount = { [weak self] accountID in try await self?.unblock(accountID: accountID) }
@@ -371,6 +392,69 @@ public final class AppModel {
         refreshOwnIdentity(updated)
     }
 
+    /// A retained member as currently known: someone's live profile update,
+    /// then your own account for your own row.
+    public func profiled(_ member: Member) -> Member { profileUpdates.apply(member).withProfile(account) }
+
+    /// Opens (or reopens after sign-in) the live `profiles` feed. An older
+    /// gateway without it leaves things as they were: changes then show on
+    /// the next load, as before.
+    private func startProfileUpdates() {
+        let gateway = profileGateway, previous = profileFeedTask
+        let handler: Gateway.Handler = { [weak self] event in self?.receiveProfileFeed(event) }
+        profileFeedTask = Task {
+            await previous?.value
+            await gateway.subscribeProfiles(handler: handler)
+        }
+    }
+
+    private func stopProfileUpdates() {
+        profileUpdates = ProfileDirectory()
+        let gateway = profileGateway, previous = profileFeedTask
+        profileFeedTask = Task {
+            await previous?.value
+            await gateway.unsubscribe(Gateway.profilesSubscriptionID)
+        }
+    }
+
+    func receiveProfileFeed(_ raw: [String: Any]) {
+        guard account != nil, let event = ProfileFeedEvent.parse(raw) else { return }
+        switch event {
+        case .person(let person): applyProfileUpdate(person)
+        case .space(let space): applySpaceUpdate(space)
+        }
+    }
+
+    /// `profile.updated`: your own account (changed on another device) runs
+    /// the own-profile refresh; anyone else's newest name, username and
+    /// picture overlay every retained copy of them. Text and cursors stay.
+    func applyProfileUpdate(_ person: Person) {
+        guard let current = account else { return }
+        if person.id == current.id {
+            let updated = current.applying(person)
+            guard updated != current else { return }
+            account = updated
+            refreshOwnIdentity(updated)
+            return
+        }
+        profileUpdates.record(person)
+        // An open DM is titled with the other person's name.
+        if selectedDirectMessage?.peer.id == person.id { chat.channelName = person.displayName }
+    }
+
+    /// `space.updated`: the space's name and icon in the rail, invitations,
+    /// the open space and remembered navigation. Spaces you don't have are ignored.
+    func applySpaceUpdate(_ update: Space) {
+        guard spaces.contains(where: { $0.id == update.id }) || invitations.contains(where: { $0.id == update.id })
+                || detailSnapshot?.space.id == update.id || notificationInvitation?.id == update.id else { return }
+        spaces = spaces.map { $0.applying(update) }
+        invitations = invitations.map { $0.applying(update) }
+        notificationInvitation = notificationInvitation?.applying(update)
+        detailSnapshot = detailSnapshot?.applying(update)
+        visited = visited.mapValues { PreparedNavigation(detail: $0.detail?.applying(update), channelID: $0.channelID, history: $0.history) }
+        chat.renameSpace(id: update.id, name: update.name)
+    }
+
     /// Back to the same saved mascot everywhere.
     public func removeAvatar() async throws {
         guard let current = account else { return }
@@ -395,6 +479,7 @@ public final class AppModel {
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         profileMessageDrafts.values.forEach { $0.discard() }
         profileMessageDrafts = [:]
+        stopProfileUpdates()
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
         notificationInvitation = nil; notificationChannelInvitation = nil
         directMessages = []; directMessagesError = nil; selectedDirectMessageID = nil; people = nil; messageRequestsOpen = nil
@@ -983,6 +1068,7 @@ public final class AppModel {
         #if os(macOS)
         desktopNotifications.start()
         #endif
+        startProfileUpdates()
         directMessageRefreshTask?.cancel()
         let attempt = generation
         Task { [weak self] in await self?.refreshBlocks() }
@@ -1583,7 +1669,7 @@ public final class AppModel {
         let attempt = generation
         let members = try await api.channelMembers(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return members.map { $0.withProfile(account) }
+        return members.map { profiled($0) }
     }
 
     public func channelInvitations(_ channel: Channel) async throws -> [Member] {
@@ -1591,7 +1677,7 @@ public final class AppModel {
         let attempt = generation
         let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
-        return invitations.map { $0.withProfile(account) }
+        return invitations.map { profiled($0) }
     }
 
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
@@ -2328,19 +2414,25 @@ public enum ReactorsState: Equatable, Sendable {
 @MainActor @Observable
 public final class ChatModel {
     private var messageSnapshots: [ChatMessage] = []
+    /// Authors (and their nested copies) show other people's live profile
+    /// updates and your own saved profile.
     public var messages: [ChatMessage] {
-        get { messageSnapshots.map { $0.withProfile(profileAuthor) } }
+        get { profiled(messageSnapshots) }
         set { messageSnapshots = newValue }
     }
     private var pinnedMessageSnapshots: [ChatMessage] = []
     public var pinnedMessages: [ChatMessage] {
-        get { pinnedMessageSnapshots.map { $0.withProfile(profileAuthor) } }
+        get { profiled(pinnedMessageSnapshots) }
         set { pinnedMessageSnapshots = newValue }
+    }
+    private func profiled(_ messages: [ChatMessage]) -> [ChatMessage] {
+        let profiles = profileDirectory(), own = profileAuthor
+        return messages.map { profiles.apply($0).withProfile(own) }
     }
     private var mutations = MessageMutations()
     private func project(_ message: ChatMessage) -> ChatMessage { mutations.project(message).withProfile(profileAuthor) }
     public var displayedMessages: [ChatMessage] { messages.map(project) }
-    public var displayedPins: [ChatMessage] { mutations.pinned(messages: messages, confirmed: pinnedMessages).map { $0.withProfile(profileAuthor) } }
+    public var displayedPins: [ChatMessage] { profiled(mutations.pinned(messages: messages, confirmed: pinnedMessages)) }
     public var channelName = "general"
     public var spaceName = "Caper"
     public var draft = ""
@@ -2492,6 +2584,13 @@ public final class ChatModel {
     /// The signed-in account, also while previewing without a chat session.
     @ObservationIgnored public var viewerAccountID: () -> String? = { nil }
     @ObservationIgnored var viewerProfile: () -> Account? = { nil }
+    /// Other people's live profile updates (`AppModel.profileUpdates`).
+    @ObservationIgnored var profileDirectory: () -> ProfileDirectory = { ProfileDirectory() }
+
+    /// A `space.updated` for the open conversation's space.
+    func renameSpace(id: String, name: String) {
+        if spaceID == id { spaceName = name }
+    }
     /// Blocks from message actions in panels that only hold the chat model.
     @ObservationIgnored public var blockAccount: ((BlockTarget) async throws -> Void)?
     /// Unblocks from message actions, by account id.
@@ -3156,9 +3255,9 @@ public final class ChatModel {
         if let list = cached?.list {
             guard let reaction = message.reactions?.first(where: { $0.emoji == emoji }) else { return .loaded([]) }
             if let people = list.people(for: reaction, viewer: reactorViewer(viewerID)) {
-                let account = viewerProfile()
+                let account = viewerProfile(), profiles = profileDirectory()
                 return .loaded(people.map { person in
-                    guard let account, person.id == account.id else { return person }
+                    guard let account, person.id == account.id else { return profiles.apply(person) }
                     let picture = account.ownPicture(asset: person.avatarAsset, url: person.avatarUrl)
                     return ReactorPerson(id: person.id, username: account.username, displayName: account.displayName, avatarId: person.avatarId,
                                          avatarAsset: picture.asset, avatarUrl: picture.url)

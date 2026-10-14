@@ -146,6 +146,19 @@ public actor Gateway {
         await subscribe(frame: ["kind": "presence", "spaceId": spaceID, "userIds": userIDs], handler: handler)
     }
 
+    /// The `profiles` feed's fixed subscription ID.
+    public static let profilesSubscriptionID = "profiles"
+
+    /// `profile.updated` and `space.updated` for the people and spaces you
+    /// share (no replay). Re-sent after every reconnect like the others. An
+    /// older gateway's `error` for the unknown kind only drops this feed: the
+    /// socket, other subscriptions and the published state are untouched,
+    /// and it is not retried.
+    @discardableResult
+    public func subscribeProfiles(handler: @escaping Handler) async -> String {
+        await subscribe(frame: ["kind": "profiles"], id: Self.profilesSubscriptionID, handler: handler)
+    }
+
     @discardableResult
     public func subscribeMedia(channelID: String?, token: String?, handler: @escaping Handler) async -> String {
         var frame: [String: Any] = ["kind": "media"]
@@ -154,8 +167,13 @@ public actor Gateway {
         return await subscribe(frame: frame, handler: handler)
     }
 
-    private func subscribe(frame: [String: Any], handler: @escaping Handler) async -> String {
-        let id = UUID().uuidString
+    private func subscribe(frame: [String: Any], id fixedID: String? = nil, handler: @escaping Handler) async -> String {
+        let id = fixedID ?? UUID().uuidString
+        // A fixed-ID feed that is already open only takes the new handler.
+        if fixedID != nil, let existing = subscriptions[id] {
+            subscriptions[id] = Subscription(frame: existing.frame, handler: handler, appliedPosition: existing.appliedPosition, revision: existing.revision)
+            return id
+        }
         var request = frame
         request["type"] = "subscribe"; request["id"] = id
         let position = (frame["kind"] as? String) == "chat" ? sequence(frame["after"]) : nil
@@ -301,6 +319,7 @@ public actor Gateway {
         case "result": await receiveResult(frame, from: stream)
         case "error":
             guard let id = frame["id"] as? String, let subscription = subscriptions[id] else { return }
+            if subscription.frame["kind"] as? String == "profiles" { await dropOptional(id, subscription: subscription, frame: frame); return }
             if stream === candidate { await failed(stream); return }
             subscriptions.removeValue(forKey: id)
             await subscription.handler(["type": "subscription.error", "status": frame["status"] as? Int ?? 0,
@@ -346,6 +365,17 @@ public actor Gateway {
         await logical.handler(event); await maybePromote(stream)
     }
 
+    /// An optional feed this gateway does not offer: forget it on both
+    /// streams without failing either or publishing an error.
+    private func dropOptional(_ id: String, subscription: Subscription, frame: [String: Any]) async {
+        subscriptions.removeValue(forKey: id)
+        active?.subscriptions.removeValue(forKey: id); candidate?.subscriptions.removeValue(forKey: id)
+        await subscription.handler(["type": "subscription.error", "status": frame["status"] as? Int ?? 0,
+                                    "error": frame["error"] as? String ?? "Live updates are not available."])
+        if subscriptions.isEmpty && commands.isEmpty { stopSockets(publish: true) }
+        else if let candidate { await maybePromote(candidate) }
+    }
+
     private func receiveResult(_ frame: [String: Any], from stream: Stream) async {
         guard owns(stream), let id = frame["id"] as? String, let status = frame["status"] as? Int, var pending = commands[id] else { return }
         let body = frame["body"] as? [String: Any] ?? [:]
@@ -385,6 +415,8 @@ public actor Gateway {
                 guard value.chatReady, (value.position ?? 0) >= required else { return }
             case "media": guard let revision = value.snapshotRevision, revision >= (logical.revision ?? 0) else { return }
             case "presence": guard value.pendingPresence != nil else { return }
+            // No replay: being subscribed is all a replacement needs.
+            case "profiles": break
             default: return
             }
         }

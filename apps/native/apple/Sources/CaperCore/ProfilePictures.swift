@@ -151,6 +151,10 @@ public enum ProfilePicturePolicy {
 
     // MARK: Display
 
+    /// Custom pictures are rounded squares: corners 30% of the side (the
+    /// shared `--radius-avatar`). Saved mascots keep their circle.
+    public static func cornerRadius(side: CGFloat) -> CGFloat { side * 0.3 }
+
     /// Pixels to decode a picture shown `points` wide: the screen's pixels
     /// (at most 3×), rounded up to a 64-pixel step so nearby avatar sizes
     /// share one decoded copy, and at most 256.

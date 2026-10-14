@@ -558,6 +558,65 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(model.spaces.first?.name, "Studio")
     }
 
+    @MainActor
+    func testLiveProfileAndSpaceUpdatesReachTheRunningClient() async throws {
+        PictureURLProtocol.handler = { _ in (404, Data(#"{"error":"not found"}"#.utf8)) }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", displayName: "Me", avatarId: 4)
+        model.phase = .ready
+        let studio = Space(id: spaceID, name: "Studio", ownerId: "self")
+        model.spaces = [studio, Space(id: "Other1234567", name: "Other", ownerId: "someone")]
+        model.invitations = [Space(id: "Invite123456", name: "Invited", ownerId: "someone")]
+        let maya = Member(id: "maya", username: "maya", displayName: "Maya", owner: false, avatarId: 31)
+        model.detail = SpaceDetail(space: studio, channels: [], members: [maya])
+        model.pendingMembers = [Member(id: "sam", username: "sam", displayName: "Sam", owner: false)]
+        model.directMessages = [DirectMessageConversation(id: "Dm0000000001",
+                                                          peer: DirectMessagePeer(id: "maya", username: "maya", displayName: "Maya"),
+                                                          lastSeq: "3", readSeq: "1")]
+        let author = ChatAuthor(id: "maya", name: "Maya", isGuest: false, avatarId: 31)
+        model.chat.messages = [ChatMessage(id: "m1", channelId: "Design123456", seq: "1", author: author,
+                                           content: ChatContent(version: 1, type: "text", text: "hi"), createdAt: "now", clientMessageId: "c1")]
+
+        model.receiveProfileFeed(["type": "profile.updated", "person": [
+            "id": "maya", "username": "maya_r", "displayName": "Maya R", "avatarId": 31, "avatarAsset": pictureID, "avatarUrl": pictureURL,
+        ]])
+        XCTAssertEqual(model.detail?.members.first?.displayName, "Maya R")
+        XCTAssertEqual(model.detail?.members.first?.avatarPicture?.asset, pictureID)
+        XCTAssertEqual(model.directMessages.first?.peer.username, "maya_r")
+        XCTAssertEqual(model.directMessages.first?.unread, true, "read cursors are untouched")
+        XCTAssertEqual(model.chat.messages.first?.author.name, "Maya R")
+        XCTAssertEqual(model.chat.messages.first?.content.text, "hi")
+        XCTAssertEqual(model.profiled(maya).avatarPicture?.asset, pictureID, "rows rendered from other lists follow too")
+        XCTAssertEqual(model.pendingMembers.first?.displayName, "Sam")
+        // A late read of an older list cannot bring the old name back.
+        model.detail = SpaceDetail(space: studio, channels: [], members: [maya])
+        XCTAssertEqual(model.detail?.members.first?.displayName, "Maya R")
+
+        // Your own profile changed on another device.
+        model.receiveProfileFeed(["type": "profile.updated", "person": [
+            "id": "self", "username": "me_too", "displayName": "Me Too", "avatarAsset": pictureID, "avatarUrl": pictureURL,
+        ]])
+        XCTAssertEqual(model.account?.displayName, "Me Too")
+        XCTAssertEqual(model.account?.avatarId, 4, "the saved mascot stays")
+        XCTAssertEqual(model.account?.avatarPicture?.asset, pictureID)
+
+        model.receiveProfileFeed(["type": "space.updated", "space": [
+            "id": spaceID, "name": "Friends", "ownerId": "self", "iconAsset": pictureID, "iconUrl": pictureURL,
+        ]])
+        XCTAssertEqual(model.spaces.map(\.name), ["Friends", "Other"])
+        XCTAssertEqual(model.spaces.first?.iconPicture?.asset, pictureID)
+        XCTAssertEqual(model.detail?.space.name, "Friends")
+        XCTAssertEqual(model.detail?.space.iconPicture?.asset, pictureID)
+        model.receiveProfileFeed(["type": "space.updated", "space": ["id": "Unknown12345", "name": "Elsewhere", "ownerId": "x"]])
+        XCTAssertEqual(model.spaces.map(\.name), ["Friends", "Other"], "spaces you don't have are ignored")
+        XCTAssertEqual(model.invitations.map(\.name), ["Invited"])
+        model.receiveProfileFeed(["type": "space.updated", "space": ["id": "Invite123456", "name": "Renamed invite", "ownerId": "someone"]])
+        XCTAssertEqual(model.invitations.map(\.name), ["Renamed invite"])
+
+        await model.logout()
+        XCTAssertTrue(model.profileUpdates.isEmpty, "signing out forgets other people's updates")
+    }
+
     // MARK: Fixtures
 
     /// An opaque sRGB image from RGB values.

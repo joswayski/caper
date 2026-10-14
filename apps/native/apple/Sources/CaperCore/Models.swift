@@ -49,9 +49,7 @@ public struct Account: Codable, Equatable, Sendable {
     /// the snapshot's URL while it signs the same asset (it may be newer),
     /// otherwise the account's. No account picture means the mascot.
     func ownPicture(asset snapshotAsset: String?, url snapshotURL: String?) -> (asset: String?, url: String?) {
-        guard let avatarAsset else { return (nil, nil) }
-        if snapshotAsset == avatarAsset, let snapshotURL { return (avatarAsset, snapshotURL) }
-        return (avatarAsset, avatarUrl)
+        PictureMerge.newer(asset: avatarAsset, url: avatarUrl, over: snapshotAsset, snapshotURL)
     }
 }
 

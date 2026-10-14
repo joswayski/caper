@@ -2198,8 +2198,8 @@ private struct MemberPresenceView: View {
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
     }
     @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
-        // Your own row shows your latest saved name and picture.
-        let member = listed.withProfile(model.account)
+        // Rows show live profile updates and your latest saved name and picture.
+        let member = model.profiled(listed)
         Button {
             // Swiping the phone panel closed lifts on the row it started on.
             guard !SwipeTapGuard.swiping else { return }
@@ -2717,11 +2717,28 @@ struct Avatar: View {
     var picture: CaperPicture? = nil
     var speaking = false
     var body: some View {
-        PictureImage(picture: picture, size: size) { saved }
-            .frame(width: size, height: size).clipShape(Circle())
-            // Web: caper-green border with a soft outer ring while speaking.
-            .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
-            .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
+        PictureLoading(picture: picture, size: size) { frames in
+            if let frames {
+                // Custom pictures are rounded squares (30% corners, web's
+                // --radius-avatar); the speaking ring follows that shape.
+                PictureFrames(frames: frames, size: size)
+                    .clipShape(Self.pictureShape(size))
+                    .overlay { if speaking { Self.pictureShape(size).stroke(CaperTheme.green, lineWidth: 2) } }
+                    .background { if speaking { Self.pictureShape(size + 6).fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
+            } else {
+                // The saved mascot keeps its circle.
+                saved.clipShape(Circle())
+                    // Web: caper-green border with a soft outer ring while speaking.
+                    .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
+                    .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    /// A custom picture's rounded square for a `side`-point avatar.
+    static func pictureShape(_ side: CGFloat) -> RoundedRectangle {
+        RoundedRectangle(cornerRadius: ProfilePicturePolicy.cornerRadius(side: side), style: .continuous)
     }
 
     /// The saved mascot, or initials when it is missing.
@@ -8024,7 +8041,7 @@ private struct ChannelEditor: View {
                         }
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
-                        ForEach(members) { member in
+                        ForEach(members.map { model.profiled($0) }) { member in
                             HStack {
                                 Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture)
                                 VStack(alignment: .leading, spacing: 1) {
@@ -8036,7 +8053,7 @@ private struct ChannelEditor: View {
                             }.font(CaperTheme.font(12))
                         }.disabled(pending || loadingMembers || membersError != nil)
                         Text("Pending invitations  \(invitations.count)").font(CaperTheme.font(14, weight: .bold))
-                        ForEach(invitations) { member in
+                        ForEach(invitations.map { model.profiled($0) }) { member in
                             HStack {
                                 Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture)
                                 VStack(alignment: .leading, spacing: 1) {

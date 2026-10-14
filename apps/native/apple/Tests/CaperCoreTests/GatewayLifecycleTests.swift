@@ -333,6 +333,59 @@ final class GatewayLifecycleTests: XCTestCase {
         await subject.stop()
     }
 
+    func testProfilesFeedUsesItsFixedIDAndAnOlderGatewayOnlyDropsIt() async {
+        let factory = SocketFactory(); var messages: [String] = []; var profileEvents: [String] = []; var chatEvents = 0
+        let subject = Gateway(baseURL: URL(string: "https://caper.invalid")!, socketFactory: { factory.make($0) },
+                              token: { nil }, state: { _, message in if let message { messages.append(message) } })
+        _ = await subject.subscribeChat(channelID: "chat", after: "0") { if $0["type"] as? String == "message.created" { chatEvents += 1 } }
+        let id = await subject.subscribeProfiles { if let type = $0["type"] as? String { profileEvents.append(type) } }
+        XCTAssertEqual(id, "profiles")
+        await eventually { factory.socket(0) != nil }; let socket = factory.socket(0)!; socket.push(["type": "hello"])
+        let chatID = await subscribeID(socket, kind: "chat")
+        _ = await subscribeID(socket, kind: "profiles")
+        let frame = socket.frames(type: "subscribe").first { $0["kind"] as? String == "profiles" }!
+        XCTAssertEqual(Set(frame.keys), ["type", "id", "kind"], "the profiles subscription has no other fields")
+        XCTAssertEqual(frame["id"] as? String, "profiles")
+        socket.push(["type": "subscribed", "id": chatID]); socket.push(["type": "event", "id": chatID, "event": ["type": "ready", "cursor": "0"]])
+        // An older gateway does not know the kind.
+        socket.push(["type": "error", "id": "profiles", "status": 400, "error": "unknown subscription kind"])
+        await eventually { profileEvents == ["subscription.error"] }
+        socket.push(["type": "event", "id": chatID, "event": ["type": "message.created", "seq": "1"]])
+        await eventually { chatEvents == 1 }
+        XCTAssertFalse(socket.cancelled, "the socket and other subscriptions stay")
+        XCTAssertTrue(messages.isEmpty, "no live-updates error is published")
+        // It is not retried, even after a reconnect.
+        socket.fail()
+        await eventually { factory.socket(1) != nil }; let next = factory.socket(1)!; next.push(["type": "hello"])
+        _ = await subscribeID(next, kind: "chat")
+        XCTAssertFalse(next.frames(type: "subscribe").contains { $0["kind"] as? String == "profiles" })
+        await subject.stop()
+    }
+
+    func testProfilesFeedIsSentAgainAfterReconnectAndDoesNotHoldUpAHandoff() async {
+        let factory = SocketFactory(); var updates: [String] = []; let subject = gateway(factory)
+        _ = await subject.subscribeProfiles { if let type = $0["type"] as? String { updates.append(type) } }
+        let again = await subject.subscribeProfiles { if let type = $0["type"] as? String { updates.append(type) } }
+        XCTAssertEqual(again, "profiles", "subscribing twice keeps one feed")
+        await eventually { factory.socket(0) != nil }; let first = factory.socket(0)!; first.push(["type": "hello"])
+        _ = await subscribeID(first, kind: "profiles")
+        XCTAssertEqual(first.frames(type: "subscribe").count, 1)
+        first.push(["type": "subscribed", "id": "profiles"])
+        first.push(["type": "event", "id": "profiles", "event": ["type": "profile.updated", "person": ["id": "a", "username": "a", "displayName": "A"]]])
+        await eventually { updates == ["profile.updated"] }
+        first.fail()
+        await eventually { factory.socket(1) != nil }; let second = factory.socket(1)!; second.push(["type": "hello"])
+        let resent = await subscribeID(second, kind: "profiles")
+        XCTAssertEqual(resent, "profiles")
+        second.push(["type": "subscribed", "id": "profiles"]); second.push(["type": "migrating"])
+        await eventually { factory.socket(2) != nil }; let candidate = factory.socket(2)!; candidate.push(["type": "hello"])
+        _ = await subscribeID(candidate, kind: "profiles"); candidate.push(["type": "subscribed", "id": "profiles"])
+        await eventually("a subscribed profiles feed needs no catch-up") { second.cancelled }
+        candidate.push(["type": "event", "id": "profiles", "event": ["type": "space.updated", "space": ["id": "s", "name": "S", "ownerId": "o"]]])
+        await eventually { updates == ["profile.updated", "space.updated"] }
+        await subject.stop()
+    }
+
     func testStopDuringPendingHandoffClosesBothStreams() async {
         let factory = SocketFactory(); let subject = gateway(factory)
         _ = await subject.subscribeMedia(channelID: "voice", token: nil) { _ in }

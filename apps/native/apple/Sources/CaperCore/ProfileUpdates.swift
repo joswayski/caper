@@ -1,0 +1,210 @@
+import Foundation
+
+// Live profile and space updates (the gateway's `profiles` subscription):
+// `profile.updated` and `space.updated` events, and the pure functions that
+// apply them over every retained copy of a person or space.
+
+/// One event from the `profiles` subscription.
+public enum ProfileFeedEvent: Equatable, Sendable {
+    /// Someone's name, username or picture changed. Absent picture fields mean
+    /// they removed their picture.
+    case person(Person)
+    /// A space was renamed or its icon changed. Absent icon fields mean it was removed.
+    case space(Space)
+
+    /// The event, or nil for other or malformed frames (newer servers may add types).
+    public static func parse(_ event: [String: Any]) -> ProfileFeedEvent? {
+        switch event["type"] as? String {
+        case "profile.updated":
+            guard let person: Person = decode(event["person"]), !person.id.isEmpty else { return nil }
+            return .person(person)
+        case "space.updated":
+            guard let space: Space = decode(event["space"]), !space.id.isEmpty else { return nil }
+            return .space(space)
+        default:
+            return nil
+        }
+    }
+
+    private static func decode<T: Decodable>(_ raw: Any?) -> T? {
+        guard let raw, JSONSerialization.isValidJSONObject(raw), let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+}
+
+/// A newer picture over a retained snapshot's.
+enum PictureMerge {
+    /// No newer asset means the picture was removed. The snapshot's URL is
+    /// kept while it signs the same asset (it may be the fresher signature).
+    static func newer(asset: String?, url: String?, over snapshotAsset: String?, _ snapshotURL: String?) -> (asset: String?, url: String?) {
+        guard let asset else { return (nil, nil) }
+        if snapshotAsset == asset, let snapshotURL { return (asset, snapshotURL) }
+        return (asset, url)
+    }
+}
+
+/// Other people's newest identities from `profile.updated` events, by account
+/// ID. Applied over every retained copy of a person (members, invitations, DM
+/// peers, suggestions, authors and their nested copies, reactors, feedback
+/// reporters, blocked accounts), as the signed-in account's own profile is.
+/// Message text and cursors are never touched.
+public struct ProfileDirectory: Equatable, Sendable {
+    private var people: [String: Person] = [:]
+
+    public init(_ people: [Person] = []) { people.forEach { record($0) } }
+
+    public var isEmpty: Bool { people.isEmpty }
+    public subscript(id: String) -> Person? { people[id] }
+
+    /// The newest event for a person replaces any earlier one.
+    public mutating func record(_ person: Person) { people[person.id] = person }
+
+    public func apply(_ author: ChatAuthor) -> ChatAuthor { people[author.id].map { author.applying($0) } ?? author }
+    public func apply(_ member: Member) -> Member { people[member.id].map { member.applying($0) } ?? member }
+    public func apply(_ person: Person) -> Person { people[person.id].map { person.applying($0) } ?? person }
+    public func apply(_ reactor: ReactorPerson) -> ReactorPerson { people[reactor.id].map { reactor.applying($0) } ?? reactor }
+    public func apply(_ account: BlockedAccount) -> BlockedAccount { people[account.id].map { account.applying($0) } ?? account }
+    public func apply(_ message: ChatMessage) -> ChatMessage { message.applying(self) }
+
+    public func apply(_ conversation: DirectMessageConversation) -> DirectMessageConversation {
+        guard let person = people[conversation.peer.id] else { return conversation }
+        return DirectMessageConversation(id: conversation.id, peer: conversation.peer.applying(person), lastSeq: conversation.lastSeq,
+                                         readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
+    }
+
+    public func apply(_ detail: SpaceDetail) -> SpaceDetail {
+        guard !isEmpty else { return detail }
+        return SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.map { apply($0) },
+                           channelInvitations: detail.channelInvitations)
+    }
+
+    public func apply(_ report: FeedbackReport) -> FeedbackReport {
+        guard let person = people[report.reporter.id] else { return report }
+        return FeedbackReport(id: report.id, messageId: report.messageId, threadRootId: report.threadRootId, createdAt: report.createdAt,
+                              text: report.text, attachments: report.attachments, reporter: report.reporter.applying(person),
+                              channel: report.channel, space: report.space, replyCount: report.replyCount,
+                              answered: report.answered, archived: report.archived)
+    }
+}
+
+// MARK: Applying one person
+
+extension Account {
+    /// The signed-in account after a `profile.updated` for it (from another
+    /// device). The saved mascot is kept when the event omits it.
+    func applying(_ person: Person) -> Account {
+        guard id == person.id else { return self }
+        var result = self
+        result.username = person.username
+        result.displayName = person.displayName
+        if let avatarId = person.avatarId { result.avatarId = avatarId }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        result.avatarAsset = picture.asset
+        result.avatarUrl = picture.url
+        return result
+    }
+}
+
+extension ChatAuthor {
+    func applying(_ person: Person) -> ChatAuthor {
+        guard id == person.id, !isGuest else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return ChatAuthor(id: id, name: person.displayName, isGuest: false, avatarId: person.avatarId ?? avatarId, admin: admin,
+                          avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension ChatMessage {
+    /// Authors here and in nested copies: reply reference, pin, thread
+    /// participants and the forwarded original.
+    func applying(_ profiles: ProfileDirectory) -> ChatMessage {
+        guard !profiles.isEmpty else { return self }
+        var result = self
+        result.author = profiles.apply(author)
+        if var reply = replyTo, profiles[reply.author.id] != nil {
+            reply.author = profiles.apply(reply.author)
+            result.replyTo = reply
+        }
+        if let pin, profiles[pin.author.id] != nil { result.pin = MessagePin(author: profiles.apply(pin.author), createdAt: pin.createdAt) }
+        if let thread, thread.participants.contains(where: { profiles[$0.id] != nil }) {
+            result.thread = ThreadSummary(replyCount: thread.replyCount, participants: thread.participants.map { profiles.apply($0) }, seq: thread.seq)
+        }
+        if let forward, let original = forward.message { result.forward = MessageForward(message: original.applying(profiles), seq: forward.seq) }
+        return result
+    }
+}
+
+extension Member {
+    func applying(_ person: Person) -> Member {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return Member(id: id, username: person.username, displayName: person.displayName, owner: owner, avatarId: person.avatarId ?? avatarId,
+                      avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension Person {
+    func applying(_ person: Person) -> Person {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return Person(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+                      avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension DirectMessagePeer {
+    /// The Caper team flag is the server's and stays.
+    func applying(_ person: Person) -> DirectMessagePeer {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return DirectMessagePeer(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+                                 team: team, avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension ReactorPerson {
+    func applying(_ person: Person) -> ReactorPerson {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return ReactorPerson(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+                             avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension BlockedAccount {
+    func applying(_ person: Person) -> BlockedAccount {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return BlockedAccount(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+                              avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+extension FeedbackReport.Reporter {
+    func applying(_ person: Person) -> FeedbackReport.Reporter {
+        guard id == person.id else { return self }
+        let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
+        return FeedbackReport.Reporter(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+                                       avatarAsset: picture.asset, avatarUrl: picture.url)
+    }
+}
+
+// MARK: Applying a space
+
+extension Space {
+    /// The space after a `space.updated` for it: its name and icon. Other
+    /// spaces are returned unchanged, so an update for a space you don't
+    /// have changes nothing.
+    func applying(_ update: Space) -> Space {
+        guard id == update.id else { return self }
+        let icon = PictureMerge.newer(asset: update.iconAsset, url: update.iconUrl, over: iconAsset, iconUrl)
+        return Space(id: id, name: update.name, ownerId: ownerId, demo: demo, inviter: inviter, iconAsset: icon.asset, iconUrl: icon.url)
+    }
+}
+
+extension SpaceDetail {
+    func applying(_ update: Space) -> SpaceDetail {
+        guard space.id == update.id else { return self }
+        return SpaceDetail(space: space.applying(update), channels: channels, members: members, channelInvitations: channelInvitations)
+    }
+}
