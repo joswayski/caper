@@ -926,12 +926,6 @@ impl Shared {
             .as_ref()
             .map(egui::TextureHandle::id)
     }
-
-    /// Loads are queued or running.
-    pub fn busy(&self) -> bool {
-        let pictures = self.lock();
-        !pictures.waiting.is_empty()
-    }
 }
 
 /// Animations play unless the system asks for less motion or the window is
@@ -945,11 +939,16 @@ pub fn playing(ui: &egui::Ui) -> bool {
 /// means draw the mascot or initial instead.
 pub fn texture(ui: &egui::Ui, source: Source<'_>) -> Option<egui::TextureId> {
     let shared = Shared::of(ui.ctx());
-    let (texture, wait) = shared.lock().texture(source, playing(ui), Instant::now());
+    let mut pictures = shared.lock();
+    let queued = pictures.waiting.len();
+    let (texture, wait) = pictures.texture(source, playing(ui), Instant::now());
+    // A new load starts at the next frame's poll; fetches repaint when done.
+    let queued = pictures.waiting.len() > queued;
+    drop(pictures);
     if let Some(wait) = wait {
         ui.ctx().request_repaint_after(wait);
     }
-    if texture.is_none() && shared.busy() {
+    if queued {
         ui.ctx().request_repaint();
     }
     texture
