@@ -21,20 +21,12 @@ const reducedMotion = () => typeof matchMedia !== "undefined" && matchMedia(REDU
  * parent must be positioned). GIFs animate; with reduced motion a still frame
  * is shown instead.
  */
-export default function Picture({ asset, url, round }: { asset?: string; url?: string; round?: boolean }) {
+export default function Picture({ asset, url }: { asset?: string; url?: string }) {
   const [, setRevision] = useState(0);
   const source = pictureSource(asset, url);
   if (!asset || !source) return null;
   // A new URL (a re-signed or replaced picture) starts a fresh load.
-  return (
-    <PictureImage
-      key={source}
-      asset={asset}
-      source={source}
-      round={round}
-      onFailed={() => setRevision((value) => value + 1)}
-    />
-  );
+  return <PictureImage key={source} asset={asset} source={source} onFailed={() => setRevision((value) => value + 1)} />;
 }
 
 function drawStill(image: HTMLImageElement, canvas: HTMLCanvasElement) {
@@ -46,17 +38,7 @@ function drawStill(image: HTMLImageElement, canvas: HTMLCanvasElement) {
   canvas.getContext("2d")?.drawImage(image, crop.x, crop.y, crop.side, crop.side, 0, 0, edge, edge);
 }
 
-function PictureImage({
-  asset,
-  source,
-  round,
-  onFailed,
-}: {
-  asset: string;
-  source: string;
-  round?: boolean;
-  onFailed: () => void;
-}) {
+function PictureImage({ asset, source, onFailed }: { asset: string; source: string; onFailed: () => void }) {
   // `ready` appears at once (already shown on this page); `arrived` fades in.
   const [state, setState] = useState<"loading" | "ready" | "arrived" | "failed">(() =>
     pictureShown(asset, source) ? "ready" : "loading",
@@ -90,12 +72,7 @@ function PictureImage({
   };
   if (state === "failed") return null;
   return (
-    <span
-      className="caper-picture"
-      data-state={state}
-      data-round={round ? "" : undefined}
-      data-still={still && drawn ? "" : undefined}
-    >
+    <span className="caper-picture" data-state={state} data-still={still && drawn ? "" : undefined}>
       <img
         ref={(node) => {
           image.current = node;

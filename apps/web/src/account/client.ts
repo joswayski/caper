@@ -1,4 +1,5 @@
 import { withPicture, type PersonPicture } from "./pictures.ts";
+import { withProfile, type Profiles } from "./profiles.ts";
 
 export interface Account extends PersonPicture {
   id: string;
@@ -60,6 +61,15 @@ export function withAccountProfile<T extends { id: string; username?: string | n
   return person.id === account?.id && account.username && account.displayName
     ? withPicture({ ...person, username: account.username, displayName: account.displayName }, account)
     : person;
+}
+
+/** Someone's latest known names and picture: a live update for them, and the saved account for you. */
+export function withLatestProfile<T extends { id: string; username?: string | null; displayName?: string | null }>(
+  person: T,
+  account: Account | undefined,
+  profiles: Profiles,
+): T {
+  return withAccountProfile(withProfile(person, profiles.get(person.id)), account);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

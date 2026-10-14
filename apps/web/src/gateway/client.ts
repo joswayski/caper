@@ -12,7 +12,9 @@ export interface PresenceMember {
   userId: string;
   status: PresenceStatus;
 }
-export type SubscriptionKind = "chat" | "media" | "presence" | "notifications";
+export type SubscriptionKind = "chat" | "media" | "presence" | "notifications" | "profiles";
+/** Kinds an older gateway may not know: its error means "unavailable", never a reason to drop a socket. */
+const OPTIONAL_KINDS = new Set<SubscriptionKind>(["profiles"]);
 
 export interface SubscriptionRequest {
   kind: SubscriptionKind;
@@ -400,7 +402,11 @@ export class AppGateway {
       const subscription = this.subscriptions.get(frame.id);
       if (!subscription) return;
       if (stream === this.candidate) {
-        this.failed(stream);
+        if (OPTIONAL_KINDS.has(subscription.request.kind) && frame.status !== 503) {
+          // The replacement doesn't offer it: carry on without it rather than refusing the replacement.
+          this.terminateSubscription(subscription, error);
+          this.maybePromote(stream);
+        } else this.failed(stream);
         return;
       }
       if (stream !== this.active) return;
@@ -575,7 +581,8 @@ export class AppGateway {
           (subscription.revision !== undefined && candidateState.snapshotRevision < subscription.revision)
         )
           return;
-      } else if (candidateState.pendingEvent === undefined) {
+      } else if (subscription.request.kind === "presence" && candidateState.pendingEvent === undefined) {
+        // Presence starts with a snapshot; profiles have none, so being subscribed is enough.
         return;
       }
     }

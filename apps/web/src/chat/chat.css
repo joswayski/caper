@@ -605,11 +605,11 @@
 .chat-reply-avatar {
   flex-shrink: 0;
 }
-.chat-reply-avatar,
-.chat-reply-avatar img {
+/* A rounded square like every avatar: a custom picture inherits this shape. */
+.chat-reply-avatar {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
+  border-radius: var(--radius-avatar);
 }
 .chat-reply-context strong {
   min-width: 0;

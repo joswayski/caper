@@ -186,8 +186,8 @@ test("avatars lay a custom picture over the mascot, which stays for loading and 
   assert.match(markup, /background-image:url\(&#x27;\/images\/avatars\/v3\/7\.svg&#x27;\)/);
   assert.match(
     markup,
-    // Round like the mascot artwork, as on every native client.
-    /<span class="caper-picture" data-state="loading" data-round=""><img src="https:\/\/cdn\.test\/pic\.gif" alt=""/,
+    // No shape of its own: it inherits the container's rounded square (--radius-avatar).
+    /<span class="caper-picture" data-state="loading"><img src="https:\/\/cdn\.test\/pic\.gif" alt=""/,
   );
   assert.doesNotMatch(renderToStaticMarkup(createElement(Avatar, { person: { avatarId: 7 }, name: "M" })), /<img/);
   // Not an http(s) URL: the mascot alone.

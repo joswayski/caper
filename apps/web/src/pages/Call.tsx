@@ -525,6 +525,10 @@ export default function Call({
   const [loadedAccount, setAccount] = useState<Account | null>(initialAccount ?? null);
   const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const account = rememberedAccount ?? loadedAccount;
+  // A display name saved elsewhere (another device, via a live profile update) renames you here too.
+  useEffect(() => {
+    if (rememberedAccount?.displayName) setName(rememberedAccount.displayName);
+  }, [rememberedAccount?.displayName]);
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
   const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [availability, setAvailability] = useState<Record<string, boolean>>({});

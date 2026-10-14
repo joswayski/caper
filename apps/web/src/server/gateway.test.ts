@@ -986,3 +986,91 @@ test("browser alerts download images outside the cross-tab lock and coalesce unr
   await vi.waitFor(() => assert.equal(shown.length, 3));
   assert.equal(shown[2], "caper:account:message1", "the slow download still presents its own alert");
 });
+
+test("profiles subscribe with only a kind, survive handoff without a snapshot, and re-subscribe after reconnect", (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = setup(t);
+  const events: unknown[] = [];
+  const profiles = f.gateway.subscribe({ kind: "profiles" }, { event: (event) => events.push(event) });
+  t.onTestFinished(() => profiles.unsubscribe());
+  f.hello(0);
+  const frame = f.subscribe(0);
+  assert.deepEqual(Object.keys(frame).sort(), ["id", "kind", "type"]);
+  assert.equal(frame.kind, "profiles");
+  f.sockets[0].frame({ type: "subscribed", id: frame.id });
+  const update = { type: "profile.updated", person: { id: "maya", username: "maya", displayName: "Maya" } };
+  f.sockets[0].frame({ type: "event", id: frame.id, event: update });
+  assert.deepEqual(events, [update]);
+
+  // A deployment: the replacement is promoted once subscribed, with no event to wait for.
+  f.sockets[0].frame({ type: "migrating" });
+  f.hello(1);
+  f.sockets[1].frame({ type: "subscribed", id: frame.id });
+  assert.equal(f.sockets[0].closed, true);
+
+  // A dropped socket re-subscribes on the next one.
+  f.sockets[1].fail();
+  vi.advanceTimersByTime(5_000);
+  f.hello(2);
+  assert.equal(f.subscribe(2).kind, "profiles");
+});
+
+test("an older gateway refusing profiles leaves the socket and other subscriptions alone and is not retried", async (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = setup(t);
+  const chatEvents: string[] = [];
+  const chat = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: "1" },
+    { event: (event) => chatEvents.push((event as { type: string }).type), cursor: () => "1" },
+  );
+  const errors: number[] = [];
+  const profiles = f.gateway.subscribe(
+    { kind: "profiles" },
+    { event: () => undefined, error: (e) => errors.push(e.status) },
+  );
+  t.onTestFinished(() => {
+    chat.unsubscribe();
+    profiles.unsubscribe();
+  });
+  f.hello(0);
+  const [chatFrame, profilesFrame] = f.sockets[0].sent.filter((frame) => frame.type === "subscribe");
+  f.sockets[0].frame({ type: "event", id: chatFrame.id, event: { type: "ready", cursor: "1" } });
+  f.sockets[0].frame({ type: "subscribed", id: chatFrame.id });
+  f.sockets[0].frame({ type: "error", id: profilesFrame.id, status: 400, error: "invalid subscription" });
+  await assert.rejects(profiles.ready, (error: unknown) => (error as { status?: number }).status === 400);
+  assert.deepEqual(errors, [400]);
+  vi.advanceTimersByTime(10_000);
+  assert.equal(f.sockets[0].closed, false);
+  assert.equal(f.sockets[0].sent.filter((frame) => frame.kind === "profiles").length, 1, "no retry loop");
+  f.sockets[0].frame({ type: "event", id: chatFrame.id, event: { type: "message.created", seq: "2" } });
+  assert.deepEqual(chatEvents, ["ready", "message.created"]);
+});
+
+test("a replacement socket refusing profiles is still promoted for everything else", (t) => {
+  const f = setup(t);
+  const chat = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: "1" },
+    { event: () => undefined, cursor: () => "1" },
+  );
+  const profiles = f.gateway.subscribe({ kind: "profiles" }, { event: () => undefined, error: () => undefined });
+  void profiles.ready.catch(() => undefined);
+  t.onTestFinished(() => {
+    chat.unsubscribe();
+    profiles.unsubscribe();
+  });
+  f.hello(0);
+  for (const frame of f.sockets[0].sent.filter((value) => value.type === "subscribe")) {
+    if (frame.kind === "chat")
+      f.sockets[0].frame({ type: "event", id: frame.id, event: { type: "ready", cursor: "1" } });
+    f.sockets[0].frame({ type: "subscribed", id: frame.id });
+  }
+  f.sockets[0].frame({ type: "migrating" });
+  f.hello(1);
+  const [chatFrame, profilesFrame] = f.sockets[1].sent.filter((frame) => frame.type === "subscribe");
+  f.sockets[1].frame({ type: "error", id: profilesFrame.id, status: 400, error: "invalid subscription" });
+  assert.equal(f.sockets[1].closed, false);
+  f.sockets[1].frame({ type: "event", id: chatFrame.id, event: { type: "ready", cursor: "1" } });
+  f.sockets[1].frame({ type: "subscribed", id: chatFrame.id });
+  assert.equal(f.sockets[0].closed, true, "promoted");
+  assert.equal(f.sockets[1].closed, false);
+});

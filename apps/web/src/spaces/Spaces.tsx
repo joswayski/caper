@@ -32,10 +32,19 @@ import {
   normalizeUsername,
   subscribeAccount,
   usernameError,
-  withAccountProfile,
+  withLatestProfile,
   type Account,
 } from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
+import { watchLiveUpdates } from "../account/live-updates";
+import {
+  getProfiles,
+  getServerProfiles,
+  subscribeProfiles,
+  withSpaceUpdate,
+  withSpaceUpdates,
+  type SpaceUpdate,
+} from "../account/profiles";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import { forwardedConversation } from "../chat/Forwarding";
@@ -726,8 +735,9 @@ function MemberManager({
   suggestions?: MentionCandidate[];
 }) {
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
-  const members = memberSnapshots.map((member) => withAccountProfile(member, account));
-  const invitations = invitationSnapshots?.map((member) => withAccountProfile(member, account));
+  const profiles = useSyncExternalStore(subscribeProfiles, getProfiles, getServerProfiles);
+  const members = memberSnapshots.map((member) => withLatestProfile(member, account, profiles));
+  const invitations = invitationSnapshots?.map((member) => withLatestProfile(member, account, profiles));
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -1715,6 +1725,8 @@ export default function Spaces({
   const [loadedAccount, setAccount] = useState<Account | undefined>(initialAccount);
   const rememberedAccount = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const account = rememberedAccount ?? loadedAccount;
+  // Other people's live name and picture changes, over every retained copy.
+  const profiles = useSyncExternalStore(subscribeProfiles, getProfiles, getServerProfiles);
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
@@ -1759,7 +1771,7 @@ export default function Spaces({
   const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
   const directs = directSnapshots.map((conversation) => ({
     ...conversation,
-    peer: withAccountProfile(conversation.peer, account),
+    peer: withLatestProfile(conversation.peer, account, profiles),
   }));
   const [directsLoading, setDirectsLoading] = useState(true);
   const [directError, setDirectError] = useState<string>();
@@ -1794,7 +1806,8 @@ export default function Spaces({
   // DM `@` suggestions, mention profile cards, and the invite and new-DM
   // username fields; the previous list stays while a refresh is in flight.
   // Loaded once signed in and again whenever a DM or one of those dialogs opens.
-  const [people, setPeople] = useState<Person[]>();
+  const [peopleSnapshot, setPeople] = useState<Person[]>();
+  const people = peopleSnapshot?.map((person) => withLatestProfile(person, account, profiles));
   const directId = directView?.conversation.id;
   const peopleDialog = dialog === "manage-space" || dialog === "direct";
   useEffect(() => {
@@ -1816,9 +1829,28 @@ export default function Spaces({
       : undefined);
   const detail = detailSnapshot && {
     ...detailSnapshot,
-    members: detailSnapshot.members.map((member) => withAccountProfile(member, account)),
+    members: detailSnapshot.members.map((member) => withLatestProfile(member, account, profiles)),
   };
   const navigation = useRef(createSpaceNavigation());
+  // Names, usernames, pictures and space names/icons changed elsewhere arrive
+  // live; people are applied where they render (see `profiles` above).
+  useEffect(() => {
+    if (!account?.id) return;
+    return watchLiveUpdates((update: SpaceUpdate) => {
+      setSpaces((current) => withSpaceUpdates(current, update));
+      setInvitations((current) => withSpaceUpdates(current, update));
+      setRailInvitation((current) => current && withSpaceUpdate(current, update));
+      setView((current) => {
+        if (!current || current.detail.space.id !== update.id) return current;
+        const updated = {
+          ...current,
+          detail: { ...current.detail, space: withSpaceUpdate(current.detail.space, update) },
+        };
+        navigation.current.remember(updated);
+        return updated;
+      });
+    });
+  }, [account?.id]);
   // The rendered detail, for the poll below whose effect tracks only the space id.
   const shownDetail = useRef(detail);
   useEffect(() => {
@@ -2590,7 +2622,10 @@ export default function Spaces({
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox
-      reports={feedback?.reports ?? []}
+      reports={(feedback?.reports ?? []).map((report) => ({
+        ...report,
+        reporter: withLatestProfile(report.reporter, account, profiles),
+      }))}
       more={!!feedback?.cursor}
       loading={feedbackLoading}
       error={feedbackError}

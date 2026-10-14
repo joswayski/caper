@@ -11,6 +11,7 @@ import {
 } from "@floating-ui/react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
+import { subscribeProfiles } from "../account/profiles.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
 import MessageActions, { preloadReactionPicker, type MessageActionTarget } from "./MessageActions.tsx";
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
@@ -676,6 +677,8 @@ export default function Chat({
   const setTyping = useCallback((active: boolean) => {
     clientRef.current?.setTyping(active);
   }, []);
+  // Someone's name or picture changed elsewhere: their messages here follow.
+  useEffect(() => subscribeProfiles(() => clientRef.current?.refreshProfiles()), []);
 
   useEffect(() => {
     let firstMessageId: string | undefined;

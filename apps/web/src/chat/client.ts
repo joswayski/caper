@@ -1,4 +1,5 @@
 import { CHAT_SESSION_KEY } from "../account/client.ts";
+import { getProfiles, withAuthorProfile, withMessageAuthors } from "../account/profiles.ts";
 import { ChatConnection } from "./connection.ts";
 import { cancelUpload, type AttachmentUpload } from "./uploads.ts";
 import { playSound } from "../audio/effects.ts";
@@ -103,6 +104,16 @@ function processingIds(messages: ChatMessage[]) {
   return ids;
 }
 
+/** Authors with their live profile updates (`refreshProfiles` keeps them current). */
+function withLatestAuthors(messages: ChatMessage[]) {
+  const profiles = getProfiles();
+  return profiles.size
+    ? messages.map((message) =>
+        withMessageAuthors(message, (author) => withAuthorProfile(author, profiles.get(author.id))),
+      )
+    : messages;
+}
+
 export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
   if (error) return { ...initialState, phase: "error", error };
   return history
@@ -112,8 +123,8 @@ export function initialChatView(history?: GeneralChatHistory, error?: string): C
         spaceName: history.space.name,
         channelId: history.channel.id,
         channelName: history.channel.name,
-        messages: history.messages,
-        pinnedMessages: history.pinnedMessages ?? [],
+        messages: withLatestAuthors(history.messages),
+        pinnedMessages: withLatestAuthors(history.pinnedMessages ?? []),
         hasMore: history.hasMore,
         hasNewer: history.hasNewer,
       }
@@ -508,6 +519,12 @@ export class ChatClient {
         () => this.refreshTypers(),
         Math.min(...entries.map((entry) => entry.expires)) - now,
       );
+  }
+
+  /** Re-applies live profile updates to the authors of retained messages. */
+  refreshProfiles() {
+    if (this.state.phase === "ready" && !this.controller.signal.aborted)
+      this.update({ messages: this.timeline.messages });
   }
 
   retryLoad() {
@@ -1500,15 +1517,14 @@ export class ChatClient {
       };
     }
     const own = change.author ?? this.state.author;
-    if (own && !own.isGuest) {
-      const author = (value: ChatAuthor) => (value.id === own.id ? { ...value, name: own.name } : value);
-      const message = (value: ChatMessage): ChatMessage => ({
-        ...value,
-        author: author(value.author),
-        ...(value.pin ? { pin: { ...value.pin, author: author(value.pin.author) } } : {}),
-        ...(value.thread ? { thread: { ...value.thread, participants: value.thread.participants.map(author) } } : {}),
-        ...(value.forward?.message ? { forward: { ...value.forward, message: message(value.forward.message) } } : {}),
-      });
+    // Retained authors show their latest names and pictures: yours from this
+    // session, other people's from live profile updates.
+    const profiles = getProfiles();
+    const self = own && !own.isGuest ? own : undefined;
+    if (self || profiles.size) {
+      const author = (value: ChatAuthor) =>
+        self && value.id === self.id ? { ...value, name: self.name } : withAuthorProfile(value, profiles.get(value.id));
+      const message = (value: ChatMessage) => withMessageAuthors(value, author);
       change = {
         ...change,
         ...(change.author ? { author: author(change.author) } : {}),

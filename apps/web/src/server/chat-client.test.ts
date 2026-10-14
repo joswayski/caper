@@ -18,6 +18,7 @@ import {
 import { replyReference } from "../chat/Replies.tsx";
 import { AttachmentUpload, type UploadTransport } from "../chat/uploads.ts";
 import { DEFAULT_COMPRESSION } from "../chat/prepare.ts";
+import { receiveProfile, resetProfilesForTests } from "../account/profiles.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -2747,4 +2748,68 @@ test("a DM send refused by a block is final, like on the native clients", async 
   await tick();
   assert.equal(f.state.sendRejected, true);
   assert.equal(f.state.sendError, "This person isn’t accepting direct messages.");
+});
+
+test("live profile updates re-render retained authors, reply references, pins, threads and forwards", async (t) => {
+  installBrowser(t);
+  resetProfilesForTests();
+  t.onTestFinished(resetProfilesForTests);
+  const maya = { id: "maya", name: "Maya", isGuest: false, avatarId: 3 };
+  const sam = { id: "sam", name: "Sam", isGuest: false, avatarId: 4 };
+  const row = (id: string, seq: string, author: typeof maya): ChatMessage => ({
+    id,
+    channelId: "general",
+    seq,
+    author,
+    content: { version: 1, type: "text", text: `${id} text` },
+    createdAt: "2026-10-14T12:00:00Z",
+    clientMessageId: `${id}-client`,
+  });
+  const history: GeneralChatHistory = {
+    space: { id: "space", name: "Caper" },
+    channel: { id: "general", name: "general" },
+    cursor: "3",
+    hasMore: false,
+    messages: [
+      { ...row("first", "1", maya), pin: { author: maya, createdAt: "2026-10-14T12:00:00Z" } },
+      {
+        ...row("second", "2", sam),
+        replyTo: { id: "first", author: maya, text: "first text", hasAttachments: false },
+        thread: { replyCount: 1, participants: [maya], seq: "3" },
+      },
+      { ...row("third", "3", sam), forward: { message: row("elsewhere", "9", maya), seq: "3" } },
+    ],
+  };
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => {
+    state = next;
+  }, "general");
+  t.onTestFinished(() => client.stop());
+  client.start(history);
+  await tick();
+  assert.equal(state.phase, "ready");
+  receiveProfile({
+    id: "maya",
+    username: "maya",
+    displayName: "Maya Lopez",
+    avatarId: 3,
+    avatarAsset: "pic",
+    avatarUrl: "https://cdn.test/pic",
+  });
+  client.refreshProfiles();
+  const latest = { ...maya, name: "Maya Lopez", avatarAsset: "pic", avatarUrl: "https://cdn.test/pic" };
+  const [first, second, third] = state.messages;
+  assert.deepEqual(first.author, latest);
+  assert.deepEqual(first.pin?.author, latest);
+  assert.deepEqual(second.author, sam);
+  assert.deepEqual(second.replyTo?.author, latest);
+  assert.deepEqual(second.thread?.participants, [latest]);
+  assert.deepEqual(third.forward?.message?.author, latest);
+  assert.deepEqual(
+    state.messages.map((message) => [message.seq, message.content.text]),
+    history.messages.map((message) => [message.seq, message.content.text]),
+    "text and sequence never change",
+  );
+  // A conversation opened later starts with the latest names too.
+  assert.equal(initialChatView(history).messages[0].author.name, "Maya Lopez");
 });

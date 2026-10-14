@@ -23,7 +23,8 @@ import type { ChatAuthor } from "./types.ts";
 import { addSpaceMember, type Space } from "../spaces/client.ts";
 import { friendlyError } from "../spaces/errors.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
-import { getRememberedAccount, subscribeAccount, withAccountProfile } from "../account/client.ts";
+import { getRememberedAccount, subscribeAccount, withLatestProfile } from "../account/client.ts";
+import { getProfiles, getServerProfiles, subscribeProfiles } from "../account/profiles.ts";
 import ProfileComposer from "./ProfileComposer.tsx";
 
 export interface MentionCardTarget {
@@ -63,7 +64,8 @@ export default function MentionCard(props: MentionCardProps) {
 function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: MentionCardProps) {
   const { person: snapshot, anchor, drawer } = target;
   const account = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
-  const person = withAccountProfile(snapshot, account);
+  const profiles = useSyncExternalStore(subscribeProfiles, getProfiles, getServerProfiles);
+  const person = withLatestProfile(snapshot, account, profiles);
   const blocked = useBlockedIds().has(person.id);
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState<string>();

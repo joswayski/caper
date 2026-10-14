@@ -144,6 +144,8 @@ function fixture() {
     { id: "member000004", username: "avery", displayName: "Avery (mascot)", avatarId: 143 },
   ];
   const control = (window.pictureFixture = { reservations: [], completes: 0, removals: 0, failNext: undefined });
+  // The server's own copy follows a profile change made "elsewhere" (as the real API would).
+  control.updateAccount = (fields) => Object.assign(account, fields);
   const members = () => [{ ...account, owner: true }, ...others.map((member) => ({ ...member, owner: false }))];
   const spaces = [
     {
@@ -193,6 +195,10 @@ function fixture() {
       author: author(person),
       content: { version: 1, type: "text", text: texts[index] },
       createdAt: "2026-10-14T12:00:00Z",
+      // June replies to Maya: a nested author that live updates must reach too.
+      ...(index === 2
+        ? { replyTo: { id: "message1", author: author(others[0]), text: texts[1], hasAttachments: false } }
+        : {}),
     })),
   });
   const spaceSummary = (space) => {
@@ -306,6 +312,13 @@ function fixture() {
     send(raw) {
       const request = JSON.parse(raw);
       if (request.type === "heartbeat") this.frame({ type: "heartbeat" });
+      if (request.type === "subscribe" && request.kind === "profiles") {
+        // Live profile/space updates: no snapshot, and events only when the test pushes them.
+        control.profilesFrame = request;
+        control.pushLive = (event) => this.frame({ type: "event", id: request.id, event });
+        this.frame({ type: "subscribed", id: request.id });
+        return;
+      }
       if (request.type === "subscribe") {
         const event =
           request.kind === "chat" || request.kind === "notifications"
@@ -385,6 +398,40 @@ const loaded = (selector) =>
 const ownAvatars =
   '.account-avatar [data-avatar-id], .direct-self [data-avatar-id], .chat-avatar[aria-label="Open profile for Owner (test)"] [data-avatar-id]';
 
+/** Custom pictures are rounded squares: they take their avatar container's 30% corners, never a circle. */
+async function checkSquares(target, label) {
+  const shapes = await target.evaluate(() =>
+    [...document.querySelectorAll("[data-avatar-asset] > .caper-picture")].map((picture) => ({
+      where: picture.closest("[class]:not(.caper-picture):not([data-avatar-asset])")?.className,
+      picture: getComputedStyle(picture).borderTopLeftRadius,
+      avatar: getComputedStyle(picture.parentElement).borderTopLeftRadius,
+      image: getComputedStyle(picture.querySelector("img")).borderTopLeftRadius,
+    })),
+  );
+  assert.ok(shapes.length > 0, `${label}: pictures to check`);
+  for (const shape of shapes) {
+    assert.equal(shape.picture, "30%", `${label}: ${shape.where} picture`);
+    assert.equal(shape.avatar, "30%", `${label}: ${shape.where} avatar`);
+    assert.equal(shape.image, "0px", `${label}: ${shape.where} image`);
+  }
+}
+
+/** Speaking rings (green border and halo) keep the rounded square around pictures. */
+async function checkRings(target) {
+  const rings = await target.evaluate(() => {
+    const avatars = [...document.querySelectorAll(".voice-occupants .avatar, .voice-stack-avatar")].filter((element) =>
+      element.querySelector("[data-avatar-asset] > .caper-picture"),
+    );
+    avatars.forEach((element) => element.classList.add("speaking"));
+    return avatars.map((element) => {
+      const style = getComputedStyle(element);
+      return [style.borderTopColor, style.borderTopLeftRadius, style.boxShadow !== "none"];
+    });
+  });
+  assert.ok(rings.length > 0, "speaking pictures to check");
+  for (const ring of rings) assert.deepEqual(ring, ["rgb(99, 122, 67)", "30%", true]);
+}
+
 const browser = await chromium.launch();
 try {
   // ---- Desktop: rendering everywhere ----
@@ -436,6 +483,18 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction('!document.querySelector(".chat-mention-card")');
   await shot(page.locator(".space-rail"), "pictures-rail-desktop.png");
+  await checkSquares(page, "desktop");
+
+  // Speaking rings around pictures follow the same rounded square (explicit style-state mock).
+  await page.locator(".channel-navigation .voice-stack").first().click();
+  await page.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
+  await checkRings(page);
+  await shot(page.locator(".channel-navigation"), "pictures-speaking-desktop.png");
+  await page.evaluate(() =>
+    document
+      .querySelectorAll(".avatar, .voice-stack-avatar")
+      .forEach((element) => element.classList.remove("speaking")),
+  );
 
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
@@ -533,6 +592,79 @@ try {
   await shot(manage, "pictures-space-dialog.png");
   await manage.getByRole("button", { name: "Close Manage space" }).click();
   await shot(page.locator(".space-rail"), "pictures-rail-updated.png");
+
+  // ---- Live updates: another person, yourself (another device) and the space change elsewhere ----
+  await page.waitForFunction(() => typeof window.pictureFixture.pushLive === "function");
+  const profilesFrame = await page.evaluate(() => window.pictureFixture.profilesFrame);
+  assert.deepEqual(Object.keys(profilesFrame).sort(), ["id", "kind", "type"], "subscribe with only a kind");
+  if (!(await page.locator("#space-member-list").count())) await page.locator(".member-list-toggle").click();
+  await page.evaluate(() => {
+    const live = (asset) => `https://cdn.test/assets/${asset}?exp=1792086400&sig=live`;
+    const push = window.pictureFixture.pushLive;
+    // Maya removes her picture and renames; Avery adds one.
+    push({
+      type: "profile.updated",
+      person: { id: "member000001", username: "maya_live", displayName: "Maya (renamed live)", avatarId: 31 },
+    });
+    push({
+      type: "profile.updated",
+      person: {
+        id: "member000004",
+        username: "avery",
+        displayName: "Avery (picture live)",
+        avatarId: 143,
+        avatarAsset: "stillpictur1",
+        avatarUrl: live("stillpictur1"),
+      },
+    });
+    push({
+      type: "space.updated",
+      space: {
+        id: "space1234567",
+        name: "Studio (renamed live)",
+        ownerId: "owner1234567",
+        iconAsset: "inviteicon01",
+        iconUrl: live("inviteicon01"),
+      },
+    });
+    push({ type: "space.updated", space: { id: "notmine12345", name: "Not a space you have", ownerId: "x" } });
+    // Your own account, changed on another device.
+    const self = {
+      username: "fixture_owner",
+      displayName: "Owner (renamed live)",
+      avatarId: 0,
+      avatarAsset: "gifpicture01",
+      avatarUrl: live("gifpicture01"),
+    };
+    window.pictureFixture.updateAccount(self);
+    push({ type: "profile.updated", person: { id: "owner1234567", ...self } });
+  });
+  const names = (selector) =>
+    page.evaluate((query) => [...document.querySelectorAll(query)].map((element) => element.textContent), selector);
+  await page.waitForFunction(
+    '[...document.querySelectorAll(".chat-author-name")].some((name) => name.textContent === "Maya (renamed live)") && [...document.querySelectorAll(".chat-author-name")].some((name) => name.textContent === "Owner (renamed live)")',
+  );
+  assert.ok((await names(".chat-author-name")).includes("Avery (picture live)"));
+  assert.ok((await names(".chat-reply-heading strong")).includes("Maya (renamed live)"), "nested reply author");
+  assert.ok((await names(".space-member-presence strong")).includes("Maya (renamed live)"), "member list");
+  await page.waitForFunction(
+    "!document.querySelector('.chat-avatar[aria-label=\"Open profile for Maya (renamed live)\"] .caper-picture')",
+  );
+  await page.waitForFunction(loaded('.chat-avatar[aria-label="Open profile for Avery (picture live)"]'));
+  await page.waitForFunction(loaded(".account-avatar"));
+  assert.equal(await page.locator(".account-name").textContent(), "Owner (renamed live)");
+  await page.waitForFunction(
+    'document.querySelector(".space-menu h1")?.textContent === "Studio (renamed live)" && !!document.querySelector(".space-rail-item:first-child .caper-picture img[src*=inviteicon01]")',
+  );
+  assert.ok(
+    (await page.locator(".space-rail-item:first-child button").getAttribute("aria-label")).startsWith(
+      "Studio (renamed live)",
+    ),
+  );
+  assert.equal(await page.locator(".space-rail-item").count(), 2, "an update for a space you don't have is ignored");
+  await page.waitForTimeout(300); // Let pictures finish arriving.
+  await shot(page, "pictures-live-desktop.png");
+  await checkSquares(page, "desktop after live updates");
   assert.deepEqual(problems, []);
   await desktop.close();
 
@@ -547,6 +679,12 @@ try {
   await phone.waitForFunction(loaded(".space-rail-item:first-child button"));
   await phone.waitForTimeout(400);
   await shot(phone, "pictures-narrow-browse.png");
+  await checkSquares(phone, "narrow");
+  await phone.locator(".channel-navigation .voice-stack").first().click();
+  await phone.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
+  await checkRings(phone);
+  await phone.waitForTimeout(300);
+  await shot(phone, "pictures-speaking-narrow.png");
   await narrow.close();
 
   // ---- Phone-width profile page and invite page ----
@@ -583,7 +721,7 @@ try {
   await shot(quiet, "pictures-reduced-motion.png");
   await calm.close();
   console.log(
-    "PASS: animated, still, broken and absent pictures; upload, GIF, errors and removal; space icons; narrow; reduced motion.",
+    "PASS: animated, still, broken and absent pictures; rounded squares and speaking rings; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
   );
 } finally {
   await browser.close();

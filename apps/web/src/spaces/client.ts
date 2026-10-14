@@ -1,4 +1,5 @@
 import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
+import { observeProfiles, profileRevision } from "../account/profiles.ts";
 import { directMessageErrors } from "./direct-errors.ts";
 
 /** `iconAsset`/`iconUrl`: the owner's custom icon; absent, the space shows its initial. */
@@ -61,12 +62,24 @@ export interface Person extends PersonPicture {
   avatarId?: number | null;
 }
 
+/** People in a response refresh live profile updates they postdate: there is no
+ * replay after a gateway reconnect, so refetched lists are the repair. */
+function withPeople<T>(response: Promise<T>, people: (value: T) => Iterable<Person | Member>): Promise<T> {
+  const since = profileRevision();
+  return response.then((value) => {
+    observeProfiles(people(value), since);
+    return value;
+  });
+}
+
 export function listPeople() {
-  return request<{ people: Person[] }>("/api/people");
+  return withPeople(request<{ people: Person[] }>("/api/people"), (value) => value.people);
 }
 
 export function listDirectConversations() {
-  return request<{ conversations: DirectConversation[] }>("/api/dms");
+  return withPeople(request<{ conversations: DirectConversation[] }>("/api/dms"), (value) =>
+    value.conversations.map((conversation) => conversation.peer),
+  );
 }
 
 export function createDirectConversation(username: string) {
@@ -340,7 +353,10 @@ export function listSpaces() {
 }
 
 export function getSpace(spaceId: string) {
-  return request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) });
+  return withPeople(
+    request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) }),
+    (value) => value.members,
+  );
 }
 
 export function createSpace(name: string) {
@@ -382,7 +398,7 @@ export function deleteChannel(spaceId: string, channelId: string) {
 }
 
 export function listSpaceMembers(spaceId: string) {
-  return request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/members`);
+  return withPeople(request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/members`), (value) => value.members);
 }
 
 export function addSpaceMember(spaceId: string, username: string) {
@@ -397,7 +413,10 @@ export function removeSpaceMember(spaceId: string, memberId: string) {
 }
 
 export function listSpaceInvitations(spaceId: string) {
-  return request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/invitations`);
+  return withPeople(
+    request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/invitations`),
+    (value) => value.members,
+  );
 }
 
 export function cancelSpaceInvitation(spaceId: string, memberId: string) {
@@ -413,8 +432,11 @@ export function declineSpaceInvitation(spaceId: string) {
 }
 
 export function listChannelMembers(spaceId: string, channelId: string) {
-  return request<{ members: Member[]; invitations?: Member[] }>(
-    `/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`,
+  return withPeople(
+    request<{ members: Member[]; invitations?: Member[] }>(
+      `/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`,
+    ),
+    (value) => [...value.members, ...(value.invitations ?? [])],
   );
 }
 

@@ -1,4 +1,6 @@
-/* A custom picture over the mascot or initial beneath it (see Picture.tsx). */
+/* A custom picture over the mascot or initial beneath it (see Picture.tsx). It
+   takes its container's shape: rounded squares (--radius-avatar) for people,
+   the tile's corners for space icons. */
 .caper-picture {
   position: absolute;
   inset: 0;
@@ -16,10 +18,6 @@
   height: 100%;
   object-fit: cover;
   object-position: center;
-}
-/* Profile pictures are round like the mascot artwork, on every client. */
-.caper-picture[data-round] {
-  border-radius: 50%;
 }
 /* The mascot or initial shows until the picture has loaded. */
 .caper-picture[data-state="loading"] {
