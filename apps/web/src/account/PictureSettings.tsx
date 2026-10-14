@@ -46,6 +46,16 @@ function PictureEditor({
   const frame = useRef<HTMLDivElement>(null);
   const menuId = useId();
   const busy = phase.kind !== "idle";
+  // The edit button is disabled while a request runs and the menu item that
+  // started it is gone, so focus falls to the page. Keyboard users continue
+  // from the edit button instead of the top of the page or dialog.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (busy || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body)
+      frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
+  }, [busy]);
   const offersMenu = removable;
 
   // A click or tap anywhere else closes the menu.
@@ -59,6 +69,7 @@ function PictureEditor({
   }, [menu]);
 
   const choose = async (file: File) => {
+    refocus.current = true;
     setError(undefined);
     setDone(undefined);
     setPhase({ kind: "preparing" });
@@ -74,6 +85,7 @@ function PictureEditor({
   };
 
   const remove = async () => {
+    refocus.current = true;
     setError(undefined);
     setDone(undefined);
     setPhase({ kind: "removing" });
