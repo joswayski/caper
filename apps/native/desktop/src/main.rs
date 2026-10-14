@@ -11927,6 +11927,13 @@ impl CaperApp {
             },
         );
         if open_profile.on_hover_text(profile_label).clicked() {
+            // As on web, the form opens with the saved profile: a name changed
+            // on another device (`profile.updated`) or an abandoned edit must
+            // not be shown, or saved back over the newer one.
+            if let Some(account) = &self.account {
+                self.username = account.username.clone().unwrap_or_default();
+                self.display_name = account.display_name.clone().unwrap_or_default();
+            }
             self.dialog = Some(if self.account.is_some() {
                 Dialog::Profile
             } else {
@@ -33328,7 +33335,7 @@ mod tests {
     #[test]
     fn live_profile_updates_reach_every_copy_of_that_person_and_your_account() {
         use crate::gateway::ProfileEvent;
-        let (_context, mut app) = fixture("parity-pictures");
+        let (context, mut app) = fixture("parity-pictures");
         let url = "https://cdn.caper.chat/assets/maya-new?exp=1&sig=x".to_owned();
         let maya = |picture: Option<&str>| model::Person {
             id: "fixture-maya".into(),
@@ -33438,6 +33445,19 @@ mod tests {
                 .filter(|message| message.author.id == "fixture-owner")
                 .all(|message| message.author.name == "Owner Two"
                     && message.author.avatar_asset.as_deref() == Some("own-new"))
+        );
+        // Edit profile then opens with the newer saved names, not the form's
+        // older values (which Save would otherwise write back).
+        app.username = "abandoned_edit".into();
+        app.display_name = "Abandoned".into();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let button = node_bounds(&output, "Edit profile for Owner Two").expect("profile button");
+        click(&mut app, &context, button.center());
+        assert!(matches!(app.dialog, Some(Dialog::Profile)));
+        assert_eq!(
+            (app.username.as_str(), app.display_name.as_str()),
+            ("owner_two", "Owner Two")
         );
     }
 
