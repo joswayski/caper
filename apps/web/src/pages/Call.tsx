@@ -1328,6 +1328,12 @@ export default function Call({
     channelId === channel?.id || !channelId
       ? (channel?.name ?? "general")
       : (voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice");
+  // The call's channel and space as they are named now: renames here, or live
+  // from elsewhere, reach the dock as they reach the channel list.
+  const voiceHere = !!voiceChannel && voiceChannel.spaceId === spaceId;
+  const voiceChannelName =
+    (voiceHere && voiceChannels?.find((item) => item.id === voiceChannel.id)?.name) || voiceChannel?.name;
+  const voiceSpaceName = (voiceHere && space?.name) || voiceChannel?.spaceName;
   // Keep the active call's roster with its channel. If navigation hides that
   // channel, render the same roster above the persistent audio controls.
   let rosterPlaced = false;
@@ -1610,8 +1616,8 @@ export default function Call({
                           {connected ? "Connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}
                         </strong>
                         <small>
-                          {voiceChannel?.name ?? initialHistory?.channel.name ?? "general"} /{" "}
-                          {voiceChannel?.spaceName ?? initialHistory?.space.name ?? "Public demo"}
+                          {voiceChannelName ?? initialHistory?.channel.name ?? "general"} /{" "}
+                          {voiceSpaceName ?? initialHistory?.space.name ?? "Public demo"}
                         </small>
                       </span>
                     </div>
@@ -1621,7 +1627,7 @@ export default function Call({
                 {connected && !rosterPlaced && (
                   <div className="voice-occupants voice-pinned" data-open="" data-active="">
                     <div className="voice-occupants-inner">
-                      {renderRoster(state.participants, true, voiceChannel?.name ?? "general")}
+                      {renderRoster(state.participants, true, voiceChannelName ?? "general")}
                     </div>
                   </div>
                 )}
