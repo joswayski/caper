@@ -57,8 +57,8 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return image
     }
 
-    /// Animations are decoded whole for the viewer within these limits;
-    /// larger ones show their first frame.
+    /// Bound decode work and retained pixels. Lower playback resolution when
+    /// needed instead of turning an otherwise ordinary GIF into a still.
     private static let maxAnimationFrames = 600
     private static let maxAnimationBytes = 192 * 1024 * 1024
 
@@ -70,23 +70,40 @@ final class AttachmentImageLoader: @unchecked Sendable {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw AttachmentLoadError.undecodable }
         let count = CGImageSourceGetCount(source)
         if count > 1, count <= Self.maxAnimationFrames, Self.frameDelay(source, at: 0) != nil {
-            let frameOptions: [CFString: Any] = [
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-            ]
-            var images: [CGImage] = []
-            var durations: [Double] = []
-            var bytes = 0
-            for index in 0..<count {
+            let byteLimit = animationByteLimit ?? Self.maxAnimationBytes
+            var edge = maxPixelSize
+            while edge > 0 {
                 try Task.checkCancellation()
-                guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
-                bytes += image.bytesPerRow * image.height
-                guard bytes <= (animationByteLimit ?? Self.maxAnimationBytes) else { break }
-                images.append(image)
-                durations.append(MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: index)))
+                let frameOptions: [CFString: Any] = [
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: edge,
+                ]
+                guard let first = CGImageSourceCreateThumbnailAtIndex(source, 0, frameOptions as CFDictionary) else { break }
+                let firstBytes = first.bytesPerRow * first.height
+                if firstBytes > byteLimit / count {
+                    // Use the actual row stride, not width × 4; ImageIO may
+                    // align rows or use a wider pixel representation.
+                    let scale = sqrt(Double(max(0, byteLimit / count)) / Double(firstBytes))
+                    edge = min(edge - 1, Int(Double(max(first.width, first.height)) * scale))
+                    continue
+                }
+                var images = [first]
+                var durations = [MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: 0))]
+                var bytes = firstBytes
+                for index in 1..<count {
+                    try Task.checkCancellation()
+                    guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, frameOptions as CFDictionary) else { break }
+                    bytes += image.bytesPerRow * image.height
+                    guard bytes <= byteLimit else { break }
+                    images.append(image)
+                    durations.append(MediaViewerPolicy.frameDuration(Self.frameDelay(source, at: index)))
+                }
+                if images.count == count { return AttachmentOriginal(images: images, durations: durations) }
+                // If later frames need more space than the first, retry at a
+                // smaller size. Never loop only the prefix that happened to fit.
+                edge /= 2
             }
-            if images.count == count { return AttachmentOriginal(images: images, durations: durations) }
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,

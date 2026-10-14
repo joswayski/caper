@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
@@ -79,12 +80,20 @@ test("each homepage offers only its own platform: direct links except for the Li
     ["linux-deb", [repository]],
     [null, [repository]],
   ] as const) {
+    const router = createRouter({
+      routeTree: createRootRoute(),
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+      isServer: true,
+    });
     const markup = renderToStaticMarkup(
-      createElement(Home, {
-        account: null,
-        initialNow: 0,
-        latestChanges: [],
-        downloadPlatform: platform,
+      createElement(RouterContextProvider, {
+        router,
+        children: createElement(Home, {
+          account: null,
+          initialNow: 0,
+          latestChanges: [],
+          downloadPlatform: platform,
+        }),
       }),
     );
     const actions = markup.slice(

@@ -116,20 +116,30 @@ pub const THUMBNAIL_EDGE: u32 = 720;
 type ImageFrames = Vec<(egui::ColorImage, Duration)>;
 
 /// GIFs keep every composited frame and its delay, never the uploaded poster.
-/// Oversized animations fall back to one still instead of exhausting memory
-/// or looping a truncated prefix. Decode runs on the existing fetch worker.
+/// Shrink playback frames to fit the retained-memory budget without freezing
+/// normal GIFs. Decode runs on the existing fetch worker.
 fn decode_gif(bytes: &[u8]) -> Option<ImageFrames> {
     use image::{AnimationDecoder, ImageDecoder};
+    const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
     let mut decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(32 * 1024 * 1024);
     decoder.set_limits(limits).ok()?;
-    let mut frames = Vec::new();
+    let (width, height) = decoder.dimensions();
+    let denominator = width.max(height).max(THUMBNAIL_EDGE);
+    let mut width = (width * THUMBNAIL_EDGE / denominator).max(1);
+    let mut height = (height * THUMBNAIL_EDGE / denominator).max(1);
+    let mut frames: Vec<(image::RgbaImage, Duration)> = Vec::new();
     let mut total = 0;
     for frame in decoder.into_frames() {
         let frame = frame.ok()?;
+        if frames.len() >= 600 {
+            // Keep the decode-work ceiling; never loop a truncated prefix.
+            frames.truncate(1);
+            break;
+        }
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = Duration::from_millis(u64::from(numerator / denominator.max(1)));
         let delay = if delay < Duration::from_millis(20) {
@@ -137,25 +147,39 @@ fn decode_gif(bytes: &[u8]) -> Option<ImageFrames> {
         } else {
             delay
         };
-        let mut image = image::DynamicImage::ImageRgba8(frame.into_buffer());
-        if image.width() > THUMBNAIL_EDGE || image.height() > THUMBNAIL_EDGE {
-            image = image.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE);
+        let mut image = frame.into_buffer();
+        if image.dimensions() != (width, height) {
+            image = image::imageops::thumbnail(&image, width, height);
         }
-        let image = image.to_rgba8();
+        while total + image.len() > MAX_FRAME_BYTES {
+            // GIF exposes no frame count up front. Geometric resizing bounds
+            // retained pixels in one decode pass, preserving every delay.
+            width = (width / 2).max(1);
+            height = (height / 2).max(1);
+            total = 0;
+            for (previous, _) in &mut frames {
+                *previous = image::imageops::thumbnail(previous, width, height);
+                total += previous.len();
+            }
+            image = image::imageops::thumbnail(&image, width, height);
+        }
         total += image.len();
-        if total > 32 * 1024 * 1024 || frames.len() >= 600 {
-            frames.truncate(1);
-            return Some(frames);
-        }
-        frames.push((
-            egui::ColorImage::from_rgba_unmultiplied(
-                [image.width() as usize, image.height() as usize],
-                image.as_raw(),
-            ),
-            delay,
-        ));
+        frames.push((image, delay));
     }
-    (!frames.is_empty()).then_some(frames)
+    (!frames.is_empty()).then(|| {
+        frames
+            .into_iter()
+            .map(|(image, delay)| {
+                (
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    ),
+                    delay,
+                )
+            })
+            .collect()
+    })
 }
 
 /// Decode a still for display only, within memory limits.
@@ -862,6 +886,79 @@ mod tests {
             now + Duration::from_millis(1100),
         );
         assert_eq!(color(), egui::Color32::RED);
+    }
+
+    #[test]
+    fn gif_tiles_keep_the_whole_animation_when_full_size_frames_exceed_the_budget() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for index in 0..60 {
+                let color = match index {
+                    0 => [255, 0, 0, 255],
+                    59 => [0, 0, 255, 255],
+                    _ => [0, 255, 0, 255],
+                };
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(720, 400, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(if index == 59 { 800 } else { 100 }, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let frames = decode_gif(&bytes).unwrap();
+        assert_eq!(frames.len(), 60, "a normal GIF must not become a still");
+        assert!(
+            frames
+                .iter()
+                .map(|(frame, _)| frame.pixels.len() * 4)
+                .sum::<usize>()
+                <= 32 * 1024 * 1024
+        );
+        let context = egui::Context::default();
+        let mut media = Media::new(None);
+        let url = signed(NOW);
+        media.gif(&context, "asset1", Some(&url), true, Instant::now());
+        media.poll(&context);
+        media
+            .sender
+            .send(Fetched {
+                generation: media.generation,
+                id: "asset1".into(),
+                result: Ok(frames),
+            })
+            .unwrap();
+        media.poll(&context);
+        let now = Instant::now();
+        for (elapsed, playing, expected) in [
+            (0, true, egui::Color32::RED),
+            (5910, true, egui::Color32::BLUE),
+            (6710, true, egui::Color32::RED),
+            (6810, true, egui::Color32::GREEN),
+            (6810, false, egui::Color32::RED),
+        ] {
+            let ImageState::Ready(texture) = media.gif(
+                &context,
+                "asset1",
+                Some(&url),
+                playing,
+                now + Duration::from_millis(elapsed),
+            ) else {
+                panic!("GIF must load");
+            };
+            let delta = context.tex_manager().write().take_delta();
+            let egui::ImageData::Color(image) = &delta
+                .set
+                .iter()
+                .find(|(id, _)| *id == texture)
+                .unwrap()
+                .1
+                .image;
+            assert_eq!(image.pixels[0], expected, "frame at {elapsed}ms");
+        }
     }
 
     #[test]
