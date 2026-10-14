@@ -1014,14 +1014,19 @@ async fn complete(
         .map_err(database_error)?
         .rows_affected()
         == 1;
-    // Only the first completion applies a picture, so a late retry can never
-    // undo a newer change.
-    if first
-        && purpose.is_picture()
-        && !pictures::apply(&mut tx, purpose, &asset, principal.user.id, row.space_id)
-            .await
-            .map_err(database_error)?
-    {
+    // Only the first completion applies a picture, and only when no picture
+    // chosen after it has completed, so neither a late retry nor a slower
+    // earlier upload can undo a newer change.
+    let applied = if first && purpose.is_picture() {
+        Some(
+            pictures::apply(&mut tx, purpose, &asset, principal.user.id, row.space_id)
+                .await
+                .map_err(database_error)?,
+        )
+    } else {
+        None
+    };
+    if applied == Some(pictures::Outcome::Gone) {
         // The space was deleted or changed hands while this was uploading.
         sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=$1")
             .bind(&asset)
@@ -1032,7 +1037,7 @@ async fn complete(
         return Err(crate::spaces::not_found());
     }
     tx.commit().await.map_err(database_error)?;
-    if first {
+    if applied == Some(pictures::Outcome::Applied) {
         match (purpose, row.space_id) {
             (Purpose::Avatar, _) => crate::profiles::account_changed(&state, principal.user.id),
             (Purpose::SpaceIcon, Some(space)) => crate::profiles::space_changed(&state, space),

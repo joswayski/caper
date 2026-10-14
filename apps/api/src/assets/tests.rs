@@ -1268,6 +1268,40 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         complete_as(&owner, &first_id).await.unwrap().0["account"]["avatarAsset"],
         second_id.as_str()
     );
+    // Uploads finishing out of order: the later choice wins even when the
+    // earlier one completes last, and the earlier one is kept, not discarded.
+    let mut chosen = Vec::new();
+    for _ in 0..2 {
+        let (_, Json(reserved)) =
+            create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+                .await
+                .unwrap();
+        put(&reserved, "upload", &photo).await;
+        chosen.push(reserved["id"].as_str().unwrap().to_owned());
+    }
+    let [earlier, later] = chosen.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(
+        complete_as(&owner, later).await.unwrap().0["account"]["avatarAsset"],
+        later.as_str()
+    );
+    let done = complete_as(&owner, earlier).await.unwrap().0;
+    assert_eq!(done["id"], earlier.as_str());
+    assert_eq!(done["account"]["avatarAsset"], later.as_str());
+    let (current, kept): (Option<String>, bool) = sqlx::query_as(
+        "SELECT u.avatar_asset, a.uploaded_at IS NOT NULL AND a.deleted_at IS NULL
+         FROM public.users u, public.assets a WHERE u.id=$1 AND a.external_id=$2",
+    )
+    .bind(owner.user.id)
+    .bind(earlier)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(current.as_deref(), Some(later.as_str()));
+    assert!(kept);
+    // The rest of this test follows the current picture.
+    let second_id = later.clone();
     // Applied pictures cannot be cancelled; pending ones can.
     assert_eq!(
         cancel(

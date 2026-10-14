@@ -199,15 +199,63 @@ pub(crate) fn fits(content_type: &str, head: &[u8]) -> bool {
     })
 }
 
-/// Applies a just-completed picture. `false` when its space is no longer the
-/// uploader's (or their account is gone), so the caller discards the upload.
+/// What completing a picture did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Applied,
+    /// A picture reserved after this one already completed, so this one is
+    /// kept like a replaced picture without undoing the newer choice.
+    Superseded,
+    /// The space is no longer the uploader's (or their account is gone), so
+    /// the caller discards the upload.
+    Gone,
+}
+
+/// Applies a just-completed picture unless a newer one already was.
 pub(crate) async fn apply(
     tx: &mut sqlx::PgConnection,
     purpose: Purpose,
     asset: &str,
     owner: i64,
     space: Option<i64>,
-) -> Result<bool, sqlx::Error> {
+) -> Result<Outcome, sqlx::Error> {
+    // Lock the account or space first: concurrent completions then check for a
+    // newer picture one after another, each seeing the other's committed row.
+    let locked = match (purpose, space) {
+        (Purpose::Avatar, _) => {
+            sqlx::query("SELECT 1 FROM public.users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE")
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
+        (Purpose::SpaceIcon, Some(space)) => sqlx::query(
+            "SELECT 1 FROM public.spaces WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo FOR UPDATE",
+        )
+        .bind(space)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?,
+        _ => None,
+    };
+    if locked.is_none() {
+        return Ok(Outcome::Gone);
+    }
+    // Reservation order is the order the person chose pictures in. A picture
+    // that completed was applied (or discarded and deleted), and a removal
+    // after it must not be undone either.
+    let newer: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM public.assets n JOIN public.assets a ON a.external_id=$1
+         WHERE n.owner_id=$2 AND n.purpose=a.purpose AND n.space_id IS NOT DISTINCT FROM a.space_id
+           AND n.uploaded_at IS NOT NULL AND n.deleted_at IS NULL
+           AND (n.created_at,n.id) > (a.created_at,a.id))",
+    )
+    .bind(asset)
+    .bind(owner)
+    .fetch_one(&mut *tx)
+    .await?;
+    if newer {
+        return Ok(Outcome::Superseded);
+    }
     let applied = match (purpose, space) {
         (Purpose::Avatar, _) => sqlx::query(
             "UPDATE public.users SET avatar_asset=$1, updated_at=now() WHERE id=$2 AND deleted_at IS NULL",
@@ -224,9 +272,13 @@ pub(crate) async fn apply(
         .bind(owner)
         .execute(&mut *tx)
         .await?,
-        _ => return Ok(false),
+        _ => return Ok(Outcome::Gone),
     };
-    Ok(applied.rows_affected() == 1)
+    Ok(if applied.rows_affected() == 1 {
+        Outcome::Applied
+    } else {
+        Outcome::Gone
+    })
 }
 
 /// What a completed picture upload returns besides its description: the
