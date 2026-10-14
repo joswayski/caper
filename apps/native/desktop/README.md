@@ -116,11 +116,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and no Caper credentials, confirms (retrying while storage has not seen it
   yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
   errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. The conversation composer does not paste images. Profile
-  composers' Attach menu has **Paste from clipboard** for native copied files
+  message keeps. Channel, thread and profile composers attach copied files
+  and images pasted with Ctrl+V; profile composers' Attach menu also has
+  **Paste from clipboard**. Pasting works for native copied files
   and images on Windows and X11/XWayland, and on Wayland compositors with the
-  data-control clipboard protocol: egui delivers no event for an image-only
-  Ctrl+V. Channel, thread and profile composers have an Emoji button beside
+  data-control clipboard protocol (an image-only Ctrl+V, which egui-winit
+  swallows, is re-sent on key release). Channel, thread and profile composers have an Emoji button beside
   the `:name:` shortcut.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
@@ -137,8 +138,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   pending invitees stay listed as "Already invited". Rows, like `@` popup rows, show the avatar and display name with
   `@username` beneath it. Clicking or Enter fills the exact username without
   submitting; Up/Down move and Escape closes the list, not the dialog.
-- The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
-  popup; the thread reply box and message editor do not yet. Space channels
+- The channel/DM and thread reply composers suggest after `:` (emoji) and `@`
+  (people) in one popup; the message editor does not, as on web. Space channels
   offer the open space's loaded members except you, then `@everyone`/`@here`.
   DMs, self-notes included, offer the people you share a space or DM with
   (`GET /api/people`, fetched when a DM opens); until that loads, only the
