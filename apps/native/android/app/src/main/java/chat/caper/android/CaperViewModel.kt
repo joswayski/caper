@@ -50,6 +50,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var chatToken: String? = null
     private var chatAuthor: ChatAuthor? = null
     private var gateway: GatewayClient? = null
+    /** The account-wide profiles feed: open while signed in, home and in the foreground. */
+    private var profileFeed: ProfileFeedClient? = null
+    private var profileFeedAccount = -1L
     private var gatewayStatus: Job? = null
     private var typingExpiry: Job? = null
     // Your own typing (web's setTyping): the wanted state, what the gateway last heard and when, and the idle stop.
@@ -197,6 +200,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     delay(RESTORE_LIMIT_MS)
                     if (requestAccountGeneration == accountGeneration) finishRestoring()
                 }
+                syncProfileFeed()
                 refreshBlocks()
                 refreshNotificationSettings()
                 createChatSession(requestAccountGeneration)
@@ -297,6 +301,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(attachmentDrafts = emptyMap(), attachmentErrors = emptyMap(), pictureSaves = emptyMap())
         pictureJobs.values.forEach { it.cancel() }; pictureJobs.clear()
         accountToken = null
+        syncProfileFeed()
         chatToken = null
         chatAuthor = null
         channelReads.clear(); ++unreadRevision
@@ -1229,6 +1234,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun setForeground(active: Boolean) {
         foreground = active
         publishForegroundConversation()
+        syncProfileFeed()
         if (!active) return
         refreshDirectConversations()
         refreshExpiringUrls()
@@ -1528,8 +1534,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun reportActivity() { gateway?.reportActivity() }
+    fun reportActivity() { gateway?.reportActivity(); profileFeed?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
+
+    /**
+     * Opens the profiles feed once signed in and home, and closes it on logout or in the
+     * background (the foreground refreshes repair what it missed meanwhile). A new sign-in
+     * gets a new socket; events from an earlier one are dropped.
+     */
+    private fun syncProfileFeed() {
+        val token = accountToken
+        val wanted = foreground && token != null && mutable.value.account != null && mutable.value.screen == SessionScreen.Home
+        if (wanted && profileFeed != null && profileFeedAccount == accountGeneration) return
+        profileFeed?.close(); profileFeed = null
+        if (!wanted || token == null) return
+        val request = accountGeneration
+        profileFeedAccount = request
+        profileFeed = ProfileFeedClient(api.baseUrl, token,
+            onProfile = { event -> viewModelScope.launch { if (request == accountGeneration) receiveProfile(event) } },
+        ).also { it.start() }
+    }
+
     /** Web: a start goes out at most every [TYPING_INTERVAL_MS], and that long without typing sends the stop. */
     fun setTyping(active: Boolean) {
         typingIdle?.cancel(); typingIdle = null
@@ -2200,12 +2225,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
         durableReplayCursor = cursor
         markConversationRead(channel, cursor)
-        val profileAccount = accountGeneration
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
-            // Account-wide, so it outlives a channel switch within this sign-in; no replay (refetches repair).
-            profiles = accountToken != null,
-            onProfile = { event -> viewModelScope.launch { if (profileAccount == accountGeneration) receiveProfile(event) } },
+            // Profile and space changes come from the account-wide [profileFeed], not per conversation.
             onMessage = { value -> viewModelScope.launch {
                 if (generation == request) {
                     durableReplayCursor = value.seq
@@ -3094,6 +3116,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         gateway?.close()
+        profileFeed?.close()
         ForegroundConversation.id = null
         super.onCleared()
     }
