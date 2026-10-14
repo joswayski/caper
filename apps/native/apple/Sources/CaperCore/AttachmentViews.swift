@@ -888,6 +888,7 @@ private struct MediaViewer: View {
     let close: () -> Void
     @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
@@ -1048,7 +1049,8 @@ private struct MediaViewer: View {
     private func move(_ delta: Int, count: Int) {
         let next = MediaViewerPolicy.step(index, by: delta, count: count)
         guard next != index else { return }
-        withAnimation(.easeOut(duration: 0.2)) { index = next }
+        // Reduce Motion switches files in place, as web's viewer does.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { index = next }
     }
 }
 
@@ -1297,7 +1299,8 @@ private struct MediaViewerImage: View {
             .updating($pinch) { value, state, _ in state = value.magnification }
             .onEnded { value in
                 let next = min(MediaViewerPolicy.maxZoom, max(1, scale * value.magnification))
-                withAnimation(.easeOut(duration: 0.2)) {
+                // Reduce Motion settles zoom without easing (web drops the transition).
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     scale = next
                     offset = next > 1 ? MediaViewerPolicy.clampedOffset(offset, scale: next, fitted: fitted, container: container) : .zero
                 }
@@ -1310,14 +1313,14 @@ private struct MediaViewerImage: View {
             .updating($drag) { value, state, _ in state = value.translation }
             .onEnded { value in
                 let moved = CGSize(width: offset.width + value.translation.width, height: offset.height + value.translation.height)
-                withAnimation(.easeOut(duration: 0.15)) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
                     offset = MediaViewerPolicy.clampedOffset(moved, scale: scale, fitted: fitted, container: container)
                 }
             }
     }
 
     private func toggleZoom(at point: CGPoint, fitted: CGSize, container: CGSize) {
-        withAnimation(.easeOut(duration: 0.2)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             if scale > 1 {
                 scale = 1
                 offset = .zero

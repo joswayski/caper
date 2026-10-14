@@ -5287,6 +5287,7 @@ private struct ReactionTooltipBubble: View {
 /// Who reacted, by emoji: tabs in chip order, then each person.
 private struct ReactorsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var chat: ChatModel
     let messageID: String
     let viewerID: String?
@@ -5366,7 +5367,7 @@ private struct ReactorsSheet: View {
                 .padding(.horizontal, 12)
             }
             .onAppear { proxy.scrollTo(selected, anchor: .center) }
-            .onChange(of: selected) { _, emoji in withAnimation { proxy.scrollTo(emoji, anchor: .center) } }
+            .onChange(of: selected) { _, emoji in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo(emoji, anchor: .center) } }
         }
     }
 
