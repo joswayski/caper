@@ -70,7 +70,10 @@ async fn send_forward(
     let chat = enabled(&state)?;
     let payload = persist_forward(&chat.pool, &channel, sender_token(&headers)?, input).await?;
     chat.wake.notify_one();
-    Ok(Json(crate::chat::with_pictures(&chat.pool, payload).await))
+    Ok(Json(assets::sign_attachments(
+        crate::chat::with_pictures(&chat.pool, payload).await,
+        chat.cdn.as_deref(),
+    )))
 }
 
 // Match membership mutations' space -> channel order. Opposite-direction
@@ -341,13 +344,23 @@ async fn thread(
     replies.truncate(PAGE as usize);
     replies.reverse();
     hydrate(&mut tx, &mut replies).await?;
-    let mut body =
-        [json!({"root":root,"messages":replies,"cursor":head,"hasMore":more,"source":source})];
-    crate::pictures::enrich_people(&mut *tx, &mut body)
-        .await
-        .map_err(|_| crate::chat::unavailable())?;
-    let [body] = body;
-    Ok(Json(body))
+    // Release the locks before reading assets on another pooled connection.
+    drop(tx);
+    // The root, replies and source excerpt leave like history does: current
+    // pictures, deleted files marked, and fresh attachment URLs.
+    let mut messages = replies;
+    messages.push(root);
+    let excerpt = source.get_mut("message").map(Value::take);
+    let has_excerpt = excerpt.is_some();
+    messages.extend(excerpt);
+    deliver(&chat.pool, chat.cdn.as_deref(), &mut messages).await?;
+    if has_excerpt {
+        source["message"] = messages.pop().unwrap_or_default();
+    }
+    let root = messages.pop().unwrap_or_default();
+    Ok(Json(
+        json!({"root":root,"messages":messages,"cursor":head,"hasMore":more,"source":source}),
+    ))
 }
 
 /// Project source edits, reactions and replies into destination replay logs.

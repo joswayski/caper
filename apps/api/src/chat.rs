@@ -730,7 +730,11 @@ async fn set_pin(
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(event))
+    // The pinned message leaves like any other: current pictures, fresh URLs.
+    Ok(Json(assets::sign_attachments(
+        with_pictures(&chat.pool, event).await,
+        chat.cdn.as_deref(),
+    )))
 }
 
 /// Single pre-publication boundary. Future replacement rules run here before

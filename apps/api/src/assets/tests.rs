@@ -660,6 +660,76 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             .unwrap()
             .contains(&format!("/assets/{doc_id}?exp="))
     );
+    // Pin and forward responses carry the message with fresh URLs too, like
+    // a send's: clients keep them for the pinned list and the new forward.
+    let app = crate::app(state.clone());
+    let chat_request = |method: &str, path: String, body: Value| {
+        let app = app.clone();
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("x-caper-chat-token", "owner-chat")
+            .header("authorization", "Bearer owner-account")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        async move {
+            let response = tower::ServiceExt::oneshot(app, request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        }
+    };
+    let message_id = message["id"].as_str().unwrap();
+    let (status, pinned) = chat_request(
+        "PUT",
+        format!("/api/chat/channels/{channel}/messages/{message_id}/pin"),
+        json!({"active": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pinned}");
+    assert!(
+        pinned["message"]["content"]["attachments"][1]["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/assets/{doc_id}?exp="))
+    );
+    let (status, forwarded) = chat_request(
+        "POST",
+        format!("/api/chat/channels/{channel}/forwards"),
+        json!({"sourceChannelId": channel, "sourceMessageId": message_id,
+            "clientMessageId": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{forwarded}");
+    assert!(
+        forwarded["forward"]["message"]["content"]["attachments"][1]["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/assets/{doc_id}?exp="))
+    );
+    // So does the forwarded conversation the forward opens.
+    let (status, conversation) = chat_request(
+        "GET",
+        format!(
+            "/api/chat/channels/{channel}/forwards/{}/thread",
+            forwarded["id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{conversation}");
+    for shown in [&conversation["root"], &conversation["source"]["message"]] {
+        assert!(
+            shown["content"]["attachments"][0]["previewUrl"]
+                .as_str()
+                .unwrap()
+                .contains("/preview/"),
+            "{shown}"
+        );
+    }
 
     let refreshed = urls(
         State(state.clone()),
