@@ -14656,9 +14656,9 @@ impl CaperApp {
             .forward
             .as_ref()
             .is_none_or(|forward| forward.message.is_some());
-        // Web's hover actions: Reply in thread (outside threads), Reply and Add
-        // reaction for members, and ⋯ always, read-only previews included.
-        let action_count = 1 + usize::from(!in_thread) + if can_react { 2 } else { 0 };
+        // Web's hover actions: Reply in thread (outside threads), Reply for
+        // members, then Add reaction (disabled in read-only previews) and ⋯.
+        let action_count = 2 + usize::from(!in_thread) + usize::from(can_react);
         let action_width = action_count as f32 * 24.0 + 6.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
@@ -14966,7 +14966,7 @@ impl CaperApp {
                         egui::Sense::click(),
                     ))
                 };
-                // Replying and reacting need membership.
+                // Replying needs membership; Add reaction stays, disabled.
                 let reply_message = can_react.then(|| {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     ui.interact(
@@ -14979,12 +14979,16 @@ impl CaperApp {
                         },
                     )
                 });
-                let emoji = can_react.then(|| {
+                let emoji = Some({
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     ui.interact(
                         rect,
                         ui.id().with((&message.id, "reaction-action")),
-                        egui::Sense::click(),
+                        if can_react {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        },
                     )
                 });
                 let more_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
@@ -15077,7 +15081,11 @@ impl CaperApp {
                             ui.painter(),
                             emoji.rect.shrink(5.0),
                             NavIcon::SmilePlus,
-                            icon(emoji, picker_open),
+                            if can_react {
+                                icon(emoji, picker_open)
+                            } else {
+                                MUTED.gamma_multiply(0.5)
+                            },
                         );
                     }
                     paint_icon(
@@ -15118,13 +15126,17 @@ impl CaperApp {
                 let more = more.on_hover_text("More actions");
                 if let Some(emoji) = emoji {
                     emoji.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add reaction")
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            can_react,
+                            "Add reaction",
+                        )
                     });
-                    if emoji.hovered() || emoji.has_focus() {
+                    if can_react && (emoji.hovered() || emoji.has_focus()) {
                         self.reaction_textures
                             .preload(ui.ctx(), emoji::CATEGORIES[0].0);
                     }
-                    if emoji.on_hover_text("Add reaction").clicked() {
+                    if emoji.on_hover_text("Add reaction").clicked() && can_react {
                         self.reaction_picker = Some(message.id.clone());
                         self.composer_emoji = None;
                         self.reaction_search.clear();
@@ -25181,7 +25193,19 @@ mod tests {
             assert!(!shown.contains(&label), "previews offer no {label}");
         }
         assert!(node_bounds(&preview, "React with 👍").is_none());
-        assert!(node_bounds(&preview, "Add reaction").is_none());
+        // The hover bar keeps a disabled Add reaction, as on web; nothing can react.
+        let nodes = &preview
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        assert!(
+            !nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Add reaction") && !node.is_disabled()),
+            "previews offer no Add reaction"
+        );
     }
 
     #[test]
@@ -28163,6 +28187,20 @@ mod tests {
         );
         click(&mut app, &context, chip);
         assert!(app.pending_reactions.is_empty(), "previews cannot react");
+        // As on web, the hover bar keeps Add reaction, disabled.
+        context.enable_accesskit();
+        let output = timed_frame(
+            &mut app,
+            &context,
+            2.0,
+            vec![egui::Event::PointerMoved(chip)],
+        );
+        let add = node_center(&output, "Add reaction");
+        click(&mut app, &context, add);
+        assert!(
+            app.reaction_picker.is_none(),
+            "previews cannot open the picker"
+        );
     }
 
     #[test]
