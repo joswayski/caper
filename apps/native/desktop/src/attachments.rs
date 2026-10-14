@@ -27,6 +27,12 @@ const REFRESH_BACKOFF: Duration = Duration::from_secs(5 * 60);
 pub const MAX_REFRESH_IDS: usize = 100;
 const MAX_FETCHES: usize = 4;
 const MAX_TEXTURES: usize = 200;
+/// GIF frames not drawn for this long are released (a tile scrolled out of
+/// view and back soon after keeps playing without a new download).
+const GIF_IDLE: Duration = Duration::from_secs(10);
+/// Retained GIF frame pixels across every tile (each GIF decodes to at most
+/// 32 MiB); the least recently drawn give way first.
+const GIF_BUDGET: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -302,6 +308,9 @@ struct Animation {
     frames: ImageFrames,
     started: Instant,
     shown: usize,
+    /// When its tile last drew it.
+    seen: Instant,
+    bytes: usize,
 }
 
 impl Animation {
@@ -499,6 +508,7 @@ impl Media {
         }) = self.images.get_mut(id)
         {
             *used = self.frame;
+            animation.seen = now;
             let (index, next) = if playing {
                 animation.frame_at(now.saturating_duration_since(animation.started))
             } else {
@@ -562,6 +572,10 @@ impl Media {
 
     /// Apply finished loads, start queued ones, and bound texture memory.
     pub fn poll(&mut self, context: &egui::Context) {
+        self.poll_at(context, Instant::now());
+    }
+
+    fn poll_at(&mut self, context: &egui::Context, now: Instant) {
         self.frame += 1;
         let results: Vec<_> = self.receiver.try_iter().collect();
         for fetched in results {
@@ -586,10 +600,12 @@ impl Media {
                         Entry::Ready {
                             texture,
                             used: self.frame,
-                            animation: gif.then_some(Animation {
+                            animation: gif.then(|| Animation {
+                                bytes: frames.iter().map(|(image, _)| image.pixels.len() * 4).sum(),
                                 frames,
-                                started: Instant::now(),
+                                started: now,
                                 shown: 0,
+                                seen: now,
                             }),
                         },
                     );
@@ -644,12 +660,36 @@ impl Media {
             });
         }
         // GIF frames are much larger than one texture. Release animations
-        // once their tiles have stopped requesting them, not just at 200 images.
+        // whose tiles have been out of view for a while, not just at 200
+        // images, then the least recently drawn past the budget.
         self.images.retain(|_, entry| {
             !matches!(entry,
-                Entry::Ready { animation: Some(_), used, .. } if *used + 2 < self.frame
+                Entry::Ready { animation: Some(animation), .. }
+                    if now.saturating_duration_since(animation.seen) >= GIF_IDLE
             )
         });
+        let mut animated: Vec<(Instant, u64, usize, String)> = self
+            .images
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                Entry::Ready {
+                    animation: Some(animation),
+                    used,
+                    ..
+                } => Some((animation.seen, *used, animation.bytes, id.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut bytes: usize = animated.iter().map(|(_, _, bytes, _)| bytes).sum();
+        animated.sort();
+        for (_, used, size, id) in animated {
+            // Tiles drawn last frame stay, so on-screen GIFs never reload.
+            if bytes <= GIF_BUDGET || used + 1 >= self.frame {
+                break;
+            }
+            self.images.remove(&id);
+            bytes -= size;
+        }
         let ready = self
             .images
             .values()
@@ -962,6 +1002,57 @@ mod tests {
                 .image;
             assert_eq!(image.pixels[0], expected, "frame at {elapsed}ms");
         }
+    }
+
+    #[test]
+    fn gif_frames_outlive_a_short_scroll_away() {
+        let context = egui::Context::default();
+        let mut media = Media::new(None);
+        let url = signed(NOW);
+        let start = Instant::now();
+        media.gif(&context, "asset1", Some(&url), true, start);
+        media.poll_at(&context, start);
+        let frames = vec![
+            (
+                egui::ColorImage::filled([4, 4], egui::Color32::RED),
+                Duration::from_millis(100),
+            ),
+            (
+                egui::ColorImage::filled([4, 4], egui::Color32::BLUE),
+                Duration::from_millis(100),
+            ),
+        ];
+        media
+            .sender
+            .send(Fetched {
+                generation: media.generation,
+                id: "asset1".into(),
+                result: Ok(frames),
+            })
+            .unwrap();
+        media.poll_at(&context, start);
+        assert!(matches!(
+            media.gif(&context, "asset1", Some(&url), true, start),
+            ImageState::Ready(_)
+        ));
+        // Out of view for a few frames and seconds: the frames stay.
+        for frame in 1..=5 {
+            media.poll_at(&context, start + Duration::from_secs(frame));
+        }
+        assert!(matches!(
+            media.gif(
+                &context,
+                "asset1",
+                Some(&url),
+                true,
+                start + Duration::from_secs(5)
+            ),
+            ImageState::Ready(_)
+        ));
+        assert!(media.waiting.is_empty(), "scrolling back needs no download");
+        // Unseen for longer: released.
+        media.poll_at(&context, start + Duration::from_secs(5) + GIF_IDLE);
+        assert!(!media.images.contains_key("asset1"));
     }
 
     #[test]
