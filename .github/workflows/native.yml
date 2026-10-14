@@ -1,41 +1,11 @@
 name: Native development builds
 
-# Runs on main only; pull requests get no CI. Use "Run workflow" to test a branch.
-# Keep squash commit messages free of CI-skip directives, including quoted PR
-# text. A later unrelated push does not backfill a skipped path-filtered build.
+# Nightly and manual only, so pushes to main never wait on these 30-60 minute
+# native UI suites. Releases build and test each client themselves (release.yml);
+# this run is the deeper overnight check. Use "Run workflow" to check a change sooner.
 on:
-  push:
-    branches: [main]
-    paths:
-      - apps/native/**
-      - apps/api/src/**
-      - apps/web/public/caper-face.svg
-      - scripts/generate-favicons.mjs
-      - tests/desktop-icons.test.mjs
-      - shared/design.css
-      - shared/emoji/**
-      - scripts/native-emoji.mjs
-      - shared/fonts/**
-      - scripts/native_fonts.py
-      - scripts/native-parity-fixture.mjs
-      - tests/native-parity-fixture.test.mjs
-      - scripts/native_artifacts.py
-      - tests/test_native_artifacts.py
-      - tests/test_apple_release_signing.py
-      - scripts/native_changelog.py
-      - tests/test_native_changelog.py
-      - tests/test_runner_routing.py
-      - scripts/play-upload.py
-      - scripts/testflight-distribute.py
-      - scripts/vectorize-avatars.py
-      - pyproject.toml
-      - uv.lock
-      - .python-version
-      - .github/workflows/mac-route.yml
-      - .github/workflows/native.yml
-      - package.json
-      - package-lock.json
-      - vitest.config.ts
+  schedule:
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 # No signing credentials, release, store upload, or deploy.
@@ -43,9 +13,8 @@ permissions:
   contents: read
   actions: write
 
-# The running build always finishes and only the newest waiting push runs next
-# (GitHub replaces older pending runs in the group), so fast pushes neither
-# starve main of finished builds nor pile up.
+# The running build always finishes and only the newest waiting run starts next
+# (GitHub replaces older pending runs in the group), so runs never pile up.
 concurrency:
   group: native-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -55,85 +24,9 @@ jobs:
     uses: ./.github/workflows/mac-route.yml
     secrets: inherit
 
-  artifact-contract:
-    needs: route
-    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version-file: pyproject.toml
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: uv sync --locked
-      - run: uv run --locked ruff check .
-      - run: uv run --locked ruff format --check .
-      - run: uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
-      - run: uv run --locked python shared/fonts/test_native_fonts.py -v
-      - run: npm run test:native
-      - name: Verify bundled Apple emoji match the shared artwork and licenses
-        run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
-
-  updater:
-    name: Updater / ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-    needs: route
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
-    timeout-minutes: 20
-    defaults:
-      run:
-        shell: bash
-        working-directory: apps/native/updater
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: 1.94.0
-          components: rustfmt, clippy
-          cache-workspaces: apps/native/updater
-          # Pull requests restore main's cache but do not upload their own.
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt -- --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
-      - name: Stop the rest of this run after a failure
-        # One failed job already fails the run; cancel the other jobs instead of
-        # letting them hold runners (and block newer pushes) until they finish.
-        if: failure()
-        shell: bash
-        working-directory: .
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" >/dev/null \
-            || echo "::warning::Could not cancel the rest of this run"
-
   desktop:
     name: Desktop / ${{ matrix.target }}
-    needs: [artifact-contract, route]
+    needs: route
     strategy:
       fail-fast: false
       matrix:
@@ -239,7 +132,7 @@ jobs:
 
   apple:
     name: Apple / ${{ matrix.target }}
-    needs: [artifact-contract, route]
+    needs: route
     strategy:
       fail-fast: false
       matrix:
@@ -260,9 +153,10 @@ jobs:
     # Mac, Intel runs on GitHub-hosted macos-15-intel as before.
     runs-on: ${{ needs.route.outputs.mac == 'true' && (matrix.platform == 'ios' && fromJSON('["self-hosted","josemac-sim"]') || fromJSON('["self-hosted","josemac-ui"]')) || matrix.os }}
     # Cold package and parity builds can take 27 minutes on iOS and 33 minutes
-    # on hosted Intel before the UI suite starts. Give both room to finish;
-    # each XCTest keeps its execution timeout. Keep macOS ARM's 30-minute budget.
-    timeout-minutes: ${{ matrix.platform == 'ios' && 60 || matrix.target == 'macos-x64' && 60 || 30 }}
+    # on hosted Intel before the UI suite starts, and the hosted iOS suite ran
+    # past 60 minutes. Give both room to finish; each XCTest keeps its execution
+    # timeout. Keep macOS ARM's 30-minute budget.
+    timeout-minutes: ${{ matrix.platform == 'ios' && 90 || matrix.target == 'macos-x64' && 60 || 30 }}
     env:
       # build.sh and parity-screenshots.sh target the runner's own architecture otherwise.
       CAPER_MACOS_ARCH: ${{ matrix.target == 'macos-x64' && 'x86_64' || '' }}
@@ -362,7 +256,7 @@ jobs:
 
   android:
     name: Android / development APK
-    needs: [artifact-contract, route]
+    needs: route
     runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:

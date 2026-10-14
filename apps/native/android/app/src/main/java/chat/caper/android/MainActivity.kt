@@ -2401,7 +2401,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                         message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId) }
-                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) { Text(message.thread?.takeIf { message.threadRootId == null }?.let { "${it.replyCount} ${if (it.replyCount == 1) "reply" else "replies"} · View thread" } ?: "Replied to a thread · View thread") }
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) {
+                            val summary = message.thread?.takeIf { message.threadRootId == null }
+                            // As on web: the reply count in bold terracotta, then a quiet "View thread".
+                            if (summary != null) Text(buildAnnotatedString {
+                                withStyle(SpanStyle(color = TerracottaBright, fontWeight = FontWeight.Bold)) {
+                                    append("${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}")
+                                }
+                                withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
+                            }) else Text("Replied to a thread · View thread")
+                        }
                     }
                 }
             }

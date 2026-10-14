@@ -248,6 +248,18 @@ fn build_number() -> Option<u64> {
         .filter(|build| *build > 0)
 }
 
+/// The installed app, not the latest release returned by the update server.
+pub fn installed_version() -> String {
+    let version = match build_number() {
+        Some(build) => format!("Caper 0.1.{build} (build {build})"),
+        None => "Development build".into(),
+    };
+    format!(
+        "Installed: {version} · {}",
+        &crate::whats_new::REVISION[..7]
+    )
+}
+
 fn locate() -> Option<Install> {
     let build = build_number()?;
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
@@ -536,6 +548,13 @@ mod tests {
             "check feedback is visible"
         );
         let checking = frame(&mut app, vec![]);
+        let installed = match option_env!("CAPER_BUILD_NUMBER") {
+            Some(build) => format!("Installed: Caper 0.1.{build} (build {build})"),
+            None => "Installed: Development build".into(),
+        };
+        assert!(checking.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&installed)
+        )), "the installed version is visible while checking for updates");
         let button = checking
             .platform_output
             .accesskit_update
@@ -547,7 +566,7 @@ mod tests {
             .unwrap();
         assert!(button.1.is_disabled(), "a second check must not overlap");
         for (result, expected) in [
-            (Ok(None), "Caper is up to date."),
+            (Ok(None), "No newer published release is available."),
             (
                 Err("Offline".into()),
                 "Could not check for updates: Offline",

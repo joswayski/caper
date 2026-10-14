@@ -111,7 +111,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           </p>
         </div>
 
-        <LiveWindow />
+        <LiveWindow preloadSpace={!!account?.username && !!account.displayName} />
       </section>
       {/* Runs during parsing, once the hero it measures is complete. */}
       <script dangerouslySetInnerHTML={{ __html: liveRestScript }} suppressHydrationWarning />

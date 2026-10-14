@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { createDirectNavigation, createSpaceNavigation } from "../spaces/navigation.ts";
+import {
+  createDirectNavigation,
+  createSpaceNavigation,
+  prepareSpaceLanding,
+  rememberSpaceLanding,
+} from "../spaces/navigation.ts";
 import {
   SpacesApiError,
   channelNameError,
@@ -106,6 +111,90 @@ const directHistory = (id: string) => ({
   ...history(id),
   space: { id: "", name: "Direct messages" },
   channel: { id, name: id, direct: true },
+});
+
+test("web landing restores the account's last joined conversation, with explicit links and access taking precedence", async () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  });
+  const firstSpace = { id: "earlier12345" };
+  let channels = spaceDetail.channels.map((channel) => ({ ...channel, joined: true }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(init?.method, undefined, "preparation is read-only");
+    const path = String(input);
+    return Response.json(
+      path.startsWith("/api/spaces/")
+        ? { ...spaceDetail, space: { ...spaceDetail.space, id: path.split("/").at(-1)! }, channels }
+        : history(path.includes("other") ? "other1234567" : "first1234567"),
+    );
+  });
+  try {
+    rememberSpaceLanding("owner", { detail: spaceDetail, channelId: "other1234567", history: history("other1234567") });
+    assert.deepEqual(JSON.parse([...storage.values()][0]), { spaceId: "space1234567", channelId: "other1234567" });
+    const spaces = [firstSpace, spaceDetail.space];
+    assert.deepEqual((await prepareSpaceLanding("owner", spaces, new URLSearchParams())).initialSelection, {
+      spaceId: "space1234567",
+      channelId: "other1234567",
+    });
+    assert.deepEqual(
+      (await prepareSpaceLanding("owner", spaces, new URLSearchParams("space=space1234567&channel=first1234567")))
+        .initialSelection,
+      { spaceId: "space1234567", channelId: "first1234567" },
+    );
+
+    channels[1].joined = false;
+    assert.equal(
+      (await prepareSpaceLanding("owner", spaces, new URLSearchParams())).initialView?.channelId,
+      "first1234567",
+      "a remembered channel the user left must not become the landing conversation",
+    );
+    channels = channels.filter((channel) => channel.id !== "other1234567");
+    assert.equal(
+      (await prepareSpaceLanding("owner", spaces, new URLSearchParams())).initialView?.channelId,
+      "first1234567",
+    );
+    const explicit = await prepareSpaceLanding(
+      "owner",
+      spaces,
+      new URLSearchParams("space=space1234567&channel=other1234567"),
+    );
+    assert.equal(explicit.initialView, undefined, "a stale explicit link must not silently open another conversation");
+    assert.match(explicit.initialSpaceError!, /no longer accessible/);
+
+    // Another account, or a removed space, cannot restore the saved space.
+    // Use no channels so history cannot accidentally mask a wrong space choice.
+    channels = [];
+    assert.equal(
+      (await prepareSpaceLanding("other", spaces, new URLSearchParams())).initialView?.detail.space.id,
+      "earlier12345",
+    );
+    assert.equal(
+      (await prepareSpaceLanding("owner", [firstSpace], new URLSearchParams())).initialView?.detail.space.id,
+      "earlier12345",
+    );
+    assert.equal((await prepareSpaceLanding("owner", [], new URLSearchParams())).initialView, undefined);
+    storage.set("caper:space-landing:owner", "not JSON");
+    assert.equal(
+      (await prepareSpaceLanding("owner", spaces, new URLSearchParams())).initialView?.detail.space.id,
+      "earlier12345",
+    );
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("web landing keeps explicit invitation, direct and feedback destinations without loading a different conversation", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    throw new Error("must not load space history");
+  });
+  for (const query of ["space=invite12345", "dm=direct12345", "feedback=report12345"]) {
+    const result = await prepareSpaceLanding("owner", [spaceDetail.space], new URLSearchParams(query));
+    assert.equal(result.initialView, undefined);
+    assert.equal(result.initialSpaceError, undefined);
+    assert.equal(result.initialSelection.spaceId, query.startsWith("space=") ? "invite12345" : "space1234567");
+  }
 });
 
 test("DM hover/click shares a read and revisits retain each live history and replay cursor", async () => {

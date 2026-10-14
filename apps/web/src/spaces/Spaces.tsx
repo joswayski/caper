@@ -67,7 +67,14 @@ import {
   useNotificationSettings,
 } from "./notifications";
 import Tooltip from "../components/Tooltip";
-import { createDirectNavigation, createSpaceNavigation, type PreparedDirect, type PreparedSpace } from "./navigation";
+import {
+  createDirectNavigation,
+  createSpaceNavigation,
+  rememberSpaceLanding,
+  type PreparedDirect,
+  type PreparedSpace,
+  type SpaceLanding,
+} from "./navigation";
 import { transitionBrowse } from "./browseTransition";
 import {
   acceptChannelInvitation,
@@ -1681,12 +1688,18 @@ export default function Spaces({
   embedded = false,
   initialAccount,
   initialSpaceList,
+  initialSelection,
+  initialView,
+  initialSpaceError,
   engaged = true,
   onChatOnlineChange,
 }: {
   embedded?: boolean;
   initialAccount?: Account;
   initialSpaceList?: { spaces: Space[]; invitations?: Space[]; limits: SpaceLimits };
+  initialSelection?: SpaceLanding;
+  initialView?: PreparedSpace;
+  initialSpaceError?: string;
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
@@ -1733,7 +1746,7 @@ export default function Spaces({
   // which would unmount the room and end a call in progress.
   const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
-  const [view, setView] = useState<PreparedSpace>();
+  const [view, setView] = useState<PreparedSpace | undefined>(initialView);
   const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
   const directs = directSnapshots.map((conversation) => ({
     ...conversation,
@@ -1802,7 +1815,10 @@ export default function Spaces({
   useEffect(() => {
     shownDetail.current = detail;
   });
-  const [selected, setSelected] = useState<Selection>(() => (embedded ? {} : selectedFromUrl()));
+  const [selected, setSelected] = useState<Selection>(() =>
+    embedded ? {} : { ...selectedFromUrl(), ...initialSelection },
+  );
+  const preparedLanding = useRef(!!initialView || !!initialSpaceError);
   const [focusMessage, setFocusMessage] = useState<FocusTarget>();
   // The feedback team's inbox and the conversation being visited from it.
   const feedbackTeam = !!account?.feedbackTeam;
@@ -1836,7 +1852,7 @@ export default function Spaces({
   const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<string | undefined>(initialSpaceError);
   const [notice, setNotice] = useState<string>();
   const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [manageChannel, setManageChannel] = useState<Channel>();
@@ -2205,6 +2221,10 @@ export default function Spaces({
   };
 
   useEffect(() => {
+    if (!embedded && account?.id && view && !selected.dmId && !selected.visit) rememberSpaceLanding(account.id, view);
+  }, [account?.id, view, selected.dmId, selected.visit, embedded]);
+
+  useEffect(() => {
     if (embedded) return;
     const pop = () => {
       navigationRevision.current++;
@@ -2262,6 +2282,18 @@ export default function Spaces({
   }, []);
 
   useEffect(() => {
+    if (preparedLanding.current) {
+      preparedLanding.current = false;
+      if (initialView) {
+        navigation.current.remember(initialView);
+        const query = new URLSearchParams(window.location.search);
+        query.set("space", initialView.detail.space.id);
+        if (initialView.channelId) query.set("channel", initialView.channelId);
+        else query.delete("channel");
+        if (!embedded) window.history.replaceState({}, "", `/spaces?${query}`);
+      }
+      return;
+    }
     if (invitation) {
       setView(undefined);
       setPending(false);

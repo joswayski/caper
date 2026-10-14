@@ -15,6 +15,7 @@ import Observation
 
     private let updater: URL?
     private let build: Int
+    private let version: String?
     private let sourceRevision: String?
     private var timer: Timer?
     private(set) var checking = false
@@ -42,10 +43,18 @@ import Observation
             && FileManager.default.isExecutableFile(atPath: updater.path)
         self.updater = enabled ? updater : nil
         self.build = build
+        version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         sourceRevision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
     }
 
     var isAvailable: Bool { updater != nil }
+
+    /// Identify this app even when there is no newer published release.
+    var installedVersion: String {
+        let label = version.map { "Caper \($0) (build \(build))" } ?? "Development build"
+        let revision = sourceRevision.map { " · \($0.prefix(7))" } ?? ""
+        return "Installed: \(label)\(revision)"
+    }
 
     var controls: DesktopUpdateControls {
         DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
@@ -170,7 +179,7 @@ import Observation
             availableUpdate = Self.parse(data)
             guard let update = availableUpdate else {
                 offeredUpdate = nil
-                if manual { inform("Caper is up to date", "") }
+                if manual { inform("Caper is up to date", "\(installedVersion)\n\nNo newer published release is available.") }
                 return
             }
             if manual { offer(update) }

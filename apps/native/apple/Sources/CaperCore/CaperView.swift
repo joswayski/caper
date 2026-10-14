@@ -349,10 +349,13 @@ struct DrawerSettle {
     func finished(at date: Date = Date()) -> Bool { date.timeIntervalSince(start) >= timing.duration }
 }
 
+/// Room past the screen's edge in a drawer's travel, so its edge shadow leaves too.
+let drawerShadowRoom: CGFloat = 48
+
 /// Where a released drawer swipe goes and how fast, as web `releaseTiming`:
-/// past halfway, or flung 40 points toward the other view, it switches; a
-/// held drag gets the full finish, and a fling carries its bounded speed into
-/// a curve that cannot overshoot.
+/// past halfway (by the finger, across what is seen), or flung 40 points
+/// toward the other view, it switches; a held drag gets the full finish, and a
+/// fling carries its bounded speed into a curve that cannot overshoot.
 struct DrawerRelease: Equatable {
     /// Switches to the other view.
     let commit: Bool
@@ -368,11 +371,19 @@ struct DrawerRelease: Equatable {
     ///   - velocity: The finger's speed toward open, in points per second.
     ///   - distance: How far the finger moved toward open, in points.
     ///   - travel: The drawer's travel, in points.
-    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat) {
+    ///   - shadow: The part of `travel` beyond what is seen (`drawerShadowRoom`).
+    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat, shadow: CGFloat = 0) {
         // Toward the other view, in points per second.
         let toward = open ? -velocity : velocity
-        let travelled = abs(position - (open ? 1 : 0))
-        commit = toward > -300 && (travelled >= 0.5 || (toward >= 300 && abs(distance) >= 40))
+        // The view follows from the finger's first reported move, a pickup
+        // distance (12 pt or more) behind it. A slow release past halfway
+        // still switches by where the finger took it, not only where the lagging
+        // view is drawn, which snapped such swipes back.
+        let reached = (open ? -distance : distance) / max(travel, 1)
+        let travelled = max(abs(position - (open ? 1 : 0)), reached)
+        // Halfway across what is seen: the shadow's room past the edge doesn't count.
+        let halfway = 0.5 * max(travel - shadow, 1) / max(travel, 1)
+        commit = toward > -300 && (travelled >= halfway || (toward >= 300 && abs(distance) >= 40))
         target = commit != open ? 1 : 0
         let remaining = target - position
         let left = Double(abs(remaining))
@@ -635,7 +646,8 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
 
     private func release(_ drawer: Drawer, from position: CGFloat, _ value: DragGesture.Value) {
         let release = DrawerRelease(open: open, position: position, velocity: Drawer.opening * value.velocity.width,
-                                    distance: Drawer.opening * value.translation.width, travel: drawer.travel)
+                                    distance: Drawer.opening * value.translation.width, travel: drawer.travel,
+                                    shadow: drawerShadowRoom)
         let timing = DrawerSettle.Timing.release(release)
         drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing)
         SwipeTapGuard.release()
@@ -743,7 +755,7 @@ private struct WorkspaceView: View {
                 let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil || model.visit != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
-                let travel = geometry.size.width + 48
+                let travel = geometry.size.width + drawerShadowRoom
                 ZStack(alignment: .leading) {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
@@ -2170,7 +2182,7 @@ private struct MembersOverlay: View {
         // Still sliding: the list stays until it is out of view (`settled`).
         let moving = settled >= 0 && settle.map { !$0.finished() } == true
         // Past the screen's edge, so the panel's shadow leaves with it.
-        let travel = width + 8 + 48
+        let travel = width + 8 + drawerShadowRoom
         let rest: CGFloat = shows ? 1 : 0
         ZStack(alignment: .trailing) {
             Color.black.opacity(0.25)
@@ -4138,8 +4150,14 @@ private struct MessageRow: View {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
                                 ForEach(summary.participants, id: \.id) { Avatar(name: $0.name, size: 24, avatarID: $0.avatarId) }
-                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies") · View thread")
-                            } else { CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread") }
+                                // As on web: the count in terracotta, then a quiet "View thread".
+                                Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")")
+                                    .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
+                                    .padding(.leading, 3)
+                                Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
+                            } else {
+                                CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread")
+                            }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                     }.buttonStyle(.plain).frame(minHeight: 32)
                         #if os(macOS)

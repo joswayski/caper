@@ -108,14 +108,14 @@ logout/login acceptance require their respective OS runners/devices.
 ## Build and download
 
 The **Native development builds** GitHub Actions workflow uses macOS, Windows, and
-Linux runners on relevant pull requests and pushes to `main`, or manual dispatch.
+Linux runners nightly on `main`, or on manual dispatch; pushes do not wait for it.
+Python tooling, native contract and self-updater tests run in `CI` on every push.
 It runs independently from the website/API image pipelines and does not deploy
 services, publish a GitHub release, or upload to app stores.
 
 Open a successful workflow run's **Artifacts** section, then select your platform.
 Each artifact contains the package, `SHA256SUMS`, and `BUILD.json` recording the
-exact checked-out Git revision and development-only distribution status. Artifact
-names on PRs refer to the tested merge commit, not necessarily the PR branch tip.
+exact checked-out Git revision and development-only distribution status.
 Artifacts expire after 14 days and downloading requires repository access.
 
 Apple and Android jobs also exercise an explicit loopback-only fixture with native
@@ -161,7 +161,9 @@ app from one `main` commit:
 - Windows and Linux desktop packages (not code-signed yet).
 
 It replaces the `native-latest` pre-release, so these links always point at the
-newest build:
+newest build. The Intel Mac build does not hold up the release: the previous Intel
+files stay in place until it finishes, then it is uploaded and added to the
+self-update manifest. If it fails, Intel Macs keep the previous build.
 
 - Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg
 - Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg
@@ -191,7 +193,9 @@ in their software installer, then launch Caper from the application menu without
 a terminal. This is not a universal Linux package. ZIP/tar archives remain for
 self-updates and advanced portable use, not the default install experience.
 
-**Releasing from Discord.** When **Native development builds** passes on `main`,
+**Releasing.** Agents dispatch `release.yml` for the pushed commit after native
+changes, once any server changes the apps depend on are deployed. When the
+nightly **Native development builds** run passes on `main`,
 `native-ready.yml` posts a "Caper apps build is ready" notification with a
 **Deploy Caper apps** button to the production deploys channel. This is the same
 channel and webhook the web app, API and gateway notifications use. Godis
