@@ -15,12 +15,8 @@ import {
   inviteUrl,
   listInviteLinks,
   revokeInviteLink,
-  SpacesApiError,
 } from "./client";
-
-function message(reason: unknown) {
-  return reason instanceof SpacesApiError ? reason.message : "That request did not work.";
-}
+import { friendlyError } from "./errors";
 
 /** Owner controls for Discord-style shareable links in Manage space. */
 export function InviteLinkManager({
@@ -49,7 +45,7 @@ export function InviteLinkManager({
     let current = true;
     void listInviteLinks(spaceId)
       .then((result) => current && setLinks(result.links))
-      .catch((reason) => current && setError(message(reason)));
+      .catch((reason) => current && setError(friendlyError(reason)));
     return () => {
       current = false;
     };
@@ -84,7 +80,7 @@ export function InviteLinkManager({
               setLinks((current) => [link, ...(current ?? [])]);
               await copy(link.code);
             })
-            .catch((reason) => setError(message(reason)))
+            .catch((reason) => setError(friendlyError(reason)))
             .finally(() => setPending(false));
         }}
       >
@@ -185,7 +181,7 @@ export function InviteLinkManager({
                   onClick={() =>
                     void revokeInviteLink(spaceId, link.code)
                       .then(() => setLinks((current) => current?.filter((item) => item.code !== link.code)))
-                      .catch((reason) => setError(message(reason)))
+                      .catch((reason) => setError(friendlyError(reason)))
                   }
                 >
                   Revoke

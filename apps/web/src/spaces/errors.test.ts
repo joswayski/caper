@@ -15,6 +15,25 @@ test("known server errors read as sentences", () => {
   assert.equal(friendlyError(new SpacesApiError(409, "user already in space")), "This person is already in the space.");
 });
 
+test("invite link errors read like the native apps' sentences", () => {
+  assert.equal(
+    friendlyError(new SpacesApiError(409, "invite link limit reached")),
+    "This space has too many active invite links. Revoke one to create another.",
+  );
+  assert.equal(
+    friendlyError(new SpacesApiError(409, "invite links cannot target private channels")),
+    "Invite links can only open public channels.",
+  );
+  assert.equal(
+    friendlyError(new SpacesApiError(403, "you can't join this space with a link; ask the owner to invite you")),
+    "You can’t join this space with a link. Ask the owner to invite you.",
+  );
+  assert.equal(
+    friendlyError(new SpacesApiError(429, "too many invitation attempts; try again in 10 minutes")),
+    "Too many invitations. Try again in 10 minutes.",
+  );
+});
+
 test("network failures and timeouts don't show the browser's text", () => {
   assert.equal(friendlyError(new TypeError("Failed to fetch")), "Couldn’t reach Caper. Check your connection.");
   assert.equal(friendlyError(new DOMException("signal timed out", "TimeoutError")), "That took too long. Try again.");

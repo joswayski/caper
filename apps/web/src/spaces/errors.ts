@@ -14,6 +14,11 @@ const serverErrors: Record<string, string> = {
   "pending invitation limit reached": "Too many invitations are waiting for a response. Try again later.",
   "membership limit reached": "You’ve reached the limit of spaces you can join. Leave one to join this space.",
   "space limit reached": "You’ve reached your space limit.",
+  "invite link is invalid or has expired": "This invite link is invalid or has expired.",
+  "you can't join this space with a link; ask the owner to invite you":
+    "You can’t join this space with a link. Ask the owner to invite you.",
+  "invite link limit reached": "This space has too many active invite links. Revoke one to create another.",
+  "invite links cannot target private channels": "Invite links can only open public channels.",
   "channel limit reached": "This space has reached its channel limit.",
   "channel name already exists": "A channel with that name already exists.",
   "invalid channel name": "Use lowercase letters separated by single dashes.",
