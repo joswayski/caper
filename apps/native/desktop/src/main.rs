@@ -3040,6 +3040,9 @@ impl CaperApp {
                     target,
                     result,
                 } if epoch == self.account_epoch => self.picture_changed(target, result),
+                Event::Profiles { epoch, event } if epoch == self.account_epoch => {
+                    self.profile_event(event);
+                }
                 Event::ProfileStatus {
                     epoch,
                     person,
@@ -3790,11 +3793,25 @@ impl CaperApp {
         }
     }
 
+    /// The signed-in account's saved profile on every retained identity. It
+    /// runs after every event, so it leaves the saved mascot (`avatarId`,
+    /// unchanged by profile saves and pictures) as each copy has it.
     fn refresh_profile_snapshots(&mut self) {
-        let Some(account) = &self.account else { return };
-        let (Some(username), Some(name)) = (&account.username, &account.display_name) else {
-            return;
-        };
+        if let Some(account) = &self.account {
+            let update = model::PersonUpdate {
+                avatar_id: None,
+                ..model::PersonUpdate::from(account)
+            };
+            self.apply_person(&update);
+        }
+    }
+
+    /// A person's saved name, username and picture on every retained copy of
+    /// them by account ID: members and pending invitations, DM peers, people
+    /// suggestions, blocked accounts, reactors, voice rosters, the feedback
+    /// inbox, typing and mention cards, message identities (nested ones too)
+    /// and the navigation cache. Text, drafts and cursors never change.
+    fn apply_person(&mut self, update: &model::PersonUpdate) {
         for member in self
             .detail
             .iter_mut()
@@ -3802,20 +3819,16 @@ impl CaperApp {
             .chain(self.managed_members.iter_mut())
             .chain(self.managed_invitations.iter_mut())
         {
-            if member.id == account.id {
-                member.username.clone_from(username);
-                member.display_name.clone_from(name);
-                member.avatar_asset.clone_from(&account.avatar_asset);
-                member.avatar_url.clone_from(&account.avatar_url);
-            }
+            member.apply_person(update);
         }
         for direct in &mut self.directs {
-            if direct.peer.id == account.id {
-                direct.peer.username.clone_from(username);
-                direct.peer.display_name.clone_from(name);
-                direct.peer.avatar_asset.clone_from(&account.avatar_asset);
-                direct.peer.avatar_url.clone_from(&account.avatar_url);
-            }
+            direct.peer.apply_person(update);
+        }
+        for person in self.people.iter_mut().flatten() {
+            person.apply_person(update);
+        }
+        for account in self.blocks.iter_mut().flatten() {
+            account.apply_person(update);
         }
         for person in self
             .reactors
@@ -3823,42 +3836,86 @@ impl CaperApp {
             .flat_map(|cached| &mut cached.groups)
             .flat_map(|group| &mut group.authors)
         {
-            if person.id == account.id {
-                person.username = Some(username.clone());
-                person.display_name = Some(name.clone());
-                person.avatar_asset.clone_from(&account.avatar_asset);
-                person.avatar_url.clone_from(&account.avatar_url);
-            }
+            person.apply_person(update);
         }
         for occupant in self.channel_rosters.values_mut().flatten() {
-            if occupant.id == account.id {
-                occupant.name.clone_from(name);
-                occupant.avatar_asset.clone_from(&account.avatar_asset);
-                occupant.avatar_url.clone_from(&account.avatar_url);
-            }
+            occupant.apply_person(update);
         }
-        for report in &mut self.feedback.reports {
-            if report.reporter.id == account.id {
-                report.reporter.username.clone_from(username);
-                report.reporter.display_name.clone_from(name);
-                report
-                    .reporter
-                    .avatar_asset
-                    .clone_from(&account.avatar_asset);
-                report.reporter.avatar_url.clone_from(&account.avatar_url);
-            }
+        for reporter in self
+            .feedback
+            .reports
+            .iter_mut()
+            .map(|report| &mut report.reporter)
+            .chain(
+                self.visit
+                    .iter_mut()
+                    .filter_map(|visit| visit.reporter.as_mut()),
+            )
+        {
+            reporter.apply_person(update);
+        }
+        for typer in self.typers.values_mut() {
+            typer.author.apply_person(update);
+        }
+        if let Some(author) = self
+            .mention_card
+            .as_mut()
+            .and_then(|card| card.author.as_mut())
+        {
+            author.apply_person(update);
         }
         if let Some(session) = &mut self.session {
-            session.author.refresh_profile(account);
+            session.author.apply_person(update);
         }
-        self.timeline.refresh_profile(account);
-        self.navigation_cache.refresh_profile(account);
+        self.timeline.apply_person(update);
+        self.navigation_cache.apply_person(update);
         for (message, pin) in self.mutations.pins.values_mut() {
-            message.refresh_profile(account);
+            message.apply_person(update);
             if let Some(pin) = pin {
-                pin.author.refresh_profile(account);
+                pin.author.apply_person(update);
             }
         }
+    }
+
+    /// A `profiles` push: someone's saved profile, or a space's name and icon.
+    fn profile_event(&mut self, event: gateway::ProfileEvent) {
+        match event {
+            gateway::ProfileEvent::Person(person) => {
+                let update = model::PersonUpdate::from(&person);
+                // Your own profile, saved on another device: the account,
+                // then the usual own-profile refresh.
+                if let Some(account) = &mut self.account
+                    && account.apply_person(&update)
+                {
+                    if let Some(api) = self.media.api() {
+                        api.reset_chat_session();
+                    }
+                    self.refresh_profile_snapshots();
+                } else {
+                    self.apply_person(&update);
+                }
+            }
+            gateway::ProfileEvent::Space(space) => self.apply_space(&space),
+        }
+    }
+
+    /// A space's new name or icon in the rail, the space list, invitations,
+    /// the open space and cached navigation. Unknown spaces are ignored.
+    fn apply_space(&mut self, update: &model::Space) {
+        for space in self
+            .spaces
+            .iter_mut()
+            .chain(self.invitations.iter_mut())
+            .chain(self.detail.iter_mut().map(|detail| &mut detail.space))
+        {
+            space.apply_space(update);
+        }
+        for report in &mut self.feedback.reports {
+            if let Some(space) = report.space.as_mut().filter(|space| space.id == update.id) {
+                space.name.clone_from(&update.name);
+            }
+        }
+        self.navigation_cache.apply_space(update);
     }
 
     fn establish(&mut self, token: String, account: Account, spaces: Spaces) {
@@ -10883,17 +10940,12 @@ impl CaperApp {
                     person.muted
                 };
                 let speaking = own && self.voice.speaking(&person.id, muted, now);
-                paint_avatar(
-                    ui,
-                    egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
-                    &person.name,
-                    person.avatar_id,
-                    person.picture(),
-                );
+                let face = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+                let shown =
+                    paint_avatar(ui, face, &person.name, person.avatar_id, person.picture());
                 if speaking {
                     // Web: caper border plus a 1px caper ring.
-                    ui.painter()
-                        .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
+                    avatar_ring(ui, face, shown, 1.0, Stroke::new(2.5, CAPER));
                 }
             }
             let count_x = rect.left()
@@ -19029,16 +19081,7 @@ impl CaperApp {
 
     /// A new or removed icon in the rail, the space list and the open space.
     fn space_icon_changed(&mut self, space: &model::Space) {
-        for listed in self
-            .spaces
-            .iter_mut()
-            .chain(self.detail.iter_mut().map(|detail| &mut detail.space))
-            .filter(|listed| listed.id == space.id)
-        {
-            listed.icon_asset.clone_from(&space.icon_asset);
-            listed.icon_url.clone_from(&space.icon_url);
-        }
-        self.navigation_cache.forget_space(&space.id);
+        self.apply_space(space);
     }
 
     /// The picture row of Profile and Manage space settings: the current
@@ -21751,7 +21794,7 @@ fn message_row<R>(
 ) -> (Option<egui::Rect>, Option<egui::Response>, R) {
     let profile = profile && !author.is_guest;
     let mut activated = None;
-    let mut profile_response = |ui: &egui::Ui, response: egui::Response| {
+    let mut profile_response = |ui: &egui::Ui, response: egui::Response, corner: f32| {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
@@ -21763,7 +21806,7 @@ fn message_row<R>(
         if response.has_focus() {
             ui.painter().rect_stroke(
                 response.rect.expand(2.0),
-                4.0,
+                corner,
                 Stroke::new(2.0, TERRACOTTA),
                 egui::StrokeKind::Outside,
             );
@@ -21805,13 +21848,19 @@ fn message_row<R>(
                         egui::Sense::hover()
                     },
                 );
-                paint_avatar(ui, rect, &author.name, author.avatar_id, author.picture());
+                let shown =
+                    paint_avatar(ui, rect, &author.name, author.avatar_id, author.picture());
                 if profile {
                     if response.hovered() {
-                        ui.painter()
-                            .circle_stroke(rect.center(), 19.0, Stroke::new(2.0, BORDER));
+                        avatar_ring(ui, rect, shown, 2.0, Stroke::new(2.0, BORDER));
                     }
-                    profile_response(ui, response);
+                    // Focus follows a picture's rounded square.
+                    let corner = if shown {
+                        picture_corner(rect.width() + 4.0)
+                    } else {
+                        4.0
+                    };
+                    profile_response(ui, response, corner);
                 }
                 ui.vertical(|ui| {
                     let timestamp = ui
@@ -21839,7 +21888,7 @@ fn message_row<R>(
                                             Stroke::new(1.0, TEXT),
                                         );
                                     }
-                                    profile_response(ui, name);
+                                    profile_response(ui, name, 4.0);
                                 }
                                 if author.admin {
                                     admin_badge(ui);
@@ -22676,7 +22725,9 @@ fn suggestion_row(
         egui::vec2(24.0, 24.0),
     );
     match avatar {
-        Some((name, avatar_id, picture)) => paint_avatar(ui, slot, name, avatar_id, picture),
+        Some((name, avatar_id, picture)) => {
+            paint_avatar(ui, slot, name, avatar_id, picture);
+        }
         None => {
             painter.circle_filled(slot.center(), slot.width() / 2.0, RAISED);
             painter.text(
@@ -22926,21 +22977,45 @@ fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
     avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
 }
 
-/// A person's custom picture filling the circle when it is ready, else their
-/// saved mascot (also while the picture loads or after it failed), else the
-/// initial of `name`.
+/// Custom pictures are rounded squares: 30% of the side, the shared
+/// `--radius-avatar` (web's avatar containers and speaking rings).
+fn picture_corner(side: f32) -> f32 {
+    side * 0.3
+}
+
+/// A ring `expand` points outside an avatar (inside when negative): a
+/// rounded square around a custom picture, a circle around a mascot.
+fn avatar_ring(ui: &egui::Ui, rect: egui::Rect, picture: bool, expand: f32, stroke: Stroke) {
+    if picture {
+        let ring = rect.expand(expand);
+        ui.painter().rect_stroke(
+            ring,
+            picture_corner(ring.width()),
+            stroke,
+            egui::StrokeKind::Middle,
+        );
+    } else {
+        ui.painter()
+            .circle_stroke(rect.center(), rect.width() / 2.0 + expand, stroke);
+    }
+}
+
+/// A person's custom picture filling the rounded square when it is ready,
+/// else their saved mascot (also while the picture loads or after it
+/// failed), else the initial of `name`. Returns whether the picture showed,
+/// so rings and outlines can follow its shape.
 fn paint_avatar(
     ui: &egui::Ui,
     rect: egui::Rect,
     name: &str,
     avatar_id: Option<i32>,
     picture: Option<pictures::Source<'_>>,
-) {
+) -> bool {
     if let Some(picture) = picture
         && ui.is_rect_visible(rect)
-        && pictures::paint(ui, rect, rect.width() / 2.0, picture)
+        && pictures::paint(ui, rect, picture_corner(rect.width()), picture)
     {
-        return;
+        return true;
     }
     if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
         egui::Image::from_bytes(
@@ -22963,6 +23038,7 @@ fn paint_avatar(
             TEXT,
         );
     }
+    false
 }
 
 fn avatar(
@@ -22974,16 +23050,17 @@ fn avatar(
     speaking: bool,
 ) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    paint_avatar(ui, rect, name, avatar_id, picture);
+    let shown = paint_avatar(ui, rect, name, avatar_id, picture);
     if speaking {
         // Web: caper border with a soft 3px caper halo.
-        ui.painter().circle_stroke(
-            rect.center(),
-            size / 2.0 + 1.5,
+        avatar_ring(
+            ui,
+            rect,
+            shown,
+            1.5,
             Stroke::new(3.0, CAPER.gamma_multiply(0.2)),
         );
-        ui.painter()
-            .circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(2.0, CAPER));
+        avatar_ring(ui, rect, shown, -1.0, Stroke::new(2.0, CAPER));
     }
     rect
 }
@@ -33047,8 +33124,8 @@ mod tests {
         for face in &maya {
             assert_eq!(
                 f32::from(face.corner_radius.nw),
-                (face.rect.width() / 2.0).round(),
-                "pictures keep the round avatar shape"
+                (face.rect.width() * 0.3).round(),
+                "pictures are rounded squares (30% of the side)"
             );
         }
         assert!(painted(&output, still).len() >= 2, "Alex's still");
@@ -33064,6 +33141,192 @@ mod tests {
             &output,
             "TEST FIXTURE — local sample data, not a live conversation."
         ));
+    }
+
+    #[test]
+    fn speaking_rings_follow_a_pictures_rounded_square_and_a_mascots_circle() {
+        let context = egui::Context::default();
+        let frames = vec![(
+            egui::ColorImage::filled([4, 4], egui::Color32::WHITE),
+            Duration::ZERO,
+        )];
+        crate::pictures::Shared::of(&context).insert(&context, "ring-picture", frames);
+        let picture = Some("ring-picture".to_owned());
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                super::avatar(
+                    ui,
+                    "Maya",
+                    Some(3),
+                    crate::pictures::Source::new(&picture, &None),
+                    28.0,
+                    true,
+                );
+                super::avatar(ui, "Alex", Some(4), None, 28.0, true);
+            });
+        });
+        let rings: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.brush.is_none() && rect.stroke.color == super::CAPER =>
+                {
+                    Some(rect.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rings.len(), 1, "the picture's ring is a rounded square");
+        assert_eq!(rings[0].rect.size(), egui::vec2(26.0, 26.0));
+        assert_eq!(rings[0].corner_radius, egui::CornerRadius::from(26.0 * 0.3));
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Circle(circle) if circle.stroke.color == super::CAPER)),
+            "the mascot keeps its circular ring"
+        );
+    }
+
+    #[test]
+    fn live_profile_updates_reach_every_copy_of_that_person_and_your_account() {
+        use crate::gateway::ProfileEvent;
+        let (_context, mut app) = fixture("parity-pictures");
+        let url = "https://cdn.caper.chat/assets/maya-new?exp=1&sig=x".to_owned();
+        let maya = |picture: Option<&str>| model::Person {
+            id: "fixture-maya".into(),
+            username: "maya_r".into(),
+            display_name: "Maya R".into(),
+            avatar_id: Some(15),
+            avatar_asset: picture.map(Into::into),
+            avatar_url: picture.map(|_| url.clone()),
+        };
+        // Copies of Maya the client already holds, beyond the fixture's.
+        app.people = Some(vec![model::Person {
+            id: "fixture-maya".into(),
+            username: "maya".into(),
+            display_name: "Maya".into(),
+            avatar_id: Some(15),
+            avatar_asset: None,
+            avatar_url: None,
+        }]);
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let maya_message = messages
+            .iter()
+            .find(|message| message.author.id == "fixture-maya")
+            .unwrap()
+            .clone();
+        let alex = messages
+            .iter_mut()
+            .find(|message| message.author.id == "fixture-alex")
+            .unwrap();
+        alex.reply_to = Some(model::MessageReply::from_message(&maya_message));
+        app.timeline.reset(messages, "4").unwrap();
+        app.profile_event(ProfileEvent::Person(maya(Some("maya-new"))));
+        let detail = app.detail.as_ref().unwrap();
+        let member = detail
+            .members
+            .iter()
+            .find(|member| member.id == "fixture-maya")
+            .unwrap();
+        assert_eq!(
+            (member.username.as_str(), member.display_name.as_str()),
+            ("maya_r", "Maya R")
+        );
+        assert_eq!(member.avatar_asset.as_deref(), Some("maya-new"));
+        assert_eq!(
+            app.people.as_ref().unwrap()[0].avatar_url.as_deref(),
+            Some(url.as_str())
+        );
+        let messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in messages
+            .iter()
+            .filter(|message| message.author.id == "fixture-maya")
+        {
+            assert_eq!(message.author.name, "Maya R");
+            assert_eq!(message.author.avatar_asset.as_deref(), Some("maya-new"));
+        }
+        let reply = messages
+            .iter()
+            .find_map(|message| message.reply_to.as_ref())
+            .unwrap();
+        assert_eq!(
+            (
+                reply.author.name.as_str(),
+                reply.author.avatar_asset.as_deref()
+            ),
+            ("Maya R", Some("maya-new")),
+            "nested identities too"
+        );
+        assert_eq!(
+            app.channel_rosters["chan00000002"][0]
+                .avatar_asset
+                .as_deref(),
+            Some("maya-new")
+        );
+        assert!(
+            messages
+                .iter()
+                .filter(|message| message.author.id == "fixture-alex")
+                .all(|message| message.author.name == "Alex"),
+            "nobody else changes"
+        );
+        assert_eq!(app.timeline.cursor(), "4");
+        // A removed picture clears it everywhere.
+        app.profile_event(ProfileEvent::Person(maya(None)));
+        assert!(
+            app.detail.as_ref().unwrap().members[1]
+                .avatar_asset
+                .is_none()
+                && app.channel_rosters["chan00000002"][0]
+                    .avatar_asset
+                    .is_none()
+        );
+        // Your own profile from another device updates the account first.
+        app.profile_event(ProfileEvent::Person(model::Person {
+            id: "fixture-owner".into(),
+            username: "owner_two".into(),
+            display_name: "Owner Two".into(),
+            avatar_id: Some(0),
+            avatar_asset: Some("own-new".into()),
+            avatar_url: None,
+        }));
+        let account = app.account.as_ref().unwrap();
+        assert_eq!(account.display_name.as_deref(), Some("Owner Two"));
+        assert_eq!(account.username.as_deref(), Some("owner_two"));
+        assert_eq!(account.avatar_asset.as_deref(), Some("own-new"));
+        assert!(
+            app.timeline
+                .messages()
+                .filter(|message| message.author.id == "fixture-owner")
+                .all(|message| message.author.name == "Owner Two"
+                    && message.author.avatar_asset.as_deref() == Some("own-new"))
+        );
+    }
+
+    #[test]
+    fn live_space_updates_rename_and_reicon_known_spaces_only() {
+        use crate::gateway::ProfileEvent;
+        let (_context, mut app) = fixture("parity-pictures");
+        let space = |id: &str, icon: Option<&str>| model::Space {
+            id: id.into(),
+            name: "Renamed Studio".into(),
+            owner_id: "fixture-owner".into(),
+            inviter: None,
+            demo: false,
+            icon_asset: icon.map(Into::into),
+            icon_url: None,
+        };
+        app.profile_event(ProfileEvent::Space(space("space0000001", None)));
+        assert_eq!(app.spaces[1].name, "Renamed Studio");
+        assert_eq!(app.spaces[1].icon(), None);
+        let open = &app.detail.as_ref().unwrap().space;
+        assert_eq!((open.name.as_str(), open.icon()), ("Renamed Studio", None));
+        assert_eq!(app.spaces[0].name, "General", "other spaces stay");
+        // A space you don't have is ignored.
+        let before = app.spaces.clone();
+        app.profile_event(ProfileEvent::Space(space("space-unknown", Some("x"))));
+        assert_eq!(app.spaces, before);
+        assert_eq!(app.spaces.len(), 2);
     }
 
     #[test]

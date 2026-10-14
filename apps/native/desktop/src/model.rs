@@ -35,18 +35,176 @@ impl Space {
     }
 }
 
+/// A saved profile as everyone now sees it: the signed-in account after a
+/// save here, or a `profile.updated` push for anyone (including you, from
+/// another device). Applied to every retained copy of that person by account
+/// ID. Absent names keep the copy's; absent picture fields clear the picture
+/// (it was removed); the saved mascot only changes when one is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonUpdate {
+    pub id: String,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_id: Option<i32>,
+    pub avatar_asset: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl From<&Account> for PersonUpdate {
+    fn from(account: &Account) -> Self {
+        Self {
+            id: account.id.clone(),
+            username: account.username.clone(),
+            display_name: account.display_name.clone(),
+            avatar_id: account.avatar_id,
+            avatar_asset: account.avatar_asset.clone(),
+            avatar_url: account.avatar_url.clone(),
+        }
+    }
+}
+
+impl From<&Person> for PersonUpdate {
+    fn from(person: &Person) -> Self {
+        Self {
+            id: person.id.clone(),
+            username: Some(person.username.clone()),
+            display_name: Some(person.display_name.clone()),
+            avatar_id: person.avatar_id,
+            avatar_asset: person.avatar_asset.clone(),
+            avatar_url: person.avatar_url.clone(),
+        }
+    }
+}
+
+impl PersonUpdate {
+    /// Update one copy's fields if it is this person; `false` otherwise.
+    fn apply(
+        &self,
+        id: &str,
+        username: Option<&mut String>,
+        display_name: &mut String,
+        avatar_id: &mut Option<i32>,
+        avatar_asset: &mut Option<String>,
+        avatar_url: &mut Option<String>,
+    ) -> bool {
+        if id != self.id {
+            return false;
+        }
+        if let (Some(target), Some(username)) = (username, &self.username) {
+            target.clone_from(username);
+        }
+        if let Some(name) = &self.display_name {
+            display_name.clone_from(name);
+        }
+        if self.avatar_id.is_some() {
+            *avatar_id = self.avatar_id;
+        }
+        avatar_asset.clone_from(&self.avatar_asset);
+        avatar_url.clone_from(&self.avatar_url);
+        true
+    }
+}
+
+/// `apply_person` on the person shapes that carry a username.
+macro_rules! updatable {
+    ($($kind:ty),* $(,)?) => {$(
+        impl $kind {
+            /// This person's saved name and picture, when the update is theirs.
+            pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+                update.apply(
+                    &self.id,
+                    Some(&mut self.username),
+                    &mut self.display_name,
+                    &mut self.avatar_id,
+                    &mut self.avatar_asset,
+                    &mut self.avatar_url,
+                )
+            }
+        }
+    )*};
+}
+
+updatable!(DirectPeer, BlockedAccount, Member, Person);
+
 impl Author {
-    /// Your saved name and picture on one of your own identities. The saved
-    /// mascot (`avatarId`) never changes with a picture.
-    pub fn refresh_profile(&mut self, account: &Account) {
-        if self.id != account.id {
-            return;
+    /// This person's saved name and picture on a message identity.
+    pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        update.apply(
+            &self.id,
+            None,
+            &mut self.name,
+            &mut self.avatar_id,
+            &mut self.avatar_asset,
+            &mut self.avatar_url,
+        )
+    }
+}
+
+impl VoiceOccupant {
+    pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        update.apply(
+            &self.id,
+            None,
+            &mut self.name,
+            &mut self.avatar_id,
+            &mut self.avatar_asset,
+            &mut self.avatar_url,
+        )
+    }
+}
+
+impl Reactor {
+    pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        if self.id != update.id {
+            return false;
         }
-        if let Some(name) = &account.display_name {
-            self.name.clone_from(name);
+        if update.username.is_some() {
+            self.username.clone_from(&update.username);
         }
-        self.avatar_asset.clone_from(&account.avatar_asset);
-        self.avatar_url.clone_from(&account.avatar_url);
+        if update.display_name.is_some() {
+            self.display_name.clone_from(&update.display_name);
+        }
+        if update.avatar_id.is_some() {
+            self.avatar_id = update.avatar_id;
+        }
+        self.avatar_asset.clone_from(&update.avatar_asset);
+        self.avatar_url.clone_from(&update.avatar_url);
+        true
+    }
+}
+
+impl Account {
+    /// Your own profile saved on another device.
+    pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        if self.id != update.id {
+            return false;
+        }
+        if update.username.is_some() {
+            self.username.clone_from(&update.username);
+        }
+        if update.display_name.is_some() {
+            self.display_name.clone_from(&update.display_name);
+        }
+        if update.avatar_id.is_some() {
+            self.avatar_id = update.avatar_id;
+        }
+        self.avatar_asset.clone_from(&update.avatar_asset);
+        self.avatar_url.clone_from(&update.avatar_url);
+        true
+    }
+}
+
+impl Space {
+    /// A `space.updated` push (or a save here): its name and icon. Other
+    /// spaces are untouched; returns whether this was the one.
+    pub fn apply_space(&mut self, update: &Space) -> bool {
+        if self.id != update.id {
+            return false;
+        }
+        self.name.clone_from(&update.name);
+        self.icon_asset.clone_from(&update.icon_asset);
+        self.icon_url.clone_from(&update.icon_url);
+        true
     }
 }
 
@@ -1031,8 +1189,13 @@ impl MessageVersions {
 }
 
 impl Message {
-    pub fn refresh_profile(&mut self, account: &Account) {
-        let author = |value: &mut Author| value.refresh_profile(account);
+    /// The person's saved name and picture on every identity in the message:
+    /// author, pinner, thread participants, reply reference and forwarded
+    /// original. Text and sequence numbers never change.
+    pub fn apply_person(&mut self, update: &PersonUpdate) {
+        let author = |value: &mut Author| {
+            value.apply_person(update);
+        };
         author(&mut self.author);
         if let Some(pin) = &mut self.pin {
             author(&mut pin.author);
@@ -1048,7 +1211,7 @@ impl Message {
             .as_mut()
             .and_then(|forward| forward.message.as_mut())
         {
-            original.refresh_profile(account);
+            original.apply_person(update);
         }
     }
 
@@ -1296,7 +1459,9 @@ pub enum Apply {
 }
 
 impl Timeline {
-    pub fn refresh_profile(&mut self, account: &Account) {
+    /// [`Message::apply_person`] across retained history, buffered and
+    /// pinned messages, pending updates and thread summaries; cursors stay.
+    pub fn apply_person(&mut self, update: &PersonUpdate) {
         for message in self
             .messages
             .values_mut()
@@ -1306,11 +1471,11 @@ impl Timeline {
             .chain(self.forward_updates.values_mut())
             .chain(self.edits.values_mut())
         {
-            message.refresh_profile(account);
+            message.apply_person(update);
         }
         for summary in self.thread_summaries.values_mut() {
             for author in &mut summary.participants {
-                author.refresh_profile(account);
+                author.apply_person(update);
             }
         }
     }
@@ -2175,12 +2340,13 @@ mod tests {
         });
         let mut timeline = Timeline::default();
         timeline.reset(vec![own, other], "4").unwrap();
-        timeline.refresh_profile(&account);
+        timeline.apply_person(&PersonUpdate::from(&account));
         let messages: Vec<_> = timeline.messages().collect();
         assert_eq!(messages[0].author.picture().unwrap().asset, "pic00000009");
         assert_eq!(
-            messages[0].author.avatar_id, None,
-            "the mascot is untouched"
+            messages[0].author.avatar_id,
+            Some(4),
+            "the saved mascot behind the picture"
         );
         let participants = &messages[0].thread.as_ref().unwrap().participants;
         assert_eq!(participants[0].avatar_url.as_deref(), Some(url));
@@ -2198,7 +2364,7 @@ mod tests {
         // Removing the picture returns every own identity to the mascot.
         account.avatar_asset = None;
         account.avatar_url = None;
-        timeline.refresh_profile(&account);
+        timeline.apply_person(&PersonUpdate::from(&account));
         let messages: Vec<_> = timeline.messages().collect();
         assert_eq!(messages[0].author.picture(), None);
         assert_eq!(
@@ -2207,6 +2373,166 @@ mod tests {
         );
         assert_eq!(messages[0].author.name, "Ana");
         assert_eq!(timeline.cursor(), "4");
+    }
+
+    #[test]
+    fn person_updates_apply_by_id_keep_missing_names_and_clear_removed_pictures() {
+        let update = PersonUpdate::from(&Person {
+            id: "u1".into(),
+            username: "maya_r".into(),
+            display_name: "Maya R".into(),
+            avatar_id: Some(312),
+            avatar_asset: Some("pic1".into()),
+            avatar_url: Some("https://cdn.caper.chat/assets/pic1?exp=1&sig=x".into()),
+        });
+        let mut member = Member {
+            id: "u1".into(),
+            avatar_id: Some(3),
+            avatar_asset: None,
+            avatar_url: None,
+            username: "maya".into(),
+            display_name: "Maya".into(),
+            owner: true,
+        };
+        assert!(member.apply_person(&update));
+        assert_eq!(
+            (
+                member.username.as_str(),
+                member.display_name.as_str(),
+                member.avatar_id,
+                member.picture().unwrap().asset,
+                member.owner
+            ),
+            ("maya_r", "Maya R", Some(312), "pic1", true)
+        );
+        let mut someone_else = member.clone();
+        someone_else.id = "u2".into();
+        someone_else.display_name = "Alex".into();
+        let before = someone_else.clone();
+        assert!(!someone_else.apply_person(&update));
+        assert_eq!(someone_else, before);
+        let mut reactor = Reactor {
+            id: "u1".into(),
+            username: None,
+            display_name: None,
+            avatar_id: None,
+            avatar_asset: Some("old".into()),
+            avatar_url: None,
+        };
+        reactor.apply_person(&update);
+        assert_eq!(reactor.display_name.as_deref(), Some("Maya R"));
+        assert_eq!(reactor.avatar_asset.as_deref(), Some("pic1"));
+        // An update without names keeps them; a removed picture clears it.
+        let removed = PersonUpdate {
+            id: "u1".into(),
+            username: None,
+            display_name: None,
+            avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
+        };
+        let mut author = Author {
+            id: "u1".into(),
+            avatar_id: Some(3),
+            avatar_asset: Some("pic1".into()),
+            avatar_url: Some("https://cdn.caper.chat/assets/pic1".into()),
+            name: "Maya R".into(),
+            is_guest: false,
+            admin: false,
+        };
+        author.apply_person(&removed);
+        assert_eq!(author.name, "Maya R");
+        assert_eq!(author.avatar_id, Some(3), "no mascot sent: kept");
+        assert_eq!(author.picture(), None);
+        let mut peer = DirectPeer {
+            id: "u1".into(),
+            username: "maya".into(),
+            display_name: "Maya".into(),
+            avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
+            team: false,
+        };
+        peer.apply_person(&update);
+        assert_eq!(peer.display_name, "Maya R");
+        let mut occupant = VoiceOccupant {
+            id: "u1".into(),
+            avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
+            name: "Maya".into(),
+            muted: true,
+            deafened: false,
+        };
+        occupant.apply_person(&update);
+        assert_eq!((occupant.name.as_str(), occupant.muted), ("Maya R", true));
+        // Your own account: only from your own updates.
+        let mut account: Account =
+            serde_json::from_value(serde_json::json!({"id": "me", "displayName": "Me"})).unwrap();
+        assert!(!account.apply_person(&update));
+        assert_eq!(account.display_name.as_deref(), Some("Me"));
+    }
+
+    #[test]
+    fn person_updates_reach_nested_message_identities_without_touching_text() {
+        let update = PersonUpdate {
+            id: "author".into(),
+            username: Some("ana".into()),
+            display_name: Some("Ana".into()),
+            avatar_id: None,
+            avatar_asset: Some("pic".into()),
+            avatar_url: None,
+        };
+        let mut original = message("original", 1);
+        original.pin = Some(Pin {
+            author: original.author.clone(),
+            created_at: "2026-10-14T00:00:00Z".into(),
+        });
+        let mut wrapper = message("wrapper", 2);
+        wrapper.author.id = "other".into();
+        wrapper.reply_to = Some(MessageReply::from_message(&original));
+        wrapper.forward = Some(Box::new(MessageForward {
+            message: Some(original.clone()),
+            seq: "2".into(),
+        }));
+        wrapper.thread = Some(ThreadSummary {
+            reply_count: 2,
+            participants: vec![original.author.clone(), wrapper.author.clone()],
+            seq: "2".into(),
+        });
+        wrapper.apply_person(&update);
+        assert_eq!(wrapper.author.name, "A", "someone else's message");
+        assert_eq!(wrapper.reply_to.as_ref().unwrap().author.name, "Ana");
+        let forwarded = wrapper.forward.as_ref().unwrap().message.as_ref().unwrap();
+        assert_eq!(forwarded.author.picture().unwrap().asset, "pic");
+        assert_eq!(forwarded.pin.as_ref().unwrap().author.name, "Ana");
+        assert_eq!(forwarded.content.text, "original");
+        let participants = &wrapper.thread.as_ref().unwrap().participants;
+        assert_eq!(
+            (participants[0].name.as_str(), participants[1].name.as_str()),
+            ("Ana", "A")
+        );
+    }
+
+    #[test]
+    fn space_updates_rename_and_reicon_only_their_space() {
+        let mut spaces: Vec<Space> = serde_json::from_value(serde_json::json!([
+            {"id": "s1", "name": "Studio", "ownerId": "u1", "iconAsset": "old"},
+            {"id": "s2", "name": "Den", "ownerId": "u2"}
+        ]))
+        .unwrap();
+        let update: Space = serde_json::from_value(serde_json::json!(
+            {"id": "s1", "name": "Friends", "ownerId": "u1"}
+        ))
+        .unwrap();
+        let applied: Vec<bool> = spaces
+            .iter_mut()
+            .map(|space| space.apply_space(&update))
+            .collect();
+        assert_eq!(applied, [true, false]);
+        assert_eq!(spaces[0].name, "Friends");
+        assert_eq!(spaces[0].icon(), None, "a removed icon clears");
+        assert_eq!(spaces[1].name, "Den");
     }
 
     fn message(id: &str, seq: u64) -> Message {
@@ -2855,7 +3181,7 @@ mod tests {
         timeline
             .apply_pin(pin_update(message("old", 1), 6, true))
             .unwrap();
-        timeline.refresh_profile(&account);
+        timeline.apply_person(&PersonUpdate::from(&account));
         let messages: Vec<_> = timeline.messages().collect();
         assert_eq!(messages[0].author.name, "New Name");
         assert_eq!(messages[0].content.text, "Keep @old_user");

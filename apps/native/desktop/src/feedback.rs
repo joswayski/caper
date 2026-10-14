@@ -26,6 +26,24 @@ impl Reporter {
     pub fn picture(&self) -> Option<crate::pictures::Source<'_>> {
         crate::pictures::Source::new(&self.avatar_asset, &self.avatar_url)
     }
+
+    /// The reporter's saved name and picture, when the update is theirs.
+    pub fn apply_person(&mut self, update: &crate::model::PersonUpdate) {
+        if self.id != update.id {
+            return;
+        }
+        if let Some(username) = &update.username {
+            self.username.clone_from(username);
+        }
+        if let Some(name) = &update.display_name {
+            self.display_name.clone_from(name);
+        }
+        if update.avatar_id.is_some() {
+            self.avatar_id = update.avatar_id;
+        }
+        self.avatar_asset.clone_from(&update.avatar_asset);
+        self.avatar_url.clone_from(&update.avatar_url);
+    }
 }
 
 /// Where a report was written. A DM is named after both people in it ("Alice

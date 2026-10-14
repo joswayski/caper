@@ -142,10 +142,13 @@ impl Drop for Control {
     }
 }
 
+/// The account feed: notifications, and the `profiles` subscription's live
+/// profile and space changes (`profiles`), on one socket for the sign-in.
 pub fn watch(
     base: &url::Url,
     token: String,
     receive: impl Fn(Alert, Arc<AtomicBool>) + Send + 'static,
+    profiles: impl Fn(crate::gateway::ProfileEvent) + Send + 'static,
 ) -> Control {
     let stop = Arc::new(AtomicBool::new(false));
     let activity = Arc::new(Mutex::new(Instant::now()));
@@ -177,7 +180,17 @@ pub fn watch(
                                 subscription["after"] = json!(cursor.to_string());
                             }
                             connection.send(subscription)?;
+                            // Again on every socket: nothing is replayed.
+                            connection.send(crate::gateway::profiles_subscription())?;
                         }
+                        Some("event") if frame["id"] == crate::gateway::PROFILES => {
+                            if let Some(event) = crate::gateway::profiles_event(&frame) {
+                                profiles(event);
+                            }
+                        }
+                        // An older gateway without `profiles`: live updates are
+                        // unavailable on this socket; notifications carry on.
+                        Some("error") if frame["id"] == crate::gateway::PROFILES => {}
                         Some("event") if frame["id"] == "notifications" => {
                             let event = &frame["event"];
                             let ready = event["type"] == "ready";
@@ -613,6 +626,111 @@ mod tests {
     }
 
     #[test]
+    fn account_feed_subscribes_to_profiles_each_socket_and_survives_an_old_gateway() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut kinds = Vec::new();
+            for round in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut socket = tungstenite::accept(stream).unwrap();
+                let send = |socket: &mut tungstenite::WebSocket<_>, value: serde_json::Value| {
+                    socket
+                        .send(Message::Text(value.to_string().into()))
+                        .unwrap();
+                };
+                send(&mut socket, json!({"type":"hello","serverTime":0}));
+                let mut frames = Vec::new();
+                for _ in 0..2 {
+                    let frame: serde_json::Value =
+                        serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                    frames.push(frame);
+                }
+                assert_eq!(
+                    frames[1],
+                    json!({"type":"subscribe","id":"profiles","kind":"profiles"}),
+                    "exactly the profiles subscription, after notifications"
+                );
+                kinds.push(frames[0]["kind"].clone());
+                let notifications = frames[0]["id"].clone();
+                if round == 0 {
+                    // A current gateway: live profile and space changes, then
+                    // a migration to another socket.
+                    send(&mut socket, json!({"type":"subscribed","id":"profiles"}));
+                    send(
+                        &mut socket,
+                        json!({"type":"event","id":"profiles","event":{
+                        "type":"profile.updated","person":{"id":"u1","username":"maya",
+                        "displayName":"Maya","avatarId":3,"avatarAsset":"pic"}}}),
+                    );
+                    send(
+                        &mut socket,
+                        json!({"type":"event","id":"profiles","event":{
+                        "type":"space.updated","space":{"id":"s1","name":"Friends","ownerId":"u1"}}}),
+                    );
+                    send(&mut socket, json!({"type":"migrating"}));
+                } else {
+                    // An older gateway: `profiles` is unknown; notifications
+                    // carry on over the same socket.
+                    send(
+                        &mut socket,
+                        json!({"type":"error","id":"profiles","status":400,
+                        "error":"unknown subscription kind"}),
+                    );
+                    send(
+                        &mut socket,
+                        json!({"type":"event","id":notifications,"event":{"type":"ready","cursor":"1"}}),
+                    );
+                    send(
+                        &mut socket,
+                        json!({"type":"event","id":notifications,"event":{
+                        "type":"notification.created","seq":"2","messageId":"message00000001",
+                        "title":"Test sender","body":"after the error",
+                        "createdAt":Utc::now().to_rfc3339(),"conversationId":"dm0000000001"}}),
+                    );
+                    let _ = socket.read();
+                }
+            }
+            kinds
+        });
+        let (alerts, received_alerts) = mpsc::channel();
+        let (profiles, received_profiles) = mpsc::channel();
+        let control = watch(
+            &url::Url::parse(&format!("http://{address}/")).unwrap(),
+            "test-account".into(),
+            move |alert, stop| {
+                stop.store(true, Ordering::Relaxed);
+                alerts.send(alert).unwrap();
+            },
+            move |event| profiles.send(event).unwrap(),
+        );
+        let person = received_profiles
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            matches!(&person, crate::gateway::ProfileEvent::Person(person)
+                if person.id == "u1" && person.avatar_asset.as_deref() == Some("pic"))
+        );
+        let space = received_profiles
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            matches!(&space, crate::gateway::ProfileEvent::Space(space) if space.name == "Friends")
+        );
+        let alert = received_alerts
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(alert.body, "after the error", "the error tore nothing down");
+        assert!(received_profiles.try_recv().is_err());
+        control.stop();
+        let kinds = server.join().unwrap();
+        assert_eq!(kinds, [json!("notifications"), json!("notifications")]);
+    }
+
+    #[test]
     fn account_feed_resumes_sparse_ids_without_duplicate_alerts_or_a_ui_loop() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -648,6 +766,11 @@ mod tests {
                     serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
                 assert_eq!(subscription["kind"], "notifications");
                 assert_eq!(subscription["after"].as_str(), after);
+                // Read the profiles subscription too: unread data would turn
+                // this server's close into a reset that loses the frames below.
+                let profiles: serde_json::Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(profiles["kind"], "profiles");
                 let id = subscription["id"].clone();
                 socket.send(Message::Text(json!({"type":"event","id":id,"event":{"type":"ready","cursor":after.unwrap_or("700")}}).to_string().into())).unwrap();
                 for (seq, body) in sequences {
@@ -681,6 +804,7 @@ mod tests {
                 }
                 send.send(alert).unwrap();
             },
+            |_| {},
         );
         let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
         let second = received.recv_timeout(Duration::from_secs(5)).unwrap();

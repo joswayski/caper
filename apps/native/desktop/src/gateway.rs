@@ -109,6 +109,47 @@ pub enum GatewayEvent {
     },
 }
 
+/// The account-wide `profiles` subscription: saved profiles and space
+/// changes pushed live (no replay; a reconnect's refetches are the repair).
+/// It rides the account feed (`os_notifications`), which lives as long as
+/// the sign-in rather than one conversation.
+pub const PROFILES: &str = "profiles";
+
+/// Sent once per socket, after each `hello`.
+pub fn profiles_subscription() -> Value {
+    json!({"type":"subscribe", "id":PROFILES, "kind":"profiles"})
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileEvent {
+    /// `profile.updated`: anyone you share a space or DM with, or you.
+    Person(crate::model::Person),
+    /// `space.updated`: a space you belong to was renamed or got a new icon.
+    Space(crate::model::Space),
+}
+
+/// A `profiles` event frame, or `None` for other frames, unknown event types
+/// and malformed payloads (which are ignored rather than dropping the socket).
+pub fn profiles_event(frame: &Value) -> Option<ProfileEvent> {
+    if frame["type"] != "event" || frame["id"] != PROFILES {
+        return None;
+    }
+    let event = &frame["event"];
+    match event["type"].as_str()? {
+        "profile.updated" => {
+            serde_json::from_value::<crate::model::Person>(event["person"].clone())
+                .ok()
+                .filter(|person| !person.id.is_empty())
+                .map(ProfileEvent::Person)
+        }
+        "space.updated" => serde_json::from_value::<crate::model::Space>(event["space"].clone())
+            .ok()
+            .filter(|space| !space.id.is_empty())
+            .map(ProfileEvent::Space),
+        _ => None,
+    }
+}
+
 pub struct GatewayControl {
     stop: Arc<AtomicBool>,
     activity: Arc<Mutex<Instant>>,
@@ -840,6 +881,53 @@ mod tests {
     use std::sync::mpsc;
     use tungstenite::Message as WsMessage;
     use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+
+    #[test]
+    fn profiles_frames_parse_people_and_spaces_and_ignore_everything_else() {
+        assert_eq!(
+            profiles_subscription(),
+            json!({"type":"subscribe","id":"profiles","kind":"profiles"})
+        );
+        let url = "https://cdn.caper.chat/assets/pic00000000000000001?exp=1&sig=x";
+        let frame = |event: Value| json!({"type":"event","id":"profiles","event":event});
+        let Some(ProfileEvent::Person(person)) = profiles_event(&frame(json!({
+            "type":"profile.updated",
+            "person":{"id":"u1","username":"maya","displayName":"Maya","avatarId":312,
+                "avatarAsset":"pic00000000000000001","avatarUrl":url}
+        }))) else {
+            panic!("profile.updated parses")
+        };
+        assert_eq!(person.display_name, "Maya");
+        assert_eq!(person.picture().unwrap().url, Some(url));
+        // Absent picture fields: the picture was removed.
+        let Some(ProfileEvent::Person(removed)) = profiles_event(&frame(json!({
+            "type":"profile.updated",
+            "person":{"id":"u1","username":"maya","displayName":"Maya","avatarId":312}
+        }))) else {
+            panic!("a removal parses")
+        };
+        assert_eq!(removed.picture(), None);
+        let Some(ProfileEvent::Space(space)) = profiles_event(&frame(json!({
+            "type":"space.updated",
+            "space":{"id":"s1","name":"Friends","ownerId":"u1","iconAsset":"icon","iconUrl":url}
+        }))) else {
+            panic!("space.updated parses")
+        };
+        assert_eq!(
+            (space.name.as_str(), space.icon().unwrap().asset),
+            ("Friends", "icon")
+        );
+        for ignored in [
+            frame(json!({"type":"profile.deleted","person":{"id":"u1"}})),
+            frame(json!({"type":"profile.updated","person":{"id":"u1"}})),
+            frame(json!({"type":"space.updated","space":{"id":"","name":"x","ownerId":"u"}})),
+            json!({"type":"event","id":"chat","event":{"type":"profile.updated"}}),
+            json!({"type":"error","id":"profiles","status":400}),
+            json!({"type":"subscribed","id":"profiles"}),
+        ] {
+            assert_eq!(profiles_event(&ignored), None, "{ignored}");
+        }
+    }
 
     #[test]
     fn mixed_handoffs_preserve_delivery_after_failed_and_stale_candidates() {

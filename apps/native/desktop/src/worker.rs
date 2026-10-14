@@ -558,6 +558,11 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    /// A live `profiles` change from the account feed.
+    Profiles {
+        epoch: u64,
+        event: gateway::ProfileEvent,
+    },
     Picture {
         epoch: u64,
         target: crate::pictures::Target,
@@ -1112,53 +1117,73 @@ fn manage(
                 let visible = visible.clone();
                 notifications = Some((
                     epoch,
-                    crate::os_notifications::watch(api.base(), token, move |alert, stopped| {
-                        send(&events, &context, Event::NotificationActivity { epoch });
-                        // A focused UI publishes a short lease. If minimized
-                        // windows stop repainting, stale focus cannot suppress alerts.
-                        if !alert.fresh()
-                            || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
-                                Some(id.as_str()) == alert.conversation()
-                                    && at.elapsed() < Duration::from_secs(2)
-                            })
+                    crate::os_notifications::watch(
+                        api.base(),
+                        token,
                         {
-                            return;
-                        }
-                        let events = events.clone();
-                        let context = context.clone();
-                        let visible = visible.clone();
-                        thread::spawn(move || {
-                            let target = alert.clone();
-                            let conversation = alert.conversation().map(str::to_owned);
-                            let clicks = events.clone();
-                            let repaint = context.clone();
-                            if let Err(error) = crate::os_notifications::show(
-                                alert,
-                                stopped,
-                                || {
-                                    visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
-                                        Some(id.as_str()) == conversation.as_deref()
+                            let events = events.clone();
+                            let context = context.clone();
+                            move |alert, stopped| {
+                                send(&events, &context, Event::NotificationActivity { epoch });
+                                // A focused UI publishes a short lease. If minimized
+                                // windows stop repainting, stale focus cannot suppress alerts.
+                                if !alert.fresh()
+                                    || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
+                                        Some(id.as_str()) == alert.conversation()
                                             && at.elapsed() < Duration::from_secs(2)
                                     })
-                                },
-                                move || {
-                                    repaint
-                                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                                    repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
-                                    send(
-                                        &clicks,
-                                        &repaint,
-                                        Event::OpenNotification {
-                                            epoch,
-                                            alert: target.clone(),
+                                {
+                                    return;
+                                }
+                                let events = events.clone();
+                                let context = context.clone();
+                                let visible = visible.clone();
+                                thread::spawn(move || {
+                                    let target = alert.clone();
+                                    let conversation = alert.conversation().map(str::to_owned);
+                                    let clicks = events.clone();
+                                    let repaint = context.clone();
+                                    if let Err(error) = crate::os_notifications::show(
+                                        alert,
+                                        stopped,
+                                        || {
+                                            visible.lock().unwrap().as_ref().is_some_and(
+                                                |(id, at)| {
+                                                    Some(id.as_str()) == conversation.as_deref()
+                                                        && at.elapsed() < Duration::from_secs(2)
+                                                },
+                                            )
                                         },
-                                    );
-                                },
-                            ) {
-                                send(&events, &context, Event::NotificationError { epoch, error });
+                                        move || {
+                                            repaint.send_viewport_cmd(
+                                                egui::ViewportCommand::Minimized(false),
+                                            );
+                                            repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
+                                            send(
+                                                &clicks,
+                                                &repaint,
+                                                Event::OpenNotification {
+                                                    epoch,
+                                                    alert: target.clone(),
+                                                },
+                                            );
+                                        },
+                                    ) {
+                                        send(
+                                            &events,
+                                            &context,
+                                            Event::NotificationError { epoch, error },
+                                        );
+                                    }
+                                });
                             }
-                        });
-                    }),
+                        },
+                        {
+                            let events = events.clone();
+                            let context = context.clone();
+                            move |event| send(&events, &context, Event::Profiles { epoch, event })
+                        },
+                    ),
                 ));
             }
             Command::StopNotifications => {
