@@ -1769,7 +1769,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         verticalAlignment = Alignment.CenterVertically) {
                         // Padded to the 48dp a checkbox with its own click handler would have.
                         Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
-                        Text(if (direct) "Also send to conversation" else "Also send to $conversation", Modifier.weight(1f), fontSize = 12.sp)
+                        Text(buildAnnotatedString {
+                            append("Also send to ")
+                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
+                        }, Modifier.weight(1f), fontSize = 12.sp)
                     }
                     // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
                     FilledIconButton(

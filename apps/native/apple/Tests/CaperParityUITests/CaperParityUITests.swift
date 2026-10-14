@@ -657,9 +657,16 @@ final class CaperParityUITests: XCTestCase {
         composer.typeText("Short reply")
         let send = app.buttons["Send reply"]
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
-        // Keep the existing 72-point thread minimum, without the 66-point gap
-        // below the text view that a 174-point background would introduce.
-        XCTAssertLessThan(send.frame.minY - composer.frame.maxY, 32)
+        XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 2,
+                       "Send must align with the single-line reply input")
+        for label in ["Attach files", "Insert emoji"] {
+            let button = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", label))), "Missing \(label)")
+            XCTAssertEqual(button.frame.midY, composer.frame.midY, accuracy: 2,
+                           "Thread tools must align with the single-line reply input")
+        }
+        let broadcast = try require(app.switches["Also send to #general"], timeout: 5, "Missing named broadcast option")
+        XCTAssertLessThanOrEqual(broadcast.frame.maxY, composer.frame.minY,
+                                "The broadcast checkbox must stay above the input, away from Send")
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,

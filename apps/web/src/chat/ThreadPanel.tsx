@@ -667,7 +667,9 @@ export default function ThreadPanel({
                     disabled={!!pending}
                     onChange={(event) => update({ broadcast: event.target.checked })}
                   />
-                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
+                  <span>
+                    Also send to <strong>{direct ? channelName : `#${channelName}`}</strong>
+                  </span>
                 </label>
                 <EmojiButton
                   disabled={state.phase !== "ready" || state.thread.loading}

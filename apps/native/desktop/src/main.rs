@@ -13138,17 +13138,26 @@ impl CaperApp {
         );
         // DMs are named after the other person, without a channel `#`.
         let direct = self.conversation_is_direct();
-        let (conversation, broadcast_label) = if direct {
-            (
-                format!("with {}", self.channel_name()),
-                "Also send to conversation".to_owned(),
-            )
+        let destination = if direct {
+            self.channel_name().to_owned()
         } else {
-            (
-                format!("in #{}", self.channel_name()),
-                format!("Also send to #{}", self.channel_name()),
-            )
+            format!("#{}", self.channel_name())
         };
+        let conversation = format!("{} {destination}", if direct { "with" } else { "in" });
+        let mut broadcast_label = egui::text::LayoutJob::default();
+        broadcast_label.append(
+            "Also send to ",
+            0.0,
+            egui::TextFormat::simple(egui::FontId::proportional(11.52), MUTED),
+        );
+        broadcast_label.append(
+            &destination,
+            0.0,
+            egui::TextFormat::simple(
+                egui::FontId::new(11.52, egui::FontFamily::Name("Satoshi Bold".into())),
+                MUTED,
+            ),
+        );
         // As on web, a blocked DM is read-only here too, like an incoming request.
         let read_only = !self.selected_is_joined()
             || self
@@ -13249,16 +13258,8 @@ impl CaperApp {
             let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(80.0, 320.0);
             let editor_height = (draft_height + 20.0).clamp(80.0, max_editor_height);
             // Two 36px buttons, two 8px gaps, then the checkbox's icon and gap.
-            let label_height = ui
-                .painter()
-                .layout(
-                    broadcast_label.clone(),
-                    egui::FontId::proportional(11.52),
-                    MUTED,
-                    (width - 88.0 - 23.0).max(1.0),
-                )
-                .size()
-                .y;
+            broadcast_label.wrap.max_width = (width - 88.0 - 23.0).max(1.0);
+            let label_height = ui.painter().layout_job(broadcast_label.clone()).size().y;
             let send_height = label_height.max(44.0);
             let files = self.draft_file_count(Some(&root));
             let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
@@ -13378,7 +13379,7 @@ impl CaperApp {
                                 ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(2);
                                 ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(2);
                                 ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
-                                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, RichText::new(&broadcast_label).size(11.52).color(MUTED)));
+                                ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, broadcast_label.clone()));
                             });
                             (send, emoji)
                     })
@@ -27155,7 +27156,7 @@ mod tests {
             );
             if can_reply {
                 assert!(
-                    labels.contains(&"Also send to conversation"),
+                    labels.contains(&format!("Also send to {peer}").as_str()),
                     "{fixture}: {labels:?}"
                 );
             } else {
