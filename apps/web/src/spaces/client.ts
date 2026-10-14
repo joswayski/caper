@@ -1,6 +1,8 @@
+import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
 import { directMessageErrors } from "./direct-errors.ts";
 
-export interface Space {
+/** `iconAsset`/`iconUrl`: the owner's custom icon; absent, the space shows its initial. */
+export interface Space extends SpaceIcon {
   id: string;
   name: string;
   ownerId: string;
@@ -21,7 +23,7 @@ export interface ChannelInvitation {
   inviter: { username: string; displayName: string };
 }
 
-export interface Member {
+export interface Member extends PersonPicture {
   id: string;
   avatarId?: number | null;
   username: string;
@@ -32,7 +34,7 @@ export interface Member {
 export interface DirectConversation {
   id: string;
   /** `team`: the Caper account, whose DM goes to the feedback team. */
-  peer: { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
+  peer: PersonPicture & { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */
@@ -52,7 +54,7 @@ export function directUnread(conversation: DirectConversation) {
 }
 
 /** People sharing a space or DM with you, for `@` suggestions in DMs. */
-export interface Person {
+export interface Person extends PersonPicture {
   id: string;
   username: string;
   displayName: string;
@@ -134,7 +136,7 @@ export function declineDirectRequest(id: string) {
   return request<void>(`/api/dms/${pathId(id)}/decline`, { method: "POST" });
 }
 
-export interface BlockedAccount {
+export interface BlockedAccount extends PersonPicture {
   id: string;
   username: string;
   displayName: string;
@@ -352,6 +354,11 @@ export function updateSpace(spaceId: string, name: string) {
   });
 }
 
+/** Back to the space's initial (owner only). */
+export function removeSpaceIcon(spaceId: string) {
+  return request<Space>(`/api/spaces/${pathId(spaceId)}/icon`, { method: "DELETE" });
+}
+
 export function deleteSpace(spaceId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}`, { method: "DELETE" });
 }
@@ -444,7 +451,7 @@ export function declineChannelInvitation(spaceId: string, channelId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "DELETE" });
 }
 
-export interface InvitePerson {
+export interface InvitePerson extends PersonPicture {
   username: string;
   displayName: string;
   avatarId?: number | null;
@@ -462,7 +469,7 @@ export interface InviteLink {
 
 export interface InvitePreview {
   code: string;
-  space: { name: string };
+  space: SpaceIcon & { name: string };
   channel: { name: string } | null;
   inviter: InvitePerson;
   memberCount: number;

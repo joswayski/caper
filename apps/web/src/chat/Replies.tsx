@@ -204,7 +204,7 @@ export function ReplyContext({
             ) : (
               <>
                 <span className="chat-reply-avatar">
-                  <Avatar avatarId={reference.author.avatarId} name={reference.author.name} />
+                  <Avatar person={reference.author} name={reference.author.name} />
                 </span>
                 <strong>{reference.author.name}</strong>
                 {reference.hasAttachments && <Paperclip size={13} aria-label="Has attachments" />}

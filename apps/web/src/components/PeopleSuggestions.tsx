@@ -7,7 +7,7 @@ export function PersonSuggestion({ person }: { person: MentionCandidate }) {
   return (
     <>
       <i className="chat-mention-avatar">
-        <Avatar avatarId={person.avatarId} name={person.displayName} />
+        <Avatar person={person} name={person.displayName} />
       </i>
       <span className="person-suggestion-names">
         <span>{person.displayName}</span>

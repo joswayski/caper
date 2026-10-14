@@ -129,7 +129,7 @@ function OriginalMessage({
     <article className="chat-forward-original">
       <header>
         <span className="chat-avatar">
-          <Avatar avatarId={message.author.avatarId} name={message.author.name} />
+          <Avatar person={message.author} name={message.author.name} />
         </span>
         <strong>{message.author.name}</strong>
         {message.editedAt && <small title={`Edited ${new Date(message.editedAt).toLocaleString()}`}>edited</small>}

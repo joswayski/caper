@@ -1,0 +1,96 @@
+/* Profile picture and space icon settings (PictureSettings.tsx). */
+.picture-settings {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 16px;
+  color: var(--text);
+}
+/* The current picture, shown large in the shape it has everywhere else. */
+.picture-settings-preview {
+  position: relative;
+  display: grid;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+}
+/* The space's tile, as the rail shows it: initial beneath, icon over it. */
+.picture-settings-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: inherit;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+.picture-settings-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.picture-settings h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.picture-settings-body > p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+.picture-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.picture-settings-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+@media (hover: hover) {
+  .picture-settings-actions button:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    background: var(--border);
+  }
+}
+.picture-settings-actions button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.picture-settings-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.picture-settings-actions button[aria-busy="true"] {
+  cursor: progress;
+}
+/* Reserves its line, so progress appearing never moves the form below. */
+.picture-settings-body > .picture-settings-status {
+  min-height: 1.45em;
+}
+.picture-settings-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--error-text);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}

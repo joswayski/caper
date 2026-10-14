@@ -162,7 +162,7 @@ export default function ReactorsPanel({
               {authors.map((author) => (
                 <li key={author.id}>
                   <span className="chat-avatar chat-reactors-avatar">
-                    <Avatar avatarId={author.avatarId} name={reactorName(author)} />
+                    <Avatar person={author} name={reactorName(author)} />
                   </span>
                   <span>
                     <strong>{reactorName(author)}</strong>

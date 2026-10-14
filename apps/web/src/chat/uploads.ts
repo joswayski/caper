@@ -3,7 +3,7 @@ import { compressionSettings, prepareFile, type CompressionSettings, type Prepar
 
 export const MAX_ATTACHMENTS = 10;
 /** Waits between `/complete` attempts while the upload is not visible yet (409). */
-const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000];
+export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000];
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -147,7 +147,7 @@ async function failure(response: Response, fallback: string) {
   return new UploadError(typeof body?.error === "string" ? body.error : fallback);
 }
 
-function sleep(ms: number, signal: AbortSignal) {
+export function sleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
       reject(signal.reason);

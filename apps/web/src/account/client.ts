@@ -1,4 +1,6 @@
-export interface Account {
+import { withPicture, type PersonPicture } from "./pictures.ts";
+
+export interface Account extends PersonPicture {
   id: string;
   avatarId?: number | null;
   username: string | null;
@@ -50,13 +52,13 @@ export function subscribeAccount(listener: () => void) {
   return () => void accountListeners.delete(listener);
 }
 
-/** The saved account wins over retained or in-flight member/peer snapshots. */
+/** The saved account (names and picture) wins over retained or in-flight member/peer snapshots. */
 export function withAccountProfile<T extends { id: string; username?: string | null; displayName?: string | null }>(
   person: T,
   account: Account | undefined,
 ): T {
   return person.id === account?.id && account.username && account.displayName
-    ? { ...person, username: account.username, displayName: account.displayName }
+    ? withPicture({ ...person, username: account.username, displayName: account.displayName }, account)
     : person;
 }
 
@@ -106,8 +108,19 @@ export async function updateProfile(username: string, displayName: string) {
     method: "POST",
     body: JSON.stringify({ username, displayName }),
   });
+  return rememberSavedAccount(account);
+}
+
+/** A saved change (profile or picture): it updates the whole running client and
+ * wins over account reads that were already in flight. */
+export function rememberSavedAccount(account: Account) {
   profileRevision++;
   return rememberAccount(account);
+}
+
+/** Back to the saved mascot; `avatarId` never changes. */
+export async function removeAvatar() {
+  return rememberSavedAccount(await request<Account>("/api/account/avatar", { method: "DELETE" }));
 }
 
 /** Browser storage key for the chat capability minted from the account session. */

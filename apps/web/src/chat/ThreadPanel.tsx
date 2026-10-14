@@ -500,7 +500,7 @@ export default function ThreadPanel({
               />
             )}
             <div className="chat-avatar">
-              <Avatar avatarId={pending.author?.avatarId} name={pending.author?.name ?? ""} />
+              <Avatar person={pending.author} name={pending.author?.name ?? ""} />
             </div>
             <div>
               <header>

@@ -80,6 +80,10 @@
   background: var(--terracotta-bright);
   content: "";
 }
+/* An owner's icon fills the tile inside its border; badges stay on top. */
+.space-rail .caper-picture {
+  border-radius: 11px;
+}
 .space-rail .space-unread {
   position: absolute;
   top: -3px;
@@ -1775,7 +1779,8 @@
   min-width: 140px;
 }
 .member-manager,
-.danger-zone {
+.danger-zone,
+.space-icon-section {
   margin: 0 22px;
   padding: 20px 0;
   border-top: 1px solid var(--border);

@@ -1,8 +1,9 @@
+import type { PersonPicture } from "../account/pictures.ts";
 import { apiError } from "./client.ts";
 import { emojiCode, emojiNames } from "./emoji.ts";
 import type { ChatReaction } from "./types.ts";
 
-export interface ReactionAuthor {
+export interface ReactionAuthor extends PersonPicture {
   id: string;
   username: string | null;
   displayName: string | null;

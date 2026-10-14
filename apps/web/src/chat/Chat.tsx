@@ -1531,7 +1531,7 @@ export default function Chat({
                       <span className="chat-thread-avatars">
                         {message.thread.participants.map((person) => (
                           <span key={person.id} title={person.name}>
-                            <Avatar avatarId={person.avatarId} name={person.name} />
+                            <Avatar person={person} name={person.name} />
                           </span>
                         ))}
                       </span>
@@ -1626,7 +1626,7 @@ export default function Chat({
     });
   };
   const authorAvatar = (author: ChatAuthor | undefined) => {
-    const image = <Avatar avatarId={author?.avatarId} name={author?.name ?? name} />;
+    const image = <Avatar person={author} name={author?.name ?? name} />;
     return author && !author.isGuest ? (
       <button
         type="button"

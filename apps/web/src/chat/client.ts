@@ -498,7 +498,8 @@ export class ChatClient {
         (author, index) =>
           author.id !== shown[index].id ||
           author.name !== shown[index].name ||
-          author.avatarId !== shown[index].avatarId,
+          author.avatarId !== shown[index].avatarId ||
+          author.avatarAsset !== shown[index].avatarAsset,
       )
     )
       this.update({ typingAuthors });

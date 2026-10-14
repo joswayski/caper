@@ -266,10 +266,10 @@ export interface PreparedFile {
   preview?: Blob;
 }
 
-type Surface = OffscreenCanvas | HTMLCanvasElement;
-type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+export type Surface = OffscreenCanvas | HTMLCanvasElement;
+export type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-function surface(width: number, height: number): Surface {
+export function surface(width: number, height: number): Surface {
   if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(width, height);
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -277,7 +277,7 @@ function surface(width: number, height: number): Surface {
   return canvas;
 }
 
-async function encode(canvas: Surface, type: string, quality?: number): Promise<Blob | undefined> {
+export async function encode(canvas: Surface, type: string, quality?: number): Promise<Blob | undefined> {
   const blob =
     "convertToBlob" in canvas
       ? await canvas.convertToBlob({ type, quality }).catch(() => undefined)

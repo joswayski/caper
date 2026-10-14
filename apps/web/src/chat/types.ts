@@ -1,4 +1,6 @@
-export interface ChatAuthor {
+import type { PersonPicture } from "../account/pictures.ts";
+
+export interface ChatAuthor extends PersonPicture {
   id: string;
   avatarId?: number | null;
   name: string;

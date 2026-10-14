@@ -112,7 +112,7 @@ export default function PrivacySettings() {
             {blocks.map((account) => (
               <li key={account.id}>
                 <span className="privacy-avatar">
-                  <Avatar avatarId={account.avatarId} name={account.displayName} />
+                  <Avatar person={account} name={account.displayName} />
                 </span>
                 <span>
                   <strong>{account.displayName}</strong>

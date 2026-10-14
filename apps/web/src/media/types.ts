@@ -1,3 +1,4 @@
+import type { PersonPicture } from "../account/pictures.ts";
 import type { AudioSetup, NoiseSuppression } from "./microphone";
 
 export type CallPhase = "idle" | "joining" | "connected" | "reconnecting" | "leaving" | "failed";
@@ -8,7 +9,7 @@ export interface CallTrack {
   kind: MediaKind;
 }
 
-export interface Participant {
+export interface Participant extends PersonPicture {
   id: string;
   avatarId?: number | null;
   name: string;

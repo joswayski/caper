@@ -102,7 +102,7 @@ export default function FeedbackInbox({
                       onClick={() => onOpen(report)}
                     >
                       <span className="direct-avatar" aria-hidden="true">
-                        <Avatar avatarId={report.reporter.avatarId} name={report.reporter.displayName} />
+                        <Avatar person={report.reporter} name={report.reporter.displayName} />
                       </span>
                       <span className="feedback-row">
                         <span className="feedback-row-top">

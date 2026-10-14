@@ -1,7 +1,8 @@
+import { withPicture, type PersonPicture } from "../account/pictures.ts";
 import type { ChatMention, ChatMessage } from "./types.ts";
 
 /** A member who can be suggested after `@`; mirrors `GET /api/spaces/{space}` members. */
-export interface MentionCandidate {
+export interface MentionCandidate extends PersonPicture {
   id: string;
   username: string;
   displayName: string;
@@ -101,13 +102,9 @@ export function excludePeople<T extends { id: string }>(people: T[], ...exclude:
 export function withInvited(people: MentionCandidate[], invitations: MentionCandidate[]): MentionCandidate[] {
   return [
     ...people,
-    ...invitations.map(({ id, username, displayName, avatarId }) => ({
-      id,
-      username,
-      displayName,
-      avatarId,
-      invited: true,
-    })),
+    ...invitations.map(({ id, username, displayName, avatarId, avatarAsset, avatarUrl }) =>
+      withPicture({ id, username, displayName, avatarId, invited: true }, { avatarAsset, avatarUrl }),
+    ),
   ];
 }
 
@@ -229,7 +226,7 @@ export function mentionsAccount(message: ChatMessage, accountId: string | undefi
 }
 
 /** What the profile card shows: the best local match by id, never a network call. */
-export interface MentionCardPerson {
+export interface MentionCardPerson extends PersonPicture {
   id: string;
   /** Pin authors need not still be in the local directory. */
   username?: string;
@@ -240,16 +237,18 @@ export interface MentionCardPerson {
 
 /** `directory` is ordered by preference: space members, then people, then DM peers. */
 export function mentionCardPerson(
-  user: { id: string; username?: string; name?: string; avatarId?: number | null },
+  user: PersonPicture & { id: string; username?: string; name?: string },
   directory: MentionCandidate[],
   accountId: string | undefined,
 ): MentionCardPerson {
   const known = directory.find((candidate) => candidate.id === user.id);
-  return {
+  const person = {
     id: user.id,
     username: known?.username ?? user.username,
     displayName: known?.displayName ?? user.name,
     avatarId: known ? known.avatarId : user.avatarId,
     self: !!accountId && user.id === accountId,
   };
+  const picture = known ?? user;
+  return withPicture(person, { avatarAsset: picture.avatarAsset, avatarUrl: picture.avatarUrl });
 }

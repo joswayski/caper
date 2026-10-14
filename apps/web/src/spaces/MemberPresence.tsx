@@ -97,7 +97,7 @@ export default function MemberPresence({
           }
         >
           <span className="member-presence-avatar">
-            <Avatar avatarId={member.avatarId} name={member.displayName} />
+            <Avatar person={member} name={member.displayName} />
             <PresenceDot status={status} live={live} />
           </span>
           <strong title={member.displayName}>{member.displayName}</strong>

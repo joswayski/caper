@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { type Account, getAccount } from "../account/client";
 import { primaryButtonClass, Spinner } from "../account/controls";
 import Avatar from "../components/Avatar";
+import SpaceIcon from "../components/SpaceIcon";
 import Wordmark from "../components/Wordmark";
 import {
   appInviteUrl,
@@ -94,12 +95,20 @@ export default function InvitePage({ code }: { code: string }) {
             <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
               {state.preview.alreadyMember ? "YOU’RE ALREADY A MEMBER" : "YOU’RE INVITED TO JOIN"}
             </p>
+            {state.preview.space.iconUrl && (
+              <span
+                className="relative mt-5 grid size-16 place-items-center overflow-hidden rounded-[30%] border border-border bg-surface-raised text-[1.4rem] font-bold text-content-muted"
+                aria-hidden="true"
+              >
+                <SpaceIcon space={state.preview.space} />
+              </span>
+            )}
             <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] wrap-anywhere">
               {state.preview.space.name}
             </h1>
             <div className="flex items-center gap-3 text-content-muted">
               <span className="size-8 shrink-0 overflow-hidden rounded-[var(--radius-avatar)]" aria-hidden="true">
-                <Avatar avatarId={state.preview.inviter.avatarId} name={state.preview.inviter.displayName} />
+                <Avatar person={state.preview.inviter} name={state.preview.inviter.displayName} />
               </span>
               <p className="leading-[1.5]">
                 <strong className="text-content">{state.preview.inviter.displayName}</strong> invited you

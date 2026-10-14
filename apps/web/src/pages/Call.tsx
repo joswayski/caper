@@ -31,6 +31,7 @@ import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import WhatsNew from "../updates/WhatsNew";
 import { getAccount, getRememberedAccount, logout, subscribeAccount, type Account } from "../account/client";
+import { withPicture } from "../account/pictures";
 import { routeOutput } from "../audio/output";
 import { rosterChanges } from "../audio/roster";
 import {
@@ -1176,6 +1177,10 @@ export default function Call({
     else profileDialog.current?.close();
   }, [profileOpen]);
 
+  // Your own voice tile shows the picture you just saved, like your name.
+  const voicePicture = <T extends Pick<Participant, "id" | "avatarId" | "avatarAsset" | "avatarUrl">>(
+    participant: T,
+  ) => (participant.id === state.selfId && account ? withPicture(participant, account) : participant);
   const isSpeaking = (participant: { id: string; muted: boolean }) => {
     const muted = participant.id === state.selfId ? state.muted : participant.muted;
     return activeParticipants.has(participant.id) && !muted;
@@ -1212,7 +1217,7 @@ export default function Call({
           >
             <span className="participant-avatar">
               <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
-                <Avatar avatarId={participant.avatarId} name={participantName} />
+                <Avatar person={voicePicture(participant)} name={participantName} />
               </span>
             </span>
             <span className="participant-name">
@@ -1356,7 +1361,7 @@ export default function Call({
           <span className="voice-stack-faces" aria-hidden="true">
             {people.slice(0, 2).map((participant) => (
               <span key={participant.id} className="voice-stack-avatar">
-                <Avatar avatarId={participant.avatarId} name={participant.name} />
+                <Avatar person={voicePicture(participant)} name={participant.name} />
               </span>
             ))}
           </span>
@@ -1517,7 +1522,7 @@ export default function Call({
               <span className="voice-stack-faces" aria-hidden="true">
                 {people.slice(0, 3).map((participant) => (
                   <span key={participant.id} className="voice-stack-avatar">
-                    <Avatar avatarId={participant.avatarId} name={participant.name} />
+                    <Avatar person={voicePicture(participant)} name={participant.name} />
                   </span>
                 ))}
               </span>
@@ -1638,7 +1643,7 @@ export default function Call({
                 }}
               >
                 <span className="account-avatar">
-                  <Avatar avatarId={account?.avatarId} name={identityName} />
+                  <Avatar person={account} name={identityName} />
                   <PresenceDot
                     status={accountPresence ? selfPresence : localPresence}
                     live={accountPresence ? presenceLive : true}

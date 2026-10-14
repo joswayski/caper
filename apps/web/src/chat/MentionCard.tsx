@@ -159,7 +159,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
         {drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
         <div className="chat-mention-card-identity">
           <i className="chat-mention-card-avatar">
-            <Avatar avatarId={person.avatarId} name={person.displayName ?? person.username ?? title} />
+            <Avatar person={person} name={person.displayName ?? person.username ?? title} />
           </i>
           <div>
             <strong>{title}</strong>
@@ -177,6 +177,8 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
                       id: person.id,
                       name: person.displayName ?? person.username ?? "Profile",
                       avatarId: person.avatarId,
+                      avatarAsset: person.avatarAsset,
+                      avatarUrl: person.avatarUrl,
                       isGuest: false,
                     });
                 }}

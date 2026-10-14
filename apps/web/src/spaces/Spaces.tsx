@@ -44,7 +44,10 @@ import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import type { FocusTarget } from "../chat/Chat";
 import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
-import Avatar, { initial } from "../components/Avatar";
+import Avatar from "../components/Avatar";
+import SpaceIcon from "../components/SpaceIcon";
+import { SpaceIconSettings } from "../account/PictureSettings";
+import { withSpaceIcon } from "../account/pictures";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
@@ -834,7 +837,7 @@ function MemberManager({
           <li key={member.id}>
             {/* TODO show status indicator */}
             <span className="member-avatar" aria-hidden="true">
-              <Avatar avatarId={member.avatarId} name={member.displayName} />
+              <Avatar person={member} name={member.displayName} />
             </span>
             <span>
               <strong>{member.displayName}</strong>
@@ -872,7 +875,7 @@ function MemberManager({
             {invitations.map((member) => (
               <li key={member.id}>
                 <span className="member-avatar" aria-hidden="true">
-                  <Avatar avatarId={member.avatarId} name={member.displayName} />
+                  <Avatar person={member} name={member.displayName} />
                 </span>
                 <span>
                   <strong>{member.displayName}</strong>
@@ -981,6 +984,12 @@ function ManageSpaceDialog({
           {error}
         </p>
       )}
+      <div className="space-icon-section">
+        <SpaceIconSettings
+          space={detail.space}
+          onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
+        />
+      </div>
       <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
       <MemberManager
         members={members}
@@ -2630,7 +2639,7 @@ export default function Spaces({
               onClick={() => void openSelfDirect()}
             >
               <span className="direct-avatar">
-                <Avatar avatarId={account.avatarId} name={account.displayName ?? account.username ?? "You"} />
+                <Avatar person={account} name={account.displayName ?? account.username ?? "You"} />
               </span>
               <span>{account.displayName ?? account.username ?? "You"}</span>
               <small>you</small>
@@ -2676,7 +2685,7 @@ export default function Spaces({
                     onClick={() => openDirect(conversation)}
                   >
                     <span className="direct-avatar">
-                      <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
+                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
                     </span>
                     <span>{conversation.peer.displayName}</span>
                     <small>@{conversation.peer.username}</small>
@@ -2705,7 +2714,7 @@ export default function Spaces({
                     onClick={() => openDirect(conversation)}
                   >
                     <span className="direct-avatar" aria-hidden="true">
-                      <Avatar avatarId={conversation.peer.avatarId} name={conversation.peer.displayName} />
+                      <Avatar person={conversation.peer} name={conversation.peer.displayName} />
                     </span>
                     <span>{conversation.peer.displayName}</span>
                     {blockedIds.has(conversation.peer.id) ? (
@@ -2997,7 +3006,7 @@ export default function Spaces({
               onFocus={() => prefetch(space.id)}
               onClick={() => choose(space.id)}
             >
-              <span>{initial(space.name)}</span>
+              <SpaceIcon space={space} />
               {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
             </button>
@@ -3013,8 +3022,8 @@ export default function Spaces({
           aria-label={`Invitation to ${space.name}`}
           onClick={() => (detail ? setRailInvitation(space) : choose(space.id))}
         >
-          {/* The space's initial in a dashed tile, as on Apple, Android and desktop. */}
-          <span aria-hidden="true">{initial(space.name)}</span>
+          {/* The space's initial (or icon) in a dashed tile, as on Apple, Android and desktop. */}
+          <SpaceIcon space={space} />
         </button>
       ))}
       <button
@@ -3418,6 +3427,8 @@ export default function Spaces({
       username: "",
       displayName: author.name,
       avatarId: author.avatarId ?? undefined,
+      avatarAsset: author.avatarAsset,
+      avatarUrl: author.avatarUrl,
     });
   const ownedSpaces = spaces.filter((space) => !!account && space.ownerId === account.id && !space.demo);
   // Don't offer the open space to someone who is already in it.
