@@ -67,6 +67,11 @@ const RELOAD_AFTER: Duration = Duration::from_secs(60);
 /// Decoded pictures kept; each texture is at most 64 KiB.
 const MAX_ENTRIES: usize = 400;
 const MAX_FETCHES: usize = 4;
+/// A load that failed on the network or a server error (a laptop waking,
+/// say) tries the same URL again after this, doubling up to [`RETRY_MAX`].
+/// Undecodable pictures and other 4xx answers wait for a re-signed URL.
+const RETRY_FIRST: Duration = Duration::from_secs(30);
+const RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub type Frames = Vec<(egui::ColorImage, Duration)>;
 
@@ -586,6 +591,9 @@ struct Entry {
     loading: Option<String>,
     /// The URL that failed; another (re-signed) URL tries again.
     failed: Option<String>,
+    /// After a transient failure: when the same URL may load again, and the
+    /// wait that set it.
+    retry: Option<(Instant, Duration)>,
     used: Option<Instant>,
 }
 
@@ -600,6 +608,13 @@ struct Fetched {
     asset: String,
     url: String,
     frames: Option<Frames>,
+    /// The download failed in a way worth trying again.
+    transient: bool,
+}
+
+/// Network failures (no status) and server errors are worth retrying.
+fn transient(status: Option<u16>) -> bool {
+    status.is_none_or(|status| status >= 500 || matches!(status, 408 | 429))
 }
 
 /// Decoded pictures by asset id. Shared through the egui context so every
@@ -663,7 +678,8 @@ impl Pictures {
         if entry.loading.is_none()
             && let Some(url) = source.url
         {
-            let missing = entry.texture.is_none() && entry.failed.as_deref() != Some(url);
+            let due = entry.retry.is_some_and(|(at, _)| now >= at);
+            let missing = entry.texture.is_none() && (entry.failed.as_deref() != Some(url) || due);
             let reload = playing
                 && room
                 && entry.texture.is_some()
@@ -698,6 +714,18 @@ impl Pictures {
             }
             texture.id()
         });
+        // A transient failure repaints when it may load again.
+        if texture.is_none()
+            && request.is_none()
+            && entry.loading.is_none()
+            && entry
+                .failed
+                .as_deref()
+                .is_some_and(|failed| source.url == Some(failed))
+            && let Some((at, _)) = entry.retry
+        {
+            wait = Some(at.saturating_duration_since(now));
+        }
         if let Some(request) = request {
             self.waiting.push_back(request);
         }
@@ -727,6 +755,7 @@ impl Pictures {
         }
         entry.released = None;
         entry.failed = None;
+        entry.retry = None;
         entry.loading = None;
         entry.used.get_or_insert(now);
     }
@@ -769,7 +798,16 @@ impl Pictures {
                 }
                 // A failed reload keeps its still and stops trying.
                 _ if entry.texture.is_some() => entry.released = None,
-                _ => entry.failed = Some(fetched.url),
+                _ => {
+                    entry.retry = fetched.transient.then(|| {
+                        let wait = entry
+                            .retry
+                            .filter(|_| entry.failed.as_ref() == Some(&fetched.url))
+                            .map_or(RETRY_FIRST, |(_, wait)| (wait * 2).min(RETRY_MAX));
+                        (now + wait, wait)
+                    });
+                    entry.failed = Some(fetched.url);
+                }
             }
         }
         while self.in_flight < MAX_FETCHES
@@ -784,15 +822,16 @@ impl Pictures {
             let context = context.clone();
             let generation = self.generation;
             std::thread::spawn(move || {
-                let frames = api
-                    .fetch_media(&request.url)
-                    .ok()
-                    .and_then(|bytes| decode(&bytes, request.animate));
+                let (frames, transient) = match api.fetch_media(&request.url) {
+                    Ok(bytes) => (decode(&bytes, request.animate), false),
+                    Err(status) => (None, transient(status)),
+                };
                 let _ = sender.send(Fetched {
                     generation,
                     asset: request.asset,
                     url: request.url,
                     frames,
+                    transient,
                 });
                 context.request_repaint();
             });
@@ -1177,6 +1216,7 @@ mod tests {
                 asset: "a1".into(),
                 url: first.clone(),
                 frames: decode(&bytes, true),
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);
@@ -1212,6 +1252,7 @@ mod tests {
                 asset: "a2".into(),
                 url: first.clone(),
                 frames: None,
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);
@@ -1223,6 +1264,33 @@ mod tests {
         };
         assert_eq!(pictures.texture(fresh, true, start), (None, None));
         assert_eq!(pictures.waiting.len(), 1, "a fresh URL retries");
+        // A network failure retries the same URL, backing off to 5 minutes.
+        pictures.poll(&context, start);
+        let mut at = start;
+        for wait in [30, 60, 120, 240, 300, 300] {
+            pictures
+                .sender
+                .send(Fetched {
+                    generation: pictures.generation,
+                    asset: "a2".into(),
+                    url: second.clone(),
+                    frames: None,
+                    transient: true,
+                })
+                .unwrap();
+            pictures.poll(&context, at);
+            let wait = Duration::from_secs(wait);
+            assert_eq!(
+                pictures.texture(fresh, true, at),
+                (None, Some(wait)),
+                "the fallback shows and a repaint is due when it may retry"
+            );
+            assert!(pictures.waiting.is_empty());
+            at += wait;
+            assert_eq!(pictures.texture(fresh, true, at), (None, None));
+            assert_eq!(pictures.waiting.len(), 1, "retried after {wait:?}");
+            pictures.poll(&context, at);
+        }
         // Logout forgets everything; late results are ignored.
         pictures.clear();
         pictures
@@ -1232,6 +1300,7 @@ mod tests {
                 asset: "a1".into(),
                 url: second.clone(),
                 frames: decode(&bytes, true),
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);
