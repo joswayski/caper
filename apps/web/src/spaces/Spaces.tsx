@@ -894,7 +894,11 @@ function MemberManager({
                 <button
                   type="button"
                   disabled={pending}
-                  onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}
+                  onClick={() => {
+                    // This row (and its button) goes; continue in the username field.
+                    refocus.current = true;
+                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
+                  }}
                 >
                   Cancel invite
                 </button>
