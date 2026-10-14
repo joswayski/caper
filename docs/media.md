@@ -7932,8 +7932,9 @@ and signed update/relaunch acceptance are still required.
 
 ### Generation and storage
 
-Infrastructure's successful Caper web rollout dispatches `whats-new.yml` on Caper
-`main` with the exact confirmed image SHA. It holds the web deployment queue until
+After Ship rolls out Caper web, infrastructure dispatches `whats-new.yml` on Caper
+`main` with the exact confirmed image SHA, authenticating as the Godis deploy
+GitHub App (no separate token). It holds the web deployment queue until
 generation finishes so successive shipped versions cannot overwrite pending
 dispatches. The native release calls the same workflow only after all distribution
 jobs succeed. The existing Godis Discord buttons need no code or deployment change.
@@ -7975,14 +7976,15 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    secret change is needed. Merging does not deploy apps or activate generation.
 2. Claim the plan's Claude Platform credits by linking the Console organization
    in Claude billing. Subscription sign-in credentials are not API credentials.
-   From either repository root, with authenticated `gh`, save the Console API key
-   and a fine-grained token restricted to Caper **Actions: read/write**. These
-   commands prompt privately; do not paste keys into scripts or commit them:
+   With authenticated `gh`, save the Console API key; it prompts privately, so do
+   not paste keys into scripts or commit them. Then, from the infrastructure
+   checkout with AWS signed in, copy the existing Godis deploy App's identity
+   into infrastructure so Ship can start this workflow:
 
    ```bash
    gh auth status
    gh secret set ANTHROPIC_API_KEY --repo joswayski/caper
-   gh secret set CAPER_RELEASE_NOTES_TOKEN --repo joswayski/infrastructure
+   ./scripts/store-ship-dispatch-secrets.sh --profile production
    gh secret list --repo joswayski/caper
    gh secret list --repo joswayski/infrastructure
    ```
@@ -8029,8 +8031,8 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    Never generate notes for a PR branch or an unshipped revision. No workflow
    dispatch, production publication or live Claude request was executed here.
 5. Roll back clients using the existing exact-image or higher-build-number native
-   release process. Do not delete history or lower acknowledgements. Removing the
-   infrastructure token stops future web generation without affecting deployment;
+   release process. Do not delete history or lower acknowledgements. Removing
+   `ANTHROPIC_API_KEY` stops future generation without affecting deployment;
    existing immutable notes remain available. Prefer a forward API fix; missing
    notes do not affect conversations or signed update verification.
 
