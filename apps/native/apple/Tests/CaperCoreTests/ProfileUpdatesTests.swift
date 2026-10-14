@@ -73,9 +73,13 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(profiles.apply(report).reporter.displayName, "Maya R")
         XCTAssertEqual(profiles.apply(report).text, "Hi")
 
-        let detail = profiles.apply(SpaceDetail(space: Space(id: "Space1234567", name: "Studio", ownerId: maya.id), channels: [], members: [member, other]))
-        XCTAssertEqual(detail.members.map(\.displayName), ["Maya R", "Other"])
-        XCTAssertEqual(MentionCandidate(detail.members[0]).picture?.asset, "Pic0000000000000new1", "suggestions follow the members")
+        let detail = profiles.apply(SpaceDetail(space: Space(id: "Space1234567", name: "Studio", ownerId: maya.id), channels: [], members: [other, member],
+                                                channelMembers: ["Priv12345678": [maya.id]]))
+        XCTAssertEqual(detail.members.map(\.displayName), ["Other", "Maya R"])
+        // A private channel's readers keep leading its member list.
+        XCTAssertEqual(detail.channelMembers, ["Priv12345678": [maya.id]])
+        XCTAssertEqual(detail.memberOrder(channelID: "Priv12345678").map(\.displayName), ["Maya R", "Other"])
+        XCTAssertEqual(MentionCandidate(detail.members[1]).picture?.asset, "Pic0000000000000new1", "suggestions follow the members")
     }
 
     func testRemovingAPictureClearsItAndTheSavedMascotStays() {
@@ -189,9 +193,11 @@ final class ProfileUpdatesTests: XCTestCase {
 
         let removed = renamed[0].applying(Space(id: "Space1234567", name: "Friends", ownerId: "Owner0000001"))
         XCTAssertNil(removed.iconPicture, "absent icon fields mean the icon was removed")
-        let detail = SpaceDetail(space: studio, channels: [Channel(id: "Chan12345678", spaceId: studio.id, name: "general", private: false)], members: [])
+        let detail = SpaceDetail(space: studio, channels: [Channel(id: "Chan12345678", spaceId: studio.id, name: "general", private: false)], members: [],
+                                 channelMembers: ["Priv12345678": ["Owner0000001"]])
         XCTAssertEqual(detail.applying(update).space.name, "Friends")
         XCTAssertEqual(detail.applying(update).channels.count, 1)
+        XCTAssertEqual(detail.applying(update).channelMembers, ["Priv12345678": ["Owner0000001"]])
     }
 
     func testCustomPicturesAreRoundedSquares() {

@@ -1472,7 +1472,7 @@ public final class AppModel {
         }
         if let current = self.detail, current.space.id == updated.id {
             replace(detail: SpaceDetail(space: merged(current.space), channels: current.channels, members: current.members,
-                                        channelInvitations: current.channelInvitations))
+                                        channelInvitations: current.channelInvitations, channelMembers: current.channelMembers))
         } else {
             spaces = spaces.map { $0.id == updated.id ? merged($0) : $0 }
         }
