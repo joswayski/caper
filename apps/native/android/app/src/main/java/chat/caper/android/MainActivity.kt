@@ -3661,13 +3661,12 @@ internal fun counterTone(count: Int): Color = when {
             Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         }
         if (picture != null) { picture(); HorizontalDivider(color = Border) }
-        Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
-            supportingText = { Text("3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
+            supportingText = { Text("Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("Shown to other people. It does not need to be unique.", color = TextMuted) })
+            supportingText = { Text("This is what people see in conversations.", color = TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }

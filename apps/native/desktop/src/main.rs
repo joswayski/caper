@@ -8660,14 +8660,6 @@ impl CaperApp {
                             );
                             ui.add_space(24.0);
                             ui.label(black("Choose how you show up.").size(40.0));
-                            ui.add_space(20.0);
-                            ui.label(
-                                RichText::new(
-                                    "Your username is unique. Your display name is what people see in conversations.",
-                                )
-                                .size(16.0)
-                                .color(MUTED),
-                            );
                             ui.add_space(24.0);
                             ui.label(bold("Username").size(14.0));
                             ui.add_space(4.0);
@@ -8682,9 +8674,11 @@ impl CaperApp {
                             self.username = normalize_username(&self.username);
                             ui.add_space(6.0);
                             ui.label(
-                                RichText::new("3-32 lowercase letters, numbers, or underscores.")
-                                    .size(12.8)
-                                    .color(MUTED),
+                                RichText::new(
+                                    "Must be unique across Caper. 3-32 lowercase letters, numbers, or underscores.",
+                                )
+                                .size(12.8)
+                                .color(MUTED),
                             );
                             ui.add_space(20.0);
                             ui.label(bold("Display name").size(14.0));
@@ -8699,7 +8693,7 @@ impl CaperApp {
                             focus_frame(ui, &field);
                             ui.add_space(6.0);
                             ui.label(
-                                RichText::new("Shown to other people. It does not need to be unique.")
+                                RichText::new("This is what people see in conversations.")
                                     .size(12.8)
                                     .color(MUTED),
                             );
@@ -18916,13 +18910,6 @@ impl CaperApp {
             );
             ui.add_space(14.0);
         }
-        ui.label(
-            RichText::new(
-                "Your username is unique. Your display name is what people see in conversations.",
-            )
-            .color(MUTED),
-        );
-        ui.add_space(10.0);
         ui.label("Username");
         let field = ui.add_sized(
             [ui.available_width(), 42.0],
@@ -18933,7 +18920,7 @@ impl CaperApp {
         focus_frame(ui, &field);
         self.username = normalize_username(&self.username);
         ui.label(
-            RichText::new("3–32 lowercase letters, numbers, or underscores.")
+            RichText::new("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
                 .small()
                 .color(MUTED),
         );
@@ -18946,7 +18933,7 @@ impl CaperApp {
         );
         focus_frame(ui, &field);
         ui.label(
-            RichText::new("Shown to other people. It does not need to be unique.")
+            RichText::new("This is what people see in conversations.")
                 .small()
                 .color(MUTED),
         );

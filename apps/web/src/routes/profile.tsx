@@ -64,9 +64,6 @@ function Profile() {
         <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">
           {account.username ? "Make it yours." : "Choose how you show up."}
         </h1>
-        <p className="leading-[1.65] text-content-muted">
-          Your username is unique. Your display name is what people see in conversations.
-        </p>
         <ProfileForm
           account={account}
           onSaved={() => {
