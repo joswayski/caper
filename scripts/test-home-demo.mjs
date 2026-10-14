@@ -191,7 +191,76 @@ try {
   browser("set", "viewport", "1280", "800", "2");
   browser("set", "media", "dark", "reduced-motion");
   browser("reload");
+  browser("wait", "--load", "networkidle");
   wait('document.querySelector(".live-stage[data-ready]") && !window.demoClockActive');
+
+  for (const width of [1280, 320]) {
+    browser("set", "viewport", String(width), "800", "2");
+    browser("scrollintoview", ".download-button");
+    const buttons = evaluate(`
+      return [...document.querySelectorAll('.download-button, .source-button')].map(el => {
+        const box = el.getBoundingClientRect();
+        return { width: box.width, height: box.height, clipped: el.scrollWidth > el.clientWidth };
+      });
+    `);
+    assert.deepEqual(buttons[0], buttons[1], "Download and View source have matching dimensions");
+    assert.equal(buttons[0].clipped, false, "Button contents fit at narrow widths");
+    assert.doesNotMatch(evaluate('return document.querySelector(".app-downloads").textContent'), /available for/i);
+    browser("focus", ".download-button");
+    browser("press", "Enter");
+    wait('document.querySelector(".download-picker")');
+    assert.equal(evaluate('return document.querySelector(".download-button").getAttribute("aria-expanded")'), "true");
+    assert.equal(evaluate('return document.querySelector(".download-picker").getAttribute("role")'), "dialog");
+    wait('document.activeElement.getAttribute("aria-label") === "Close downloads"');
+    browser("press", "Tab");
+    assert.equal(
+      evaluate("return document.activeElement.tagName"),
+      "SELECT",
+      "Platform selector is keyboard reachable",
+    );
+
+    const release = "https://github.com/joswayski/caper/releases/download/native-latest/";
+    for (const [platform, urls] of [
+      ["macos", [`${release}Caper-macOS-Apple-Silicon.dmg`, `${release}Caper-macOS-Intel.dmg`]],
+      ["windows", [`${release}Caper-Windows-x64-Setup.exe`]],
+      ["linux", [`${release}Caper-Linux-x64.deb`, `${release}Caper-Linux-x64.tar.gz`]],
+      ["ios", ["https://testflight.apple.com/join/khGQMuYP"]],
+      [
+        "android",
+        ["https://groups.google.com/g/caper-testers", "https://play.google.com/apps/testing/chat.caper.android"],
+      ],
+      ["", []],
+    ]) {
+      browser("select", ".download-platform-select select", platform);
+      assert.deepEqual(
+        evaluate('return [...document.querySelectorAll(".download-platform a")].map(el => el.href)'),
+        urls,
+        `${platform || "Unknown platform"} offers explicit downloads, not a release-page detour`,
+      );
+      assert.equal(
+        evaluate('return getComputedStyle(document.querySelector(".download-picker-content")).animationName'),
+        "none",
+      );
+    }
+    browser("press", "Escape");
+    wait('!document.querySelector(".download-picker")');
+    assert.equal(
+      evaluate('return document.activeElement.matches(".download-button")'),
+      true,
+      "Escape restores trigger focus",
+    );
+    browser("click", ".download-button");
+    wait('document.querySelector(".download-picker")');
+    browser("mouse", "move", "1", "1");
+    browser("mouse", "down", "left");
+    browser("mouse", "up", "left");
+    wait('!document.querySelector(".download-picker")');
+  }
+  console.log(
+    "PASS: equal-size downloads/source controls, all five platform choices, keyboard and outside dismissal at 1280px and 320px",
+  );
+  browser("set", "viewport", "1280", "800", "2");
+  browser("scroll", "up", "5000");
   const before = evaluate('return document.querySelector(".sim-messages").textContent');
   assert.equal(
     evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { detectDownloadPlatform, downloads, intelMacDownload, mobileBetas, playTestingUrl } from "../downloads.ts";
+import { detectDownloadPlatform, downloadGroups, mobileBetas, playTestingUrl } from "../downloads.ts";
 
 test("desktop hints select current platform packages", () => {
   for (const [userAgent, expected] of [
@@ -41,9 +41,22 @@ test("Android installs come from the Play closed test, never a sideloaded APK", 
 
 test("all desktop links use the rolling native release, never legacy previews", () => {
   const base = "https://github.com/joswayski/caper/releases/download/native-latest/";
-  assert.equal(downloads.macos.url, `${base}Caper-macOS-Apple-Silicon.dmg`);
-  assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.dmg`);
-  assert.equal(downloads.windows.url, `${base}Caper-Windows-x64-Setup.exe`);
-  assert.equal(downloads["linux-deb"].url, `${base}Caper-Linux-x64.deb`);
-  assert.equal(downloads.linux.url, "https://github.com/joswayski/caper/releases/tag/native-latest");
+  assert.deepEqual(
+    downloadGroups
+      .filter((group) => !["ios", "android"].includes(group.platform))
+      .map((group) => group.links.map((link) => link.url)),
+    [
+      [`${base}Caper-macOS-Apple-Silicon.dmg`, `${base}Caper-macOS-Intel.dmg`],
+      [`${base}Caper-Windows-x64-Setup.exe`],
+      [`${base}Caper-Linux-x64.deb`, `${base}Caper-Linux-x64.tar.gz`],
+    ],
+  );
+  assert.deepEqual(
+    downloadGroups.find((group) => group.platform === "ios")?.links.map((link) => link.url),
+    ["https://testflight.apple.com/join/khGQMuYP"],
+  );
+  assert.deepEqual(
+    downloadGroups.find((group) => group.platform === "android")?.links.map((link) => link.url),
+    ["https://groups.google.com/g/caper-testers", "https://play.google.com/apps/testing/chat.caper.android"],
+  );
 });

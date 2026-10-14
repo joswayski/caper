@@ -236,25 +236,14 @@
   font-size: 0.8125rem;
   line-height: 1.55;
 }
-.app-downloads a {
-  color: var(--text);
-  text-underline-offset: 4px;
-}
-/* Link hovers here are gated to real pointers: on touch, :hover sticks after
-   a tap, leaving a link (or a download button) lit when you come back. */
-@media (hover: hover) {
-  .app-downloads a:hover {
-    color: var(--terracotta-bright);
-  }
-}
-.app-downloads a:focus-visible {
+.app-downloads :is(a, button):focus-visible,
+.download-picker :is(a, button, select):focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 4px;
 }
 .download-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 .app-downloads .download-button,
@@ -262,13 +251,14 @@
   display: inline-flex;
   justify-content: center;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 46px;
-  padding: 10px 16px;
+  padding: 10px 12px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius);
   font-size: 0.8125rem;
   font-weight: 700;
+  line-height: 1.55;
   text-decoration: none;
   white-space: nowrap;
   transition:
@@ -304,32 +294,111 @@
   border-color: var(--text-muted);
   background: var(--surface-raised);
 }
-.download-actions svg {
+.download-actions svg,
+.download-platform a svg {
   width: 18px;
   height: 18px;
   flex: none;
 }
-.app-downloads p {
-  margin: 8px 0 0;
+.download-picker {
+  z-index: 100;
+  width: min(360px, calc(100vw - 24px));
+}
+.download-picker-content {
+  max-height: min(520px, calc(100dvh - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 30%);
+  animation: download-picker-enter var(--motion-fast) var(--ease-out);
+}
+.download-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.875rem;
+}
+.download-picker-heading button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+.download-platform-select {
+  display: grid;
+  gap: 6px;
+  margin-block: 8px 12px;
   color: var(--text-muted);
   font-size: 0.75rem;
 }
-.app-downloads p a {
-  color: inherit;
+.download-platform-select select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--blackout);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+}
+.download-platform {
+  padding-block: 12px;
+  border-top: 1px solid var(--border);
+}
+.download-platform a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-inline: -8px;
+  padding: 8px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.8125rem;
   text-decoration: none;
 }
+.download-platform p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+.download-release-notes {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
 @media (hover: hover) {
-  .app-downloads p a:hover {
+  .download-platform a:hover,
+  .download-picker-heading button:hover {
+    background: var(--surface-hover);
     color: var(--text);
-    text-decoration: underline;
   }
 }
-/* The Android beta's second step must read as a link, not as muted copy. */
-.app-downloads .download-step {
-  color: var(--text);
+.download-platform a:active,
+.download-picker-heading button:active {
+  background: var(--surface-hover);
 }
-.app-downloads .download-step a {
-  text-decoration: underline;
+@keyframes download-picker-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .hero-copy > .made-by {
   margin: 20px 0 0;
@@ -564,9 +633,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .app-downloads .download-button,
+  .app-downloads .source-button,
   .hero-copy,
   .hero[data-live-open] .hero-copy {
     transition: none;
+  }
+  .download-picker-content {
+    animation: none;
   }
 }
 
