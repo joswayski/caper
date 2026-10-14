@@ -487,8 +487,35 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(Array(red.prefix(4)), [255, 0, 0, 255])
         XCTAssertEqual(Array(blue.prefix(4)), [0, 0, 255, 255])
         let limited = try await loader.loadFrames(key: "limited", url: url, maxPixelSize: 20, animationByteLimit: 800)
-        XCTAssertEqual(limited.images.count, 1, "show one still, never loop a truncated prefix")
-        XCTAssertTrue(limited.durations.isEmpty)
+        XCTAssertEqual(limited.images.count, 2, "reduce resolution, not animation")
+        XCTAssertEqual(limited.durations, [0.08, 0.8])
+        XCTAssertLessThanOrEqual(limited.images.reduce(0) { $0 + $1.bytesPerRow * $1.height }, 800)
+        XCTAssertLessThan(try XCTUnwrap(limited.images.first).width, 20)
+    }
+
+    func testInlineGIFOverThePixelBudgetStillPlaysItsLastFrameAndLoops() async throws {
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data as CFMutableData, UTType.gif.identifier as CFString, 60, nil))
+        for index in 0..<60 {
+            let frame = rgbaImage(width: 720, height: 400) { _, _ in index == 59 ? [0, 0, 255, 255] : [255, 0, 0, 255] }
+            let delay = index == 59 ? 0.8 : 0.1
+            CGImageDestinationAddImage(destination, frame, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay]] as CFDictionary)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gif")
+        try (data as Data).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let frames = try await AttachmentImageLoader().loadFrames(key: "long-inline", url: url, maxPixelSize: 720, animationByteLimit: 32 * 1024 * 1024)
+        XCTAssertEqual(frames.images.count, 60)
+        XCTAssertEqual(frames.durations, Array(repeating: 0.1, count: 59) + [0.8])
+        XCTAssertLessThanOrEqual(frames.images.reduce(0) { $0 + $1.bytesPerRow * $1.height }, 32 * 1024 * 1024)
+        let first = try XCTUnwrap(frames.images.first)
+        XCTAssertLessThan(first.width, 720)
+        XCTAssertEqual(Double(first.width) / Double(first.height), 1.8, accuracy: 0.01)
+        let last = try XCTUnwrap(frames.images.last)
+        XCTAssertEqual(Array(try XCTUnwrap(AttachmentPreparer.rgbaPixels(last)).straight.prefix(4)), [0, 0, 255, 255])
+        XCTAssertEqual(MediaViewerPolicy.frameIndex(at: 5.91, durations: frames.durations), 59)
+        XCTAssertEqual(MediaViewerPolicy.frameIndex(at: 6.71, durations: frames.durations), 0)
     }
 
     // MARK: Compression decisions

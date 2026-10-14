@@ -1487,8 +1487,13 @@ change is needed, and existing GIF attachments do not need to be uploaded again.
 Reduced-motion readers see a still inline, including GIFs with no uploaded
 preview. Web draws a bounded canvas still; native clients use their existing
 motion preference. Apple and Rust inline decoding is limited to a 720px long
-edge, 600 frames and 32 MiB of retained frame pixels per GIF; animations exceeding
-the frame/retained-memory budget fall back to one still, not a truncated loop.
+edge, 600 frames and 32 MiB of retained frame pixels per GIF. When the pixels
+would exceed that budget, playback resolution shrinks while every frame and
+delay is preserved. A 720×400 GIF exceeds the budget after just 29 frames at
+full resolution; it must not silently become a still. Apple chooses the size
+from the frame count and actual decoded row stride, while Rust shrinks retained
+frames geometrically during its single decode pass. Files exceeding the
+600-frame decode-work ceiling still fall back to one still, not a truncated loop.
 Rust also applies decoder allocation/dimension limits and the existing 40 MiB
 network limit, so files exceeding those limits may fail inline. Apple releases
 frames on disappearance and Rust releases inactive animation cache entries.
@@ -1511,6 +1516,18 @@ Android's compile/unit-test attempt stops at `SDK location not found`.
 Android/Apple builds, native visual/device checks and live R2 acceptance remain
 required before release. No Docker daemon is available; the web production
 build was validated directly.
+
+Memory-budget follow-up (October 14, 2026): a generated 720×400, 60-frame GIF
+reproduced the freeze in both the real Mac attachment view and Rust's decoder:
+only one frame survived. The Rust regression now verifies all 60 frames within
+32 MiB, the last frame, looping and reduced motion; desktop tests pass (507
+passed, 12 existing ignored), as do formatting and Clippy. The rebuilt Linux
+client against the loopback chat/media fixture changes 9,308 GIF pixels between
+captures while the adjacent photo changes zero. This is local fixture evidence,
+not a production-upload or Windows-device check. The published Linux package
+could not run in this orb because it requires glibc 2.39; the local source build
+was used instead. No web, Android, upload, API or schema change is required for
+this follow-up; only Apple and Rust desktop need the corrected native release.
 
 Deployment order:
 
