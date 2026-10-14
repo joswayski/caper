@@ -3876,9 +3876,10 @@ internal fun counterTone(count: Int): Color = when {
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
-            InviteManager(state.channelGrants, state.pendingChannelInvitations, state.busy, { username, done, failed -> viewModel.addChannelGrant(channel, username, done, failed) },
+            val (grants, invited) = state.channelGrantsFor(channel.id)
+            InviteManager(grants, invited, state.busy, { username, done, failed -> viewModel.addChannelGrant(channel, username, done, failed) },
                 { removing = it }, { viewModel.cancelChannelInvitation(channel, it) }, channel = true,
-                suggestions = channelGrantCandidates(state.selectedSpace?.members.orEmpty(), state.account?.id ?: state.chatAuthorId, state.channelGrants, state.pendingChannelInvitations))
+                suggestions = channelGrantCandidates(state.selectedSpace?.members.orEmpty(), state.account?.id ?: state.chatAuthorId, grants, invited))
         }
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }

@@ -2902,19 +2902,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id }))
         done()
     }
+    /** Starts empty for [channel]: another channel's grants never show, and their late reply is dropped. */
     fun loadChannelGrants(channel: Channel) = launchAction { request ->
+        mutable.value = mutable.value.copy(channelGrantsChannelId = channel.id, channelGrants = emptyList(), pendingChannelInvitations = emptyList())
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         val response = if (channel.private) api.channelMembers(requireAccountToken(), detail.space.id, channel.id) else MemberList(emptyList())
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        mutable.value = mutable.value.copy(channelGrants = response.members, pendingChannelInvitations = response.invitations)
+        mutable.value = mutable.value.withChannelGrants(channel.id) { _, _ -> response.members to response.invitations }
     }
     fun addChannelGrant(channel: Channel, username: String, done: () -> Unit = {}, failed: (String) -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         val member = memberRequest(request, failed) { api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username) } ?: return@launchAction
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id } + member)
+        mutable.value = mutable.value.withChannelGrants(channel.id) { members, invitations -> members to invitations.filter { it.id != member.id } + member }
         done()
     }
 
@@ -2934,7 +2936,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id })
+        mutable.value = mutable.value.withChannelGrants(channel.id) { members, invitations -> members.filter { it.id != member.id } to invitations }
         done()
     }
 
@@ -2943,7 +2945,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
         if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
-            mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id })
+            mutable.value = mutable.value.withChannelGrants(channel.id) { members, invitations -> members to invitations.filter { it.id != member.id } }
     }
 
     fun joinChannel(channel: Channel) = mutateChannelMembership(channel) {

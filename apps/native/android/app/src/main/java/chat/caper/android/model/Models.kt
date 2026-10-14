@@ -589,6 +589,8 @@ data class AppUiState(
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
     val presencePage: Int = 0,
+    /** The private channel [channelGrants] and [pendingChannelInvitations] belong to; read them with [channelGrantsFor]. */
+    val channelGrantsChannelId: String? = null,
     val channelGrants: List<Member> = emptyList(),
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
@@ -633,6 +635,17 @@ data class AppUiState(
 ) {
     val drafts: List<DraftAttachmentUi> get() = selectedChannel?.id?.let { attachmentDrafts[AttachmentDraftTarget(it)] }.orEmpty()
     val attachmentError: String? get() = selectedChannel?.id?.let { attachmentErrors[AttachmentDraftTarget(it)] }
+
+    /** [channelId]'s members and pending invitations; another channel's (or none loaded yet) read as empty. */
+    fun channelGrantsFor(channelId: String): Pair<List<Member>, List<Member>> =
+        if (channelGrantsChannelId == channelId) channelGrants to pendingChannelInvitations else emptyList<Member>() to emptyList()
+
+    /** Applies [change] to [channelId]'s grants only while they are the ones loaded, so a late reply can't land on another channel. */
+    fun withChannelGrants(channelId: String, change: (members: List<Member>, invitations: List<Member>) -> Pair<List<Member>, List<Member>>): AppUiState {
+        if (channelGrantsChannelId != channelId) return this
+        val (members, invitations) = change(channelGrants, pendingChannelInvitations)
+        return copy(channelGrants = members, pendingChannelInvitations = invitations)
+    }
 
     /**
      * Resolve retained identity snapshots from the account without touching conversation state:
