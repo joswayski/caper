@@ -15805,8 +15805,7 @@ impl CaperApp {
         // A ready GIF uses its original frames, not a cached local/poster still.
         let gif = !pending && !processing && attachment.content_type == "image/gif";
         let state = if gif && ui.is_rect_visible(rect) {
-            static MOTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let playing = *MOTION.get_or_init(reply_motion_enabled) && pictures::playing(ui);
+            let playing = reply_motion_enabled() && pictures::playing(ui);
             self.media.gif(
                 ui.ctx(),
                 &attachment.id,
@@ -21656,8 +21655,7 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
             displacement: 0.0,
             velocity: 0.0,
         });
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let enabled = *ENABLED.get_or_init(reply_motion_enabled) && ui.style().animation_time > 0.0;
+    let enabled = reply_motion_enabled() && ui.style().animation_time > 0.0;
     if enabled && ui.is_rect_visible(egui::Rect::from_two_pos(source, target)) {
         // Advance elapsed time in stable substeps, even on a slow software-rendered frame.
         let mut remaining = (now - motion.time).clamp(0.0, 0.25) as f32;
@@ -21711,35 +21709,23 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
     }
 }
 
-/// Read the desktop preference once, without a subprocess or timer per row/frame.
+/// Reply strings and GIFs move unless the desktop asks for less motion.
+/// Linux's setting comes from `motion::reduced`, read off the UI thread at
+/// launch (a `gsettings` subprocess here stalled the first frame that drew
+/// one); Windows' in-process `UISettings` is read once.
 fn reply_motion_enabled() -> bool {
     #[cfg(target_os = "windows")]
     {
-        windows::UI::ViewManagement::UISettings::new()
-            .and_then(|settings| settings.AnimationsEnabled())
-            .unwrap_or(true)
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            windows::UI::ViewManagement::UISettings::new()
+                .and_then(|settings| settings.AnimationsEnabled())
+                .unwrap_or(true)
+        }) && !motion::reduced()
     }
     #[cfg(not(target_os = "windows"))]
     {
-        #[cfg(target_os = "macos")]
-        let (command, args, disabled) = (
-            "defaults",
-            &["read", "com.apple.universalaccess", "reduceMotion"][..],
-            "1",
-        );
-        #[cfg(not(target_os = "macos"))]
-        let (command, args, disabled) = (
-            "gsettings",
-            &["get", "org.gnome.desktop.interface", "enable-animations"][..],
-            "false",
-        );
-        !std::process::Command::new(command)
-            .args(args)
-            .output()
-            .is_ok_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).trim() == disabled
-            })
+        !motion::reduced()
     }
 }
 
