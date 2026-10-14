@@ -6958,7 +6958,8 @@ uses a resizable egui thread SidePanel (300–480) and is unchanged.
 
 Web (desktop and narrow), Android, iOS/macOS and Rust desktop offer **Block**
 with the existing confirmation and **Unblock** on other people's profile cards.
-Blocked cards hide Message and Invite; your own card only says You. Historical
+Blocked cards hide Message and Invite; your own card says You with **Edit profile**,
+which opens the existing profile editor on every client. Historical
 authors with an account ID but no known username can still be blocked, but cannot
 be messaged or invited by an invented username.
 

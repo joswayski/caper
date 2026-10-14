@@ -151,7 +151,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   their avatar, name and `@username` from loaded data, Open conversation and
   Close icons, and an inline DM composer in the channel composer's shell
   (Attach, Emoji, Send; staged files with image thumbnails above it). Enter
-  sends (your own card says "You"). Close retains the per-person draft; populated cards resist
+  sends (your own card says "You", with **Edit profile**). Close retains the per-person draft; populated cards resist
   outside clicks, and sending prevents dismissal. Drafts survive dialogs until
   logout. Only Send resolves the DM, prepares/uploads files and sends; success opens it,
   while errors retain the draft and uncertain retries reuse the exact payload
