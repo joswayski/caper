@@ -14896,18 +14896,7 @@ impl CaperApp {
                         for author in &summary.participants {
                             avatar(ui, &author.name, author.avatar_id, 24.0, false);
                         }
-                        if ui
-                            .small_button(format!(
-                                "{} {} · View thread",
-                                summary.reply_count,
-                                if summary.reply_count == 1 {
-                                    "reply"
-                                } else {
-                                    "replies"
-                                }
-                            ))
-                            .clicked()
-                        {
+                        if thread_summary_link(ui, summary.reply_count).clicked() {
                             self.open_thread(message.id.clone());
                         }
                     });
@@ -17698,6 +17687,7 @@ impl CaperApp {
                 | Dialog::Block { .. }
                 | Dialog::RemoveMember { .. }
                 | Dialog::StartDirect
+                | Dialog::CreateSpace
                 | Dialog::Invitation(_)
         ) {
             // Short forms: a fixed shell (it never resizes) without a mostly
@@ -20020,10 +20010,11 @@ enum VoiceAction {
 /// Web's `.header-voice-join` and `.header-voice .voice-leave`: an icon and
 /// a bold label in a 34px button. A disabled `ui` dims it.
 fn header_voice_button(ui: &mut egui::Ui, icon: NavIcon, text: &str, tone: Tone) -> egui::Response {
+    // Placeholder-colored, so the label takes the tone's color when painted.
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
         egui::FontId::new(12.5, egui::FontFamily::Name("Satoshi Bold".into())),
-        TEXT,
+        Color32::PLACEHOLDER,
     );
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(12.0 + 16.0 + 6.0 + galley.size().x + 12.0, 34.0),
@@ -21719,6 +21710,43 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
         ui.ctx().copy_text(message.id.clone());
         ui.close();
     }
+}
+
+/// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
+/// quiet "View thread", without a button frame.
+fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
+    let mut job = egui::text::LayoutJob::default();
+    let count = format!(
+        "{replies} {}",
+        if replies == 1 { "reply" } else { "replies" }
+    );
+    job.append(
+        &count,
+        0.0,
+        egui::TextFormat::simple(
+            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TERRACOTTA_BRIGHT,
+        ),
+    );
+    job.append(
+        "View thread",
+        8.0,
+        egui::TextFormat::simple(egui::FontId::proportional(12.0), MUTED),
+    );
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::vec2(0.0, 4.0);
+            ui.add(egui::Button::new(job).frame(false))
+        })
+        .inner;
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("{count} · View thread"),
+        )
+    });
+    response
 }
 
 /// Web's link above a thread reply that was also sent to the channel.
