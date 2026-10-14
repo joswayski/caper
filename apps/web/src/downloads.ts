@@ -6,16 +6,16 @@ export const desktopRelease = "https://github.com/joswayski/caper/releases/tag/n
 
 export const downloads = {
   macos: {
-    label: "Download for macOS",
-    detail: "Apple Silicon · .dmg",
+    label: "Apple Silicon",
+    detail: "M1 or newer · .dmg",
     url: `${release}/Caper-macOS-Apple-Silicon.dmg`,
   },
-  windows: { label: "Download for Windows", detail: "x64 · Setup.exe", url: `${release}/Caper-Windows-x64-Setup.exe` },
-  "linux-deb": { label: "Download for Linux", detail: "x64 · .deb", url: `${release}/Caper-Linux-x64.deb` },
+  windows: { label: "Installer", detail: "x64 · Setup.exe", url: `${release}/Caper-Windows-x64-Setup.exe` },
+  "linux-deb": { label: "Debian / Ubuntu package", detail: "x64 · .deb", url: `${release}/Caper-Linux-x64.deb` },
   linux: {
-    label: "Linux downloads",
-    detail: "Check compatibility",
-    url: desktopRelease,
+    label: "Portable archive",
+    detail: "x64 · .tar.gz",
+    url: `${release}/Caper-Linux-x64.tar.gz`,
   },
 };
 export const intelMacDownload = `${release}/Caper-macOS-Intel.dmg`;
@@ -29,11 +29,11 @@ export const androidTestersGroupUrl: string | null = "https://groups.google.com/
 export const playTestingUrl = "https://play.google.com/apps/testing/chat.caper.android";
 
 export const mobileBetas: Record<"ios" | "android", { label: string; url: string } | null> = {
-  ios: testFlightUrl ? { label: "Get the iOS beta", url: testFlightUrl } : null,
-  android: androidTestersGroupUrl ? { label: "Get the Android beta", url: androidTestersGroupUrl } : null,
+  ios: testFlightUrl ? { label: "Join TestFlight", url: testFlightUrl } : null,
+  android: androidTestersGroupUrl ? { label: "1. Join the testers group", url: androidTestersGroupUrl } : null,
 };
 
-// Unknown Linux distributions need the compatibility notes, not an archive dump.
+// Linux detection identifies the platform, not compatibility with either package.
 export function detectDownloadPlatform({
   userAgent,
   platform = "",

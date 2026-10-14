@@ -1,11 +1,32 @@
 import { useEffect, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, ChevronDown, Copy, Download } from "lucide-react";
+import {
+  autoUpdate,
+  flip,
+  FloatingFocusManager,
+  FloatingPortal,
+  offset,
+  shift,
+  useClick,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
-import { detectDownloadPlatform, downloads, mobileBetas, playTestingUrl, type DownloadPlatform } from "../downloads";
+import {
+  desktopRelease,
+  detectDownloadPlatform,
+  downloads,
+  intelMacDownload,
+  mobileBetas,
+  playTestingUrl,
+  type DownloadPlatform,
+} from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -25,11 +46,6 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "alwa
 export default function Home({ account, initialNow, latestChanges, downloadPlatform }: HomeProps) {
   const [now, setNow] = useState(initialNow);
   const [platform, setPlatform] = useState(downloadPlatform);
-  const download = !platform
-    ? null
-    : platform === "ios" || platform === "android"
-      ? mobileBetas[platform]
-      : downloads[platform];
 
   useEffect(() => {
     // iPadOS can send a Mac user agent; touch points distinguish it after hydration.
@@ -70,22 +86,12 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
             <div className="download-actions">
-              {download && platform && (
-                <a className="download-button" href={download.url}>
-                  <PlatformIcon platform={platform} />
-                  {download.label}
-                </a>
-              )}
+              <DownloadChooser platform={platform} />
               <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer">
                 <GitHubIcon />
                 View source
               </a>
             </div>
-            {download && platform === "android" && (
-              <p className="download-step">
-                Join the testers group, then <a href={playTestingUrl}>install from Google Play</a>.
-              </p>
-            )}
           </div>
           <p className="experimental-note">
             <span className="experimental-warning">
@@ -124,6 +130,109 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
         )}
       </section>
     </main>
+  );
+}
+
+const downloadGroups = [
+  {
+    platform: "macos",
+    label: "macOS",
+    options: [downloads.macos, { label: "Intel", detail: ".dmg", url: intelMacDownload }],
+  },
+  { platform: "windows", label: "Windows", options: [downloads.windows] },
+  {
+    platform: "linux",
+    label: "Linux",
+    options: [downloads["linux-deb"], downloads.linux],
+  },
+  {
+    platform: "ios",
+    label: "iOS",
+    options: mobileBetas.ios ? [{ ...mobileBetas.ios, detail: "iPhone & iPad" }] : [],
+  },
+  {
+    platform: "android",
+    label: "Android",
+    options: mobileBetas.android
+      ? [
+          { ...mobileBetas.android, detail: "Google Groups" },
+          { label: "2. Install from Google Play", detail: "After joining the group", url: playTestingUrl },
+        ]
+      : [],
+  },
+] satisfies {
+  platform: DownloadPlatform;
+  label: string;
+  options: { label: string; detail: string; url: string }[];
+}[];
+
+function DownloadChooser({ platform }: { platform: DownloadPlatform | null }) {
+  const [open, setOpen] = useState(false);
+  const { refs, floatingStyles, context } = useFloating({
+    open,
+    onOpenChange: setOpen,
+    placement: "bottom-start",
+    strategy: "fixed",
+    middleware: [offset(8), flip({ padding: 16 }), shift({ padding: 16, crossAxis: true })],
+    whileElementsMounted: autoUpdate,
+  });
+  const { getReferenceProps, getFloatingProps } = useInteractions([
+    useClick(context),
+    useDismiss(context),
+    useRole(context, { role: "dialog" }),
+  ]);
+  const detected = platform === "linux-deb" ? "linux" : platform;
+  const groups = [
+    ...downloadGroups.filter((group) => group.platform === detected),
+    ...downloadGroups.filter((group) => group.platform !== detected),
+  ].filter((group) => group.options.length > 0);
+
+  return (
+    <>
+      <button ref={refs.setReference} type="button" className="download-button" {...getReferenceProps()}>
+        <Download aria-hidden="true" />
+        Download
+        <ChevronDown aria-hidden="true" />
+      </button>
+      {open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={context} modal={false}>
+            <div
+              ref={refs.setFloating}
+              style={floatingStyles}
+              className="download-menu"
+              aria-label="Download Caper"
+              {...getFloatingProps()}
+            >
+              <p className="download-menu-hint">
+                Scroll for all platforms <ChevronDown size={14} aria-hidden="true" />
+              </p>
+              {groups.map((group) => (
+                <section key={group.platform} aria-label={group.label}>
+                  <h2>
+                    <PlatformIcon platform={group.platform} />
+                    {group.label}
+                    {group.platform === detected && <small>Your platform</small>}
+                  </h2>
+                  {group.options.map((option) => (
+                    <a key={option.url} href={option.url} onClick={() => setOpen(false)}>
+                      <span>{option.label}</span>
+                      <small>{option.detail}</small>
+                    </a>
+                  ))}
+                  {group.platform === "linux" && (
+                    <p>
+                      Both need x64 and glibc 2.39+. Use the .deb on Ubuntu 24.04 or compatible Debian systems; the
+                      archive is for advanced portable installs. <a href={desktopRelease}>Compatibility notes</a>.
+                    </p>
+                  )}
+                </section>
+              ))}
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
+    </>
   );
 }
 

@@ -236,25 +236,14 @@
   font-size: 0.8125rem;
   line-height: 1.55;
 }
-.app-downloads a {
-  color: var(--text);
-  text-underline-offset: 4px;
-}
-/* Link hovers here are gated to real pointers: on touch, :hover sticks after
-   a tap, leaving a link (or a download button) lit when you come back. */
-@media (hover: hover) {
-  .app-downloads a:hover {
-    color: var(--terracotta-bright);
-  }
-}
-.app-downloads a:focus-visible {
+.download-actions :is(a, button):focus-visible,
+.download-menu a:focus-visible {
   outline: 2px solid var(--terracotta);
-  outline-offset: 4px;
+  outline-offset: 2px;
 }
 .download-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 .app-downloads .download-button,
@@ -262,19 +251,15 @@
   display: inline-flex;
   justify-content: center;
   align-items: center;
-  gap: 10px;
-  min-height: 46px;
-  padding: 10px 16px;
+  gap: 8px;
+  height: 46px;
+  padding: 10px 12px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius);
   font-size: 0.8125rem;
   font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease;
 }
 .app-downloads .download-button {
   color: var(--on-action);
@@ -283,7 +268,7 @@
 .app-downloads .source-button {
   color: var(--text);
   border-color: var(--border);
-  background: var(--surface);
+  background: transparent;
 }
 /* Hover only where a pointer hovers, so a tapped button doesn't stay lit on
    touch; a press still shows the pressed fill. */
@@ -294,6 +279,7 @@
   .app-downloads .source-button:hover {
     color: var(--text);
     border-color: var(--text-muted);
+    background: var(--surface);
   }
 }
 .app-downloads .download-button:active {
@@ -309,27 +295,98 @@
   height: 18px;
   flex: none;
 }
-.app-downloads p {
-  margin: 8px 0 0;
+.download-menu {
+  z-index: 100;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(480px, calc(100dvh - 100px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--surface);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
+.download-menu::-webkit-scrollbar {
+  width: 6px;
+}
+.download-menu::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--border);
+}
+.download-menu section + section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.download-menu h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
   color: var(--text-muted);
   font-size: 0.75rem;
+  font-weight: 500;
 }
-.app-downloads p a {
-  color: inherit;
+.download-menu h2 svg {
+  width: 16px;
+  height: 16px;
+}
+.download-menu h2 small {
+  margin-left: auto;
+  font-size: 0.6875rem;
+}
+.download-menu section > a {
+  display: flex;
+  flex-direction: column;
+  min-height: 44px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  color: var(--text);
   text-decoration: none;
 }
+.download-menu a small {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.download-menu p {
+  margin: 4px 8px 8px;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.download-menu .download-menu-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 8px 4px;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.download-menu p a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 @media (hover: hover) {
-  .app-downloads p a:hover {
-    color: var(--text);
-    text-decoration: underline;
+  .download-menu section > a:hover {
+    background: var(--surface-hover);
+  }
+  .download-menu p a:hover {
+    color: var(--terracotta-bright);
   }
 }
-/* The Android beta's second step must read as a link, not as muted copy. */
-.app-downloads .download-step {
-  color: var(--text);
-}
-.app-downloads .download-step a {
-  text-decoration: underline;
+@media (prefers-reduced-motion: reduce) {
+  .download-menu {
+    animation: none;
+  }
 }
 .hero-copy > .made-by {
   margin: 20px 0 0;

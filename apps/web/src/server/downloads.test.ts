@@ -45,5 +45,5 @@ test("all desktop links use the rolling native release, never legacy previews", 
   assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.dmg`);
   assert.equal(downloads.windows.url, `${base}Caper-Windows-x64-Setup.exe`);
   assert.equal(downloads["linux-deb"].url, `${base}Caper-Linux-x64.deb`);
-  assert.equal(downloads.linux.url, "https://github.com/joswayski/caper/releases/tag/native-latest");
+  assert.equal(downloads.linux.url, `${base}Caper-Linux-x64.tar.gz`);
 });
