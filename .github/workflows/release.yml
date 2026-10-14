@@ -118,19 +118,16 @@ jobs:
     name: macOS / ${{ matrix.label }}
     needs: resolve
     strategy:
-      fail-fast: false
       matrix:
         include:
           - os: macos-15
             label: Apple-Silicon
-          - os: macos-15-intel
-            label: Intel
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     permissions:
       contents: read
       id-token: write
-    steps:
+    steps: &macos-steps
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
@@ -215,6 +212,26 @@ jobs:
         run: |
           [[ -z "${CAPER_SIGNING_KEYCHAIN:-}" ]] || security delete-keychain "$CAPER_SIGNING_KEYCHAIN" || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/apple.json"
+
+  # Hosted Intel Macs are the slowest and least reliable release build, so
+  # publish does not wait for them. publish carries the previous Intel files
+  # forward without offering them to self-updaters; publish-intel then adds
+  # this build. If it fails, Intel Macs keep the previous build until a later
+  # release succeeds.
+  macos-intel:
+    name: macOS / ${{ matrix.label }}
+    needs: resolve
+    strategy:
+      matrix:
+        include:
+          - os: macos-15-intel
+            label: Intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps: *macos-steps
 
   testflight:
     name: iOS / TestFlight
@@ -532,14 +549,23 @@ jobs:
           merge-multiple: true
       - name: Stage the release files
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
           cd release
-          assets=(Caper-macOS-Apple-Silicon.dmg Caper-macOS-Intel.dmg
-            Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk
+          assets=(Caper-macOS-Apple-Silicon.dmg Caper-macOS-Apple-Silicon.zip Caper-Android.apk
             Caper-Windows-x64-Setup.exe Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
           for asset in "${assets[@]}"; do test -s "$asset"; done
+          # macos-intel finishes later (publish-intel). Keep the current Intel
+          # downloads working meanwhile; latest.json does not list them.
+          if gh release download "$RELEASE_TAG" --pattern 'Caper-macOS-Intel.*' 2>/dev/null \
+            && test -s Caper-macOS-Intel.dmg && test -s Caper-macOS-Intel.zip; then
+            assets+=(Caper-macOS-Intel.dmg Caper-macOS-Intel.zip)
+          else
+            rm -f Caper-macOS-Intel.dmg Caper-macOS-Intel.zip
+          fi
           sha256sum "${assets[@]}" >SHA256SUMS
           cat >notes.md <<EOF
           Test builds of the Caper apps, from \`${RELEASE_SHA::7}\`. They use your caper.chat account.
@@ -593,11 +619,10 @@ jobs:
             --arg version "0.1.$CAPER_BUILD_NUMBER" \
             --arg commit "$RELEASE_SHA" \
             --argjson macos_arm64 "$(artifact Caper-macOS-Apple-Silicon.zip)" \
-            --argjson macos_x64 "$(artifact Caper-macOS-Intel.zip)" \
             --argjson windows_x64 "$(artifact Caper-Windows-x64.zip)" \
             --argjson linux_x64 "$(artifact Caper-Linux-x64.tar.gz)" \
             '{schema: 1, build: $build, version: $version, commit: $commit,
-              platforms: {"macos-arm64": $macos_arm64, "macos-x64": $macos_x64,
+              platforms: {"macos-arm64": $macos_arm64,
                 "windows-x64": $windows_x64, "linux-x64": $linux_x64}}' >latest.json
           python3 "$GITHUB_WORKSPACE/scripts/native_changelog.py" latest.json "${previous_args[@]}"
           key="$RUNNER_TEMP/update-key.pem"
@@ -625,6 +650,70 @@ jobs:
           gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
           gh release create "$RELEASE_TAG" --prerelease --target "$RELEASE_SHA" \
             --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/update-key.pem"
+
+  publish-intel:
+    name: Add Intel Mac to native-latest
+    needs: [resolve, macos-intel, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos-Intel
+          path: release
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        if: needs.resolve.outputs.update_public_key != ''
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Upload Intel files and re-sign the self-update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
+        run: |
+          set -euo pipefail
+          cd release
+          intel=(Caper-macOS-Intel.dmg Caper-macOS-Intel.zip)
+          for asset in "${intel[@]}"; do test -s "$asset"; done
+          # Only extend the release this run published.
+          target="$(gh release view "$RELEASE_TAG" --json targetCommitish --jq .targetCommitish)"
+          [[ "$target" == "$RELEASE_SHA" ]] || { echo "native-latest now targets $target, not $RELEASE_SHA." >&2; exit 1; }
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS
+          { grep -v -E '  Caper-macOS-Intel\.(dmg|zip)$' SHA256SUMS || true; sha256sum "${intel[@]}"; } >SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          gh release upload "$RELEASE_TAG" --clobber "${intel[@]}" SHA256SUMS
+          [[ -n "$UPDATE_PUBLIC_KEY" ]] || exit 0
+          # Files first, then the manifest that points self-updaters at them.
+          { printf '%s' "$UPDATE_PUBLIC_KEY" | base64 -d | cat <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00') -; } >"$RUNNER_TEMP/update-public.der"
+          gh release download "$RELEASE_TAG" --pattern latest.json --pattern latest.json.sig
+          base64 -d latest.json.sig >"$RUNNER_TEMP/current.sig.bin"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
+            -in latest.json -sigfile "$RUNNER_TEMP/current.sig.bin"
+          [[ "$(jq -r .commit latest.json)" == "$RELEASE_SHA" ]]
+          jq --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/Caper-macOS-Intel.zip" \
+            --arg sha256 "$(sha256sum Caper-macOS-Intel.zip | cut -d' ' -f1)" \
+            --argjson size "$(stat -c %s Caper-macOS-Intel.zip)" \
+            '.platforms["macos-x64"] = {url: $url, sha256: $sha256, size: $size}' latest.json >latest.json.new
+          mv latest.json.new latest.json
+          key="$RUNNER_TEMP/update-key.pem"
+          umask 077
+          aws secretsmanager get-secret-value --secret-id production/signing/release \
+            --query SecretString --output text | jq -r .caper_update.private_key_pem >"$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in latest.json | base64 -w0 >latest.json.sig
+          rm -f "$key"
+          base64 -d latest.json.sig >"$RUNNER_TEMP/latest.sig.bin"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
+            -in latest.json -sigfile "$RUNNER_TEMP/latest.sig.bin"
+          cat latest.json
+          gh release upload "$RELEASE_TAG" --clobber latest.json latest.json.sig
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
