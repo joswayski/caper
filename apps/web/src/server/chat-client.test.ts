@@ -2351,6 +2351,68 @@ test("failed prefetch is silent and does not prevent explicit load and retry", a
   assert.equal(f.state.thread?.loading, false);
 });
 
+test("a failed thread page records which page Retry must repeat, and a failed jump keeps its target", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const failedJump = f.client.loadMessageContext(reply(-99));
+  f.requests[0].resolve(Response.json({ error: "try again" }, { status: 503 }));
+  assert.equal(await failedJump, false);
+  assert.equal(f.state.thread?.error, "try again");
+  assert.equal(f.state.thread?.failedPage, undefined);
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id, "Retry reopens the jump target");
+  const jump = f.client.retryThread(f.state.thread?.focusMessageId);
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages/${root.id}/thread?around=${reply(-99).id}`);
+  f.requests[1].resolve(
+    Response.json({ root, messages: [-99].map(reply), cursor: f.history.cursor, hasMore: true, hasNewer: true }),
+  );
+  await jump;
+  assert.equal(f.state.thread?.error, undefined);
+
+  const newer = f.client.loadNewerThread();
+  f.requests[2].resolve(Response.json({ error: "offline" }, { status: 503 }));
+  await newer;
+  assert.equal(f.state.thread?.error, "offline");
+  assert.equal(f.state.thread?.failedPage, "newer", "Retry must not page older just because older pages exist");
+  const older = f.client.loadOlderThread();
+  f.requests[3].resolve(Response.json({ error: "offline" }, { status: 503 }));
+  await older;
+  assert.equal(f.state.thread?.failedPage, "older");
+  const retried = f.client.loadOlderThread();
+  assert.equal(f.state.thread?.failedPage, undefined);
+  f.requests[4].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retried;
+  assert.equal(f.state.thread?.error, undefined);
+});
+
+test("a thread left loading by a failed refresh offers Retry instead of loading forever", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const open = f.client.openThread(root.id);
+  let finish!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  f.sockets[0].frame({ type: "resync_required" });
+  // The refresh aborts the thread request, so it never settles the panel itself.
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await open;
+  assert.equal(f.state.thread?.loading, true);
+  finish(Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.thread?.loading, false);
+  assert.equal(f.state.thread?.error, "Thread could not be loaded.");
+  const retry = f.client.retryThread();
+  finish(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retry;
+  assert.equal(f.state.thread?.error, undefined);
+  assert.equal(f.state.thread?.loading, false);
+});
+
 test("resync invalidates thread pages and discards prefetches from the previous generation", async (t) => {
   const f = await paginationFixture(t);
   const root = f.message(4);

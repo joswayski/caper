@@ -477,7 +477,13 @@ export default function ThreadPanel({
             {state.thread.error}{" "}
             <button
               type="button"
-              onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.retryThread())}
+              onClick={() =>
+                void (state.thread?.failedPage === "older"
+                  ? client?.loadOlderThread()
+                  : state.thread?.failedPage === "newer"
+                    ? client?.loadNewerThread()
+                    : client?.retryThread(state.thread?.focusMessageId))
+              }
             >
               Retry
             </button>

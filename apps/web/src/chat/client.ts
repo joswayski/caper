@@ -53,6 +53,8 @@ export interface ThreadViewState {
   focusMessageId?: string;
   before?: string;
   error?: string;
+  /** The page `error` belongs to, so Retry repeats it; undefined reloads the thread. */
+  failedPage?: "older" | "newer";
 }
 
 export interface ChatViewState {
@@ -607,6 +609,7 @@ export class ChatClient {
         thread: {
           ...thread,
           error: undefined,
+          failedPage: undefined,
           loading: !older && !newer,
           loadingOlder: older,
           loadingNewer: newer,
@@ -685,6 +688,9 @@ export class ChatClient {
               loadingOlder: false,
               loadingNewer: false,
               error: error instanceof Error ? error.message : "Thread could not be loaded.",
+              failedPage: older ? "older" : newer ? "newer" : undefined,
+              // Retry reopens the same context rather than the latest replies.
+              ...(around ? { focusMessageId: around } : {}),
             },
           });
       }
@@ -1412,6 +1418,9 @@ export class ChatClient {
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
+        // The refresh aborted any thread request; a panel still waiting on one needs Retry.
+        const thread = this.state.thread;
+        const stalled = !denied && thread && (thread.loading || thread.loadingOlder || thread.loadingNewer);
         if (denied) {
           this.timeline.reset([], "0");
           this.spaceId = undefined;
@@ -1425,6 +1434,18 @@ export class ChatClient {
                 pinnedMessages: [],
                 channelId: undefined,
                 thread: undefined,
+              }
+            : {}),
+          ...(stalled
+            ? {
+                thread: {
+                  ...thread,
+                  loading: false,
+                  loadingOlder: false,
+                  loadingNewer: false,
+                  failedPage: undefined,
+                  error: "Thread could not be loaded.",
+                },
               }
             : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
