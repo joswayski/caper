@@ -34,12 +34,27 @@ public enum ProfileFeedEvent: Equatable, Sendable {
 
 /// A newer picture over a retained snapshot's.
 enum PictureMerge {
-    /// No newer asset means the picture was removed. The snapshot's URL is
-    /// kept while it signs the same asset (it may be the fresher signature).
+    /// No newer asset means the picture was removed. For the same asset the
+    /// signature that expires later wins (ties and unreadable URLs go to the
+    /// newer one), so long sessions never keep an expired URL. Pictures are
+    /// cached by asset, so a fresher URL doesn't reload them.
     static func newer(asset: String?, url: String?, over snapshotAsset: String?, _ snapshotURL: String?) -> (asset: String?, url: String?) {
         guard let asset else { return (nil, nil) }
-        if snapshotAsset == asset, let snapshotURL { return (asset, snapshotURL) }
-        return (asset, url)
+        guard snapshotAsset == asset else { return (asset, url) }
+        return (asset, fresher(url, over: snapshotURL))
+    }
+
+    /// The signed URL that stays valid longer, preferring `url` unless
+    /// `snapshotURL` expires strictly later.
+    static func fresher(_ url: String?, over snapshotURL: String?) -> String? {
+        guard let url else { return snapshotURL }
+        guard let snapshotURL, let later = expiry(snapshotURL) else { return url }
+        return later > (expiry(url) ?? .min) ? snapshotURL : url
+    }
+
+    /// The CDN signature's `exp` (Unix seconds), when present.
+    static func expiry(_ url: String) -> Int64? {
+        URLComponents(string: url)?.queryItems?.first { $0.name == "exp" }?.value.flatMap { Int64($0) }
     }
 }
 

@@ -46,8 +46,8 @@ public struct Account: Codable, Equatable, Sendable {
     public var isFeedbackTeam: Bool { feedbackTeam == true }
 
     /// The account's own picture for a retained snapshot of the same person:
-    /// the snapshot's URL while it signs the same asset (it may be newer),
-    /// otherwise the account's. No account picture means the mascot.
+    /// for the same asset, whichever URL expires later (the snapshot may be
+    /// newer), otherwise the account's. No account picture means the mascot.
     func ownPicture(asset snapshotAsset: String?, url snapshotURL: String?) -> (asset: String?, url: String?) {
         PictureMerge.newer(asset: avatarAsset, url: avatarUrl, over: snapshotAsset, snapshotURL)
     }
@@ -563,7 +563,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
             guard value.id == own.id else { return value }
             // A snapshot's signature for the same picture may be newer.
             var result = own
-            if value.avatarAsset == own.avatarAsset, let url = value.avatarUrl { result.avatarUrl = url }
+            if value.avatarAsset == own.avatarAsset { result.avatarUrl = PictureMerge.fresher(own.avatarUrl, over: value.avatarUrl) }
             // The admin badge is stamped per message by the server; the profile has none.
             result.admin = value.admin
             return result

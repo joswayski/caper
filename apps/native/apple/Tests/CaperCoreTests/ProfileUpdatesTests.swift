@@ -89,9 +89,36 @@ final class ProfileUpdatesTests: XCTestCase {
         let updated = removed.apply(member)
         XCTAssertNil(updated.avatarPicture)
         XCTAssertEqual(updated.avatarId, 31, "an event without avatarId keeps the saved mascot")
-        // The same picture keeps a snapshot's (possibly fresher) signature.
+        // The same picture takes whichever signature expires later.
         let same = Member(id: maya.id, username: "maya", displayName: "Maya", owner: false, avatarAsset: "Pic0000000000000new1", avatarUrl: oldURL)
-        XCTAssertEqual(directory.apply(same).avatarUrl, oldURL)
+        XCTAssertEqual(directory.apply(same).avatarUrl, newURL, "an expired snapshot URL gives way to the event's")
+        let resigned = "https://cdn.caper.chat/assets/Pic0000000000000new1?exp=9&sig=later"
+        let fresher = Member(id: maya.id, username: "maya", displayName: "Maya", owner: false, avatarAsset: "Pic0000000000000new1", avatarUrl: resigned)
+        XCTAssertEqual(directory.apply(fresher).avatarUrl, resigned, "a snapshot signed later is kept")
+    }
+
+    func testPictureMergeKeepsTheLaterSignature() {
+        let asset = "Pic0000000000000new1"
+        let day1 = "https://cdn.caper.chat/assets/\(asset)?exp=172800&sig=a"
+        let day2 = "https://cdn.caper.chat/assets/\(asset)?exp=259200&sig=b"
+        XCTAssertEqual(PictureMerge.expiry(day2), 259200)
+        XCTAssertNil(PictureMerge.expiry("https://cdn.caper.chat/assets/\(asset)?exp=soon"))
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day2, over: asset, day1).url, day2)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, day2).url, day2)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, "https://cdn.caper.chat/assets/\(asset)?exp=x").url, day1,
+                       "an unreadable expiry goes to the newer URL")
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: nil, over: asset, day1).url, day1)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: "Pic0000000000000old1", day2).url, day1, "another asset never lends its URL")
+        XCTAssertNil(PictureMerge.newer(asset: nil, url: nil, over: asset, day2).asset)
+
+        // Your own picture over a message's author snapshot follows the same rule.
+        let own = ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarAsset: asset, avatarUrl: day2)
+        var message = ChatMessage(id: "Message00000001", channelId: "Chan12345678", seq: "1",
+                                  author: ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarAsset: asset, avatarUrl: day1),
+                                  content: ChatContent(version: 1, type: "text", text: "hi"), createdAt: "now", clientMessageId: "c1")
+        XCTAssertEqual(message.withProfile(own).author.avatarUrl, day2)
+        message.author.avatarUrl = "https://cdn.caper.chat/assets/\(asset)?exp=345600&sig=c"
+        XCTAssertEqual(message.withProfile(own).author.avatarUrl, message.author.avatarUrl)
     }
 
     func testMessageAuthorsUpdateIncludingNestedCopiesButNeverText() {
