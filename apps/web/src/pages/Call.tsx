@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
+import { hostProfileEditor } from "../account/profile-editor";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import WhatsNew from "../updates/WhatsNew";
@@ -541,6 +542,8 @@ export default function Call({
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialog = useRef<HTMLDialogElement>(null);
   const profileBackdrop = useBackdropDismiss(() => setProfileOpen(false));
+  // Your own profile card in chat or the member list opens this dialog too.
+  useEffect(() => (account ? hostProfileEditor(() => setProfileOpen(true)) : undefined), [!!account]);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");

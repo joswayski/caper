@@ -25,6 +25,7 @@ import { friendlyError } from "../spaces/errors.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { getRememberedAccount, subscribeAccount, withLatestProfile } from "../account/client.ts";
 import { getProfiles, getServerProfiles, subscribeProfiles } from "../account/profiles.ts";
+import { canEditProfile, editProfile } from "../account/profile-editor.ts";
 import ProfileComposer from "./ProfileComposer.tsx";
 
 export interface MentionCardTarget {
@@ -209,7 +210,21 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
           </div>
         </div>
         {person.self ? (
-          <p className="chat-mention-card-self">You</p>
+          <>
+            <p className="chat-mention-card-self">You</p>
+            {canEditProfile() && (
+              <button
+                type="button"
+                className="chat-mention-card-message chat-mention-card-edit"
+                onClick={() => {
+                  onClose();
+                  editProfile();
+                }}
+              >
+                Edit profile
+              </button>
+            )}
+          </>
         ) : (
           <div className="chat-profile-actions">
             {!blocked && person.username && spaces.length > 0 && (

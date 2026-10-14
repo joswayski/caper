@@ -1866,6 +1866,10 @@
   opacity: 0.6;
   cursor: wait;
 }
+.chat-mention-card-edit {
+  width: 100%;
+  margin-top: 10px;
+}
 .chat-mention-card-action {
   display: flex;
   align-items: center;

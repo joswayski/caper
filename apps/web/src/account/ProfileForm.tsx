@@ -80,11 +80,11 @@ export default function ProfileForm({
           name="displayName"
           value={displayName}
           onChange={(event) => {
-            setDisplayName(event.target.value.slice(0, 64));
+            // Characters, like the server: a UTF-16 cut would shorten emoji names or split a pair.
+            setDisplayName(Array.from(event.target.value).slice(0, 64).join(""));
             setError(undefined);
           }}
           autoComplete="name"
-          maxLength={64}
           required
         />
         <small id="display-name-hint" className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">
