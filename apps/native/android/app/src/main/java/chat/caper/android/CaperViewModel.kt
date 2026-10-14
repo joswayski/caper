@@ -1377,7 +1377,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
                     if (direct != null) refreshPeople()
                 }
-                goToMessage(target, onOpened)
+                goToMessage(target, notify = true, onLoaded = onOpened)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (request == generation && accountRequest == accountGeneration && navigation == conversationOpeningRevision)
@@ -1386,8 +1386,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun goToMessage(target: ChatMessage, onLoaded: () -> Unit) {
-        goToMessage(target.channelId, target.id, target.threadRootId, onLoaded = onLoaded)
+    /** [notify]: also show a failure as the app's notice, for jumps made where the Pins list (and its error) isn't shown. */
+    fun goToMessage(target: ChatMessage, notify: Boolean = false, onLoaded: () -> Unit) {
+        goToMessage(target.channelId, target.id, target.threadRootId,
+            onFailed = { if (notify) mutable.value = mutable.value.copy(error = mutable.value.messageContextError) }, onLoaded = onLoaded)
     }
 
     /** Loads [targetId]'s context: around it in the conversation, or in its thread [root] (which opens). */

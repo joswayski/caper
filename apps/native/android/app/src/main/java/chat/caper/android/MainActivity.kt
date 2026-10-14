@@ -2436,7 +2436,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
                         openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
-                        openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId)) {} },
+                        // A reply to a deleted or unavailable message says so instead of doing nothing.
+                        openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), notify = true) {} },
                         openConversation = { message -> viewModel.openForwardedConversation(message, { conversationTarget = message }) },
                         openHistory = { historyTarget = it },
                         retryPin = viewModel::retryPin,
@@ -2928,12 +2929,12 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
-                    openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), close) },
+                    openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), onLoaded = close) },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
                 Row(Modifier.fillMaxWidth().padding(start = 54.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, close) }, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
+                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, onLoaded = close) }, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
                         colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
                         Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
                         Spacer(Modifier.width(6.dp))
