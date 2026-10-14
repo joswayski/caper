@@ -3804,7 +3804,10 @@ private struct NativeThreadView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
-                    let replyRows = entries(replies)
+                    // Read once per render, never per scroll frame in the geometry below.
+                    let threadReplies = replies
+                    let firstReplyID = threadReplies.first?.id
+                    let replyRows = entries(threadReplies)
                     let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
                     // The root's reactions grow the thread as well as its replies'.
                     let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
@@ -3850,7 +3853,7 @@ private struct NativeThreadView: View {
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id, recent: recentRows) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstReplyID, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
