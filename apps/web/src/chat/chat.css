@@ -771,6 +771,12 @@
   background: rgb(243 244 245 / 3%);
   box-shadow: inset 2px 0 var(--border);
 }
+/* Pins keep their gold wash on hover/focus; mention, thread and jump tints win. */
+.chat-message-pinned,
+.chat-message-pinned:hover,
+.chat-message-pinned:focus-within {
+  background: var(--pin-wash);
+}
 /* Follow-ups from the same person (grouping.ts): no avatar or name, tighter
    spacing, and the time in the avatar column on hover. */
 .chat-message-grouped {

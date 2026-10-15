@@ -4438,8 +4438,9 @@ private struct MessageRow: View {
     private func rowBackground(mentionsMe: Bool) -> Color {
         if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
+        if message.pin != nil { return CaperTheme.pinGold.opacity(0.06) }
         if message.replyTo != nil { return CaperTheme.text.opacity(0.03) }
-        return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
+        return .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot

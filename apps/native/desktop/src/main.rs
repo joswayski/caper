@@ -15538,7 +15538,7 @@ impl CaperApp {
                 TERRACOTTA,
             );
         } else {
-            // Reply context stays quietly marked. Thread and jump tints win.
+            // Pins and reply context stay marked. Thread and jump tints win.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
@@ -15549,7 +15549,16 @@ impl CaperApp {
                         .thread_view
                         .as_ref()
                         .is_some_and(|thread| thread.root == message.id));
-            if !highlighted && message.reply_to.is_some() {
+            if !in_pins && !highlighted && pinned.is_some() {
+                ui.painter().set(
+                    tint,
+                    egui::Shape::rect_filled(
+                        rect,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(228, 199, 106, 15),
+                    ),
+                );
+            } else if !highlighted && message.reply_to.is_some() {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(
@@ -25110,9 +25119,9 @@ mod tests {
             text_position(&output, "Pinned original author").y
                 < text_position(&output, "Pinned original text").y
         );
-        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(228, 199, 106, 15) && rect.rect.width() > 700.0
-        )), "pins must not add a highlight to the channel timeline");
+        )), "pins stay highlighted in the channel timeline without hovering");
         let nodes = &output
             .platform_output
             .accesskit_update

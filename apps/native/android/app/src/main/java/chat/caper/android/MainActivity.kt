@@ -2430,7 +2430,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (!inThread && state.thread?.rootId == message.id) Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else Terracotta.copy(alpha = 0.12f)).drawBehind {
                         val edge = 3.dp.toPx()
                         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-                    } else Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else Color.Transparent))) {
+                    } else Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (message.pin != null) PinGoldWash else Color.Transparent))) {
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -2755,7 +2755,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val pressing by interaction.collectIsPressedAsState()
     // A message that mentions you: terracotta wash with a 2dp leading edge.
     val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    val replyWash = message.replyTo != null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    val replyWash = message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
     Column((if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))

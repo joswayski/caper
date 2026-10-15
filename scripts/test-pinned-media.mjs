@@ -117,11 +117,23 @@ try {
     [message.id],
     "pins the chosen GIF, not its neighbor",
   );
-  browser("reload");
-  wait('!!document.querySelector(".chat-pins-toggle") && !document.querySelector(".chat-initial-messages")');
   for (const width of [1280, 390]) {
     browser("set", "viewport", String(width), "900", "2");
+    browser("reload");
+    wait('!!document.querySelector(".chat-pins-toggle") && !document.querySelector(".chat-initial-messages")');
     wait(`document.querySelector('${row} .chat-pin-author')?.textContent === 'Pinned by you'`);
+    browser("mouse", "move", "0", "0");
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(228, 199, 106, 0.06)",
+      "pinned messages keep the gold wash without hovering",
+    );
+    browser("hover", `${row} p`);
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(228, 199, 106, 0.06)",
+      "hover does not replace the pinned highlight",
+    );
     assert.equal(
       evaluate(`(() => {
         const row = document.querySelector('${row}');
@@ -157,6 +169,12 @@ try {
     wait('document.querySelector(".chat-mention-card strong")?.textContent === "Fixture Owner"');
     action("Close profile");
     await control({ incomingPin: { channelId: message.channelId, messageId: message.id, active: false } });
+    wait(`!document.querySelector('${row} .chat-pin-marker')`);
+    assert.notEqual(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(228, 199, 106, 0.06)",
+      "unpin removes the persistent timeline highlight",
+    );
     await control({ incomingPin: { channelId: message.channelId, messageId: message.id, userId: "member000001" } });
     wait('document.querySelector(".chat-pinned-message .chat-pin-author")?.textContent === "Pinned by Maya"');
     assert.equal(evaluate(`document.querySelector('${row} .chat-pin-author').textContent`), "Pinned by Maya");
@@ -230,7 +248,7 @@ try {
     "Pinned by Alex",
   );
   console.log(
-    "PASS: GIF pin survives reload; self/other attribution above timeline messages and in Pins at desktop/narrow widths; live pinner updates; pinner/media/profile controls; proportional previews; body/keyboard jumps; failed jump retry; unpin removes attribution; pinned thread attribution and jump.",
+    "PASS: GIF pin survives reload; persistent gold timeline highlight at rest/on hover and self/other attribution in chat and Pins at desktop/narrow widths; live pinner updates; pinner/media/profile controls; proportional previews; body/keyboard jumps; failed jump retry; unpin removes attribution/highlight; pinned thread attribution and jump.",
   );
 } finally {
   await mediaServer?.terminate();
