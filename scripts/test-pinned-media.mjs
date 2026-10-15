@@ -125,13 +125,13 @@ try {
     browser("mouse", "move", "0", "0");
     assert.equal(
       evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
-      "rgba(228, 199, 106, 0.06)",
-      "pinned messages keep the gold wash without hovering",
+      "rgba(182, 77, 50, 0.12)",
+      "your pins use terracotta even when someone else wrote the message",
     );
     browser("hover", `${row} p`);
     assert.equal(
       evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
-      "rgba(228, 199, 106, 0.06)",
+      "rgba(182, 77, 50, 0.12)",
       "hover does not replace the pinned highlight",
     );
     assert.equal(
@@ -150,6 +150,11 @@ try {
     assert.equal(
       evaluate('document.querySelector(".chat-pinned-message .chat-pin-author").textContent'),
       "Pinned by you",
+    );
+    assert.equal(
+      evaluate('getComputedStyle(document.querySelector(".chat-pinned-message")).backgroundColor'),
+      "rgba(182, 77, 50, 0.12)",
+      "your Pins cards use the same terracotta as chat",
     );
     screenshot(`pins-gif-${width}`);
     const bounds = evaluate(`(() => {
@@ -172,12 +177,19 @@ try {
     wait(`!document.querySelector('${row} .chat-pin-marker')`);
     assert.notEqual(
       evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
-      "rgba(228, 199, 106, 0.06)",
+      "rgba(182, 77, 50, 0.12)",
       "unpin removes the persistent timeline highlight",
     );
     await control({ incomingPin: { channelId: message.channelId, messageId: message.id, userId: "member000001" } });
     wait('document.querySelector(".chat-pinned-message .chat-pin-author")?.textContent === "Pinned by Maya"');
     assert.equal(evaluate(`document.querySelector('${row} .chat-pin-author').textContent`), "Pinned by Maya");
+    for (const selector of [row, ".chat-pinned-message"]) {
+      assert.equal(
+        evaluate(`getComputedStyle(document.querySelector('${selector}')).backgroundColor`),
+        "rgba(228, 199, 106, 0.06)",
+        "other people's pins switch to faded yellow in chat and Pins",
+      );
+    }
     screenshot(`pins-other-${width}`);
     browser("click", ".chat-pinned-message .chat-media");
     wait('!!document.querySelector(".chat-viewer")');
@@ -247,8 +259,24 @@ try {
     ),
     "Pinned by Alex",
   );
+  // A mention must not make someone else's pin look like one of yours.
+  await control({ reset: true });
+  browser("reload");
+  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-pins-toggle")');
+  const mentioned = (await history()).messages.find((m) =>
+    m.content.mentions?.some((mention) => mention.id === "owner0000001"),
+  );
+  assert.ok(mentioned, "fixture includes a real mention of the viewer");
+  await control({ incomingPin: { channelId: mentioned.channelId, messageId: mentioned.id, userId: "member000001" } });
+  const mentionedRow = `.chat-message[data-message-id="${mentioned.id}"]`;
+  wait(`document.querySelector('${mentionedRow} .chat-pin-author')?.textContent === 'Pinned by Maya'`);
+  assert.equal(
+    evaluate(`getComputedStyle(document.querySelector('${mentionedRow}')).backgroundColor`),
+    "rgba(228, 199, 106, 0.06)",
+    "pin ownership, not a mention, determines the pin's wash",
+  );
   console.log(
-    "PASS: GIF pin survives reload; persistent gold timeline highlight at rest/on hover and self/other attribution in chat and Pins at desktop/narrow widths; live pinner updates; pinner/media/profile controls; proportional previews; body/keyboard jumps; failed jump retry; unpin removes attribution/highlight; pinned thread attribution and jump.",
+    "PASS: GIF pin survives reload; your pins are terracotta and other people's pins faded yellow in chat/Pins at desktop/narrow widths; live pinner changes update labels and washes; hover persists; mentions do not mask ownership; pinner/media/profile controls; proportional previews; body/keyboard jumps; failed jump retry; unpin removes attribution/highlight; pinned thread attribution and jump.",
   );
 } finally {
   await mediaServer?.terminate();

@@ -1414,7 +1414,7 @@ export default function Chat({
             </div>
           )}
           <article
-            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${!pending && message.pin ? " chat-message-pinned" : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
+            className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${!pending && message.pin ? ` chat-message-pinned${message.pin.author.id === viewerId ? " chat-message-pinned-own" : ""}` : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && !message.pin && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
             onPointerDown={(event) => {
@@ -1917,7 +1917,7 @@ export default function Chat({
                 ) : (
                   state.pinnedMessages.map((message) => (
                     <article
-                      className="chat-message chat-pinned-message"
+                      className={`chat-message chat-pinned-message chat-message-pinned${message.pin?.author.id === viewerId ? " chat-message-pinned-own" : ""}`}
                       key={message.id}
                       aria-busy={jumping === message.id}
                       onClick={(event) => {

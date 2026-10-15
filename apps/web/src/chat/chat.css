@@ -771,7 +771,11 @@
   background: rgb(243 244 245 / 3%);
   box-shadow: inset 2px 0 var(--border);
 }
-/* Pins keep their gold wash on hover/focus; mention, thread and jump tints win. */
+/* Your pins are terracotta; other people's pins keep the faded gold wash. */
+.chat-message-pinned-own {
+  --pin-wash: rgb(182 77 50 / 12%);
+}
+/* Keep pin ownership visible on hover/focus; thread and jump selections win. */
 .chat-message-pinned,
 .chat-message-pinned:hover,
 .chat-message-pinned:focus-within {

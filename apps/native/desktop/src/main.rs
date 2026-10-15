@@ -1548,7 +1548,7 @@ impl CaperApp {
                         .enumerate()
                         .map(|(index, mut message)| {
                             message.pin = Some(model::Pin {
-                                author: author.clone(),
+                                author: if index == 1 { message.author.clone() } else { author.clone() },
                                 created_at: message.created_at.clone(),
                             });
                             message.pin_seq = Some((index + 5).to_string());
@@ -14687,16 +14687,29 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
+        let pinned_by_viewer = pinned.is_some_and(|pin| {
+            Some(pin.author.id.as_str())
+                == self
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.as_str())
+                    .or_else(|| {
+                        self.session
+                            .as_ref()
+                            .map(|session| session.author.id.as_str())
+                    })
+        });
         let mut view_thread = None;
         let mut actions_y = None;
         // The row's background; its files below are drawn on the same fill.
-        let fill = if !in_thread
+        let fill = if !in_pins
+            && !in_thread
             && self
                 .thread_view
                 .as_ref()
                 .is_some_and(|thread| thread.root == message.id)
         {
-            Color32::from_rgba_unmultiplied(228, 199, 106, 26)
+            Color32::from_rgba_unmultiplied(182, 77, 50, 31)
         } else if !in_pins && self.focused_message.as_deref() == Some(&message.id) {
             Color32::from_rgba_unmultiplied(182, 77, 50, 35)
         } else {
@@ -14709,16 +14722,7 @@ impl CaperApp {
                 (source, !self.is_blocked(&reference.author.id))
             });
             if let Some(pin) = pinned {
-                let viewer_id = self
-                    .account
-                    .as_ref()
-                    .map(|account| account.id.as_str())
-                    .or_else(|| {
-                        self.session
-                            .as_ref()
-                            .map(|session| session.author.id.as_str())
-                    });
-                let pinner = if viewer_id == Some(pin.author.id.as_str()) {
+                let pinner = if pinned_by_viewer {
                     "you"
                 } else {
                     &pin.author.name
@@ -15522,7 +15526,7 @@ impl CaperApp {
                     });
                 }
             });
-        if mentioned {
+        if mentioned && pinned.is_none() {
             // Messages that mention you: an 8% terracotta row with a 2px edge.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
@@ -15544,18 +15548,23 @@ impl CaperApp {
                 message_rect.top()..=controls.response.rect.bottom(),
             );
             let highlighted = (!in_pins && self.focused_message.as_deref() == Some(&message.id))
-                || (!in_thread
+                || (!in_pins
+                    && !in_thread
                     && self
                         .thread_view
                         .as_ref()
                         .is_some_and(|thread| thread.root == message.id));
-            if !in_pins && !highlighted && pinned.is_some() {
+            if !highlighted && pinned.is_some() {
                 ui.painter().set(
                     tint,
                     egui::Shape::rect_filled(
                         rect,
                         0.0,
-                        Color32::from_rgba_unmultiplied(228, 199, 106, 15),
+                        if pinned_by_viewer {
+                            Color32::from_rgba_unmultiplied(182, 77, 50, 31)
+                        } else {
+                            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                        },
                     ),
                 );
             } else if !highlighted && message.reply_to.is_some() {
@@ -25094,6 +25103,8 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
+        // Compare the settled washes, not the modal entrance's changing opacity.
+        context.all_styles_mut(|style| style.animation_time = 0.0);
         app.session = Some(session());
         let mut message = app.timeline.messages().next().unwrap().clone();
         message.author.name = "Pinned original author".into();
@@ -25214,6 +25225,20 @@ mod tests {
             let output = render(&mut app, &context, vec![]);
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by you")));
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
+            let attribution = output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Pinned by you" => {
+                        Some(text.pos + egui::vec2(4.0, 4.0))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgba_unmultiplied(182, 77, 50, 31) && rect.rect.contains(attribution)
+            )), "your pins are terracotta in chat and Pins, even without a sending session (in_pins={in_pins})");
         }
     }
 
