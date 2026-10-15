@@ -2532,6 +2532,7 @@ private struct AccountBar: View {
                 Button(action: review) {
                     Text("Update available").frame(maxWidth: .infinity)
                 }.buttonStyle(CaperSecondaryButton(minHeight: 36))
+                    .modifier(UpdateButtonShine())
                     .accessibilityIdentifier("desktop-update-action")
                     .help("Review the update before restarting Caper.")
                     .padding(8)

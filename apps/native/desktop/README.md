@@ -11,10 +11,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   minute. **User Settings → Check for updates** checks immediately and opens
   Settings with progress and success/failure feedback; the Updates section keeps
   the same check action. A known release adds a persistent **Update available**
-  button above the profile/audio row, with no hiding animation. Clicking it or finding
-  an update manually opens a centered modal with **What’s new expanded** and fixed
-  actions. **Later**, Escape and backdrop dismissal retain the update button without
-  installing or checking again. Writable installs offer a restart to update;
+  button above the profile/audio row, with a thin rainbow edge and occasional shine.
+  The label never moves; Reduce Motion/background windows keep the edge still.
+  Clicking it or finding an update manually opens a centered modal with
+  **What’s new expanded** and fixed actions. **Later**, Escape and backdrop dismissal
+  retain the update button without installing or checking again. Writable installs
+  offer a restart to update;
   the `.deb` offers a download for manual installation.
 - **Settings… → Updates → What’s new** reopens shipped release highlights for
   the exact running source revision. First successful load quietly establishes

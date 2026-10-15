@@ -7882,6 +7882,9 @@ Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
 Automatic checks advertise a known update through a persistent **Update available**
 button above the profile/audio controls; they do not take focus. The button has
 its own row, outside the fixed-height account controls, and never animates away.
+A thin rainbow edge stays still while a short light sweep passes every eight
+seconds. Reduce Motion, disabled controls and background windows stop the sweep;
+the decoration never moves the label or intercepts pointer/keyboard input.
 Clicking it or completing a manual check with an available release opens a centered
 modal with **What’s new expanded by default**. Only the notes scroll; restart/Later
 and installer actions stay visible. Later, Escape or the backdrop close the review

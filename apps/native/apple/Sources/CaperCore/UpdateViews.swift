@@ -34,6 +34,67 @@ public struct DesktopUpdate: Equatable, Sendable {
     }
 }
 
+/// Decoration only: the existing button owns layout, focus and activation.
+/// A short shine every eight seconds; background/Reduce Motion keeps the edge still.
+struct UpdateButtonShine: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var activity
+    @Environment(\.isEnabled) private var enabled
+    @State private var progress = 0.0
+    private var running: Bool { enabled && !reduceMotion && activity == .key }
+    private let duration = CaperMotion.slow * 6
+    private let colors = [
+        Color(red: 167/255, green: 128/255, blue: 242/255),
+        Color(red: 104/255, green: 175/255, blue: 236/255),
+        Color(red: 99/255, green: 210/255, blue: 193/255),
+        Color(red: 215/255, green: 205/255, blue: 130/255),
+        Color(red: 229/255, green: 139/255, blue: 183/255),
+    ]
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            ZStack {
+                let edge = LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing)
+                RoundedRectangle(cornerRadius: 8).strokeBorder(edge.opacity(0.12), lineWidth: 4)
+                RoundedRectangle(cornerRadius: 8).strokeBorder(edge.opacity(0.75), lineWidth: 1)
+                UpdateButtonSweep(progress: progress)
+                    .opacity(running ? 1 : 0)
+            }.opacity(enabled ? 1 : 0)
+                .allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .task(id: running) {
+            withAnimation(nil) { progress = 0 }
+            guard running else { return }
+            while !Task.isCancelled {
+                withAnimation(CaperMotion.easeOut(duration)) { progress = 1 }
+                do { try await Task.sleep(for: .seconds(duration)) } catch { return }
+                withAnimation(nil) { progress = 0 }
+                do { try await Task.sleep(for: .seconds(8 - duration)) } catch { return }
+            }
+        }
+    }
+}
+
+/// Animate drawing coordinates, not an oversized child view that expands the button's AX frame.
+private struct UpdateButtonSweep: View, Animatable {
+    var progress: Double
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            context.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 8))
+            context.translateBy(x: -80 + (size.width + 160) * progress, y: -size.height)
+            context.rotate(by: .degrees(18))
+            context.fill(Path(CGRect(x: 0, y: 0, width: 56, height: size.height * 3)),
+                         with: .linearGradient(Gradient(colors: [.clear, .white.opacity(0.16), .clear]),
+                                               startPoint: .zero, endPoint: CGPoint(x: 56, y: 0)))
+        }
+    }
+}
+
 /// Fixed actions and warning outside the independently scrolling release history.
 @MainActor public struct DesktopUpdateReview: View {
     public let update: DesktopUpdate

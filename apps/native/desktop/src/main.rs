@@ -25727,7 +25727,7 @@ mod tests {
                 .bounds()
                 .unwrap();
             // A known update remains visible; it never hides behind the profile.
-            for time in [1.5, 6.5, 15.0] {
+            for time in [0.15, 1.5, 6.5, 15.0] {
                 let output = context.run(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
