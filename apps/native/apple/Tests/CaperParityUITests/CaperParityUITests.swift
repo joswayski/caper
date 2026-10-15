@@ -1665,6 +1665,41 @@ final class CaperParityUITests: XCTestCase {
         saved.doubleClick()
     }
 
+    func testUpdateButtonStaysVisibleAndReopensReviewWithoutCoveringAccountControls() {
+        let app = launch(fixture: "update")
+        let update = app.buttons["desktop-update-action"]
+        XCTAssertTrue(update.waitForExistence(timeout: 10))
+        let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
+        XCTAssertTrue(handle.exists)
+        for key in [XCUIKeyboardKey.home, .end] {
+            handle.click()
+            handle.typeKey(key, modifierFlags: [])
+            XCTAssertEqual(update.label, "Update available")
+            XCTAssertTrue(update.isHittable)
+            XCTAssertGreaterThanOrEqual(update.frame.height, 36)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(update.frame))
+            for id in ["account-profile", "microphone-toggle", "deafen-toggle", "account-settings-menu"] {
+                let control = app.descendants(matching: .any)[id]
+                XCTAssertTrue(control.isHittable, id)
+                XCTAssertTrue(app.windows.firstMatch.frame.contains(control.frame), id)
+                XCTAssertGreaterThanOrEqual(control.frame.minY, update.frame.maxY, id)
+            }
+            capture(key == .home ? "update-compact-sidebar" : "update-wide-sidebar", app: app)
+            update.click()
+            XCTAssertTrue(app.buttons["desktop-update-install"].waitForExistence(timeout: 3))
+            capture("update-review", app: app)
+            app.buttons["Later"].click()
+            XCTAssertTrue(update.waitForExistence(timeout: 3))
+            XCTAssertTrue(update.isHittable)
+            update.click()
+            XCTAssertTrue(app.buttons["desktop-update-install"].waitForExistence(timeout: 3))
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(update.waitForExistence(timeout: 3))
+            XCTAssertTrue(app.buttons["account-profile"].isHittable)
+        }
+        handle.doubleClick()
+    }
+
     func testRowJoinShortcutAndProfileBackdropDismissal() {
         let app = launch()
         let channel = app.buttons["channel-chan00000001"]

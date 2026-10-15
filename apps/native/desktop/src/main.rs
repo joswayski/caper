@@ -8322,7 +8322,7 @@ impl CaperApp {
                 ui.set_width((viewport.width() - 48.0).min(420.0));
                 let (mascot, _) =
                     ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                update_art::paint(ui, mascot, 0.0, 0.0);
+                update_art::paint(ui, mascot);
                 ui.label(bold("A fresh Caper is ready").size(20.0));
                 ui.label(RichText::new(format!("Version {}", update.version)).color(MUTED));
                 ui.add_space(12.0);
@@ -11910,7 +11910,7 @@ impl CaperApp {
             ui.add_space(8.0);
         }
         if let Some(update) = self.updates.known_available()
-            && update_art::dock(ui, &update.version, self.updates.available().is_some()).clicked()
+            && update_art::dock(ui, &update.version).clicked()
         {
             self.updates.show_available();
         }
@@ -18776,8 +18776,10 @@ impl CaperApp {
             }
             updates::Status::Available => {
                 ui.label(
-                    RichText::new("Click Caper above your profile to review the available update.")
-                        .color(MUTED),
+                    RichText::new(
+                        "Select Update available above your profile to review the update.",
+                    )
+                    .color(MUTED),
                 );
             }
             updates::Status::Failed(error) => {
@@ -25557,7 +25559,12 @@ mod tests {
 
     #[test]
     fn account_update_action_survives_later_and_reopens_review_without_installing() {
-        for fixture in ["parity-update", "parity-update-download"] {
+        for (fixture, sidebar_width) in [
+            ("parity-update", 220.0),
+            ("parity-update", 440.0),
+            ("parity-update-download", 220.0),
+            ("parity-update-download", 440.0),
+        ] {
             let context = egui::Context::default();
             context.enable_accesskit();
             let mut app = CaperApp::new(
@@ -25565,6 +25572,7 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some(fixture),
             );
+            app.sidebar_width = sidebar_width;
             app.updates.dismiss();
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
@@ -25575,13 +25583,12 @@ mod tests {
                 .unwrap()
                 .nodes
                 .iter()
-                .find(|(_, node)| node.label() == Some("Review Caper update"))
+                .find(|(_, node)| node.label() == Some("Update available"))
                 .unwrap()
                 .1
                 .bounds()
                 .unwrap();
-            // The attention animation must not move its click target or resize
-            // the sidebar when Caper walks away and hides for its long rest.
+            // A known update remains visible; it never hides behind the profile.
             for time in [1.5, 6.5, 15.0] {
                 let output = context.run(
                     egui::RawInput {
@@ -25601,12 +25608,37 @@ mod tests {
                     .unwrap()
                     .nodes
                     .iter()
-                    .find(|(_, node)| node.label() == Some("Review Caper update"))
+                    .find(|(_, node)| node.label() == Some("Update available"))
                     .unwrap()
                     .1
                     .bounds()
                     .unwrap();
-                assert_eq!(current, bounds, "mascot target moved at {time}s");
+                assert_eq!(current, bounds, "update button moved at {time}s");
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Update available"
+                        && shape.clip_rect.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                )), "update label clipped at {time}s");
+                for label in [
+                    "Edit profile for Fixture Owner",
+                    "Mute microphone",
+                    "Deafen audio",
+                    "User Settings",
+                ] {
+                    let control = output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .find(|(_, node)| node.label() == Some(label))
+                        .unwrap_or_else(|| panic!("missing {label}"))
+                        .1
+                        .bounds()
+                        .unwrap();
+                    assert!(control.y0 >= current.y1, "update overlaps {label}");
+                    assert!(control.y1 <= 900.0, "{label} is offscreen");
+                }
             }
             let pos = egui::pos2(
                 (bounds.x0 + bounds.x1) as f32 / 2.0,

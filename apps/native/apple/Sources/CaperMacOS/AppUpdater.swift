@@ -46,6 +46,12 @@ import Observation
         self.build = build
         version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         sourceRevision = revision.flatMap { WhatsNewSnapshot.validRevision($0) ? $0 : nil }
+        if environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_UI_FIXTURE"] == "update",
+           let rawURL = environment["CAPER_API_BASE_URL"], let url = URL(string: rawURL),
+           ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "") {
+            availableUpdate = Update(version: "0.1.42", notes: "TEST FIXTURE — local update preview. No update will be installed.",
+                                     changelog: [], historyComplete: true, canApply: true, lastError: nil)
+        }
     }
 
     var isAvailable: Bool { updater != nil }
@@ -67,7 +73,7 @@ import Observation
                                      check: checkNow, review: reviewNow)
     }
 
-    /// Later closes the review; the mascot can reopen it without a network check.
+    /// Later closes the review; the update button can reopen it without a network check.
     private func review() {
         guard let update = availableUpdate else { return }
         offer(update)

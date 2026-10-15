@@ -2487,13 +2487,6 @@ private struct AccountBar: View {
         if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
         return model.chat.liveState == .connected ? .online : nil
     }
-    private var accountAlignment: VerticalAlignment {
-        #if os(macOS)
-        updates.review == nil ? .center : .bottom
-        #else
-        .center
-        #endif
-    }
     var body: some View {
         VStack(spacing: 0) {
             if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
@@ -2533,29 +2526,33 @@ private struct AccountBar: View {
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("voice-error")
             }
-            HStack(alignment: accountAlignment, spacing: 5) {
-                VStack(spacing: 0) {
-                    #if os(macOS)
-                    if let review = updates.review {
-                        DesktopUpdateMascot(review: review)
-                    }
-                    #endif
-                    Button { sheet = model.account == nil ? .login : .profile } label: {
-                        HStack(spacing: 7) {
-                            Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
-                                .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
-                            if showsName {
-                                Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                            // The width is what the controls leave, whether or not the name shows.
-                            .onGeometryChange(for: Bool.self) { $0.size.width >= 76 } action: { showsName = $0 }
-                    }.buttonStyle(.plain).modifier(ControlHover())
-                        .help(identityName)
-                        // Web: the account's name, else the guest chat identity, with its profile label.
-                        .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
-                        .accessibilityIdentifier("account-profile")
-                }
+            #if os(macOS)
+            if let review = updates.review {
+                // Keep the update outside the fixed-height profile/audio row.
+                Button(action: review) {
+                    Text("Update available").frame(maxWidth: .infinity)
+                }.buttonStyle(CaperSecondaryButton(minHeight: 36))
+                    .accessibilityIdentifier("desktop-update-action")
+                    .help("Review the update before restarting Caper.")
+                    .padding(8)
+            }
+            #endif
+            HStack(spacing: 5) {
+                Button { sheet = model.account == nil ? .login : .profile } label: {
+                    HStack(spacing: 7) {
+                        Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
+                            .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
+                        if showsName {
+                            Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        // The width is what the controls leave, whether or not the name shows.
+                        .onGeometryChange(for: Bool.self) { $0.size.width >= 76 } action: { showsName = $0 }
+                }.buttonStyle(.plain).modifier(ControlHover())
+                    .help(identityName)
+                    // Web: the account's name, else the guest chat identity, with its profile label.
+                    .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
+                    .accessibilityIdentifier("account-profile")
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)

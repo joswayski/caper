@@ -7879,9 +7879,9 @@ defers during calls or another modal. Missing publication retries at most once
 per minute while foregrounded; Settings offers immediate retry.
 
 Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
-Automatic checks advertise a known update through a Caper mascot above the profile;
-they do not take focus. The mascot briefly peeks, waves and walks, then hides for
-a longer rest. Reduced motion/background windows keep a still clickable peek.
+Automatic checks advertise a known update through a persistent **Update available**
+button above the profile/audio controls; they do not take focus. The button has
+its own row, outside the fixed-height account controls, and never animates away.
 Clicking it or completing a manual check with an available release opens a centered
 modal with **What’s new expanded by default**. Only the notes scroll; restart/Later
 and installer actions stay visible. Later, Escape or the backdrop close the review
