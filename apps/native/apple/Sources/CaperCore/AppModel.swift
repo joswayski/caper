@@ -1612,6 +1612,14 @@ public final class AppModel {
         return link
     }
 
+    public func regenerateInviteLink(_ current: InviteLink) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.regenerateInviteLink(spaceID: id, code: current.code)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
     public func revokeInviteLink(_ link: InviteLink) async throws {
         guard let id = detail?.space.id, isOwner else { throw CancellationError() }
         let attempt = generation

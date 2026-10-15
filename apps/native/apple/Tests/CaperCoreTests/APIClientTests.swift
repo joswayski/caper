@@ -466,6 +466,21 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(first.expiresAt, "2026-10-27T12:00:00Z")
     }
 
+    func testRegenerateInviteLinkPostsSelectedCodeWithoutBody() async throws {
+        let json = #"{"code":"NewLink1234","channel":null,"createdBy":{"username":"owner","displayName":"Owner"},"uses":0,"maxUses":100,"expiresAt":"2026-11-14T12:00:00Z","createdAt":"2026-10-15T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/aB3dE5gH9k/regenerate")
+            XCTAssertNil(try requestBodyData(request))
+            return (201, Data(json.utf8))
+        }
+        let link = try await client().regenerateInviteLink(spaceID: "Space1234567", code: "aB3dE5gH9k")
+        XCTAssertEqual(link.code, "NewLink1234")
+        XCTAssertEqual(link.maxUses, 100)
+        XCTAssertEqual(link.uses, 0)
+        XCTAssertNil(link.channel)
+    }
+
     func testInviteLinkEndpoints() async throws {
         let spaceID = "Space1234567"
         let code = "aB3dE5gH9k"

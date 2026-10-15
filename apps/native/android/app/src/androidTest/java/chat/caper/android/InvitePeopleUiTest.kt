@@ -36,6 +36,35 @@ class InvitePeopleUiTest {
         compose.onNodeWithText("Invitation sent. They must accept before joining.").assertExists()
     }
 
+    @Test fun linkOptionsWarnAndDispatchWithoutSpaceAdministration() {
+        var regenerated = 0
+        var settings = 0
+        var deactivated = 0
+        compose.setContent {
+            CaperTheme { InviteLinkActions(true, { regenerated++ }, { settings++ }, { deactivated++ }) }
+        }
+        compose.onNodeWithText("Regenerate link").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Previous link stops working. Resets to 30 days / 100 joins.").assertExists()
+        listOf("Rename", "Delete space", "Manage space").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
+        compose.onNodeWithText("Regenerate link").performClick()
+        compose.runOnIdle { assertEquals(1, regenerated); assertEquals(0, deactivated) }
+        compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Link settings").performClick()
+        compose.runOnIdle { assertEquals(1, settings) }
+        compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Deactivate link").performClick()
+        compose.runOnIdle { assertEquals(1, deactivated) }
+    }
+
+    @Test fun busyLinkOptionsCannotStartAnotherMutation() {
+        compose.setContent {
+            CaperTheme { InviteLinkActions(false, { error("busy") }, { error("busy") }, { error("busy") }) }
+        }
+        compose.onNodeWithContentDescription("More link options").assertIsNotEnabled()
+        compose.onNodeWithText("Regenerate link").assertDoesNotExist()
+    }
+
     @Test fun managementStillOffersCurrentMemberRemoval() {
         var removed: Member? = null
         compose.setContent {

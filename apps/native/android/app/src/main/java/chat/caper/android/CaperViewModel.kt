@@ -2811,8 +2811,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
         done(link)
     }
+    /** Atomically replaces only this link; failures leave the displayed link intact. */
+    fun regenerateInviteLink(link: InviteLink, done: (InviteLink) -> Unit, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
+        val detail = mutable.value.selectedSpace ?: return@launchAction
+        val context = AdminMutationContext(request, detail.space.id)
+        val replacement = try { api.regenerateInviteLink(requireAccountToken(), detail.space.id, link.code) }
+        catch (error: CancellationException) { throw error }
+        catch (error: Throwable) {
+            if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error))
+            return@launchAction
+        }
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        mutable.value = mutable.value.copy(inviteLinks = listOf(replacement) + mutable.value.inviteLinks.filter { it.code != link.code && it.code != replacement.code })
+        done(replacement)
+    }
     /** Creates a link for the open space; [done] gets it (now first in the list). */
-    fun createInviteLink(channelId: String?, maxAge: Int?, maxUses: Int?, done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+    fun createInviteLink(channelId: String?, maxAge: Int?, maxUses: Int?, done: (InviteLink) -> Unit, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         val link = formRequest(request, failed) { api.createInviteLink(requireAccountToken(), detail.space.id, channelId, maxAge, maxUses) } ?: return@launchAction
@@ -2821,7 +2835,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         done(link)
     }
     /** A link that is already gone (404: revoked elsewhere, expired or used up) leaves the list too. */
-    fun revokeInviteLink(link: InviteLink, failed: (String) -> Unit) = launchAction { request ->
+    fun revokeInviteLink(link: InviteLink, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         formRequest(request, failed) {

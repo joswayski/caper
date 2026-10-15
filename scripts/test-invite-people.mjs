@@ -40,11 +40,24 @@ const url = () => evaluate('return document.querySelector(".invite-link-share in
 const click = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
 const open = () => {
   click("Invite people");
-  wait('!!document.querySelector(".invite-link-share input")');
+  wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
 };
 const close = () => click("Close Invite people to Fixture Studio");
+const options = () => {
+  click("More invite options");
+  wait('!!document.querySelector(".invite-link-menu")');
+};
+const settings = () => {
+  options();
+  click("Link settings");
+  wait('document.querySelector(".invite-link-settings")?.open');
+};
 const capture = (name) => {
-  if (artifacts) browser("screenshot", `${artifacts}/${name}.png`);
+  if (!artifacts) return;
+  evaluate(
+    'return Promise.all(document.querySelector("dialog[open]").getAnimations({subtree:true}).filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})));',
+  );
+  browser("screenshot", "dialog[open]", `${artifacts}/${name}.png`);
 };
 try {
   browser("open", origin.href);
@@ -55,17 +68,63 @@ try {
   open();
   const initial = url();
   assert.match(initial, /\/invite\/[a-zA-Z0-9]{10}$/);
-  assert.match(text(), /100 people.*16 days/);
+  assert.match(text(), /100 people.*30 days/);
+  assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
   assert.doesNotMatch(text(), /Space name|Save name|Delete space|Remove/);
   assert.equal(evaluate('return document.querySelector(".invite-link-settings").open;'), false);
-  click("Copy link");
+  click("Copy");
   wait('[...document.querySelectorAll("dialog button")].some(b => b.textContent === "Copied")');
   close();
   open();
   assert.equal(url(), initial, "Reopening must keep the link");
   capture("web-invite-default");
-  browser("click", ".invite-link-settings summary");
-  assert.equal(evaluate('return document.querySelector(".invite-link-expiry input").value;'), "16");
+  options();
+  assert.match(text(), /The old link stops working/);
+  capture("web-invite-options");
+  browser("press", "Escape");
+  wait('!document.querySelector(".invite-link-menu")');
+  assert.equal(evaluate('return document.activeElement?.getAttribute("aria-label");'), "More invite options");
+  assert.equal(url(), initial, "Escape closes options, not the invitation dialog");
+  browser("press", "Enter");
+  wait('!!document.querySelector(".invite-link-menu")');
+  assert.equal(evaluate('return document.activeElement?.getAttribute("aria-label");'), "Regenerate link");
+  browser("press", "Tab");
+  assert.match(evaluate("return document.activeElement?.textContent;"), /Link settings/);
+  browser("press", "Escape");
+  const initialCode = initial.split("/").at(-1);
+  await control({
+    failure: {
+      path: `/api/spaces/space0000001/invite-links/${initialCode}/regenerate`,
+      method: "POST",
+      status: 503,
+      persistent: true,
+    },
+  });
+  options();
+  click("Regenerate link");
+  wait('!!document.querySelector("dialog[open] [role=alert]")');
+  assert.equal(url(), initial, "A failed regeneration preserves the displayed link");
+  capture("web-invite-regenerate-error");
+  await control({ clearFailures: true });
+  options();
+  click("Regenerate link");
+  wait(`document.querySelector('.invite-link-share input')?.value !== ${JSON.stringify(initial)}`);
+  const regenerated = url();
+  assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
+  const live = await fetch("http://127.0.0.1:3001/api/spaces/space0000001/invite-links", {
+    headers: { cookie: "caper_fixture=owner", connection: "close" },
+  }).then((r) => r.json());
+  assert.equal(
+    live.links.some((link) => link.code === initialCode),
+    false,
+  );
+  assert.equal(live.links.length, 1);
+  close();
+  open();
+  assert.equal(url(), regenerated, "Reopening selects the regenerated code");
+  capture("web-invite-regenerated");
+  settings();
+  assert.equal(evaluate('return document.querySelector(".invite-link-expiry input").value;'), "30");
   assert.equal(evaluate('return document.querySelector(".invite-link-options label input").value;'), "100");
   capture("web-invite-settings");
   browser("fill", 'input[aria-label="Expire after amount"]', "4");
@@ -73,9 +132,9 @@ try {
   browser("fill", 'input[placeholder="No limit"]', "17");
   browser("select", ".invite-link-options label select", "chan00000002");
   click("Create link");
-  wait('document.querySelector(".invite-links ul")?.textContent.includes("17 uses")');
-  assert.match(text(), /#design.*0 of 17 uses.*Expires in 4 hours/);
-  assert.equal(url(), initial, "Custom creation must not replace the default");
+  wait('document.querySelector(".invite-links ul")?.textContent.includes("17 joins remaining")');
+  assert.match(text(), /#design.*17 of 17 joins remaining.*Expires in 4 hours/);
+  assert.equal(url(), regenerated, "Custom creation must not replace the default");
   click("Deactivate link");
   wait('!document.querySelector(".invite-link-share input")');
   assert.match(text(), /No active default link/);
@@ -90,7 +149,13 @@ try {
   browser("set", "viewport", "390", "844", "2");
   evaluate("return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
   capture("web-invite-narrow");
-  browser("click", ".invite-link-settings summary");
+  options();
+  const menu = evaluate(
+    'const r=document.querySelector(".invite-link-menu").getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};',
+  );
+  assert.ok(menu.left >= 0 && menu.right <= 390 && menu.top >= 0 && menu.bottom <= 844, JSON.stringify(menu));
+  capture("web-invite-options-narrow");
+  click("Link settings");
   capture("web-invite-settings-narrow");
   browser("scrollintoview", '.invite-link-options button[type="submit"]');
   const bounds = evaluate(
@@ -118,7 +183,7 @@ try {
   wait('!!document.querySelector(".invite-link-share input")');
   assert.equal(url(), replacement);
   console.log(
-    "PASS: invite-only UI, copy, reuse, custom link, deactivation/replacement, narrow layout/scroll, username invite and retry.",
+    "PASS: 30-day/100-join defaults, invite-only UI, copy, reuse, keyboard options, regenerate/failure recovery, custom link, deactivation/replacement, narrow layout/scroll, username invite and retry.",
   );
 } finally {
   browser("close");

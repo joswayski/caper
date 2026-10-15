@@ -963,19 +963,29 @@ random alphanumeric characters (about 59 bits), so the unauthenticated preview
 cannot be enumerated. **Invite people** opens an invitation-only dialog on web,
 Android, Apple and Rust desktop; renaming, icons, member removal and deletion
 remain in **Manage space**. Opening prepares a ready-to-copy link for **100 total
-joins within 16 days of creation**, landing in the default channel. The server
-reuses the oldest live link with those settings under the space lock, so reopening
-or opening on multiple devices does not reset its use count or expiry. Expired,
+joins within 30 days of creation**, landing in the default channel. Under the space
+lock, the server reuses the newest link with those settings only if it is still live,
+so reopening or opening on multiple devices does not reset its use count or expiry. Expired,
 exhausted or deactivated links are not reused. Deactivating stops new joins, not
 existing memberships; it leaves the dialog without a default link until the owner
 creates another or reopens Invite people. No QR code is generated.
 
-**Link settings** in the invitation dialog retains custom creation and management
+**More invite options** sits beside the primary Copy action. **Regenerate link**
+revokes the displayed code and creates a new default code with 30 full days and
+100 available joins in one transaction. Failures leave the previous link intact;
+simultaneous regenerations of the same code mint only one replacement (the stale
+request returns 404). Other links and existing memberships are untouched. The
+newest matching link is selected on the next open, so it cannot revert to an older
+compatible link after regeneration, exhaustion or deactivation. Separate links
+created with exactly the default settings are also eligible for selection. The UI shows remaining joins
+and remaining time, rather than presenting the initial lifetime as time left.
+
+**Link settings** in the options menu retains custom creation and management
 of other links. These settings create a separate link, not an edit to an existing
 one. Owners type the expiry as a number of minutes, hours or days (the API accepts
 any `maxAge` from 60 to 31,536,000 seconds) or choose Never, and optionally type max
 uses (1 to 10,000; empty is unlimited; spaces have no member cap). Custom forms
-also start at 16 days and 100 joins. The existing custom-create API still treats
+also start at 30 days and 100 joins. The existing custom-create API still treats
 omitted/null limits as unlimited for compatibility. A link can also land joiners
 in a public channel; a landing channel deleted or made private later
 falls back to the starter channel and is no longer named in previews. Links are
@@ -986,6 +996,7 @@ recorded in `space_invite_link_uses`.
 | --- | --- | --- |
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
 | Owner prepares/reuses default link | `POST /api/spaces/{space}/invite-links/default` (no body) | 200 link |
+| Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 new default link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
@@ -996,10 +1007,10 @@ have at most 100 live links. Reusing the default link does not consume that
 budget. Deploy the API before these clients; no database migration is required.
 The browser regression scenario runs with the disposable native parity fixture
 and Vite: `node scripts/test-invite-people.mjs <loopback-web-url>`. It checks
-invitation-only controls, copy, reuse, custom links, deactivation, username
-invitations, narrow-layout scrolling and failed-request retry. This is mock-backed
-UI validation, not live join validation; the Rust invite-link Postgres integration
-test covers the server lifecycle and concurrent opens.
+invitation-only controls, copy, reuse, keyboard options, regeneration, custom links,
+deactivation, username invitations, narrow-layout scrolling and failed-request retry.
+This is mock-backed UI validation, not live join validation; the Rust invite-link Postgres integration
+test covers the server lifecycle, concurrent opens/regenerations and rollback.
 
 Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,

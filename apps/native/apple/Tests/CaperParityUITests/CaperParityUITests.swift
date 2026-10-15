@@ -60,6 +60,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Save name"].exists)
         XCTAssertFalse(app.buttons["Delete space"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
+        let copy = app.buttons["default-invite-link-copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 10))
+        let options = app.descendants(matching: .any)["default-invite-link-options"].firstMatch
+        XCTAssertTrue(options.exists)
+        XCTAssertEqual(options.label, "More invite options")
+        XCTAssertGreaterThanOrEqual(options.frame.minX, copy.frame.maxX)
+        options.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Regenerate link"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Link settings"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Deactivate link"].firstMatch.exists)
     }
 
     #if os(iOS)

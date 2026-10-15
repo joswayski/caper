@@ -16,6 +16,7 @@ import {
   inviteFromSearch,
   joinInvite,
   previewInvite,
+  regenerateInviteLink,
   signedInPath,
   SpacesApiError,
 } from "../spaces/client.ts";
@@ -54,7 +55,7 @@ test("sign-in returns to a pending invite only for valid codes", () => {
   assert.equal(invitedSpacePath("space1234567", null), "/spaces?space=space1234567");
 });
 
-test("invite link summaries read like Discord's", () => {
+test("invite link summaries show remaining joins and time", () => {
   const now = Date.parse("2026-10-11T00:00:00Z");
   const link = {
     code: "AbCdE12345",
@@ -65,18 +66,20 @@ test("invite link summaries read like Discord's", () => {
     expiresAt: "2026-10-17T00:00:00Z",
     createdAt: "2026-10-10T00:00:00Z",
   };
-  assert.equal(inviteLinkSummary(link, now), "#feedback · 3 of 10 uses · Expires in 6 days");
+  assert.equal(inviteLinkSummary(link, now), "#feedback · 7 of 10 joins remaining · Expires in 6 days");
   assert.equal(
     inviteLinkSummary({ ...link, channel: null, uses: 1, maxUses: null, expiresAt: null }, now),
     "1 use · Never expires",
   );
   assert.equal(
     inviteLinkSummary({ ...link, uses: 1_234, maxUses: 10_000, expiresAt: "2026-11-10T00:00:00Z" }, now),
-    "#feedback · 1,234 of 10,000 uses · Expires in 30 days",
+    "#feedback · 8,766 of 10,000 joins remaining · Expires in 30 days",
   );
   assert.equal(inviteExpiry("2026-10-11T00:30:00Z", now), "Expires in 30 minutes");
   assert.equal(inviteExpiry("2026-10-11T01:00:00Z", now), "Expires in 1 hour");
-  assert.equal(inviteExpiry("2026-10-10T23:00:00Z", now), "Expires in 1 minute");
+  assert.equal(inviteExpiry("2026-10-10T23:00:00Z", now), "Expired");
+  assert.equal(inviteExpiry("2026-10-11T00:00:00Z", now), "Expired");
+  assert.match(inviteLinkSummary({ ...link, uses: 10 }, now), /0 of 10 joins remaining/);
 });
 
 test("invite requests use the documented endpoints and reject malformed codes locally", async () => {
@@ -87,6 +90,7 @@ test("invite requests use the documented endpoints and reject malformed codes lo
   });
   await createInviteLink("space1234567", { channelId: null, maxAge: 604800, maxUses: null });
   await ensureDefaultInviteLink("space1234567");
+  await regenerateInviteLink("space1234567", "AbCdE12345");
   await previewInvite("AbCdE12345");
   await joinInvite("AbCdE12345");
   assert.deepEqual(calls, [
@@ -96,10 +100,12 @@ test("invite requests use the documented endpoints and reject malformed codes lo
       body: JSON.stringify({ channelId: null, maxAge: 604800, maxUses: null }),
     },
     { path: "/api/spaces/space1234567/invite-links/default", method: "POST", body: undefined },
+    { path: "/api/spaces/space1234567/invite-links/AbCdE12345/regenerate", method: "POST", body: undefined },
     { path: "/api/invites/AbCdE12345", method: undefined, body: undefined },
     { path: "/api/invites/AbCdE12345/join", method: "POST", body: undefined },
   ]);
   await assert.rejects(() => previewInvite("../x"), SpacesApiError);
+  await assert.rejects(() => regenerateInviteLink("space1234567", "../x"), SpacesApiError);
 });
 
 test("native apps verify caper.chat invite links and open caper:// links", async () => {
@@ -115,7 +121,7 @@ test("native apps verify caper.chat invite links and open caper:// links", async
 });
 
 test("expiry and max uses are free-form within the API's bounds", () => {
-  assert.deepEqual(inviteExpirySeconds(DEFAULT_INVITE_EXPIRY.amount, DEFAULT_INVITE_EXPIRY.unit), { value: 1_382_400 });
+  assert.deepEqual(inviteExpirySeconds(DEFAULT_INVITE_EXPIRY.amount, DEFAULT_INVITE_EXPIRY.unit), { value: 2_592_000 });
   assert.deepEqual(inviteMaxUses(DEFAULT_INVITE_MAX_USES), { value: 100 });
   assert.deepEqual(inviteExpirySeconds("7", "days"), { value: 604_800 });
   assert.deepEqual(inviteExpirySeconds(" 90 ", "minutes"), { value: 5_400 });

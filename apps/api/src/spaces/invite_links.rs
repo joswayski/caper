@@ -7,7 +7,7 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
-const DEFAULT_MAX_AGE: i64 = 16 * 24 * 60 * 60;
+const DEFAULT_MAX_AGE: i64 = 30 * 24 * 60 * 60;
 const DEFAULT_MAX_USES: i32 = 100;
 /// Expiry from one minute to a year, in seconds; `None` never expires.
 const MAX_AGE: std::ops::RangeInclusive<i64> = 60..=31_536_000;
@@ -161,9 +161,10 @@ pub(super) async fn default_link(
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let existing = sqlx::query_as::<_, LinkRow>(&format!(
         "{LINK_SELECT} WHERE l.space_id=$1 AND {LIVE}
-         AND l.channel_id IS NULL AND l.max_uses=$2
-         AND l.expires_at=l.created_at+make_interval(secs=>$3::double precision)
-         ORDER BY l.created_at,l.id LIMIT 1"
+         AND l.id=(SELECT newest.id FROM public.space_invite_links newest
+             WHERE newest.space_id=$1 AND newest.channel_id IS NULL AND newest.max_uses=$2
+             AND newest.expires_at=newest.created_at+make_interval(secs=>$3::double precision)
+             ORDER BY newest.id DESC LIMIT 1)"
     ))
     .bind(space_id)
     .bind(DEFAULT_MAX_USES)
@@ -174,6 +175,7 @@ pub(super) async fn default_link(
     let result = match existing {
         Some(row) => link(row),
         None => {
+            // Never resurface an older link after the latest one stops working.
             // Reusing a link doesn't consume the owner's creation budget.
             invite_rate_limit(&mut *tx, principal.user.id).await?;
             insert_link(
@@ -192,6 +194,45 @@ pub(super) async fn default_link(
     };
     tx.commit().await.map_err(database_error)?;
     Ok(Json(result))
+}
+
+/// Replace exactly the displayed code, never other links or memberships. Both
+/// changes commit together, so a failed insert leaves the old link usable. A
+/// second regeneration of the same code fails instead of minting another link.
+pub(super) async fn regenerate_link(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path((space, code)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<InviteLink>), ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let changed = sqlx::query(
+        "UPDATE public.space_invite_links SET revoked_at=now()
+         WHERE space_id=$1 AND code=$2 AND revoked_at IS NULL",
+    )
+    .bind(space_id)
+    .bind(code)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if changed.rows_affected() != 1 {
+        return Err(not_found());
+    }
+    invite_rate_limit(&mut *tx, principal.user.id).await?;
+    let created = insert_link(
+        &mut tx,
+        space_id,
+        principal.user.id,
+        None,
+        &LinkInput {
+            channel_id: None,
+            max_age: Some(DEFAULT_MAX_AGE),
+            max_uses: Some(DEFAULT_MAX_USES),
+        },
+    )
+    .await?;
+    tx.commit().await.map_err(database_error)?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 pub(super) async fn create_link(

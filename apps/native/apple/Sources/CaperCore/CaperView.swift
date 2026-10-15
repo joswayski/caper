@@ -7580,11 +7580,13 @@ private struct DefaultInviteLinkSection: View {
     @State private var copied = false
     @State private var error: String?
     @State private var settingsRevision = 0
+    @State private var settingsExpanded = false
+    @State private var customPending = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Invite link").font(CaperTheme.font(14, weight: .bold))
-            Text("Anyone with this link can join. Up to 100 total joins, valid for 16 days from creation. Opens in the default channel.")
+            Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation. Opens in the default channel.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             if let link {
                 Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
@@ -7595,9 +7597,24 @@ private struct DefaultInviteLinkSection: View {
                 HStack {
                     Button(copied ? "Copied" : "Copy link") { copy(link) }.buttonStyle(CaperPrimaryButton())
                         .accessibilityIdentifier("default-invite-link-copy")
-                    Button("Deactivate link", role: .destructive) { deactivate(link) }.buttonStyle(CaperSecondaryButton())
-                        .accessibilityIdentifier("default-invite-link-deactivate")
-                }.disabled(pending)
+                    Menu {
+                        Button("Regenerate link") { regenerate(link) }
+                            .accessibilityIdentifier("default-invite-link-regenerate")
+                        Text("The previous link stops working. The new link allows 100 joins for 30 days.")
+                        Button("Link settings") { settingsExpanded = true }
+                        Button("Deactivate link", role: .destructive) { deactivate(link) }
+                            .accessibilityIdentifier("default-invite-link-deactivate")
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 16)
+                            .foregroundStyle(CaperTheme.muted)
+                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("More invite options")
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+                    .fixedSize().accessibilityLabel("More invite options")
+                    .accessibilityIdentifier("default-invite-link-options")
+                }.disabled(pending || customPending)
             } else if pending {
                 ProgressView("Preparing invite link…")
             } else {
@@ -7607,21 +7624,24 @@ private struct DefaultInviteLinkSection: View {
                 }
                 Button(deactivated ? "Create another link" : "Prepare link") { Task { await prepare() } }
                     .buttonStyle(CaperPrimaryButton()).accessibilityIdentifier("default-invite-link-create")
+                    .disabled(customPending)
             }
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
-            DisclosureGroup("Link settings") {
-                Text("Create a separate custom link. These settings do not edit existing links.")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                InviteLinksSection(model: model, onRevoked: { code in
-                    if link?.code == code { link = nil; copied = false; deactivated = true }
-                }).id(settingsRevision)
-            }.font(CaperTheme.font(12))
+            if settingsExpanded || link == nil {
+                DisclosureGroup("Link settings", isExpanded: $settingsExpanded) {
+                    Text("Create a separate custom link. These settings do not edit existing links.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    InviteLinksSection(model: model, mutationPending: $customPending, onRevoked: { code in
+                        if link?.code == code { link = nil; copied = false; deactivated = true }
+                    }).id(settingsRevision).disabled(pending)
+                }.font(CaperTheme.font(12))
+            }
         }
         .task(id: model.detail?.space.id) { link = nil; deactivated = false; await prepare() }
     }
 
     private func prepare() async {
-        guard !pending else { return }
+        guard !pending, !customPending else { return }
         pending = true; error = nil; copied = false
         defer { pending = false }
         do { link = try await model.defaultInviteLink(); deactivated = false; settingsRevision += 1 }
@@ -7629,8 +7649,22 @@ private struct DefaultInviteLinkSection: View {
         catch { self.error = FriendlyError.message(for: error) }
     }
 
+    private func regenerate(_ current: InviteLink) {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil
+        Task {
+            defer { pending = false }
+            do {
+                let replacement = try await model.regenerateInviteLink(current)
+                guard link?.code == current.code else { return }
+                link = replacement; copied = false; deactivated = false; settingsRevision += 1
+            } catch is CancellationError {}
+            catch { self.error = FriendlyError.message(for: error) }
+        }
+    }
+
     private func deactivate(_ current: InviteLink) {
-        guard !pending else { return }
+        guard !pending, !customPending else { return }
         pending = true; error = nil
         Task {
             do {
@@ -7659,6 +7693,7 @@ private struct DefaultInviteLinkSection: View {
 /// Manage space's "Invite link": owners create, copy and revoke shareable links.
 private struct InviteLinksSection: View {
     @Bindable var model: AppModel
+    @Binding var mutationPending: Bool
     var onRevoked: ((String) -> Void)? = nil
     @State private var expiryNumber = InviteLinks.defaultExpiryNumber
     @State private var expiryUnit = InviteLinks.defaultExpiryUnit
@@ -7725,7 +7760,7 @@ private struct InviteLinksSection: View {
             Text("Expire after").font(CaperTheme.font(12, weight: .bold))
             HStack(spacing: 8) {
                 if expiryUnit != .never {
-                    numberField("16", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
+                    numberField("30", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
                         .frame(width: 76)
                         .accessibilityLabel("Expire after")
                         .accessibilityIdentifier("invite-link-expiry-number")
@@ -7801,8 +7836,9 @@ private struct InviteLinksSection: View {
         guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
         // A channel made private since it was picked falls back to the default.
         let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
-        pending = "create"; error = nil
+        pending = "create"; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: useLimit)
                 links.removeAll { $0.code == link.code }
@@ -7815,8 +7851,9 @@ private struct InviteLinksSection: View {
 
     private func revoke(_ link: InviteLink) {
         guard pending == nil else { return }
-        pending = link.code; error = nil
+        pending = link.code; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 try await model.revokeInviteLink(link)
                 links.removeAll { $0.code == link.code }
@@ -7920,11 +7957,11 @@ private struct SpaceEditor: View {
                     }
                     if managing {
                         if inviteOnly {
-                            DefaultInviteLinkSection(model: model)
+                            DefaultInviteLinkSection(model: model).id(model.detail?.space.id)
                         } else {
                             iconSection
                             Divider().overlay(CaperTheme.border)
-                            InviteLinksSection(model: model)
+                            InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
                         }
                         Divider().overlay(CaperTheme.border)
                         if !inviteOnly {

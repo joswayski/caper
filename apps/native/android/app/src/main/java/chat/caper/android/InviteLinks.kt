@@ -52,6 +52,9 @@ import kotlinx.coroutines.delay
     var preparing by remember(detail.space.id) { mutableStateOf(true) }
     var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var copied by remember(detail.space.id) { mutableStateOf(false) }
+    var settings by remember(detail.space.id) { mutableStateOf(false) }
+    var now by remember { mutableStateOf(Instant.now()) }
+    LaunchedEffect(Unit) { while (true) { delay(30_000); now = Instant.now() } }
     fun prepare() {
         preparing = true; error = null; copied = false
         viewModel.ensureDefaultInviteLink({ code = it.code; preparing = false }) { error = it; preparing = false }
@@ -60,25 +63,46 @@ import kotlinx.coroutines.delay
     LaunchedEffect(copied) { if (copied) { delay(2_000); copied = false } }
     val link = state.inviteLinks.firstOrNull { it.code == code }
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    Text("100 total joins · Expires 16 days from creation · Default channel", color = TextMuted, fontSize = 11.sp)
-    Text("Reopening keeps the same live link and its original expiry. Deactivating stops new joins; existing members remain. Opening again prepares a new link.", color = TextMuted, fontSize = 11.sp)
+    Text("New links allow 100 joins for 30 days. Opens in the default channel.", color = TextMuted, fontSize = 11.sp)
     if (preparing) Text("Preparing link…", color = TextMuted, fontSize = 12.sp)
     else if (link != null) {
         Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        Text(inviteLinkMeta(link, Instant.now()), color = TextMuted, fontSize = 11.sp)
+        Text(inviteLinkMeta(link, now), color = TextMuted, fontSize = 11.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button({
                 context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(link.code)))
                 copied = true
-            }, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy link") }
-            TextButton({ viewModel.revokeInviteLink(link) { error = it } }, enabled = !state.busy, colors = neutralTextButtonColors()) { Text("Deactivate") }
+            }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy") }
+            InviteLinkActions(!state.busy, {
+                error = null
+                viewModel.regenerateInviteLink(link, { code = it.code; copied = false }) { error = it }
+            }, { settings = !settings }, { error = null; viewModel.revokeInviteLink(link) { error = it } })
         }
     } else {
         Text("No active default link.", color = TextMuted, fontSize = 12.sp)
         Button({ prepare() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Create another link") }
     }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-    InviteLinkSettingsDisclosure(state, detail, viewModel, enabled = !preparing && !state.busy)
+    if (settings) InviteLinkSection(state, detail, viewModel)
+}
+
+/** The link's actions, immediately beside Copy; no space administration actions. */
+@Composable internal fun InviteLinkActions(enabled: Boolean, regenerate: () -> Unit, settings: () -> Unit, deactivate: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton({ open = true }, Modifier.semantics { contentDescription = "More link options" }, enabled = enabled,
+            shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = ButtonDefaults.outlinedButtonColors(contentColor = Text)) {
+            Text("…", fontSize = 18.sp)
+        }
+        DropdownMenu(open && enabled, { open = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            DropdownMenuItem(text = { Column {
+                Text("Regenerate link", fontSize = 13.sp)
+                Text("Previous link stops working. Resets to 30 days / 100 joins.", color = TextMuted, fontSize = 11.sp)
+            } }, onClick = { open = false; regenerate() })
+            DropdownMenuItem(text = { Text("Link settings", fontSize = 13.sp) }, onClick = { open = false; settings() })
+            DropdownMenuItem(text = { Text("Deactivate link", color = ErrorText, fontSize = 13.sp) }, onClick = { open = false; deactivate() })
+        }
+    }
 }
 
 @Composable internal fun InviteLinkSettingsDisclosure(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, enabled: Boolean = !state.busy) {

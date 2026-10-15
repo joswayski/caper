@@ -1329,10 +1329,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           cursor: channelHead(channel.id),
         });
       }
-      const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?$/.exec(path);
+      const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?(\/regenerate)?$/.exec(path);
       if (inviteLinksPath) {
         if (!user) return reject(response, 401, "Sign in required.");
-        const [, spaceId, code] = inviteLinksPath;
+        const [, spaceId, code, regeneration] = inviteLinksPath;
         const detail = state.spaces.find((entry) => entry.space.id === spaceId && entry.space.ownerId === user.id);
         if (!detail) return reject(response, 404, "resource not found");
         const links = state.inviteLinks.get(spaceId) ?? [];
@@ -1341,30 +1341,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           (!link.expiresAt || Date.parse(link.expiresAt) > Date.now()) &&
           (link.maxUses === null || link.uses < link.maxUses);
         if (method === "GET" && !code) return json(response, 200, { links: links.filter(live) });
-        if (method === "DELETE") {
+        if (method === "DELETE" && !regeneration) {
           const link = links.find((link) => link.code === code && !link.revokedAt);
           if (!link) return reject(response, 404, "resource not found");
           link.revokedAt = new Date().toISOString();
           return json(response, 204);
         }
-        if (method === "POST" && (!code || code === "default")) {
-          const defaults = code === "default";
-          const maxAge = defaults ? 1_382_400 : (body.maxAge ?? null);
+        if (method === "POST" && (!code || code === "default" || regeneration)) {
+          const previous = regeneration && links.find((link) => link.code === code && !link.revokedAt);
+          if (regeneration && !previous) return reject(response, 404, "resource not found");
+          const defaults = code === "default" || !!regeneration;
+          const maxAge = defaults ? 2_592_000 : (body.maxAge ?? null);
           const maxUses = defaults ? 100 : (body.maxUses ?? null);
           const channel =
             defaults || !body.channelId
               ? null
               : detail.channels.find((channel) => channel.id === body.channelId && !channel.private);
           if (channel === undefined) return reject(response, 400, "invalid landing channel");
-          if (defaults) {
-            const existing = links.findLast(
+          if (defaults && !regeneration) {
+            const existing = links.find(
               (link) =>
-                live(link) &&
                 link.channel === null &&
                 link.maxUses === 100 &&
-                Date.parse(link.expiresAt) - Date.parse(link.createdAt) === 1_382_400_000,
+                Date.parse(link.expiresAt) - Date.parse(link.createdAt) === 2_592_000_000,
             );
-            if (existing) return json(response, 200, existing);
+            if (existing && live(existing)) return json(response, 200, existing);
           }
           const now = Date.now();
           const link = {
@@ -1376,8 +1377,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             createdAt: new Date(now).toISOString(),
             expiresAt: maxAge === null ? null : new Date(now + maxAge * 1000).toISOString(),
           };
+          if (previous) previous.revokedAt = new Date(now).toISOString();
           state.inviteLinks.set(spaceId, [link, ...links]);
-          return json(response, defaults ? 200 : 201, link);
+          return json(response, defaults && !regeneration ? 200 : 201, link);
         }
         return reject(response, 405, "method not allowed");
       }

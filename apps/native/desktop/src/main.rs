@@ -682,6 +682,7 @@ struct MentionCard {
 /// next link's choices.
 struct InviteLinkPanel {
     default_link: Option<invites::InviteLink>,
+    settings_open: bool,
     /// The space these links belong to; answers for another are dropped.
     space: Option<String>,
     links: Vec<invites::InviteLink>,
@@ -706,6 +707,7 @@ impl Default for InviteLinkPanel {
     fn default() -> Self {
         Self {
             default_link: None,
+            settings_open: false,
             space: None,
             links: Vec::new(),
             loading: false,
@@ -2123,7 +2125,7 @@ impl CaperApp {
                         link.max_uses = Some(100);
                         link.created_at = chrono::Utc::now().to_rfc3339();
                         link.expires_at =
-                            Some((chrono::Utc::now() + chrono::TimeDelta::days(16)).to_rfc3339());
+                            Some((chrono::Utc::now() + chrono::TimeDelta::days(30)).to_rfc3339());
                         app.invite_links.links[0] = link.clone();
                         app.invite_links.default_link = Some(link);
                         app.dialog = Some(Dialog::InvitePeople);
@@ -4485,7 +4487,20 @@ impl CaperApp {
             {
                 self.invite_links.creating = false;
                 match result {
-                    Ok(link) => self.invite_links.default_link = Some(link),
+                    Ok(link) => {
+                        if let Some(previous) = self.invite_links.default_link.replace(link.clone())
+                        {
+                            self.invite_links
+                                .links
+                                .retain(|item| item.code != previous.code);
+                        }
+                        self.invite_links
+                            .links
+                            .retain(|item| item.code != link.code);
+                        self.invite_links.links.insert(0, link);
+                        self.invite_links.error = None;
+                        self.invite_links.copied = None;
+                    }
                     Err(error) => self.invite_links.error = Some(error),
                 }
             }
@@ -4888,7 +4903,7 @@ impl CaperApp {
         }
     }
 
-    /// Fresh custom link choices: sixteen days, 100 joins, selected public channel.
+    /// Fresh custom link choices: thirty days, 100 joins, selected public channel.
     fn reset_invite_links(&mut self) {
         let channel = self
             .detail
@@ -19362,29 +19377,50 @@ impl CaperApp {
     }
 
     fn invite_people_dialog(&mut self, ui: &mut egui::Ui) {
-        ui.label("Anyone with this link can join. 100 total joins, 16 days from creation, default channel.");
+        ui.label("Anyone with this link can join. New links allow 100 joins for 30 days.");
         if let Some(link) = self.invite_links.default_link.clone() {
             let url = invites::invite_url(&self.api_base, &link.code);
             ui.label(RichText::new(&url).monospace());
             ui.label(invites::link_meta(&link, chrono::Utc::now()));
             ui.horizontal(|ui| {
-                if secondary_button(ui, "Copy link", true).clicked() {
+                let pending =
+                    self.invite_links.creating || !self.invite_links.revoking.is_empty();
+                if primary_button(ui, "Copy link", !pending).clicked() {
                     ui.ctx().copy_text(url);
                 }
-                if secondary_button(
-                    ui,
-                    "Deactivate link",
-                    !self.invite_links.revoking.contains(&link.code),
-                )
-                .clicked()
-                    && let Some(space) = self.selected_space.clone()
-                {
-                    self.invite_links.revoking.insert(link.code.clone());
-                    self.account_op(AccountOperation::RevokeInviteLink {
-                        space,
-                        code: link.code,
+                ui.add_enabled_ui(!pending, |ui| {
+                    ui.menu_button("More options", |ui| {
+                        ui.set_max_width(280.0);
+                        ui.label("Regenerating stops the previous code from working. The new link allows 100 joins for 30 days.");
+                        if ui.button("Regenerate link").clicked() {
+                            ui.close();
+                            if let Some(space) = self.selected_space.clone() {
+                                self.invite_join.request = self.invite_join.request.wrapping_add(1);
+                                self.invite_links.creating = true;
+                                self.invite_links.error = None;
+                                self.account_op(AccountOperation::RegenerateInviteLink {
+                                    space,
+                                    code: link.code.clone(),
+                                    request: self.invite_join.request,
+                                });
+                            }
+                        }
+                        if ui.button("Link settings").clicked() {
+                            self.invite_links.settings_open = !self.invite_links.settings_open;
+                            ui.close();
+                        }
+                        if ui.button("Deactivate link").clicked() {
+                            ui.close();
+                            if let Some(space) = self.selected_space.clone() {
+                                self.invite_links.revoking.insert(link.code.clone());
+                                self.account_op(AccountOperation::RevokeInviteLink {
+                                    space,
+                                    code: link.code.clone(),
+                                });
+                            }
+                        }
                     });
-                }
+                });
             });
         } else if self.invite_links.creating {
             ui.label("Preparing invite link…");
@@ -19397,10 +19433,10 @@ impl CaperApp {
         if let Some(error) = &self.invite_links.error {
             ui.label(RichText::new(error).color(ERROR));
         }
-        ui.collapsing("Link settings", |ui| {
+        if self.invite_links.settings_open {
             ui.label("These settings create a separate link; they do not edit the existing link.");
             self.invite_link_section(ui);
-        });
+        }
         ui.separator();
         ui.label(bold("Invite by username"));
         self.members_dialog(ui, None);
@@ -19438,7 +19474,7 @@ impl CaperApp {
         if !channels.iter().any(|(id, _)| *id == panel.channel) {
             panel.channel = None;
         }
-        let enabled = !panel.creating;
+        let enabled = !panel.creating && panel.revoking.is_empty();
         let mut edited = false;
         ui.columns(3, |columns| {
             let ui = &mut columns[0];
@@ -19579,7 +19615,7 @@ impl CaperApp {
                             let revoke = toned(
                                 ui,
                                 REMOVE_TONE,
-                                !revoking,
+                                enabled,
                                 egui::Button::new(
                                     RichText::new(if revoking { "Revoking…" } else { "Revoke" })
                                         .size(11.0),
@@ -36299,6 +36335,29 @@ mod tests {
         app.account_result(answer(request, space.clone()));
         assert!(app.invite_links.default_link.is_some());
         assert!(app.invite_links.copy.is_none());
+        let mut replacement = link.clone();
+        replacement.code = "Fresh12345".into();
+        app.account_result(crate::worker::AccountResult::DefaultInviteLink {
+            space: space.clone(),
+            request,
+            result: Ok(replacement.clone()),
+        });
+        assert!(
+            app.invite_links
+                .links
+                .iter()
+                .all(|item| item.code != link.code)
+        );
+        assert_eq!(app.invite_links.links.first(), Some(&replacement));
+        let link = replacement;
+        app.invite_links.creating = true;
+        app.account_result(crate::worker::AccountResult::DefaultInviteLink {
+            space: space.clone(),
+            request,
+            result: Err("This invite link is invalid or has expired.".into()),
+        });
+        assert_eq!(app.invite_links.default_link.as_ref(), Some(&link));
+        assert!(!app.invite_links.creating);
         app.account_result(crate::worker::AccountResult::InviteLinkRevoked {
             space,
             code: link.code,

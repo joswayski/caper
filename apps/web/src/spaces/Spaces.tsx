@@ -1012,7 +1012,12 @@ function ManageSpaceDialog({
           />
         </div>
       )}
-      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} prepareDefault={inviteOnly} />
+      <InviteLinkManager
+        key={detail.space.id}
+        spaceId={detail.space.id}
+        channels={detail.channels}
+        prepareDefault={inviteOnly}
+      />
       <MemberManager
         inviteOnly={inviteOnly}
         members={members}

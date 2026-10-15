@@ -1,5 +1,18 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useId, useState } from "react";
+import { type KeyboardEvent, useEffect, useId, useState } from "react";
+import {
+  autoUpdate,
+  flip,
+  FloatingFocusManager,
+  offset,
+  shift,
+  useClick,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
+import { Ban, ChevronDown, Copy, RefreshCw, Settings } from "lucide-react";
 import {
   type Channel,
   createInviteLink,
@@ -16,12 +29,103 @@ import {
   inviteLinkSummary,
   inviteUrl,
   listInviteLinks,
+  regenerateInviteLink,
   revokeInviteLink,
   SpacesApiError,
 } from "./client";
 
 function message(reason: unknown) {
   return reason instanceof SpacesApiError ? reason.message : "That request did not work.";
+}
+
+function InviteLinkActions({
+  disabled,
+  regenerate,
+  settings,
+  deactivate,
+}: {
+  disabled: boolean;
+  regenerate: () => void;
+  settings: () => void;
+  deactivate: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const warningId = useId();
+  const { refs, floatingStyles, context } = useFloating({
+    open,
+    onOpenChange: setOpen,
+    placement: "bottom-end",
+    strategy: "fixed",
+    middleware: [offset(8), flip(), shift({ padding: 12, crossAxis: true })],
+    whileElementsMounted: autoUpdate,
+  });
+  const { getReferenceProps, getFloatingProps } = useInteractions([
+    useClick(context),
+    useDismiss(context),
+    useRole(context),
+  ]);
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+  const dismissOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (!open || event.key !== "Escape") return;
+    // The surrounding native dialog handles Escape on key-down too.
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.nativeEvent.isComposing) setOpen(false);
+  };
+  return (
+    <>
+      <button
+        ref={refs.setReference}
+        type="button"
+        className="primary invite-link-more"
+        disabled={disabled}
+        aria-label="More invite options"
+        title="More invite options"
+        {...getReferenceProps({ onKeyDown: dismissOnEscape })}
+      >
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <FloatingFocusManager context={context} modal={false}>
+          <div
+            ref={refs.setFloating}
+            style={floatingStyles}
+            className="invite-link-menu"
+            aria-label="More invite options"
+            {...getFloatingProps({ onKeyDown: dismissOnEscape })}
+          >
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label="Regenerate link"
+              aria-describedby={warningId}
+              onClick={() => choose(regenerate)}
+            >
+              <RefreshCw size={16} aria-hidden="true" />
+              <span>
+                Regenerate link
+                <small id={warningId}>Replaces this link with 30 days and 100 joins. The old link stops working.</small>
+              </span>
+            </button>
+            <button type="button" onClick={() => choose(settings)}>
+              <Settings size={16} aria-hidden="true" /> Link settings
+            </button>
+            <button
+              type="button"
+              className="invite-link-menu-danger"
+              disabled={disabled}
+              onClick={() => choose(deactivate)}
+            >
+              <Ban size={16} aria-hidden="true" /> Deactivate link
+            </button>
+          </div>
+        </FloatingFocusManager>
+      )}
+    </>
+  );
 }
 
 /** Reuses the default link when inviting; custom links stay behind settings. */
@@ -44,7 +148,13 @@ export function InviteLinkManager({
   const [pending, setPending] = useState(true);
   const [copied, setCopied] = useState<string>();
   const [error, setError] = useState<string>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const ids = useId();
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(interval);
+  }, []);
   useEffect(() => {
     let current = true;
     void (async () => {
@@ -74,6 +184,7 @@ export function InviteLinkManager({
   }, [copied]);
   const defaultLink = links?.find((link) => link.code === defaultCode);
   const prepare = async () => {
+    if (pending) return;
     setPending(true);
     setError(undefined);
     try {
@@ -86,7 +197,24 @@ export function InviteLinkManager({
       setPending(false);
     }
   };
+  const regenerate = async (code: string) => {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      const link = await regenerateInviteLink(spaceId, code);
+      setDefaultCode(link.code);
+      setCopied(undefined);
+      setNow(Date.now());
+      setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== code)]);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setPending(false);
+    }
+  };
   const deactivate = async (code: string) => {
+    if (pending) return;
     setPending(true);
     setError(undefined);
     try {
@@ -117,7 +245,8 @@ export function InviteLinkManager({
             <h3>Share an invite link</h3>
           </div>
           <p className="channel-name-guidance">
-            Up to 100 people can join within 16 days of creation. Opens in the default channel.
+            Up to {DEFAULT_INVITE_MAX_USES} people can join within {DEFAULT_INVITE_EXPIRY.amount} days of creation.
+            Opens in the default channel.
           </p>
           {defaultLink ? (
             <>
@@ -128,11 +257,27 @@ export function InviteLinkManager({
                   value={inviteUrl(defaultLink.code)}
                   onFocus={(event) => event.target.select()}
                 />
-                <button className="primary" type="button" onClick={() => void copy(defaultLink.code)}>
-                  {copied === defaultLink.code ? "Copied" : "Copy link"}
-                </button>
+                <div className="invite-link-split">
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void copy(defaultLink.code)}
+                  >
+                    <Copy size={16} aria-hidden="true" />
+                    {copied === defaultLink.code ? "Copied" : "Copy"}
+                  </button>
+                  <InviteLinkActions
+                    disabled={pending}
+                    regenerate={() => void regenerate(defaultLink.code)}
+                    settings={() => setSettingsOpen(true)}
+                    deactivate={() => void deactivate(defaultLink.code)}
+                  />
+                </div>
               </div>
-              <p className="channel-name-guidance">{inviteLinkSummary(defaultLink)}</p>
+              <p className="channel-name-guidance" role="status">
+                {inviteLinkSummary(defaultLink, now)}
+              </p>
             </>
           ) : pending ? (
             <p className="channel-name-guidance" role="status">
@@ -148,7 +293,11 @@ export function InviteLinkManager({
               </button>
             </div>
           )}
-          <p className="channel-name-guidance">Reopening keeps the same live link and its original expiry.</p>
+          {!defaultLink && !pending && !settingsOpen && (
+            <button type="button" onClick={() => setSettingsOpen(true)}>
+              Link settings
+            </button>
+          )}
         </>
       )}
       {error && (
@@ -156,7 +305,12 @@ export function InviteLinkManager({
           {error}
         </p>
       )}
-      <details className="invite-link-settings">
+      <details
+        className="invite-link-settings"
+        open={settingsOpen}
+        hidden={prepareDefault && !settingsOpen}
+        onToggle={(event) => setSettingsOpen(event.currentTarget.open)}
+      >
         <summary>Link settings</summary>
         {defaultLink && (
           <div className="invite-link-deactivate">
@@ -279,7 +433,7 @@ export function InviteLinkManager({
               <li key={link.code}>
                 <span className="invite-link-row">
                   <strong>{inviteUrl(link.code).replace(/^https?:\/\//, "")}</strong>
-                  <small>{inviteLinkSummary(link)}</small>
+                  <small>{inviteLinkSummary(link, now)}</small>
                 </span>
                 <span className="invite-link-actions">
                   <button type="button" className="invite-link-copy" onClick={() => void copy(link.code)}>

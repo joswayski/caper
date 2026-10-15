@@ -293,6 +293,10 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/spaces/{space}/invite-links/{code}",
             delete(invite_links::revoke_link),
         )
+        .route(
+            "/api/spaces/{space}/invite-links/{code}/regenerate",
+            post(invite_links::regenerate_link),
+        )
         .route("/api/invites/{code}/join", post(accept_invite_link))
         .route("/api/spaces/{space}/invitations", get(list_invitations))
         .route(
