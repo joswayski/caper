@@ -1870,7 +1870,24 @@ export default function Chat({
                   <p className="chat-state">No pinned messages.</p>
                 ) : (
                   state.pinnedMessages.map((message) => (
-                    <article className="chat-message chat-pinned-message" key={message.id}>
+                    <article
+                      className="chat-message chat-pinned-message"
+                      key={message.id}
+                      aria-busy={jumping === message.id}
+                      onClick={(event) => {
+                        // The Go button is the keyboard action. Plain card clicks do
+                        // the same; links, media, profiles and text selection keep theirs.
+                        if (
+                          event.defaultPrevented ||
+                          (event.target as Element).closest(
+                            "button, a, input, textarea, audio, video, [role=button]",
+                          ) ||
+                          window.getSelection()?.isCollapsed === false
+                        )
+                          return;
+                        void goToMessage(message);
+                      }}
+                    >
                       {message.replyTo && (
                         <ReplyContext
                           motionKey={message.clientMessageId}

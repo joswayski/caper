@@ -153,7 +153,10 @@ function AnimatedVideo({
     else video.pause();
   };
   return (
-    <div className="chat-media chat-animated" style={size}>
+    <div
+      className="chat-media chat-animated"
+      style={size && { width: size.width, aspectRatio: size.width / size.height }}
+    >
       <video
         ref={ref}
         src={attachment.url}
@@ -235,7 +238,7 @@ export function MessageAttachments({
               href={attachment.url}
               target="_blank"
               rel="noopener noreferrer"
-              style={size}
+              style={size && { width: size.width, aspectRatio: size.width / size.height }}
               aria-haspopup={onView ? "dialog" : undefined}
               onClick={(event) => {
                 // Modified clicks keep the link's new tab or window.
@@ -272,7 +275,7 @@ export function MessageAttachments({
             <div
               key={attachment.id}
               className={size ? "chat-media chat-video" : "chat-media chat-video intrinsic"}
-              style={size}
+              style={size && { width: size.width, aspectRatio: size.width / size.height }}
             >
               <video
                 controls

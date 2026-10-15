@@ -31,6 +31,43 @@ import org.junit.runner.RunWith
 class ReactionUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun pinnedBodyTapIsOptInAndKeepsChildActionsAndLongPress() {
+        val message = ChatMessage(
+            "message00000001", "channel00001", "1", ChatAuthor("other", "Fixture Author", false, avatarId = 719),
+            ChatContent(1, "text", "TEST FIXTURE — pinned navigation"),
+            "2026-09-29T10:00:00Z", "fixture-client",
+            listOf(MessageReaction("👍", listOf("other"))), "2",
+        )
+        val enabled = mutableStateOf(false)
+        var jumps = 0
+        var actions = 0
+        var profiles = 0
+        var reactions = 0
+        compose.setContent {
+            CaperTheme {
+                ReactionMessageRow(message, AppUiState(chatAuthorId = "self",
+                    selectedChannel = Channel("channel00001", "space0000001", "general", private = false, joined = true)),
+                    { _, _, _ -> reactions++ }, { _, _ -> }, { _, _ -> },
+                    openReactors = { _, _ -> }, openAuthor = { profiles++ },
+                    openMessage = if (enabled.value) ({ jumps++ }) else null,
+                    openActions = { actions++ })
+            }
+        }
+        compose.onNodeWithText(message.content.text).performTouchInput { click() }
+        compose.runOnIdle { assertEquals(0, jumps); enabled.value = true }
+        compose.onNodeWithText(message.content.text).performTouchInput { click() }
+        compose.runOnIdle { assertEquals(1, jumps) }
+        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        compose.onNodeWithText("Fixture Author").performTouchInput { click() }
+        compose.onNodeWithContentDescription("👍 reaction, 1").performTouchInput { click() }
+        compose.runOnIdle {
+            assertEquals(1, jumps)
+            assertEquals(1, actions)
+            assertEquals(1, profiles)
+            assertEquals(1, reactions)
+        }
+    }
+
     @Test fun longPressQuickReactionsClipboardAndRestrictions() {
         val joined = Channel("channel00001", "space0000001", "general", private = false, joined = true)
         val state = mutableStateOf(AppUiState(chatAuthorId = "self", selectedChannel = joined))

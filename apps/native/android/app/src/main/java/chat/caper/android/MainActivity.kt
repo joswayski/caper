@@ -2743,6 +2743,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     openReference: ((MessageReply) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
+    /** Only pinned cards opt in; nested links and controls consume their own taps. */
+    openMessage: (() -> Unit)? = null,
     openActions: (ChatMessage) -> Unit,
 ) {
     val own = state.chatAuthorId ?: state.account?.id
@@ -2764,7 +2766,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
             interactionSource = interaction,
             indication = null,
-            onClick = {},
+            onClick = { openMessage?.invoke() },
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
@@ -2913,6 +2915,12 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
         items(state.displayedPins, key = { "pin:${it.id}" }) { message ->
+            val goToMessage: () -> Unit = {
+                if (!state.loadingMessageContext) {
+                    pinnerTarget = null
+                    viewModel.goToMessage(message, onLoaded = close)
+                }
+            }
             Column(Modifier.background(PinGoldWash)) {
                 message.pin?.let { pin ->
                     val interaction = remember(message.id) { MutableInteractionSource() }
@@ -2928,6 +2936,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
+                    openMessage = goToMessage,
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), onLoaded = close) },
@@ -2935,7 +2944,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
                 // The button's own inset keeps its label in line with the message text.
                 Row(Modifier.fillMaxWidth().padding(start = 54.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ pinnerTarget = null; viewModel.goToMessage(message, onLoaded = close) }, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
+                    TextButton(goToMessage, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
                         colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
                         Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
                         Spacer(Modifier.width(6.dp))

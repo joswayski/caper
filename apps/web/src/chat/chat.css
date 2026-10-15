@@ -1535,6 +1535,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--pin-wash);
+  cursor: pointer;
 }
 .chat-pinned-message > .chat-avatar {
   grid-column: 1;
@@ -1583,7 +1584,9 @@
     right: 0;
   }
 }
-/* Forwarded cards are direct children here; keep them in the content column. */
+/* Media and forwards are direct children here, not inside the timeline's
+   content wrapper. Never let auto-placement squeeze them into the avatar column. */
+.chat-pinned-message > .chat-attachments,
 .chat-pinned-message > .chat-forward-card {
   grid-column: 2;
 }
