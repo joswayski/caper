@@ -137,7 +137,7 @@ class InviteLinksTest {
         )
     }
 
-    @Test fun `default link preparation uses a bodyless authenticated POST and preserves server values on reopening`() = runTest {
+    @Test fun `no public channels prepares a space-only link and preserves server values on reopening`() = runTest {
         val link = """{"code":"aB3dE5fG7h","channel":null,"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":7,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"""
         repeat(2) { server.enqueue(MockResponse().setBody(link)) }
         val api = CaperApi(baseUrl = server.url("/").toString())
@@ -156,14 +156,34 @@ class InviteLinksTest {
         }
     }
 
+    @Test fun `selected channel preparation is bodyless, reuses server values and propagates failures`() = runTest {
+        val link = """{"code":"aB3dE5fG7h","channel":{"id":"channel00001","name":"design"},"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":7,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"""
+        repeat(2) { server.enqueue(MockResponse().setBody(link)) }
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"channel must be public"}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val first = api.ensureDefaultInviteLink("account-secret", "space0000001", "channel00001")
+        assertEquals("channel00001", first.channel?.id)
+        assertEquals("design", first.channel?.name)
+        assertEquals(first, api.ensureDefaultInviteLink("account-secret", "space0000001", "channel00001"))
+        val error = runCatching { api.ensureDefaultInviteLink("account-secret", "space0000001", "channel00002") }.exceptionOrNull() as ApiException
+        assertEquals(400, error.status)
+        repeat(3) { index ->
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/spaces/space0000001/invite-links/default?channelId=${if (index == 2) "channel00002" else "channel00001"}", request.path)
+            assertEquals("Bearer account-secret", request.headers["Authorization"])
+            assertEquals("", request.body.readUtf8())
+        }
+    }
+
     @Test fun `regeneration uses one bodyless authenticated POST and propagates stale failures`() = runTest {
-        val link = """{"code":"newCode123","channel":null,"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":0,"maxUses":100,"expiresAt":"2026-11-10T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"""
+        val link = """{"code":"newCode123","channel":{"id":"channel00001","name":"design"},"createdBy":{"username":"mira","displayName":"Mira","avatarId":3},"uses":0,"maxUses":100,"expiresAt":"2026-11-10T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"""
         server.enqueue(MockResponse().setResponseCode(201).setBody(link))
         server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"invite link is invalid or has expired"}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
         val replacement = api.regenerateInviteLink("account-secret", "space0000001", "aB3dE5fG7h")
         assertEquals("newCode123", replacement.code)
-        assertNull(replacement.channel)
+        assertEquals("channel00001", replacement.channel?.id)
         assertEquals(0, replacement.uses)
         assertEquals(100, replacement.maxUses)
         assertEquals(30 * 86_400L, java.time.Duration.between(Instant.parse(replacement.createdAt), Instant.parse(replacement.expiresAt)).seconds)

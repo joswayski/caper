@@ -90,6 +90,7 @@ test("invite requests use the documented endpoints and reject malformed codes lo
   });
   await createInviteLink("space1234567", { channelId: null, maxAge: 604800, maxUses: null });
   await ensureDefaultInviteLink("space1234567");
+  await ensureDefaultInviteLink("space1234567", "chan12345678");
   await regenerateInviteLink("space1234567", "AbCdE12345");
   await previewInvite("AbCdE12345");
   await joinInvite("AbCdE12345");
@@ -100,6 +101,7 @@ test("invite requests use the documented endpoints and reject malformed codes lo
       body: JSON.stringify({ channelId: null, maxAge: 604800, maxUses: null }),
     },
     { path: "/api/spaces/space1234567/invite-links/default", method: "POST", body: undefined },
+    { path: "/api/spaces/space1234567/invite-links/default?channelId=chan12345678", method: "POST", body: undefined },
     { path: "/api/spaces/space1234567/invite-links/AbCdE12345/regenerate", method: "POST", body: undefined },
     { path: "/api/invites/AbCdE12345", method: undefined, body: undefined },
     { path: "/api/invites/AbCdE12345/join", method: "POST", body: undefined },

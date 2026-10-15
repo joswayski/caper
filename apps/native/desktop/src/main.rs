@@ -682,6 +682,7 @@ struct MentionCard {
 /// next link's choices.
 struct InviteLinkPanel {
     default_link: Option<invites::InviteLink>,
+    regenerating: bool,
     settings_open: bool,
     /// The space these links belong to; answers for another are dropped.
     space: Option<String>,
@@ -694,7 +695,7 @@ struct InviteLinkPanel {
     expiry_unit: invites::ExpiryUnit,
     /// "Max uses"; empty means no limit.
     max_uses: String,
-    /// The landing channel; `None` opens the space's default channel.
+    /// The custom link's public landing channel; `None` when none exist.
     channel: Option<String>,
     error: Option<String>,
     /// A new link's URL, copied on the next frame (copying needs the UI).
@@ -707,6 +708,7 @@ impl Default for InviteLinkPanel {
     fn default() -> Self {
         Self {
             default_link: None,
+            regenerating: false,
             settings_open: false,
             space: None,
             links: Vec::new(),
@@ -2121,7 +2123,6 @@ impl CaperApp {
                     app.dialog = Some(Dialog::ManageSpace);
                     if name == "parity-invite-people" {
                         let mut link = app.fixture_invite_links().remove(0);
-                        link.channel = None;
                         link.max_uses = Some(100);
                         link.created_at = chrono::Utc::now().to_rfc3339();
                         link.expires_at =
@@ -4489,6 +4490,7 @@ impl CaperApp {
                 match result {
                     Ok(link) => {
                         if let Some(previous) = self.invite_links.default_link.replace(link.clone())
+                            && self.invite_links.regenerating
                         {
                             self.invite_links
                                 .links
@@ -4503,6 +4505,7 @@ impl CaperApp {
                     }
                     Err(error) => self.invite_links.error = Some(error),
                 }
+                self.invite_links.regenerating = false;
             }
             AccountResult::InviteLinks { space, result }
                 if self.invite_panel_is_current(&space) =>
@@ -4892,12 +4895,20 @@ impl CaperApp {
     }
 
     fn ensure_default_invite_link(&mut self) {
+        self.prepare_invite_link(None);
+    }
+
+    fn prepare_invite_link(&mut self, channel: Option<String>) {
+        if self.invite_links.creating || !self.invite_links.revoking.is_empty() {
+            return;
+        }
         self.invite_join.request = self.invite_join.request.wrapping_add(1);
         if let Some(space) = self.selected_space.clone() {
             self.invite_links.creating = true;
             self.invite_links.error = None;
             self.account_op(AccountOperation::EnsureDefaultInviteLink {
                 space,
+                channel,
                 request: self.invite_join.request,
             });
         }
@@ -4908,13 +4919,7 @@ impl CaperApp {
         let channel = self
             .detail
             .as_ref()
-            .zip(self.selected_channel.as_ref())
-            .and_then(|(detail, selected)| {
-                detail
-                    .channels
-                    .iter()
-                    .find(|channel| &channel.id == selected && !channel.private)
-            })
+            .and_then(|detail| detail.channels.iter().find(|channel| !channel.private))
             .map(|channel| channel.id.clone());
         self.invite_links = InviteLinkPanel {
             space: self.selected_space.clone(),
@@ -19378,10 +19383,31 @@ impl CaperApp {
 
     fn invite_people_dialog(&mut self, ui: &mut egui::Ui) {
         ui.label("Anyone with this link can join. New links allow 100 joins for 30 days.");
+        let channels = self.invite_channel_choices();
+        let mut selected = self
+            .invite_links
+            .default_link
+            .as_ref()
+            .and_then(|link| link.channel.as_ref().map(|channel| channel.id.clone()))
+            .or_else(|| channels.first().and_then(|(id, _)| id.clone()));
+        let previous = selected.clone();
+        invite_picker(
+            ui,
+            "Opens in",
+            &channels,
+            &mut selected,
+            !self.invite_links.creating && self.invite_links.revoking.is_empty(),
+        );
+        if selected != previous {
+            self.prepare_invite_link(selected);
+        }
         if let Some(link) = self.invite_links.default_link.clone() {
             let url = invites::invite_url(&self.api_base, &link.code);
             ui.label(RichText::new(&url).monospace());
             ui.label(invites::link_meta(&link, chrono::Utc::now()));
+            if self.invite_links.creating {
+                ui.label("Preparing invite link…");
+            }
             ui.horizontal(|ui| {
                 let pending =
                     self.invite_links.creating || !self.invite_links.revoking.is_empty();
@@ -19397,6 +19423,7 @@ impl CaperApp {
                             if let Some(space) = self.selected_space.clone() {
                                 self.invite_join.request = self.invite_join.request.wrapping_add(1);
                                 self.invite_links.creating = true;
+                                self.invite_links.regenerating = true;
                                 self.invite_links.error = None;
                                 self.account_op(AccountOperation::RegenerateInviteLink {
                                     space,
@@ -19435,11 +19462,32 @@ impl CaperApp {
         }
         if self.invite_links.settings_open {
             ui.label("These settings create a separate link; they do not edit the existing link.");
-            self.invite_link_section(ui);
+            ui.add_enabled_ui(
+                !self.invite_links.creating && self.invite_links.revoking.is_empty(),
+                |ui| self.invite_link_section(ui),
+            );
         }
         ui.separator();
         ui.label(bold("Invite by username"));
         self.members_dialog(ui, None);
+    }
+
+    fn invite_channel_choices(&self) -> Vec<(Option<String>, String)> {
+        let mut channels: Vec<_> = self
+            .detail
+            .iter()
+            .flat_map(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .filter(|channel| !channel.private)
+                    .map(|channel| (Some(channel.id.clone()), format!("#{}", channel.name)))
+            })
+            .collect();
+        if channels.is_empty() {
+            channels.push((None, "No public channels".to_owned()));
+        }
+        channels
     }
 
     /// Manage space's "Invite link": the next link's choices, Create link, and
@@ -19461,18 +19509,10 @@ impl CaperApp {
             .map(|(value, label)| (*value, (*label).to_owned()))
             .collect();
         // Links can open only public channels.
-        let channels: Vec<_> = std::iter::once((None, "Default channel".to_owned()))
-            .chain(self.detail.iter().flat_map(|detail| {
-                detail
-                    .channels
-                    .iter()
-                    .filter(|channel| !channel.private)
-                    .map(|channel| (Some(channel.id.clone()), format!("#{}", channel.name)))
-            }))
-            .collect();
+        let channels = self.invite_channel_choices();
         let panel = &mut self.invite_links;
         if !channels.iter().any(|(id, _)| *id == panel.channel) {
-            panel.channel = None;
+            panel.channel = channels.first().and_then(|(id, _)| id.clone());
         }
         let enabled = !panel.creating && panel.revoking.is_empty();
         let mut edited = false;
@@ -20663,7 +20703,7 @@ fn invite_menu<T: Clone + PartialEq>(
     let width = button.rect.width().max(160.0);
     egui::Popup::menu(&button).width(width).show(|ui| {
         for (choice, text) in choices {
-            if ui.selectable_label(choice == value, text).clicked() {
+            if ui.selectable_label(choice == value, text).clicked() && enabled && ui.is_enabled() {
                 *value = choice.clone();
             }
         }
@@ -36308,6 +36348,42 @@ mod tests {
     }
 
     #[test]
+    fn invite_choices_start_at_oldest_public_channel_without_synthetic_destination() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let detail = app.detail.as_mut().unwrap();
+        detail.channels[0].private = true;
+        let oldest = detail
+            .channels
+            .iter()
+            .find(|channel| !channel.private)
+            .unwrap()
+            .id
+            .clone();
+        app.reset_invite_links();
+        assert_eq!(app.invite_links.channel, Some(oldest.clone()));
+        assert_eq!(app.invite_channel_choices()[0].0, Some(oldest));
+        assert!(
+            app.invite_channel_choices()
+                .iter()
+                .all(|(id, _)| id.is_some())
+        );
+        for channel in &mut app.detail.as_mut().unwrap().channels {
+            channel.private = true;
+        }
+        app.reset_invite_links();
+        assert_eq!(app.invite_links.channel, None);
+        assert_eq!(
+            app.invite_channel_choices(),
+            vec![(None, "No public channels".into())]
+        );
+    }
+
+    #[test]
     fn default_invite_answers_are_fenced_and_never_copy_on_open_or_revoke() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -36346,10 +36422,19 @@ mod tests {
             app.invite_links
                 .links
                 .iter()
-                .all(|item| item.code != link.code)
+                .any(|item| item.code == link.code)
         );
-        assert_eq!(app.invite_links.links.first(), Some(&replacement));
-        let link = replacement;
+        assert_eq!(app.invite_links.default_link.as_ref(), Some(&replacement));
+        // Only regeneration revokes and removes the displayed predecessor.
+        app.invite_links.regenerating = true;
+        app.account_result(answer(request, space.clone()));
+        assert!(
+            app.invite_links
+                .links
+                .iter()
+                .all(|item| item.code != replacement.code)
+        );
+        assert_eq!(app.invite_links.links.first(), Some(&link));
         app.invite_links.creating = true;
         app.account_result(crate::worker::AccountResult::DefaultInviteLink {
             space: space.clone(),

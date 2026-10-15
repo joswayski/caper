@@ -7582,12 +7582,27 @@ private struct DefaultInviteLinkSection: View {
     @State private var settingsRevision = 0
     @State private var settingsExpanded = false
     @State private var customPending = false
+    @State private var channelID: String?
+
+    private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
+    private var channelOptions: [InviteOption<String?>] {
+        publicChannels.isEmpty
+            ? [InviteOption<String?>(label: "No public channels", value: nil)]
+            : publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Invite link").font(CaperTheme.font(14, weight: .bold))
-            Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation. Opens in the default channel.")
+            Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            InviteOptionPicker(title: "Opens in", selection: Binding(get: { channelID }, set: { selected in
+                guard !pending, !customPending, selected != channelID else { return }
+                pending = true; error = nil; copied = false
+                Task { await prepareSelected(channelID: selected) }
+            }), options: channelOptions)
+                .disabled(pending || customPending || publicChannels.isEmpty)
+                .accessibilityIdentifier("invite-link-channel")
             if let link {
                 Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -7637,14 +7652,25 @@ private struct DefaultInviteLinkSection: View {
                 }.font(CaperTheme.font(12))
             }
         }
-        .task(id: model.detail?.space.id) { link = nil; deactivated = false; await prepare() }
+        .task(id: model.detail?.space.id) {
+            link = nil; deactivated = false; channelID = publicChannels.first?.id
+            await prepare()
+        }
     }
 
     private func prepare() async {
         guard !pending, !customPending else { return }
         pending = true; error = nil; copied = false
+        await prepareSelected(channelID: channelID)
+    }
+
+    private func prepareSelected(channelID: String?) async {
         defer { pending = false }
-        do { link = try await model.defaultInviteLink(); deactivated = false; settingsRevision += 1 }
+        do {
+            let prepared = try await model.defaultInviteLink(channelID: channelID)
+            link = prepared; self.channelID = prepared.channel?.id
+            deactivated = false; settingsRevision += 1
+        }
         catch is CancellationError {}
         catch { self.error = FriendlyError.message(for: error) }
     }
@@ -7657,7 +7683,8 @@ private struct DefaultInviteLinkSection: View {
             do {
                 let replacement = try await model.regenerateInviteLink(current)
                 guard link?.code == current.code else { return }
-                link = replacement; copied = false; deactivated = false; settingsRevision += 1
+                link = replacement; channelID = replacement.channel?.id
+                copied = false; deactivated = false; settingsRevision += 1
             } catch is CancellationError {}
             catch { self.error = FriendlyError.message(for: error) }
         }
@@ -7716,8 +7743,9 @@ private struct InviteLinksSection: View {
         InviteExpiryUnit.allCases.map { InviteOption(label: $0.label, value: $0) }
     }
     private var channelOptions: [InviteOption<String?>] {
-        [InviteOption<String?>(label: "Default channel", value: nil)]
-            + publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
+        publicChannels.isEmpty
+            ? [InviteOption<String?>(label: "No public channels", value: nil)]
+            : publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
     }
 
     var body: some View {
@@ -7741,8 +7769,7 @@ private struct InviteLinksSection: View {
             ForEach(links) { link in row(link) }
         }
         .onAppear {
-            // Opens in the channel being viewed when anyone can see it.
-            if let channel = model.selectedChannel, !channel.private { channelID = channel.id }
+            channelID = publicChannels.first?.id
         }
         .task(id: model.detail?.space.id) { await load() }
         .onDisappear { copiedReset?.cancel() }
@@ -7752,6 +7779,7 @@ private struct InviteLinksSection: View {
         expiryField
         maxUsesField
         InviteOptionPicker(title: "Opens in", selection: $channelID, options: channelOptions)
+            .disabled(pending != nil || publicChannels.isEmpty)
     }
 
     /// A whole number and its unit; Never hides the number.
@@ -7834,8 +7862,8 @@ private struct InviteLinksSection: View {
         if case .failure(let failure) = expiry { expiryError = failure.message } else { expiryError = nil }
         if case .failure(let failure) = uses { maxUsesError = failure.message } else { maxUsesError = nil }
         guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
-        // A channel made private since it was picked falls back to the default.
-        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
+        // A channel made private since it was picked falls back to the oldest public channel.
+        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil } ?? publicChannels.first?.id
         pending = "create"; mutationPending = true; error = nil
         Task {
             defer { mutationPending = false }

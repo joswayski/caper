@@ -767,14 +767,18 @@ impl Api {
         .map(|value| value.links)
     }
 
-    pub fn default_invite_link(&self, token: &str, space: &str) -> Result<InviteLink, ApiError> {
-        self.request(
-            Method::POST,
-            &format!("api/spaces/{space}/invite-links/default"),
-            Some(token),
-            None,
-            None,
-        )
+    pub fn default_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+    ) -> Result<InviteLink, ApiError> {
+        let mut path = format!("api/spaces/{space}/invite-links/default");
+        if let Some(channel) = channel {
+            path.push_str("?channelId=");
+            path.extend(url::form_urlencoded::byte_serialize(channel.as_bytes()));
+        }
+        self.request(Method::POST, &path, Some(token), None, None)
     }
 
     pub fn regenerate_invite_link(
@@ -1623,6 +1627,13 @@ mod tests {
                 link.to_owned(),
             ),
             (
+                "POST /api/spaces/space0000001/invite-links/default?channelId=chan00000002",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
                 "POST /api/spaces/space0000001/invite-links",
                 Some(r#"{"channelId":"chan00000002","maxAge":604800,"maxUses":10}"#),
                 true,
@@ -1725,10 +1736,18 @@ mod tests {
             "AbC123xYz9"
         );
         assert_eq!(
-            api.default_invite_link("account", "space0000001")
+            api.default_invite_link("account", "space0000001", None)
                 .unwrap()
                 .code,
             "AbC123xYz9"
+        );
+        assert_eq!(
+            api.default_invite_link("account", "space0000001", Some("chan00000002"))
+                .unwrap()
+                .channel
+                .unwrap()
+                .id,
+            "chan00000002"
         );
         let created = api
             .create_invite_link(

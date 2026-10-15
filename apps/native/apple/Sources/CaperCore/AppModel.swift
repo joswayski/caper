@@ -1596,10 +1596,10 @@ public final class AppModel {
         return links
     }
 
-    public func defaultInviteLink() async throws -> InviteLink {
+    public func defaultInviteLink(channelID: String? = nil) async throws -> InviteLink {
         guard let id = detail?.space.id, isOwner else { throw CancellationError() }
         let attempt = generation
-        let link = try await api.defaultInviteLink(spaceID: id)
+        let link = try await api.defaultInviteLink(spaceID: id, channelID: channelID)
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
         return link
     }

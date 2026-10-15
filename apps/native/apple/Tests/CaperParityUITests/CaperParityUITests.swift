@@ -62,6 +62,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
         let copy = app.buttons["default-invite-link-copy"]
         XCTAssertTrue(copy.waitForExistence(timeout: 10))
+        let channelPicker = app.descendants(matching: .any)["invite-link-channel"].firstMatch
+        XCTAssertTrue(channelPicker.exists)
+        XCTAssertTrue(app.staticTexts["Opens in"].exists)
+        XCTAssertFalse(app.staticTexts["Default channel"].exists)
         let options = app.descendants(matching: .any)["default-invite-link-options"].firstMatch
         XCTAssertTrue(options.exists)
         XCTAssertEqual(options.label, "More invite options")

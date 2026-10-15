@@ -367,6 +367,7 @@ pub enum AccountOperation {
     },
     EnsureDefaultInviteLink {
         space: String,
+        channel: Option<String>,
         request: u64,
     },
     RegenerateInviteLink {
@@ -2063,13 +2064,17 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
             result: api.invite_links(token, &space).map_err(text),
             space,
         },
-        AccountOperation::EnsureDefaultInviteLink { space, request } => {
-            AccountResult::DefaultInviteLink {
-                result: api.default_invite_link(token, &space).map_err(text),
-                space,
-                request,
-            }
-        }
+        AccountOperation::EnsureDefaultInviteLink {
+            space,
+            channel,
+            request,
+        } => AccountResult::DefaultInviteLink {
+            result: api
+                .default_invite_link(token, &space, channel.as_deref())
+                .map_err(text),
+            space,
+            request,
+        },
         AccountOperation::RegenerateInviteLink {
             space,
             code,

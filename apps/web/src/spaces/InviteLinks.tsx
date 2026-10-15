@@ -141,10 +141,11 @@ export function InviteLinkManager({
   const publicChannels = channels.filter((channel) => !channel.private);
   const [links, setLinks] = useState<InviteLink[]>();
   const [defaultCode, setDefaultCode] = useState<string>();
+  const [selectedChannel, setSelectedChannel] = useState<string | null>(publicChannels[0]?.id ?? null);
   const [expiryAmount, setExpiryAmount] = useState(DEFAULT_INVITE_EXPIRY.amount);
   const [expiryUnit, setExpiryUnit] = useState<InviteExpiryUnit>(DEFAULT_INVITE_EXPIRY.unit);
   const [usesText, setUsesText] = useState(DEFAULT_INVITE_MAX_USES);
-  const [landing, setLanding] = useState<string | null>(null);
+  const [landing, setLanding] = useState<string | null>(publicChannels[0]?.id ?? null);
   const [pending, setPending] = useState(true);
   const [copied, setCopied] = useState<string>();
   const [error, setError] = useState<string>();
@@ -163,6 +164,7 @@ export function InviteLinkManager({
           const link = await ensureDefaultInviteLink(spaceId);
           if (!current) return;
           setDefaultCode(link.code);
+          setSelectedChannel(link.channel?.id ?? null);
           setLinks([link]);
         }
         const result = await listInviteLinks(spaceId);
@@ -183,13 +185,18 @@ export function InviteLinkManager({
     return () => clearTimeout(timeout);
   }, [copied]);
   const defaultLink = links?.find((link) => link.code === defaultCode);
-  const prepare = async () => {
+  const chosenChannel =
+    publicChannels.find((channel) => channel.id === selectedChannel)?.id ?? publicChannels[0]?.id ?? null;
+  const customChannel = publicChannels.find((channel) => channel.id === landing)?.id ?? publicChannels[0]?.id ?? null;
+  const prepare = async (channelId: string | null = chosenChannel) => {
     if (pending) return;
     setPending(true);
     setError(undefined);
     try {
-      const link = await ensureDefaultInviteLink(spaceId);
+      const link = await ensureDefaultInviteLink(spaceId, channelId);
       setDefaultCode(link.code);
+      setSelectedChannel(link.channel?.id ?? null);
+      setCopied(undefined);
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== link.code)]);
     } catch (reason) {
       setError(message(reason));
@@ -204,6 +211,7 @@ export function InviteLinkManager({
     try {
       const link = await regenerateInviteLink(spaceId, code);
       setDefaultCode(link.code);
+      setSelectedChannel(link.channel?.id ?? null);
       setCopied(undefined);
       setNow(Date.now());
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== code)]);
@@ -246,8 +254,26 @@ export function InviteLinkManager({
           </div>
           <p className="channel-name-guidance">
             Up to {DEFAULT_INVITE_MAX_USES} people can join within {DEFAULT_INVITE_EXPIRY.amount} days of creation.
-            Opens in the default channel.
           </p>
+          <label className="invite-link-destination" htmlFor={`${ids}-destination`}>
+            Opens in
+            <select
+              id={`${ids}-destination`}
+              value={chosenChannel ?? ""}
+              disabled={pending || publicChannels.length === 0}
+              onChange={(event) => void prepare(event.target.value || null)}
+            >
+              {publicChannels.length === 0 && <option value="">No public channels</option>}
+              {publicChannels.map((channel) => (
+                <option key={channel.id} value={channel.id}>
+                  #{channel.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {publicChannels.length === 0 && (
+            <p className="channel-name-guidance">People will join the space without opening a channel.</p>
+          )}
           {defaultLink ? (
             <>
               <div className="invite-link-share">
@@ -286,7 +312,7 @@ export function InviteLinkManager({
           ) : (
             <div className="invite-link-share">
               <p className="channel-name-guidance">
-                {error ? "Couldn’t prepare the invite link." : "No active default link."}
+                {error ? "Couldn’t prepare the invite link." : "No active invite link."}
               </p>
               <button className="primary" type="button" onClick={() => void prepare()}>
                 {error ? "Try again" : "Create another link"}
@@ -345,7 +371,7 @@ export function InviteLinkManager({
             if (invalid) return setError(invalid);
             setPending(true);
             setError(undefined);
-            void createInviteLink(spaceId, { channelId: landing, maxAge: maxAge.value!, maxUses: maxUses.value! })
+            void createInviteLink(spaceId, { channelId: customChannel, maxAge: maxAge.value!, maxUses: maxUses.value! })
               .then((link) => {
                 setLinks((current) => [link, ...(current ?? [])]);
               })
@@ -406,11 +432,11 @@ export function InviteLinkManager({
             Opens in
             <select
               id={`${ids}-channel`}
-              value={landing ?? ""}
-              disabled={pending}
+              value={customChannel ?? ""}
+              disabled={pending || publicChannels.length === 0}
               onChange={(event) => setLanding(event.target.value || null)}
             >
-              <option value="">Default channel</option>
+              {publicChannels.length === 0 && <option value="">No public channels</option>}
               {publicChannels.map((channel) => (
                 <option key={channel.id} value={channel.id}>
                   #{channel.name}

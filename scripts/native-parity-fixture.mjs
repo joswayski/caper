@@ -1353,15 +1353,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const defaults = code === "default" || !!regeneration;
           const maxAge = defaults ? 2_592_000 : (body.maxAge ?? null);
           const maxUses = defaults ? 100 : (body.maxUses ?? null);
-          const channel =
-            defaults || !body.channelId
-              ? null
-              : detail.channels.find((channel) => channel.id === body.channelId && !channel.private);
+          const publicChannels = detail.channels.filter((channel) => !channel.private);
+          const selected = code === "default" ? url.searchParams.get("channelId") : body.channelId;
+          const channel = regeneration
+            ? (publicChannels.find((channel) => channel.id === previous.channel?.id) ?? publicChannels[0] ?? null)
+            : selected
+              ? publicChannels.find((channel) => channel.id === selected)
+              : defaults
+                ? (publicChannels[0] ?? null)
+                : null;
           if (channel === undefined) return reject(response, 400, "invalid landing channel");
           if (defaults && !regeneration) {
             const existing = links.find(
               (link) =>
-                link.channel === null &&
+                (link.channel?.id ?? null) === (channel?.id ?? null) &&
                 link.maxUses === 100 &&
                 Date.parse(link.expiresAt) - Date.parse(link.createdAt) === 2_592_000_000,
             );

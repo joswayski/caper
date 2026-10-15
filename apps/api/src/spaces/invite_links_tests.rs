@@ -1,9 +1,10 @@
 use super::invite_links::{
-    accept, create_link, default_link, list_links, preview, regenerate_link, revoke_link,
+    PrepareInput, accept, create_link, default_link, list_links, preview, regenerate_link,
+    revoke_link,
 };
 use super::*;
 use crate::{Cloudflare, Config, accounts::User};
-use axum::http::HeaderMap;
+use axum::{extract::Query, http::HeaderMap};
 use sha2::{Digest, Sha256};
 use sqlx::{
     Connection, Executor,
@@ -463,9 +464,14 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         let who = who.clone();
         let space = space.clone();
         async move {
-            default_link(State(state), Extension(who), Path(space))
-                .await
-                .map(|Json(link)| serde_json::to_value(link).unwrap())
+            default_link(
+                State(state),
+                Extension(who),
+                Path(space),
+                Query(PrepareInput::default()),
+            )
+            .await
+            .map(|Json(link)| serde_json::to_value(link).unwrap())
         }
     };
     assert_eq!(
@@ -485,7 +491,7 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         assert_eq!(result.as_ref().unwrap(), first);
     }
     assert_eq!(first["maxUses"], 100);
-    assert_eq!(first["channel"], Value::Null);
+    assert_eq!(first["channel"]["id"], general.as_str());
     let created =
         chrono::DateTime::parse_from_rfc3339(first["createdAt"].as_str().unwrap()).unwrap();
     let expires =
@@ -558,9 +564,12 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     };
     // Even if another matching link exists, regeneration must mint a new code
     // and the next open must select it, not the older compatible link.
-    let (_, displayed) = create(owner, json!({"maxAge":2_592_000,"maxUses":100}))
-        .await
-        .unwrap();
+    let (_, displayed) = create(
+        owner,
+        json!({"channelId":general,"maxAge":2_592_000,"maxUses":100}),
+    )
+    .await
+    .unwrap();
     let code = displayed["code"].as_str().unwrap();
     assert_eq!(prepare(owner).await.unwrap()["code"], code);
     sqlx::query("UPDATE public.space_invite_links SET uses=18, created_at=created_at-interval '28 days', expires_at=expires_at-interval '28 days' WHERE code=$1")
@@ -582,7 +591,7 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     assert_ne!(fresh["code"], code);
     assert_eq!(fresh["uses"], 0);
     assert_eq!(fresh["maxUses"], 100);
-    assert_eq!(fresh["channel"], Value::Null);
+    assert_eq!(fresh["channel"]["id"], general.as_str());
     let created =
         chrono::DateTime::parse_from_rfc3339(fresh["createdAt"].as_str().unwrap()).unwrap();
     let expires =
@@ -629,6 +638,96 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     );
     assert!(view(code).await.is_ok());
     assert_eq!(prepare(owner).await.unwrap(), fresh);
+
+    // Isolate channel-selection cases from the creation budget tested above.
+    sqlx::query("UPDATE public.space_invite_limits SET attempts=0 WHERE user_id=$1")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let prepare_for = |who: &Principal, channel: &str| {
+        let state = state.clone();
+        let who = who.clone();
+        let space = space.clone();
+        let channel_id = Some(channel.to_owned());
+        async move {
+            default_link(
+                State(state),
+                Extension(who),
+                Path(space),
+                Query(PrepareInput { channel_id }),
+            )
+            .await
+            .map(|Json(link)| serde_json::to_value(link).unwrap())
+        }
+    };
+    sqlx::query("UPDATE public.channels SET name='welcome' WHERE external_id=$1")
+        .bind(general)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE public.channels SET name='general',private=false WHERE external_id=$1")
+        .bind(feedback)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        prepare(owner).await.unwrap()["channel"]["id"],
+        general.as_str(),
+        "Oldest wins even when a newer channel is named general"
+    );
+    assert_eq!(
+        prepare_for(member, feedback).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        prepare_for(owner, staff).await.unwrap_err().status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        prepare_for(owner, "missing00001").await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    let selected = prepare_for(owner, feedback).await.unwrap();
+    assert_eq!(selected["channel"]["id"], feedback.as_str());
+    assert_eq!(prepare_for(owner, feedback).await.unwrap(), selected);
+    assert_eq!(prepare(owner).await.unwrap()["code"], fresh["code"]);
+    assert!(view(fresh["code"].as_str().unwrap()).await.is_ok());
+    let (_, replaced) = regenerate(owner, selected["code"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(replaced["channel"]["id"], feedback.as_str());
+    assert_eq!(
+        join(member, replaced["code"].as_str().unwrap())
+            .await
+            .unwrap()["channelId"],
+        feedback.as_str()
+    );
+    // Deleted destinations fall back to the oldest public channel on regeneration.
+    sqlx::query("UPDATE public.channels SET deleted_at=now() WHERE external_id=$1")
+        .bind(feedback)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, fallback) = regenerate(owner, replaced["code"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(fallback["channel"]["id"], general.as_str());
+    // Space-only invitations remain usable when no public channels exist.
+    sqlx::query("UPDATE public.channels SET private=true WHERE external_id=$1")
+        .bind(general)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let space_only = prepare(owner).await.unwrap();
+    assert_eq!(space_only["channel"], Value::Null);
+    assert_eq!(prepare(owner).await.unwrap(), space_only);
+    assert_eq!(
+        join(member, space_only["code"].as_str().unwrap())
+            .await
+            .unwrap()["channelId"],
+        Value::Null
+    );
 
     pool.close().await;
     admin

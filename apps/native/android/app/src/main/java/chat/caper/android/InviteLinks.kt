@@ -45,7 +45,7 @@ import chat.caper.android.ui.*
 import java.time.Instant
 import kotlinx.coroutines.delay
 
-/** Opening prepares a default once; revocation never silently replaces it in this dialog. */
+/** Opening prepares a link once; revocation never silently replaces it in this dialog. */
 @Composable internal fun DefaultInviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
     val context = LocalContext.current
     var code by remember(detail.space.id) { mutableStateOf<String?>(null) }
@@ -55,35 +55,45 @@ import kotlinx.coroutines.delay
     var settings by remember(detail.space.id) { mutableStateOf(false) }
     var now by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = Instant.now() } }
-    fun prepare() {
+    fun prepare(channelId: String? = null) {
         preparing = true; error = null; copied = false
-        viewModel.ensureDefaultInviteLink({ code = it.code; preparing = false }) { error = it; preparing = false }
+        viewModel.ensureDefaultInviteLink(channelId, { code = it.code; preparing = false }) { error = it; preparing = false }
     }
-    LaunchedEffect(detail.space.id) { prepare() }
+    var started by remember(detail.space.id) { mutableStateOf(false) }
+    LaunchedEffect(detail.space.id, state.busy) {
+        if (!started && !state.busy) { started = true; prepare() }
+    }
     LaunchedEffect(copied) { if (copied) { delay(2_000); copied = false } }
     val link = state.inviteLinks.firstOrNull { it.code == code }
+    val publicChannels = detail.channels.filter { !it.private && !it.direct }
+    val choices = publicChannels.map { (it.id as String?) to "#${it.name}" }
+        .ifEmpty { listOf(null to "No public channels") }
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    Text("New links allow 100 joins for 30 days. Opens in the default channel.", color = TextMuted, fontSize = 11.sp)
+    Text("New links allow 100 joins for 30 days. Choosing a channel leaves previously shared links unchanged.", color = TextMuted, fontSize = 11.sp)
+    InviteChoice("Opens in", choices, link?.channel?.id ?: publicChannels.firstOrNull()?.id,
+        !state.busy && !preparing && publicChannels.isNotEmpty()) { selected ->
+        if (selected != link?.channel?.id) prepare(selected)
+    }
     if (preparing) Text("Preparing link…", color = TextMuted, fontSize = 12.sp)
-    else if (link != null) {
+    if (link != null) {
         Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Text(inviteLinkMeta(link, now), color = TextMuted, fontSize = 11.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button({
                 context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(link.code)))
                 copied = true
-            }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy") }
-            InviteLinkActions(!state.busy, {
+            }, enabled = !state.busy && !preparing, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (copied) "Copied" else "Copy") }
+            InviteLinkActions(!state.busy && !preparing, {
                 error = null
                 viewModel.regenerateInviteLink(link, { code = it.code; copied = false }) { error = it }
             }, { settings = !settings }, { error = null; viewModel.revokeInviteLink(link) { error = it } })
         }
-    } else {
-        Text("No active default link.", color = TextMuted, fontSize = 12.sp)
+    } else if (!preparing) {
+        Text("No active invite link.", color = TextMuted, fontSize = 12.sp)
         Button({ prepare() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Create another link") }
     }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-    if (settings) InviteLinkSection(state, detail, viewModel)
+    if (settings) InviteLinkSection(if (preparing) state.copy(busy = true) else state, detail, viewModel)
 }
 
 /** The link's actions, immediately beside Copy; no space administration actions. */
@@ -127,7 +137,7 @@ import kotlinx.coroutines.delay
     var expiryError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var maxUsesError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var channelId by remember(detail.space.id) {
-        mutableStateOf<String?>(null)
+        mutableStateOf(publicChannels.firstOrNull()?.id)
     }
     var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var loaded by remember(detail.space.id) { mutableStateOf(false) }
@@ -138,8 +148,8 @@ import kotlinx.coroutines.delay
     LaunchedEffect(detail.space.id) { viewModel.loadInviteLinks({ loaded = true }) { error = it; loaded = true } }
     LaunchedEffect(state.busy) { if (!state.busy) { creating = false; revoking = null } }
     LaunchedEffect(copied) { if (copied != null) { delay(2_000); copied = null } }
-    // A channel deleted or made private meanwhile falls back to the default.
-    val landing = publicChannels.firstOrNull { it.id == channelId }
+    // A channel deleted or made private meanwhile falls back to the oldest public channel.
+    val landing = publicChannels.firstOrNull { it.id == channelId } ?: publicChannels.firstOrNull()
     fun copy(code: String) {
         clipboard?.setPrimaryClip(ClipData.newPlainText("Invite link", viewModel.inviteUrl(code)))
         copied = code
@@ -157,6 +167,7 @@ import kotlinx.coroutines.delay
 
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text("Anyone with the link can join this space.", color = TextMuted, fontSize = 11.sp)
+    Text("“Opens in” changes this link only.", color = TextMuted, fontSize = 11.sp)
     InviteRow("Expire after") {
         // "Never" has no number; the typed one comes back with another unit.
         if (expiryUnit != InviteExpiryUnit.Never) {
@@ -177,8 +188,8 @@ import kotlinx.coroutines.delay
     }
     InviteFieldError(maxUsesError)
     InviteChoice(
-        "Opens in", listOf<Pair<String?, String>>(null to "Default channel") + publicChannels.map { it.id to "#${it.name}" },
-        landing?.id, !state.busy,
+        "Opens in", publicChannels.map { (it.id as String?) to "#${it.name}" }.ifEmpty { listOf(null to "No public channels") },
+        landing?.id, !state.busy && publicChannels.isNotEmpty(),
     ) { channelId = it; error = null }
     Button({ create() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Create link", "Creating…", state.busy && creating) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
@@ -191,7 +202,7 @@ import kotlinx.coroutines.delay
                     Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(inviteLinkMeta(link, now), color = TextMuted, fontSize = 10.sp)
                 }
-                TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
+                TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
                     PendingLabel("Copy", "Copied", copied == link.code)
                 }
                 TextButton({ error = null; revoking = link.code; viewModel.revokeInviteLink(link) { error = it } }, enabled = !state.busy,
@@ -245,7 +256,7 @@ import kotlinx.coroutines.delay
             Spacer(Modifier.width(6.dp))
             Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(14.dp), tint = TextMuted)
         }
-        DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        DropdownMenu(open && enabled, { open = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             options.forEach { (option, text) ->
                 DropdownMenuItem(
                     text = { Text(text, fontSize = 13.sp) }, onClick = { open = false; choose(option) },

@@ -3,7 +3,7 @@
 //! code can preview the space and join it. Codes are random and unguessable,
 //! so the public preview reveals only what the owner chose to share.
 use super::*;
-use axum::http::HeaderMap;
+use axum::{extract::Query, http::HeaderMap};
 use chrono::{DateTime, Utc};
 
 const CODE_LENGTH: usize = 10;
@@ -16,6 +16,12 @@ const MAX_USES: std::ops::RangeInclusive<i32> = 1..=10_000;
 const ACTIVE_LINKS_PER_SPACE: i64 = 100;
 const LIVE: &str = "l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > now())
      AND (l.max_uses IS NULL OR l.uses < l.max_uses)";
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct PrepareInput {
+    pub(super) channel_id: Option<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -156,19 +162,25 @@ pub(super) async fn default_link(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(space): Path<String>,
+    Query(input): Query<PrepareInput>,
 ) -> Result<Json<InviteLink>, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let channel_id = match input.channel_id.as_deref() {
+        Some(channel) => Some(selected_channel(&mut tx, space_id, channel).await?),
+        None => landing_channel(&mut tx, space_id, None).await?,
+    };
     let existing = sqlx::query_as::<_, LinkRow>(&format!(
         "{LINK_SELECT} WHERE l.space_id=$1 AND {LIVE}
          AND l.id=(SELECT newest.id FROM public.space_invite_links newest
-             WHERE newest.space_id=$1 AND newest.channel_id IS NULL AND newest.max_uses=$2
+             WHERE newest.space_id=$1 AND newest.channel_id IS NOT DISTINCT FROM $4 AND newest.max_uses=$2
              AND newest.expires_at=newest.created_at+make_interval(secs=>$3::double precision)
              ORDER BY newest.id DESC LIMIT 1)"
     ))
     .bind(space_id)
     .bind(DEFAULT_MAX_USES)
     .bind(DEFAULT_MAX_AGE as f64)
+    .bind(channel_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?;
@@ -182,7 +194,7 @@ pub(super) async fn default_link(
                 &mut tx,
                 space_id,
                 principal.user.id,
-                None,
+                channel_id,
                 &LinkInput {
                     channel_id: None,
                     max_age: Some(DEFAULT_MAX_AGE),
@@ -206,24 +218,23 @@ pub(super) async fn regenerate_link(
 ) -> Result<(StatusCode, Json<InviteLink>), ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let changed = sqlx::query(
+    let previous: Option<(Option<i64>,)> = sqlx::query_as(
         "UPDATE public.space_invite_links SET revoked_at=now()
-         WHERE space_id=$1 AND code=$2 AND revoked_at IS NULL",
+         WHERE space_id=$1 AND code=$2 AND revoked_at IS NULL RETURNING channel_id",
     )
     .bind(space_id)
     .bind(code)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?;
-    if changed.rows_affected() != 1 {
-        return Err(not_found());
-    }
+    let (previous_channel,) = previous.ok_or_else(not_found)?;
+    let channel_id = landing_channel(&mut tx, space_id, previous_channel).await?;
     invite_rate_limit(&mut *tx, principal.user.id).await?;
     let created = insert_link(
         &mut tx,
         space_id,
         principal.user.id,
-        None,
+        channel_id,
         &LinkInput {
             channel_id: None,
             max_age: Some(DEFAULT_MAX_AGE),
@@ -254,18 +265,34 @@ pub(super) async fn create_link(
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let channel_id = match &input.channel_id {
         None => None,
-        Some(channel) => {
-            let (id, private): (i64, bool) = sqlx::query_as("SELECT id,private FROM public.channels WHERE external_id=$1 AND space_id=$2 AND deleted_at IS NULL")
-                .bind(channel).bind(space_id).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
-            if private {
-                return Err(conflict("invite links cannot target private channels"));
-            }
-            Some(id)
-        }
+        Some(channel) => Some(selected_channel(&mut tx, space_id, channel).await?),
     };
     let created = insert_link(&mut tx, space_id, principal.user.id, channel_id, &input).await?;
     tx.commit().await.map_err(database_error)?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn selected_channel(
+    tx: &mut Transaction<'_, Postgres>,
+    space_id: i64,
+    channel: &str,
+) -> Result<i64, ApiError> {
+    let (id, private): (i64, bool) = sqlx::query_as("SELECT id,private FROM public.channels WHERE external_id=$1 AND space_id=$2 AND deleted_at IS NULL")
+        .bind(channel).bind(space_id).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(not_found)?;
+    if private {
+        return Err(conflict("invite links cannot target private channels"));
+    }
+    Ok(id)
+}
+
+/// Keep a valid selected destination, otherwise use the oldest public channel.
+async fn landing_channel(
+    tx: &mut Transaction<'_, Postgres>,
+    space_id: i64,
+    preferred: Option<i64>,
+) -> Result<Option<i64>, ApiError> {
+    sqlx::query_scalar("SELECT id FROM public.channels WHERE space_id=$1 AND NOT private AND deleted_at IS NULL ORDER BY (id IS NOT DISTINCT FROM $2) DESC,id LIMIT 1")
+        .bind(space_id).bind(preferred).fetch_optional(&mut **tx).await.map_err(database_error)
 }
 
 async fn insert_link(
@@ -460,15 +487,7 @@ pub(crate) async fn accept(
     let (link_id, landing, live) = live.ok_or_else(invalid_link)?;
     let member: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)")
         .bind(space_id).bind(user).fetch_one(&mut *tx).await.map_err(database_error)?;
-    let starter = "SELECT id FROM public.channels WHERE space_id=$1 AND NOT private AND deleted_at IS NULL ORDER BY (name='general') DESC,id LIMIT 1";
-    let channel_id = match landing {
-        Some(id) => Some(id),
-        None => sqlx::query_scalar(starter)
-            .bind(space_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(database_error)?,
-    };
+    let channel_id = landing_channel(&mut tx, space_id, landing).await?;
     if !member {
         if !live {
             return Err(invalid_link());

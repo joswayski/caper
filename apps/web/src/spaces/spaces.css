@@ -1890,6 +1890,17 @@
 .invite-links > .channel-name-guidance {
   margin: 6px 0 0;
 }
+.invite-link-destination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  font-size: 0.8rem;
+}
+.invite-link-destination select {
+  min-width: 0;
+  flex: 1;
+}
 .invite-link-share {
   display: flex;
   gap: 8px;
@@ -2048,6 +2059,7 @@
   width: 4.5em;
   flex: none;
 }
+.invite-link-destination select,
 .invite-link-options :is(select, input) {
   width: 100%;
   height: 42px;
@@ -2060,6 +2072,7 @@
   font-size: 0.8rem;
   font-weight: 500;
 }
+.invite-link-destination select:focus,
 .invite-link-options :is(select, input):focus {
   border-color: var(--terracotta);
   outline: 2px solid rgb(182 77 50 / 0.22);

@@ -37,6 +37,11 @@ const evaluate = (code) => browser("eval", `(() => { ${code} })()`).result;
 const wait = (code) => browser("wait", "--fn", code);
 const text = () => evaluate('return document.querySelector("dialog[open]").textContent;');
 const url = () => evaluate('return document.querySelector(".invite-link-share input").value;');
+const destination = () => evaluate('return document.querySelector(".invite-link-destination select").value;');
+const chooseChannel = (id) => {
+  browser("select", ".invite-link-destination select", id);
+  wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
+};
 const click = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
 const open = () => {
   click("Invite people");
@@ -70,6 +75,8 @@ try {
   assert.match(initial, /\/invite\/[a-zA-Z0-9]{10}$/);
   assert.match(text(), /100 people.*30 days/);
   assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
+  assert.equal(destination(), "chan00000001");
+  assert.doesNotMatch(text(), /\bdefault\b/i);
   assert.doesNotMatch(text(), /Space name|Save name|Delete space|Remove/);
   assert.equal(evaluate('return document.querySelector(".invite-link-settings").open;'), false);
   click("Copy");
@@ -123,9 +130,35 @@ try {
   open();
   assert.equal(url(), regenerated, "Reopening selects the regenerated code");
   capture("web-invite-regenerated");
+  chooseChannel("chan00000002");
+  const designLink = url();
+  assert.notEqual(designLink, regenerated);
+  assert.equal(destination(), "chan00000002");
+  assert.match(text(), /#design · 100 of 100 joins remaining/);
+  capture("web-invite-channel-selected");
+  await control({
+    failure: { path: "/api/spaces/space0000001/invite-links/default", method: "POST", status: 503, persistent: true },
+  });
+  chooseChannel("chan00000001");
+  assert.equal(url(), designLink, "Failed selection preserves the previous link");
+  assert.equal(destination(), "chan00000002", "Failed selection preserves the previous channel");
+  assert.match(text(), /requested failure/);
+  capture("web-invite-channel-error");
+  await control({ clearFailures: true });
+  options();
+  click("Regenerate link");
+  wait(`document.querySelector('.invite-link-share input')?.value !== ${JSON.stringify(designLink)}`);
+  assert.equal(destination(), "chan00000002", "Regeneration retains the chosen channel");
+  chooseChannel("chan00000001");
+  assert.equal(url(), regenerated, "Switching back reuses the unchanged old link");
   settings();
   assert.equal(evaluate('return document.querySelector(".invite-link-expiry input").value;'), "30");
   assert.equal(evaluate('return document.querySelector(".invite-link-options label input").value;'), "100");
+  assert.equal(
+    evaluate('return document.querySelector(".invite-link-options label select option:checked").textContent;'),
+    "#general",
+  );
+  assert.doesNotMatch(text(), /\bdefault\b/i);
   capture("web-invite-settings");
   browser("fill", 'input[aria-label="Expire after amount"]', "4");
   browser("select", 'select[aria-label="Expire after unit"]', "hours");
@@ -137,7 +170,7 @@ try {
   assert.equal(url(), regenerated, "Custom creation must not replace the default");
   click("Deactivate link");
   wait('!document.querySelector(".invite-link-share input")');
-  assert.match(text(), /No active default link/);
+  assert.match(text(), /No active invite link/);
   capture("web-invite-deactivated");
   click("Create another link");
   wait('!!document.querySelector(".invite-link-share input")');
@@ -182,8 +215,55 @@ try {
   click("Try again");
   wait('!!document.querySelector(".invite-link-share input")');
   assert.equal(url(), replacement);
+
+  // Rename and privacy changes must update the displayed destination, not a
+  // hard-coded general or a channel sorted by its random external ID.
+  const changeChannel = async (id, name, privateChannel) => {
+    const response = await fetch(`http://127.0.0.1:3001/api/spaces/space0000001/channels/${id}`, {
+      method: "PATCH",
+      headers: { cookie: "caper_fixture=owner", "content-type": "application/json", connection: "close" },
+      body: JSON.stringify({ name, private: privateChannel }),
+    });
+    assert.ok(response.ok);
+  };
+  const reopenSpace = () => {
+    browser("open", new URL("/spaces", origin).href);
+    wait('!!document.querySelector("#chat-message:not(:disabled)")');
+    evaluate(
+      "return document.fonts.ready.then(() => Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));",
+    );
+    browser("set", "viewport", "1280", "900", "2");
+    open();
+  };
+  close();
+  await changeChannel("chan00000001", "welcome", false);
+  await changeChannel("chan00000002", "general", false);
+  reopenSpace();
+  assert.equal(destination(), "chan00000001", "Oldest public channel wins even when a newer one is named general");
+  assert.match(text(), /#welcome · 100 of 100 joins remaining/);
+  close();
+  await changeChannel("chan00000001", "welcome", true);
+  reopenSpace();
+  assert.equal(destination(), "chan00000002", "Private channels are excluded");
+  capture("web-invite-default-fallback");
+  settings();
+  assert.equal(
+    evaluate('return document.querySelector(".invite-link-options label select option:checked").textContent;'),
+    "#general",
+  );
+  close();
+  await changeChannel("chan00000002", "general", true);
+  reopenSpace();
+  assert.match(text(), /People will join the space without opening a channel/);
+  assert.equal(evaluate('return document.querySelector(".invite-link-destination select").disabled;'), true);
+  capture("web-invite-no-public-channel");
+  settings();
+  assert.equal(
+    evaluate('return document.querySelector(".invite-link-options label select option:checked").textContent;'),
+    "No public channels",
+  );
   console.log(
-    "PASS: 30-day/100-join defaults, invite-only UI, copy, reuse, keyboard options, regenerate/failure recovery, custom link, deactivation/replacement, narrow layout/scroll, username invite and retry.",
+    "PASS: channel picker, oldest public selection, preserved shared links, selection failure recovery, regeneration retaining channel, no-public-channel state, 30-day/100-join defaults, copy, keyboard options, custom links, deactivation, narrow layout/scroll and username invitations.",
   );
 } finally {
   browser("close");

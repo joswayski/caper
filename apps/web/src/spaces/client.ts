@@ -602,8 +602,9 @@ export function listInviteLinks(spaceId: string) {
   return request<{ links: InviteLink[] }>(`/api/spaces/${pathId(spaceId)}/invite-links`);
 }
 
-export function ensureDefaultInviteLink(spaceId: string) {
-  return request<InviteLink>(`/api/spaces/${pathId(spaceId)}/invite-links/default`, { method: "POST" });
+export function ensureDefaultInviteLink(spaceId: string, channelId?: string | null) {
+  const query = channelId ? `?${new URLSearchParams({ channelId: pathId(channelId) })}` : "";
+  return request<InviteLink>(`/api/spaces/${pathId(spaceId)}/invite-links/default${query}`, { method: "POST" });
 }
 
 export async function regenerateInviteLink(spaceId: string, code: string) {

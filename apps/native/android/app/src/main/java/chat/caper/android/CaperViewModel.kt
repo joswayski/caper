@@ -2797,11 +2797,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) { if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error)) }
         }
     }
-    /** Reuses or prepares the default link without touching the clipboard. */
-    fun ensureDefaultInviteLink(done: (InviteLink) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+    /** Reuses or prepares this channel's link without changing previously shared links. */
+    fun ensureDefaultInviteLink(channelId: String? = null, done: (InviteLink) -> Unit, failed: (String) -> Unit) = if (mutable.value.busy) null else launchAction { request ->
         val detail = mutable.value.selectedSpace ?: return@launchAction
         val context = AdminMutationContext(request, detail.space.id)
-        val link = try { api.ensureDefaultInviteLink(requireAccountToken(), detail.space.id) }
+        val link = try { api.ensureDefaultInviteLink(requireAccountToken(), detail.space.id, channelId) }
         catch (error: CancellationException) { throw error }
         catch (error: Throwable) {
             if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error))

@@ -963,21 +963,33 @@ random alphanumeric characters (about 59 bits), so the unauthenticated preview
 cannot be enumerated. **Invite people** opens an invitation-only dialog on web,
 Android, Apple and Rust desktop; renaming, icons, member removal and deletion
 remain in **Manage space**. Opening prepares a ready-to-copy link for **100 total
-joins within 30 days of creation**, landing in the default channel. Under the space
-lock, the server reuses the newest link with those settings only if it is still live,
+joins within 30 days of creation**, initially selecting the oldest public channel.
+Under the space lock, the server reuses the newest link with those settings and
+that landing channel only if it is still live,
 so reopening or opening on multiple devices does not reset its use count or expiry. Expired,
 exhausted or deactivated links are not reused. Deactivating stops new joins, not
-existing memberships; it leaves the dialog without a default link until the owner
+existing memberships; it leaves the dialog without a prepared link until the owner
 creates another or reopens Invite people. No QR code is generated.
 
+The main dialog has an **Opens in** picker with actual public-channel names, not
+“Default channel”. Choosing another channel prepares or reuses its own link;
+previously shared links keep their destinations. Reopening starts with the oldest
+public channel again. There is no special preference for a channel named `general`
+and no space-wide destination setting. With no public channels, the picker says
+**No public channels** and space-only invitations remain usable. Failed selection
+preserves the previous displayed URL and selected channel. The API returns the
+actual destination; clients list channels in API creation order.
+
 **More invite options** sits beside the primary Copy action. **Regenerate link**
-revokes the displayed code and creates a new default code with 30 full days and
-100 available joins in one transaction. Failures leave the previous link intact;
+revokes the displayed code and creates a new code for the same public channel,
+with 30 full days and 100 available joins in one transaction. If the old destination
+became private or was deleted, regeneration and joining fall back to the oldest
+public channel. Failures leave the previous link intact;
 simultaneous regenerations of the same code mint only one replacement (the stale
 request returns 404). Other links and existing memberships are untouched. The
-newest matching link is selected on the next open, so it cannot revert to an older
+newest matching link for each selected channel is used, so it cannot revert to an older
 compatible link after regeneration, exhaustion or deactivation. Separate links
-created with exactly the default settings are also eligible for selection. The UI shows remaining joins
+created with exactly these settings are also eligible for selection. The UI shows remaining joins
 and remaining time, rather than presenting the initial lifetime as time left.
 
 **Link settings** in the options menu retains custom creation and management
@@ -995,8 +1007,8 @@ recorded in `space_invite_link_uses`.
 | Operation | Route | Result |
 | --- | --- | --- |
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
-| Owner prepares/reuses default link | `POST /api/spaces/{space}/invite-links/default` (no body) | 200 link |
-| Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 new default link |
+| Owner prepares/reuses a link | `POST /api/spaces/{space}/invite-links/default?channelId=...` (no body; omit query for oldest public channel) | 200 link |
+| Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 replacement link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
@@ -2340,8 +2352,9 @@ belong to the space. These are fixed policies, not new secrets/configuration.
 
 Migration `202610010001_channel_joining.sql` joins existing members to all their
 currently accessible non-demo channels, preserving conversations during rollout.
-New space acceptance joins only one public starter, preferring `general`, if
-available. Creating a channel joins its creator, not every space member. Space
+Accepting a username invitation joins one public starter, preferring `general`,
+if available. Invite links use their selected public channel, falling back to the
+oldest public channel. Creating a channel joins its creator, not every space member. Space
 removal clears participation and revokes channel invitations. No Valkey/SFU
 schema change or data reset is needed.
 

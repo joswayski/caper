@@ -336,8 +336,9 @@ public actor APIClient {
                           body: InviteLinkInput(channelId: try channelID.map { try pathID($0) }, maxAge: maxAge, maxUses: maxUses))
     }
 
-    public func defaultInviteLink(spaceID: String) async throws -> InviteLink {
-        try await request("api/spaces/\(try pathID(spaceID))/invite-links/default", method: "POST")
+    public func defaultInviteLink(spaceID: String, channelID: String? = nil) async throws -> InviteLink {
+        let query = try channelID.map { "?channelId=\(try pathID($0))" } ?? ""
+        return try await request("api/spaces/\(try pathID(spaceID))/invite-links/default\(query)", method: "POST")
     }
 
     public func regenerateInviteLink(spaceID: String, code: String) async throws -> InviteLink {
