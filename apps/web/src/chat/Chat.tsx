@@ -1286,6 +1286,51 @@ export default function Chat({
         </button>
       );
     });
+  const pinMarker = (author: ChatAuthor) => (
+    <small className="chat-pin-marker">
+      <Pin size={12} aria-hidden="true" />
+      <button
+        type="button"
+        className="chat-pin-author"
+        aria-label={`Open profile for ${author.name}`}
+        aria-haspopup="dialog"
+        onClick={(event) => openAuthor(author, event.currentTarget)}
+        onPointerEnter={(event) => {
+          if (event.pointerType === "mouse" && !isTouchLayout()) openAuthor(author, event.currentTarget, false);
+        }}
+        onPointerDown={(event) => {
+          cancelPress();
+          if (event.pointerType === "mouse" || !event.isPrimary) return;
+          const anchor = event.currentTarget;
+          press.current = {
+            x: event.clientX,
+            y: event.clientY,
+            pointerId: event.pointerId,
+            timer: setTimeout(() => {
+              suppressClick.current = true;
+              openAuthor(author, anchor);
+            }, 500),
+          };
+        }}
+        onPointerMove={(event) => {
+          const current = press.current;
+          if (
+            current &&
+            (event.pointerId !== current.pointerId ||
+              Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
+          )
+            cancelPress();
+        }}
+        onPointerUp={cancelPress}
+        onPointerCancel={cancelPress}
+        onContextMenu={(event) => {
+          if (isTouchLayout()) event.preventDefault();
+        }}
+      >
+        Pinned by {author.id === viewerId ? "you" : author.name}
+      </button>
+    </small>
+  );
   const renderMessage = (
     index: number,
     message: (typeof messages)[number],
@@ -1418,6 +1463,7 @@ export default function Chat({
             }}
             tabIndex={pending ? undefined : -1}
           >
+            {!pending && message.pin && pinMarker(message.pin.author)}
             {message.replyTo && (
               <ReplyContext
                 motionKey={message.clientMessageId}
@@ -1896,52 +1942,7 @@ export default function Chat({
                           onOpen={() => void goToMessage({ ...message.replyTo!, channelId: state.channelId! })}
                         />
                       )}
-                      {message.pin && (
-                        <small className="chat-pin-marker">
-                          <Pin size={12} aria-hidden="true" />
-                          <button
-                            type="button"
-                            className="chat-pin-author"
-                            aria-label={`Open profile for ${message.pin.author.name}`}
-                            aria-haspopup="dialog"
-                            onClick={(event) => openAuthor(message.pin!.author, event.currentTarget)}
-                            onPointerEnter={(event) => {
-                              if (event.pointerType === "mouse")
-                                openAuthor(message.pin!.author, event.currentTarget, false);
-                            }}
-                            onPointerDown={(event) => {
-                              cancelPress();
-                              if (event.pointerType === "mouse" || !event.isPrimary) return;
-                              const anchor = event.currentTarget;
-                              press.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                                pointerId: event.pointerId,
-                                timer: setTimeout(() => {
-                                  suppressClick.current = true;
-                                  openAuthor(message.pin!.author, anchor);
-                                }, 500),
-                              };
-                            }}
-                            onPointerMove={(event) => {
-                              const current = press.current;
-                              if (
-                                current &&
-                                (event.pointerId !== current.pointerId ||
-                                  Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10)
-                              )
-                                cancelPress();
-                            }}
-                            onPointerUp={cancelPress}
-                            onPointerCancel={cancelPress}
-                            onContextMenu={(event) => {
-                              if (isTouchLayout()) event.preventDefault();
-                            }}
-                          >
-                            Pinned by {message.pin.author.name}
-                          </button>
-                        </small>
-                      )}
+                      {message.pin && pinMarker(message.pin.author)}
                       {authorAvatar(message.author)}
                       <header>
                         {authorName(message.author)}

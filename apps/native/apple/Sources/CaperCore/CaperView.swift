@@ -4173,11 +4173,11 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
-            if inPins, let pin = message.pin {
+            if let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
                         CaperIcon(name: "pin", size: 12)
-                        Text("Pinned by \(pin.author.name)")
+                        Text("Pinned by \(pin.author.id == currentUserID ? "you" : pin.author.name)")
                     }.contentShape(Rectangle())
                 }
                     .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)

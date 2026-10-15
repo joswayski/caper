@@ -2743,6 +2743,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     openReference: ((MessageReply) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
+    inPins: Boolean = false,
     /** Only pinned cards opt in; nested links and controls consume their own taps. */
     openMessage: (() -> Unit)? = null,
     openActions: (ChatMessage) -> Unit,
@@ -2761,6 +2762,18 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     }).drawBehind {
         if (pressing) drawRect(Text.copy(alpha = 0.08f))
     }) {
+        message.pin?.let { pin ->
+            val pinInteraction = remember(message.id) { MutableInteractionSource() }
+            val hovered by pinInteraction.collectIsHoveredAsState()
+            LaunchedEffect(hovered) { if (hovered) openAuthor?.invoke(pin.author) }
+            Text("Pinned by ${if (pin.author.id == (state.account?.id ?: state.chatAuthorId)) "you" else pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
+                .heightIn(min = 44.dp).wrapContentHeight()
+                .hoverable(pinInteraction)
+                .clip(MaterialTheme.shapes.small).combinedClickable(enabled = openAuthor != null, role = Role.Button, onClick = { openAuthor?.invoke(pin.author) }, onLongClick = { openAuthor?.invoke(pin.author) })
+                .semantics { contentDescription = "Open profile for ${pin.author.name}" },
+                color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        if (inPins) Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
         message.replyTo?.let { reference -> ReplyContext(reference, state, message.clientMessageId, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
@@ -2922,21 +2935,9 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                 }
             }
             Column(Modifier.background(PinGoldWash)) {
-                message.pin?.let { pin ->
-                    val interaction = remember(message.id) { MutableInteractionSource() }
-                    val hovered by interaction.collectIsHoveredAsState()
-                    LaunchedEffect(hovered) { if (hovered) pinnerTarget = pin.author }
-                    Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
-                        .heightIn(min = 44.dp).wrapContentHeight()
-                        .hoverable(interaction)
-                        .clip(MaterialTheme.shapes.small).combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
-                        .semantics { contentDescription = "Open profile for ${pin.author.name}" },
-                        color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-                Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
-                    openMessage = goToMessage,
+                    inPins = true, openMessage = goToMessage,
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), onLoaded = close) },

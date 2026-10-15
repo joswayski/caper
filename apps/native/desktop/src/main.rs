@@ -14708,7 +14708,21 @@ impl CaperApp {
                 let source = self.reply_context(ui, reference, &message.id);
                 (source, !self.is_blocked(&reference.author.id))
             });
-            if in_pins && let Some(pin) = pinned {
+            if let Some(pin) = pinned {
+                let viewer_id = self
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.as_str())
+                    .or_else(|| {
+                        self.session
+                            .as_ref()
+                            .map(|session| session.author.id.as_str())
+                    });
+                let pinner = if viewer_id == Some(pin.author.id.as_str()) {
+                    "you"
+                } else {
+                    &pin.author.name
+                };
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 62,
@@ -14719,7 +14733,7 @@ impl CaperApp {
                     .show(ui, |ui| {
                         let response = ui.add(
                             egui::Button::new(
-                                RichText::new(format!("Pinned by {}", pin.author.name))
+                                RichText::new(format!("Pinned by {pinner}"))
                                     .size(11.0)
                                     .color(MUTED),
                             )
@@ -25076,6 +25090,7 @@ mod tests {
         message.author.name = "Pinned original author".into();
         message.content.text = "Pinned original text".into();
         let mut pinner = message.author.clone();
+        pinner.id = "fixture-pinner".into();
         pinner.name = "Fixture Pinner".into();
         message.pin = Some(crate::model::Pin {
             author: pinner,
@@ -25087,7 +25102,10 @@ mod tests {
         render(&mut app, &context, vec![]);
         context.enable_accesskit();
         let output = render(&mut app, &context, vec![]);
-        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
+        assert!(
+            text_position(&output, "Pinned by Fixture Pinner").y
+                < text_position(&output, "Pinned original author").y
+        );
         assert!(
             text_position(&output, "Pinned original author").y
                 < text_position(&output, "Pinned original text").y
@@ -25166,7 +25184,7 @@ mod tests {
         assert!(opened.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin message")));
         egui::Popup::close_all(&context);
         app.showing_pins = true;
-        app.timeline.reset_pins(vec![message]).unwrap();
+        app.timeline.reset_pins(vec![message.clone()]).unwrap();
         render(&mut app, &context, vec![]);
         let pins = render(&mut app, &context, vec![]);
         for label in ["Pinned by Fixture Pinner", "Go to message"] {
@@ -25175,6 +25193,19 @@ mod tests {
         assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin message")), "unpin belongs only in the actions menu");
         click(&mut app, &context, egui::pos2(20.0, 20.0));
         assert!(!app.showing_pins, "clicking outside closes Pins");
+
+        // Self attribution follows account identity, not the pinner's name or sending capability.
+        message.pin.as_mut().unwrap().author.id = app.account.as_ref().unwrap().id.clone();
+        app.session = None;
+        app.timeline.reset(vec![message.clone()], "7").unwrap();
+        app.timeline.reset_pins(vec![message]).unwrap();
+        for in_pins in [false, true] {
+            app.showing_pins = in_pins;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by you")));
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Pinned by Fixture Pinner")));
+        }
     }
 
     #[test]
@@ -25386,7 +25417,18 @@ mod tests {
             render(&mut app, &context, vec![]);
         }
         let output = render(&mut app, &context, vec![]);
-        let anchor = text_position(&output, "Pinned by Old pinner name") + egui::vec2(30.0, 5.0);
+        // The same attribution is also behind the modal in the timeline.
+        let anchor = output
+            .shapes
+            .iter()
+            .rev()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Pinned by Old pinner name" => {
+                    Some(text.pos + egui::vec2(34.0, 9.0))
+                }
+                _ => None,
+            })
+            .expect("pinner attribution in Pins");
         render(&mut app, &context, vec![egui::Event::PointerMoved(anchor)]);
         let output = render(&mut app, &context, vec![]);
         assert_eq!(card_entry(&app), Some("fixture-maya"));

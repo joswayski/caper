@@ -2425,8 +2425,11 @@ Pins are channel-wide, not personal bookmarks. Any joined channel member can pin
 or unpin another member's message; the two participants can do the same in a DM.
 Private-channel grants and active space membership still apply. Preview readers
 can see pins but cannot change them, including no-op writes. Actions do not ask
-for confirmation. “Pinned by …” attribution appears only in the Pins view,
-not in the main timeline. The header says Pins without a count.
+for confirmation. “Pinned by …” attribution appears above each pinned message in
+the timeline, threads and Pins. It says “Pinned by you” when the pinner's account
+ID matches the viewer; otherwise it names the pinner, independently of who wrote
+the message. The attribution still opens the pinner's profile. The header says
+Pins without a count.
 Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
 24px targets, separated by 2px. Touch clients retain long-press actions and large
 targets; narrow web reserves text space beside its 44px action target.
@@ -2514,6 +2517,14 @@ otherwise Playwright's newest Chromium).
 Stock headless Chromium reports no hover device. The script verifies the fine
 pointer before checking hover and later checks a 390px narrow browser layout.
 That is not touch emulation or physical-device validation.
+
+Attribution validation (2026-10-15): `npm run check`, all 650 JavaScript tests,
+and `scripts/test-pinned-media.mjs` pass. The browser fixture covers self/other
+labels in chat and Pins at 1280px/390px, live pin changes, pinner profiles,
+unpin removal and thread attribution. Rust desktop passes 545 tests (12 device/
+audio tests ignored), formatting, Clippy and a Linux build; its Pins fixture was
+rendered and inspected. Android compilation stops at the missing Android SDK;
+Apple builds/rendering require Swift/Xcode, unavailable in the Linux orb.
 
 ### Deployment order for pins
 
