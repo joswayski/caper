@@ -37,6 +37,13 @@ public enum CaperTheme {
     public static let error = Color(red: 1, green: 155/255, blue: 130/255)
     /// Web's muted/deafened account controls (#ED5265): the icon and its options chevron.
     public static let voiceOff = Color(red: 237/255, green: 82/255, blue: 101/255)
+    /// Shared bottom edge for the account dock and conversation composer.
+    static let workspaceBottomInset: CGFloat = 16
+    #if os(iOS)
+    static let accountBarHeight: CGFloat = 52
+    #else
+    static let accountBarHeight: CGFloat = 42
+    #endif
 
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
@@ -2633,15 +2640,11 @@ private struct AccountBar: View {
                 #endif
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4)
-                #if os(iOS)
-                .frame(height: 52)
-                #else
-                .frame(height: 42)
-                #endif
+                .frame(height: CaperTheme.accountBarHeight)
                 .background(CaperTheme.raised)
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(12)
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, CaperTheme.workspaceBottomInset)
         #if os(macOS)
         .onChange(of: sheet?.id) { old, new in
             guard new == nil, let old, ["audio", "connection", "diagnostics", "notifications", "privacy"].contains(old) else { return }
@@ -3455,7 +3458,7 @@ private struct ChatView: View {
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     #endif
                     HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat).padding(.leading, 4)
+                        AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
                             if chat.draft.isEmpty {
                                 Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
@@ -3463,14 +3466,14 @@ private struct ChatView: View {
                             }
                             messageComposer
                         }
-                        .frame(minHeight: 42, maxHeight: 174)
+                        .frame(minHeight: composerMinHeight, maxHeight: 174)
                         // Measure the text view instead of filling the 174-point maximum.
                         .fixedSize(horizontal: false, vertical: true)
                         .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
                         #if os(iOS)
                         .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                         #endif
-                        ComposerEmojiButton(controller: composerAutocomplete).padding(.trailing, 2)
+                        ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight).padding(.trailing, 2)
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -3483,7 +3486,7 @@ private struct ChatView: View {
                     CaperIcon(name: "send", size: 16)
                         // Size the actual label, not only its styled background: clicks
                         // beside the glyph must submit too, especially on macOS.
-                        .frame(width: 42, height: 42)
+                        .frame(width: 42, height: composerMinHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
@@ -3497,7 +3500,7 @@ private struct ChatView: View {
             }
             }.padding(.horizontal, 18).padding(.top, 12)
             // Keep breathing room above the keyboard/home-indicator safe area.
-            .padding(.bottom, 16)
+            .padding(.bottom, CaperTheme.workspaceBottomInset)
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -3629,6 +3632,8 @@ private struct ChatView: View {
         let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
         return direct ? "Message \(chat.channelName)" : "Message #\(chat.channelName.lowercased())"
     }
+    /// Side-by-side layouts match the account bar; phones retain their compact editor.
+    private var composerMinHeight: CGFloat { narrow ? 42 : CaperTheme.accountBarHeight }
     // Type-check the native editor and its optional callback separately from
     // channelBody's large SwiftUI builder; keep the editor at the same position.
     private var messageComposer: NativeMessageComposer {
