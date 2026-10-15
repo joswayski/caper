@@ -734,22 +734,22 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
             </section>
           </div>
         </div>
+        <Link
+          className="live-activator"
+          data-live-activator
+          data-live-control
+          to="/spaces"
+          preload={preloadSpace ? "intent" : false}
+          aria-label="Join Caper"
+          draggable={false}
+        >
+          <span className="live-invite">
+            <i aria-hidden="true" />
+            <span className="live-invite-fine">Click to join</span>
+            <span className="live-invite-coarse">Tap to join</span>
+          </span>
+        </Link>
       </div>
-      <Link
-        className="live-activator"
-        data-live-activator
-        data-live-control
-        to="/spaces"
-        preload={preloadSpace ? "intent" : false}
-        aria-label="Join Caper"
-        draggable={false}
-      >
-        <span className="live-invite">
-          <i aria-hidden="true" />
-          <span className="live-invite-fine">Click to join</span>
-          <span className="live-invite-coarse">Tap to join</span>
-        </span>
-      </Link>
     </div>
   );
 }

@@ -159,7 +159,10 @@ const drag = (selector) => {
     evaluate(
       'window.dragStartTilt = Number(document.querySelector(".live-scene").style.transform.match(/rotateY\\(([-\\d.]+)deg\\)/)[1]);',
     );
-    evaluate('window.dragStartJoinTransform = getComputedStyle(document.querySelector(".live-activator")).transform;');
+    evaluate(`
+      const pill = document.querySelector('.live-invite').getBoundingClientRect();
+      window.dragStartJoinX = pill.left + pill.width / 2;
+    `);
     browser("mouse", "move", String(point[0] + 40), String(point[1] + 20));
     assert.equal(
       evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'),
@@ -175,14 +178,13 @@ const drag = (selector) => {
     );
     assert.ok(
       evaluate(`
-        const scene = new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.live-scene')).transform);
-        const join = new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.live-activator')).transform);
-        const scale = Math.hypot(scene.m11, scene.m12, scene.m13);
-        return getComputedStyle(document.querySelector('.live-activator')).transform !== window.dragStartJoinTransform
-          && ['m11', 'm12', 'm13', 'm21', 'm22', 'm23', 'm31', 'm32', 'm33']
-            .every(key => Math.abs(scene[key] / scale - join[key]) < .00001);
+        const pill = document.querySelector('.live-invite').getBoundingClientRect();
+        const x = pill.left + pill.width / 2, y = pill.top + pill.height / 2;
+        return Math.abs(x - window.dragStartJoinX) > 1
+          && pill.width > 100 && pill.height > 32
+          && document.elementFromPoint(x, y)?.closest('a')?.getAttribute('href') === '/spaces';
       `),
-      "The join pill turns with the demo without inheriting its shrinking scale",
+      "The raised join pill travels with the tilted demo instead of rotating in place, and stays readable and clickable",
     );
   } finally {
     browser("mouse", "up", "left");
@@ -277,8 +279,11 @@ try {
   drag(".sim-brand");
   browser("set", "media", "dark");
   wait("window.demoClockActive");
+  wait(
+    '[".live-scene", ".live-invite"].every(selector => document.querySelector(selector).getAnimations().every(animation => animation.playState === "finished"))',
+  );
   drag(".sim-brand");
-  console.log("PASS: join follows demo tilt at readable size, including explicit dragging with reduced motion");
+  console.log("PASS: raised join pill travels with the demo, stays clickable and supports reduced-motion dragging");
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), "center");
   assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), "/spaces");
 
@@ -767,11 +772,12 @@ try {
         const pill = document.querySelector('.live-invite').getBoundingClientRect();
         const stage = document.querySelector('.live-stage').getBoundingClientRect();
         const x = pill.left + pill.width / 2, y = pill.top + pill.height / 2;
-        return Math.abs(x - (stage.left + stage.width / 2)) < 1
-          && Math.abs(y - (stage.top + stage.height / 2)) < 1
+        return Math.abs(x - (stage.left + stage.width / 2)) < stage.width * .15
+          && Math.abs(y - (stage.top + stage.height / 2)) < stage.height * .15
+          && pill.width > 100 && pill.height > 32
           && document.elementFromPoint(x, y)?.closest('a')?.getAttribute('href') === '/spaces';
       `),
-      `The join pill stays centered and tappable above the tilted demo at ${width}px`,
+      `The raised join pill stays near the demo center, readable and tappable at ${width}px`,
     );
     checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
     assert.equal(

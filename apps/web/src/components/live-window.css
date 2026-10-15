@@ -366,11 +366,9 @@
   border-radius: 0;
 }
 
-/* Keep the action above the scene's compositing layers. Share its rotation,
-   but not its shrinking scale or translation, so the pill stays readable and
-   centered while turning with the demo. */
+/* The join pill floats above the window in the same 3D scene, so rotating the
+   demo moves the pill with perspective and parallax, not just an in-place tilt. */
 .live-activator {
-  --counter-scale: 1;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -384,7 +382,7 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
-  transform: var(--scene-rotation, none);
+  transform: translateZ(calc(var(--depth) * 80px));
 }
 .live-invite {
   pointer-events: auto;
