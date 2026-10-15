@@ -23,7 +23,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-/// GIFs upload unchanged up to this size; the API's limit.
+/// GIFs upload unchanged up to this size (the API's limit); bigger ones are
+/// shrunk to fit it.
 pub const MAX_GIF_BYTES: usize = 5 * 1024 * 1024;
 /// Every other picture is re-encoded to at most this size.
 pub const MAX_STILL_BYTES: usize = 1024 * 1024;
@@ -43,7 +44,8 @@ pub const PICKER_EXTENSIONS: &[&str] = &[
     "avif",
 ];
 
-pub const GIF_TOO_LARGE: &str = "GIFs can be up to 5 MB and 1024 × 1024.";
+/// Output edges for a shrunk GIF, largest first: the first that fits wins.
+const SHRINK_EDGES: [u32; 5] = [512, 384, 256, 192, 128];
 pub const UNREADABLE: &str = "Caper can’t read that file. Choose a PNG, JPEG, WebP or GIF.";
 pub const UNSUPPORTED: &str =
     "HEIC and AVIF pictures can’t be used on this computer. Choose a PNG, JPEG, WebP or GIF.";
@@ -207,8 +209,9 @@ fn heif_family(bytes: &[u8]) -> bool {
     bytes.get(4..8) == Some(b"ftyp")
 }
 
-/// Prepare picked bytes for upload (contract "Client preparation"). GIFs go
-/// up unchanged so they keep animating; everything else is decoded upright,
+/// Prepare picked bytes for upload (contract "Client preparation"). GIFs keep
+/// animating: unchanged within 5 MiB and 1024 × 1024, else shrunk to a square
+/// that fits ([`shrink_gif`]); everything else is decoded upright,
 /// cropped to a centred square, scaled to at most 512 px and re-encoded as
 /// lossy WebP (JPEG only if WebP fails), which drops location metadata.
 pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
@@ -217,7 +220,7 @@ pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
             .filter(|(width, height)| *width > 0 && *height > 0)
             .ok_or(INVALID)?;
         if bytes.len() > MAX_GIF_BYTES || width > MAX_DIMENSION || height > MAX_DIMENSION {
-            return Err(GIF_TOO_LARGE.into());
+            return shrink_gif(&bytes, MAX_GIF_BYTES);
         }
         return Ok(Prepared {
             bytes,
@@ -319,12 +322,113 @@ impl Failure {
     }
 }
 
+/// Shrink a GIF too large to upload unchanged, as the web's `gif-shrink.ts`
+/// does: every composited frame cropped to a centred square and scaled down,
+/// keeping its timing. 512 px first, then smaller edges, then fewer frames
+/// (each lasting as long as the ones it replaces).
+pub fn shrink_gif(bytes: &[u8], budget: usize) -> Result<Prepared, String> {
+    let (width, height) = gif_dimensions(bytes)
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .ok_or(INVALID)?;
+    let short = width.min(height);
+    let mut edges: Vec<u32> = SHRINK_EDGES
+        .into_iter()
+        .filter(|edge| *edge <= short)
+        .collect();
+    if edges.is_empty() {
+        edges.push(short);
+    }
+    let frames = gif_frame_count(bytes).unwrap_or(1);
+    let (mut edge, mut step) = (edges[0], 1);
+    loop {
+        let output = encode_shrunk(bytes, edge, step)?;
+        if output.len() <= budget {
+            return Ok(Prepared {
+                bytes: output,
+                content_type: "image/gif",
+                width: edge,
+                height: edge,
+            });
+        }
+        // Jump straight to the edge the size suggests, else halve the frames.
+        let target = f64::from(edge) * (budget as f64 / output.len() as f64).sqrt();
+        let below: Vec<u32> = edges
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate < edge)
+            .collect();
+        if let Some(smaller) = below
+            .iter()
+            .copied()
+            .find(|candidate| f64::from(*candidate) <= target)
+            .or(below.last().copied())
+        {
+            edge = smaller;
+        } else if step * 2 < frames {
+            step *= 2;
+        } else {
+            return Err("That GIF is too large. Try another one.".into());
+        }
+    }
+}
+
+/// An `edge`-pixel square GIF of every `step`th composited frame.
+fn encode_shrunk(bytes: &[u8], edge: u32, step: usize) -> Result<Vec<u8>, String> {
+    use image::AnimationDecoder;
+    use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+    let mut decoder = GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| UNREADABLE)?;
+    decoder.set_limits(limits()).map_err(|_| UNREADABLE)?;
+    let mut output = Vec::new();
+    {
+        let mut encoder = GifEncoder::new_with_speed(&mut output, 10);
+        encoder.set_repeat(Repeat::Infinite).map_err(|_| INVALID)?;
+        // A kept frame waits until the frames it stands in for add their time.
+        let mut pending: Option<(image::RgbaImage, u32)> = None;
+        let flush = |encoder: &mut GifEncoder<&mut Vec<u8>>,
+                     (image, ms): (image::RgbaImage, u32)| {
+            encoder
+                .encode_frame(image::Frame::from_parts(
+                    image,
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(ms, 1),
+                ))
+                .map_err(|_| INVALID.to_string())
+        };
+        for (index, frame) in decoder.into_frames().enumerate() {
+            let frame = frame.map_err(|_| UNREADABLE)?;
+            let (numer, denom) = frame.delay().numer_denom_ms();
+            let ms = numer / denom.max(1);
+            if index % step != 0 {
+                if let Some((_, total)) = pending.as_mut() {
+                    *total += ms;
+                }
+                continue;
+            }
+            if let Some(ready) = pending.take() {
+                flush(&mut encoder, ready)?;
+            }
+            let buffer = frame.into_buffer();
+            let (x, y, side) = square_crop(buffer.width(), buffer.height());
+            let square = image::imageops::crop_imm(&buffer, x, y, side, side).to_image();
+            let scaled =
+                image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle);
+            pending = Some((scaled, ms));
+        }
+        match pending.take() {
+            Some(ready) => flush(&mut encoder, ready)?,
+            None => return Err(UNREADABLE.into()),
+        }
+    }
+    Ok(output)
+}
+
 /// The API's picture errors as sentences (contract "Uploading a picture").
 pub fn failure(status: Option<u16>, code: Option<&str>, message: &str, target: &Target) -> Failure {
     let text = match (code, status) {
         (Some("picture_type"), _) => "Choose a PNG, JPEG, WebP or GIF picture.",
         (Some("picture_too_large"), _) | (_, Some(413)) => {
-            "Pictures can be up to 1 MB, or 5 MB for GIFs."
+            "That picture is too large. Try another one."
         }
         (Some("picture_rate_limited"), _) | (_, Some(429)) => {
             "You’ve changed pictures too often today. Try again later."
@@ -1036,13 +1140,65 @@ mod tests {
         assert_eq!(prepared.content_type, "image/gif");
         assert_eq!((prepared.width, prepared.height), (48, 32));
         assert_eq!(prepared.filename(&Target::Avatar), "avatar.gif");
-        // The header decides, before any upload.
-        let mut wide = bytes.clone();
-        wide[6..8].copy_from_slice(&1025_u16.to_le_bytes());
-        assert_eq!(prepare(wide), Err(GIF_TOO_LARGE.into()));
+        // Over 5 MiB: shrunk (to its 32 px short edge), never refused.
         let mut large = bytes;
         large.resize(MAX_GIF_BYTES + 1, 0);
-        assert_eq!(prepare(large), Err(GIF_TOO_LARGE.into()));
+        let shrunk = prepare(large).unwrap();
+        assert_eq!(
+            (shrunk.content_type, shrunk.width, shrunk.height),
+            ("image/gif", 32, 32)
+        );
+        assert_eq!(gif_frame_count(&shrunk.bytes), Some(2));
+    }
+
+    #[test]
+    fn oversized_gifs_shrink_to_a_512_px_square_keeping_frames_and_timing() {
+        use image::AnimationDecoder;
+        // Over 1024 px wide: a 512 px square, centre-cropped, every frame and delay.
+        let wide = gif(
+            &[
+                ([255, 0, 0, 255], 80),
+                ([0, 0, 255, 255], 120),
+                ([0, 255, 0, 255], 40),
+            ],
+            1100,
+            700,
+        );
+        let prepared = prepare(wide).unwrap();
+        assert_eq!((prepared.width, prepared.height), (512, 512));
+        assert_eq!(gif_dimensions(&prepared.bytes), Some((512, 512)));
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&prepared.bytes)).unwrap();
+        let frames: Vec<_> = decoder.into_frames().map(Result::unwrap).collect();
+        let delays: Vec<u32> = frames
+            .iter()
+            .map(|frame| frame.delay().numer_denom_ms().0)
+            .collect();
+        assert_eq!(delays, [80, 120, 40]);
+        assert_eq!(frames[1].buffer().get_pixel(256, 256).0, [0, 0, 255, 255]);
+        // A tight budget: smaller, then fewer frames lasting as long.
+        let source = gif(
+            &[
+                ([255, 0, 0, 255], 50),
+                ([0, 0, 255, 255], 50),
+                ([0, 255, 0, 255], 50),
+                ([9, 9, 9, 255], 50),
+            ],
+            600,
+            600,
+        );
+        assert_eq!(shrink_gif(&source, MAX_GIF_BYTES).unwrap().width, 512);
+        let tight = shrink_gif(&source, 700).unwrap();
+        assert!(tight.bytes.len() <= 700);
+        assert_eq!(gif_frame_count(&tight.bytes), Some(2));
+        assert_eq!(tight.width, 128);
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&tight.bytes)).unwrap();
+        let total: u32 = decoder
+            .into_frames()
+            .map(|frame| frame.unwrap().delay().numer_denom_ms().0)
+            .sum();
+        assert_eq!(total, 200, "the animation keeps its length");
     }
 
     #[test]
@@ -1132,7 +1288,7 @@ mod tests {
         );
         assert_eq!(
             message(Some(413), Some("picture_too_large")),
-            "Pictures can be up to 1 MB, or 5 MB for GIFs."
+            "That picture is too large. Try another one."
         );
         assert_eq!(message(Some(422), Some("picture_invalid")), INVALID);
         assert_eq!(

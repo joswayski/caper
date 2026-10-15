@@ -35,13 +35,12 @@ class PicturesTest {
     }
 
     @Test fun `gifs upload unchanged up to 5 MiB and 1024 on each side`() {
-        assertNull(gifError(PicturePolicy.GIF_MAX_BYTES, 1024, 1024))
-        assertNull(gifError(812_345, 480, 480))
-        assertEquals(PicturePolicy.GIF_LIMIT, gifError(PicturePolicy.GIF_MAX_BYTES + 1, 480, 480))
-        assertEquals(PicturePolicy.GIF_LIMIT, gifError(1_000, 1025, 480))
-        assertEquals(PicturePolicy.GIF_LIMIT, gifError(1_000, 480, 1025))
-        assertEquals(PicturePolicy.UNUSABLE, gifError(1_000, 0, 480))
-        assertEquals("GIFs can be up to 5 MB and 1024 × 1024.", PicturePolicy.GIF_LIMIT)
+        assertTrue(gifUploadsUnchanged(PicturePolicy.GIF_MAX_BYTES, 1024, 1024))
+        assertTrue(gifUploadsUnchanged(812_345, 480, 480))
+        assertFalse(gifUploadsUnchanged(PicturePolicy.GIF_MAX_BYTES + 1, 480, 480))
+        assertFalse(gifUploadsUnchanged(1_000, 1025, 480))
+        assertFalse(gifUploadsUnchanged(1_000, 480, 1025))
+        assertFalse(gifUploadsUnchanged(1_000, 0, 480))
     }
 
     @Test fun `stills crop to the centered square and scale to at most 512`() {
@@ -83,14 +82,14 @@ class PicturesTest {
         val icon = PictureTarget.SpaceIcon("space0000001")
         assertEquals("Use a PNG, JPEG, WebP or GIF picture.", pictureError(ApiException(400, "unsupported", "picture_type"), avatar))
         assertEquals("Pictures can be up to 1024 × 1024.", pictureError(ApiException(400, "invalid dimensions"), avatar))
-        assertEquals("GIFs can be up to 5 MB, and other pictures up to 1 MB.", pictureError(ApiException(413, "too large", "picture_too_large"), avatar))
+        assertEquals("That picture is too large. Try another one.", pictureError(ApiException(413, "too large", "picture_too_large"), avatar))
         assertEquals("That picture couldn’t be used. Try another one.", pictureError(ApiException(422, "bad", "picture_invalid"), icon))
         assertEquals("You’ve changed pictures too many times today. Try again later.", pictureError(ApiException(429, "slow down", "picture_rate_limited"), avatar))
         assertEquals("Picture uploads aren’t available right now.", pictureError(ApiException(503, "uploads unavailable"), avatar))
         assertEquals("Only the space owner can change its icon.", pictureError(ApiException(404, "resource not found"), icon))
         assertEquals("That’s no longer available.", pictureError(ApiException(404, "resource not found"), avatar))
         assertEquals("The upload didn’t finish. Try again.", pictureError(ApiException(409, "upload not finished"), avatar))
-        assertEquals(PicturePolicy.GIF_LIMIT, pictureError(PictureException(PicturePolicy.GIF_LIMIT), avatar))
+        assertEquals(PicturePolicy.GIF_UNREADABLE, pictureError(PictureException(PicturePolicy.GIF_UNREADABLE), avatar))
         assertEquals("Storage refused the upload (403).", pictureError(UploadException("Storage refused the upload (403)."), avatar))
         assertEquals("Couldn’t reach Caper. Check your connection.", pictureError(IOException("reset"), avatar))
     }

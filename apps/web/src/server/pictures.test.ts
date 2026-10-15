@@ -5,8 +5,8 @@ import { test } from "vitest";
 import { getRememberedAccount, subscribeAccount, withAccountProfile, type Account } from "../account/client.ts";
 import { PictureError, preparePicture, uploadAvatar, uploadPicture } from "../account/picture-upload.ts";
 import {
-  gifError,
   gifSize,
+  gifUploadsUnchanged,
   MAX_GIF_BYTES,
   pictureEdge,
   pictureErrorMessage,
@@ -41,15 +41,15 @@ test("GIFs are recognised by their magic bytes and logical screen size, not thei
   assert.equal(gifSize(gif(10, 10).subarray(0, 9)), undefined);
 });
 
-test("GIFs upload unchanged only up to 5 MiB and 1024 × 1024", () => {
-  assert.equal(gifError(MAX_GIF_BYTES, { width: 1024, height: 1024 }), undefined);
+test("GIFs upload unchanged up to 5 MiB and 1024 × 1024; bigger ones are shrunk", () => {
+  assert.equal(gifUploadsUnchanged(MAX_GIF_BYTES, { width: 1024, height: 1024 }), true);
   for (const [size, width, height] of [
     [MAX_GIF_BYTES + 1, 10, 10],
     [100, 1025, 10],
     [100, 10, 1025],
     [100, 0, 10],
   ])
-    assert.equal(gifError(size, { width, height }), "GIFs can be up to 5 MB and 1024 × 1024.");
+    assert.equal(gifUploadsUnchanged(size, { width, height }), false);
 });
 
 test("stills are center-cropped square and scaled to their short edge, at most 512", () => {
@@ -213,7 +213,7 @@ test("avatars lay a custom picture over the mascot, which stays for loading and 
   resetPicturesForTests();
 });
 
-test("GIFs are prepared unchanged; oversized GIFs and undecodable files fail before any upload", async () => {
+test("GIFs are prepared unchanged; unreadable GIFs and undecodable files fail before any upload", async () => {
   const animated = new Blob([gif(480, 480)], { type: "" });
   const prepared = await preparePicture(animated);
   assert.equal(prepared.blob, animated);
@@ -221,8 +221,9 @@ test("GIFs are prepared unchanged; oversized GIFs and undecodable files fail bef
     { ...prepared, blob: undefined },
     { blob: undefined, contentType: "image/gif", width: 480, height: 480 },
   );
+  // Too big to keep unchanged, and no frames to shrink.
   await assert.rejects(preparePicture(new Blob([gif(2048, 10)])), (error: unknown) => {
-    return error instanceof PictureError && error.message === "GIFs can be up to 5 MB and 1024 × 1024.";
+    return error instanceof PictureError && error.message === pictureMessages.gifUnreadable;
   });
   // Node has no image decoder, like a browser given HEIC it can't open.
   await assert.rejects(preparePicture(new Blob([new Uint8Array(64)], { type: "image/heic" })), (error: unknown) => {

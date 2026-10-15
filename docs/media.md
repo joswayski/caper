@@ -8218,9 +8218,17 @@ image downloads on each platform; follow-up).
 
 ### Clients
 
-Every client applies the same preparation: a GIF (detected by its bytes) uploads
-unchanged so it keeps its animation, and is refused locally above 5 MB or 1024 ×
-1024; anything else the platform decodes is turned upright, center-cropped to a
+Every client applies the same preparation: a GIF (detected by its bytes) keeps
+its animation. Within 5 MB and 1024 × 1024 it uploads unchanged; any bigger GIF
+is shrunk on the device instead of refused: every composited frame is
+center-cropped square and scaled to 512 px with its timing, then, while the
+result is still over 5 MB, to 384, 256, 192 and 128 px, then to every other
+frame (each lasting as long as the ones it replaces). Web
+(`account/gif-shrink.ts`, in a worker) and Android (`GifShrink.kt`) share one
+pure decoder/encoder that gives each frame a palette of only the pixels that
+changed and leaves unchanged pixels showing; Apple uses ImageIO and the Rust
+desktop the `image` crate's GIF codec. The server's 5 MiB GIF ceiling stays: it
+is also what older clients will download. Anything else the platform decodes is turned upright, center-cropped to a
 square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
 aspect-filled in a rounded square (corner radius 30% of the side, the
@@ -8252,6 +8260,17 @@ The framed editor and "change me!" sign (same day): web `npm run check` and
 without a picture and a menu with one; Escape closes the menu, not the dialog);
 Rust desktop `cargo test` (536 passed), application Clippy and Xvfb renders of
 both states. Android and Apple were not compiled (no SDK or Xcode here).
+
+Shrinking oversized GIFs (October 15, 2026): web Vitest decodes, shrinks and
+re-decodes generated GIFs (12 frames over 5 MB → 512 px under 100 KB with every
+delay; tight budgets step down then halve frames keeping total length;
+transparency; truncated files), and `scripts/test-pictures.mjs` uploads a 6 MB,
+1200 px GIF that Chrome's `ImageDecoder` then plays as 12 frames at 512 × 512.
+A 1100 × 800 photo-like GIF shrinks in about 0.5 s to 34 dB PSNR against its
+own frames. `GifShrink.kt` and its JUnit tests compile and pass with a
+standalone Kotlin 2.2.20 compiler on the JVM, with the same output quality; the
+Android app itself was not built (no SDK). Rust desktop `pictures::` tests and
+application Clippy pass. Apple's ImageIO path was not compiled (no Xcode).
 
 Run the browser check against `vite dev` with Playwright installed somewhere
 (the repository has no Playwright dependency):
