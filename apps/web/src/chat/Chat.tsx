@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, Reply, SmilePlus, X } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, MoreHorizontal, Pin, SmilePlus, X } from "lucide-react";
+import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -19,7 +20,6 @@ import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
 import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
-import { MessageSquare } from "lucide-react";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
@@ -1492,7 +1492,7 @@ export default function Chat({
                         onFocus={() => prefetchThread(message.threadRootId ?? message.id)}
                         onClick={() => openThread(message.threadRootId ?? message.id)}
                       >
-                        <MessageSquare size={14} aria-hidden="true" />
+                        <Thread size={14} aria-hidden="true" />
                       </button>
                     )}
                     {!readOnly && state.author && (

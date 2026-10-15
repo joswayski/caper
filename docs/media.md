@@ -1950,6 +1950,11 @@ while its menu or picker is open; thread rows omit Reply in thread. Narrow web,
 Android and iPhone retain their existing message-actions sheets instead of the
 desktop bar.
 
+Thread actions use a thread-spool glyph, and Reply uses a longer curved arrow.
+`shared/message-icons.ts` supplies both to web and the native SVG exporter;
+the icon parity test also checks Android's vectors against the same glyphs.
+Action labels, targets and permissions are unchanged.
+
 Hover-bar validation: web check/build/typechecks and 639 web/shared tests pass;
 Rust desktop formatting, application Clippy, Linux build and 536 tests pass
 (12 existing device/audio tests ignored). Inspected labelled Chromium desktop,

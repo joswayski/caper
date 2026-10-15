@@ -1,4 +1,5 @@
-import { Paperclip, Reply, X } from "lucide-react";
+import { Paperclip, X } from "lucide-react";
+import { Reply } from "../../../../shared/message-icons.ts";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";

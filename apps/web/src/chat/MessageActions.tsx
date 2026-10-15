@@ -12,21 +12,8 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import {
-  Ban,
-  Copy,
-  Forward,
-  Hash,
-  History,
-  MessageSquare,
-  Pencil,
-  Pin,
-  PinOff,
-  Reply,
-  SmilePlus,
-  Users,
-  X,
-} from "lucide-react";
+import { Ban, Copy, Forward, Hash, History, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
 import ReactionPicker from "./ReactionPicker.tsx";
@@ -199,7 +186,7 @@ export default function MessageActions({
               )}
               {onReply && (
                 <button type="button" onClick={onReply}>
-                  <MessageSquare size={16} aria-hidden="true" />
+                  <Thread size={16} aria-hidden="true" />
                   Reply in thread
                 </button>
               )}

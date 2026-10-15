@@ -2853,8 +2853,8 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
                     // Web's order: replies, forward, edit, history, reactions, pin, then copy and block.
-                    onReplyMessage?.let { SheetAction("Reply", onClick = it); HorizontalDivider(color = Border) }
-                    onReply?.let { SheetAction("Reply in thread", icon = R.drawable.lucide_message_square, onClick = it); HorizontalDivider(color = Border) }
+                    onReplyMessage?.let { SheetAction("Reply", icon = R.drawable.lucide_reply, onClick = it); HorizontalDivider(color = Border) }
+                    onReply?.let { SheetAction("Reply in thread", icon = R.drawable.lucide_thread, onClick = it); HorizontalDivider(color = Border) }
                     if (state.account != null && (message.forward == null || message.forward.message != null)) {
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)

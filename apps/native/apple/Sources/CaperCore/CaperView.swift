@@ -4273,7 +4273,7 @@ private struct MessageRow: View {
                                     .padding(.leading, 3)
                                 Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
                             } else {
-                                CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread")
+                                CaperIcon(name: "thread", size: 14); Text("Replied to a thread · View thread")
                             }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                     }.buttonStyle(.plain).frame(minHeight: 32)
@@ -4323,7 +4323,7 @@ private struct MessageRow: View {
                 HStack(spacing: 0) {
                     if !inThread {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
-                            CaperIcon(name: "message-square", size: 14).frame(width: 24, height: 24)
+                            CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
@@ -5604,7 +5604,7 @@ private struct MessageActionsSheet: View {
             if let reply {
                 Divider()
                 Button(action: reply) {
-                    Label { Text("Reply in thread") } icon: { CaperIcon(name: "message-square") }
+                    Label { Text("Reply in thread") } icon: { CaperIcon(name: "thread") }
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
             }
