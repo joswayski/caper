@@ -15624,6 +15624,14 @@ impl CaperApp {
                             }
                             for message in &pins {
                                 ui.push_id(&message.id, |ui| {
+                                    // Register the card below its children: links, edited
+                                    // markers, profiles, media and actions keep their clicks.
+                                    let card = ui.scope_builder(
+                                        egui::UiBuilder::new().sense(egui::Sense::click()),
+                                        |ui| {
+                                    // Plain labels are navigation, not selection targets,
+                                    // in this preview. Explicit child controls stay interactive.
+                                    ui.style_mut().interaction.selectable_labels = false;
                                     egui::Frame::new()
                                         .fill(BLACKOUT)
                                         .stroke(Stroke::new(1.0, BORDER))
@@ -15656,6 +15664,15 @@ impl CaperApp {
                                                     }
                                                 });
                                         });
+                                        },
+                                    );
+                                    if card.response.clicked() && !self.context_loading {
+                                        self.load_context(
+                                            message.thread_root_id.clone(),
+                                            message.id.clone(),
+                                            false,
+                                        );
+                                    }
                                 });
                             }
                         });
@@ -25158,6 +25175,127 @@ mod tests {
         assert!(!pins.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unpin message")), "unpin belongs only in the actions menu");
         click(&mut app, &context, egui::pos2(20.0, 20.0));
         assert!(!app.showing_pins, "clicking outside closes Pins");
+    }
+
+    #[test]
+    fn pins_card_click_navigates_without_stealing_child_controls() {
+        for target in [
+            "body", "pending", "link", "edited", "actions", "reaction", "author", "pinner",
+            "media", "right", "go",
+        ] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-pins"),
+            );
+            app.session = Some(session());
+            app.token = Some("fixture-only".into());
+            let mut message = app.timeline.pinned_messages().next().unwrap().clone();
+            message.content.text = "Pinned click target https://example.com".into();
+            message.revision = 2;
+            message.edited_at = Some(message.created_at.clone());
+            message.edit_seq = Some("6".into());
+            message.author.name = "Pinned Author".into();
+            message.pin.as_mut().unwrap().author.name = "Pinned Pinner".into();
+            if target == "media" {
+                app.install_attachments_fixture();
+                message.content.attachments = app
+                    .timeline
+                    .messages()
+                    .flat_map(|message| &message.content.attachments)
+                    .filter(|attachment| attachment.id == "fixture-image")
+                    .cloned()
+                    .collect();
+                assert_eq!(message.content.attachments.len(), 1);
+                app.draft_files.clear();
+            }
+            // Keep the original outside the loaded timeline, so hit targets
+            // unambiguously belong to the Pins modal rather than its backdrop.
+            app.timeline.reset(vec![], "7").unwrap();
+            app.timeline.reset_pins(vec![message]).unwrap();
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            let body = text_position(&output, "Pinned click target https://example.com");
+            render(&mut app, &context, vec![egui::Event::PointerMoved(body)]);
+            let output = render(&mut app, &context, vec![]);
+            let position = match target {
+                "link" => node_bounds(&output, "https://example.com")
+                    .unwrap()
+                    .center(),
+                "edited" => text_ending(&output, "(edited)"),
+                "actions" => node_bounds(&output, "Message actions").unwrap().center(),
+                "reaction" => node_bounds(&output, "Add reaction").unwrap().center(),
+                "author" => node_bounds(&output, "Open profile for Pinned Author")
+                    .unwrap()
+                    .center(),
+                "pinner" => node_bounds(&output, "Open profile for Pinned Pinner")
+                    .unwrap()
+                    .center(),
+                "media" => node_bounds(&output, "View TEST FIXTURE screenshot.webp")
+                    .unwrap()
+                    .center(),
+                "go" => node_bounds(&output, "Go to message").unwrap().center(),
+                _ => body,
+            };
+            if target == "pending" {
+                app.context_loading = true;
+            }
+            let request = app.history_request;
+            let opened = if target == "right" {
+                for pressed in [true, false] {
+                    render(
+                        &mut app,
+                        &context,
+                        vec![
+                            egui::Event::PointerMoved(position),
+                            egui::Event::PointerButton {
+                                pos: position,
+                                button: egui::PointerButton::Secondary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                None
+            } else {
+                click_opening(&mut app, &context, position)
+            };
+            if target == "link" {
+                assert_eq!(opened.as_deref(), Some("https://example.com"));
+            }
+            assert_eq!(
+                app.history_request,
+                request + u64::from(matches!(target, "body" | "go")),
+                "navigation for {target}"
+            );
+            if target == "edited" {
+                assert!(app.edit_history.is_some(), "edited marker opens history");
+            }
+            if matches!(target, "author" | "pinner") {
+                assert!(app.mention_card.is_some(), "{target} opens a profile");
+            }
+            if target == "reaction" {
+                assert!(app.reaction_picker.is_some(), "reaction picker opens");
+            }
+            if target == "media" {
+                assert!(app.viewer.is_some(), "media opens its viewer");
+            }
+            if target == "right" {
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                assert!(texts(&output).contains(&"Copy message ID"));
+            }
+            if target == "actions" {
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                assert!(texts(&output).contains(&"Unpin message"));
+            }
+        }
     }
 
     #[test]

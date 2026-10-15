@@ -88,10 +88,13 @@ test("without a viewer (the sender's pending row) files keep their links and inl
   expect(markup).not.toContain("in viewer");
 });
 
-test("a video with a stored size fills a frame of that shape", () => {
+test("a video with a stored size reserves its shape without fixing the responsive height", () => {
   const sized = file("sized", "sized.mp4", { kind: "video", contentType: "video/mp4", width: 1080, height: 1920 });
   const markup = renderToStaticMarkup(<MessageAttachments attachments={[sized]} />);
-  expect(markup).toMatch(/<div class="chat-media chat-video" style="width:\d+px;height:\d+px"><video/);
+  const ratio = markup.match(
+    /<div class="chat-media chat-video" style="width:\d+px;aspect-ratio:([\d.]+)"><video/,
+  )?.[1];
+  expect(Number(ratio)).toBeCloseTo(9 / 16, 2);
 });
 
 test("draft files can be previewed before uploading finishes, with removal separate from preview", () => {

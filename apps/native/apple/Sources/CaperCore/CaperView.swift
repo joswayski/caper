@@ -4141,6 +4141,8 @@ private struct MessageRow: View {
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
     var forwardOpened: (() -> Void)? = nil
+    /// Pins opt in; child links and controls keep their own interactions.
+    var openMessage: (() -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -4312,6 +4314,7 @@ private struct MessageRow: View {
         #if os(iOS)
         row.contentShape(Rectangle())
             .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { pressing = $0 })
+            .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openMessage?() } }, including: openMessage == nil ? .subviews : .all)
             .onDisappear { pressing = false }
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
@@ -4364,6 +4367,7 @@ private struct MessageRow: View {
             // action must not hide that action before the pointer can click it.
             .contentShape(Rectangle())
             .onHover { controlsHovered = $0 }
+            .gesture(TapGesture().onEnded { openMessage?() }, including: openMessage == nil ? .subviews : .all)
             .contextMenu { messageMenuItems }
         #endif
     }
@@ -5737,11 +5741,9 @@ private struct PinnedMessagesView: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
-                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close) { actionTarget = message }
-                                Button {
-                                    mentionCard = nil
-                                    Task { if await chat.goToMessage(message) { close() } }
-                                } label: {
+                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
+                                    openMessage: { goToMessage(message) }) { actionTarget = message }
+                                Button { goToMessage(message) } label: {
                                     HStack(spacing: 6) {
                                         Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
                                         CaperIcon(name: "arrow-right", size: 14)
@@ -5788,6 +5790,12 @@ private struct PinnedMessagesView: View {
             .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
             #endif
             .accessibilityIdentifier("pinned-messages")
+    }
+
+    private func goToMessage(_ message: ChatMessage) {
+        guard !chat.jumpingToMessage else { return }
+        mentionCard = nil
+        Task { if await chat.goToMessage(message) { close() } }
     }
 }
 
