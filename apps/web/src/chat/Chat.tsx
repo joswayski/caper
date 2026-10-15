@@ -37,6 +37,7 @@ import {
 } from "./types.ts";
 import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
@@ -2084,7 +2085,9 @@ export default function Chat({
                   }}
                 />
                 <div className="chat-initial-rows">
-                  {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
+                  <MediaPreviewContext value={true}>
+                    {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
+                  </MediaPreviewContext>
                 </div>
               </div>
             )}

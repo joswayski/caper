@@ -2512,6 +2512,12 @@ a.chat-draft-preview:focus-visible strong {
   height: 100%;
   object-fit: cover;
 }
+.chat-gif[data-still] img {
+  visibility: hidden;
+}
+.chat-gif[data-still] canvas {
+  display: block;
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-gif img {
     visibility: hidden;

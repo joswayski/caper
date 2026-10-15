@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer from "./MediaViewer.tsx";
+import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
 
@@ -130,6 +131,7 @@ function AnimatedVideo({
   onView?: (anchor: HTMLElement) => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const preview = useContext(MediaPreviewContext);
   const [paused, setPaused] = useState(true);
   useEffect(() => {
     const video = ref.current;
@@ -137,16 +139,16 @@ function AnimatedVideo({
     video.muted = true;
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const apply = () => {
-      if (motion.matches) video.pause();
+      if (preview || motion.matches) video.pause();
       else void video.play().catch(() => undefined);
     };
     apply();
     motion.addEventListener("change", apply);
     return () => motion.removeEventListener("change", apply);
-  }, [attachment.url]);
+  }, [attachment.url, preview]);
   const toggle = () => {
     const video = ref.current;
-    if (!video) return;
+    if (!video || preview) return;
     if (video.paused) void video.play().catch(() => undefined);
     else video.pause();
   };
@@ -166,7 +168,7 @@ function AnimatedVideo({
         onPause={() => setPaused(true)}
         onError={onError}
       />
-      {paused && (
+      {paused && !preview && (
         <button type="button" className="chat-animated-play" aria-label={`Play ${attachment.name}`} onClick={toggle}>
           <Play size={18} aria-hidden="true" />
         </button>

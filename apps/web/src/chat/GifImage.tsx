@@ -1,11 +1,13 @@
-import { useRef, type ImgHTMLAttributes } from "react";
+import { useContext, useRef, type ImgHTMLAttributes } from "react";
+import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 
 /** Keep the original GIF, not its still upload preview. The canvas gives
  * reduced-motion readers a still even when the upload has no preview. */
 export default function GifImage({ alt, onLoad, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const preview = useContext(MediaPreviewContext);
   return (
-    <span className="chat-gif" role="img" aria-label={alt}>
+    <span className="chat-gif" role="img" aria-label={alt} data-still={preview || undefined}>
       <img
         {...props}
         alt=""
