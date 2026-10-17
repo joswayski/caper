@@ -14638,6 +14638,21 @@ impl CaperApp {
             .map_or(1.0, |start| motion::progress(context, start, motion::SLOW))
     }
 
+    fn pinned_by_viewer(&self, message: &model::Message) -> bool {
+        message.pin.as_ref().is_some_and(|pin| {
+            Some(pin.author.id.as_str())
+                == self
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.as_str())
+                    .or_else(|| {
+                        self.session
+                            .as_ref()
+                            .map(|session| session.author.id.as_str())
+                    })
+        })
+    }
+
     fn message_in(
         &mut self,
         ui: &mut egui::Ui,
@@ -14687,18 +14702,7 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
-        let pinned_by_viewer = pinned.is_some_and(|pin| {
-            Some(pin.author.id.as_str())
-                == self
-                    .account
-                    .as_ref()
-                    .map(|account| account.id.as_str())
-                    .or_else(|| {
-                        self.session
-                            .as_ref()
-                            .map(|session| session.author.id.as_str())
-                    })
-        });
+        let pinned_by_viewer = self.pinned_by_viewer(message);
         let mut view_thread = None;
         let mut actions_y = None;
         // The row's background; its files below are drawn on the same fill.
@@ -15541,8 +15545,8 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
-        } else {
-            // Pins and reply context stay marked. Thread and jump tints win.
+        } else if !in_pins {
+            // Pins owns the whole card's wash. Thread and jump tints win here.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
@@ -15665,8 +15669,11 @@ impl CaperApp {
                                     // in this preview. Explicit child controls stay interactive.
                                     ui.style_mut().interaction.selectable_labels = false;
                                     egui::Frame::new()
-                                        .fill(BLACKOUT)
-                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .fill(if self.pinned_by_viewer(message) {
+                                            Color32::from_rgba_unmultiplied(182, 77, 50, 31)
+                                        } else {
+                                            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                                        })
                                         .corner_radius(8)
                                         .inner_margin(egui::Margin::symmetric(0, 8))
                                         .show(ui, |ui| {
@@ -15680,11 +15687,12 @@ impl CaperApp {
                                                     bottom: 12,
                                                 })
                                                 .show(ui, |ui| {
+                                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 32.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.add_enabled(!self.context_loading,
                                                         egui::Button::image_and_text(
-                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(MUTED).fit_to_exact_size(egui::vec2(14.0, 14.0)),
-                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0).color(MUTED),
-                                                        ).frame(false).min_size(egui::vec2(0.0, 28.0)),
+                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(TEXT).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0),
+                                                        ).min_size(egui::vec2(0.0, 32.0)),
                                                     )
                                                     .clicked()
                                                     {
@@ -15694,6 +15702,7 @@ impl CaperApp {
                                                             false,
                                                         );
                                                     }
+                                                    });
                                                 });
                                         });
                                         },
@@ -25545,6 +25554,7 @@ mod tests {
     fn pins_cards_align_navigation_and_keep_close_visible_in_small_windows() {
         for size in [egui::vec2(840.0, 620.0), egui::vec2(390.0, 520.0)] {
             let context = egui::Context::default();
+            context.all_styles_mut(|style| style.animation_time = 0.0);
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -25598,10 +25608,6 @@ mod tests {
                 .unwrap();
             let go = bounds("Go to message");
             assert!(
-                (go.x0 - f64::from(author.left())).abs() < 1.0,
-                "navigation aligns with message text"
-            );
-            assert!(
                 go.y0 > f64::from(author.bottom()),
                 "navigation follows the message"
             );
@@ -25642,15 +25648,39 @@ mod tests {
                 ((go.x0 + go.x1) / 2.0) as f32,
                 ((go.y0 + go.y1) / 2.0) as f32,
             );
+            let card = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == egui::Color32::from_rgba_unmultiplied(182, 77, 50, 31)
+                            && f64::from(rect.rect.top()) > close.y1
+                            && rect.rect.contains(author.center())
+                            && rect.rect.contains(navigation_center)
+                            && shape.clip_rect.contains_rect(rect.rect) =>
+                    {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .expect("one continuous pin wash covers the message and navigation");
+            assert_eq!(card.stroke.width, 0.0, "the card has no extra border");
+            assert!(
+                (go.x1 - f64::from(card.rect.right() - 18.0)).abs() < 1.0,
+                "navigation aligns with the card's trailing inset"
+            );
+            assert!(
+                (go.y1 - f64::from(card.rect.bottom() - 20.0)).abs() < 1.0,
+                "navigation sits at the card bottom without expanding the footer"
+            );
+            assert!(go.height() >= 32.0, "navigation is a full button target");
             assert!(
                 output.shapes.iter().any(|shape| matches!(&shape.shape,
                     egui::Shape::Rect(rect) if rect.stroke.width == 1.0
-                        && f64::from(rect.rect.top()) > close.y1
-                        && rect.rect.contains(author.center())
                         && rect.rect.contains(navigation_center)
-                        && shape.clip_rect.contains_rect(rect.rect)
+                        && !rect.rect.contains(author.center())
                 )),
-                "each pin has a fully visible bordered card"
+                "navigation has its own button frame"
             );
             for pressed in [true, false] {
                 frame(

@@ -4437,6 +4437,8 @@ private struct MessageRow: View {
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
     private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && mentionsMe) }
     private func rowBackground(mentionsMe: Bool) -> Color {
+        // Pins paints the whole card, including its navigation footer.
+        if inPins { return .clear }
         if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
         if let pin = message.pin {
             return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
@@ -5761,28 +5763,29 @@ private struct PinnedMessagesView: View {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 12) {
                         ForEach(chat.displayedPins) { message in
-                            // The row's own bottom padding already separates it from Go to message.
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
                                     mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
                                     openMessage: { goToMessage(message) }) { actionTarget = message }
-                                Button { goToMessage(message) } label: {
-                                    HStack(spacing: 6) {
-                                        Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
-                                        CaperIcon(name: "arrow-right", size: 14)
-                                    }
-                                }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
-                                    .foregroundStyle(CaperTheme.muted).disabled(chat.jumpingToMessage)
-                                    .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
-                                    .accessibilityIdentifier("go-to-message-\(message.id)")
+                                HStack {
+                                    Spacer()
+                                    Button { goToMessage(message) } label: {
+                                        HStack(spacing: 6) {
+                                            Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
+                                            CaperIcon(name: "arrow-right", size: 14)
+                                        }
+                                    }.buttonStyle(CaperSecondaryButton(minHeight: 44))
+                                        .disabled(chat.jumpingToMessage)
+                                        .accessibilityIdentifier("go-to-message-\(message.id)")
+                                }.padding(.horizontal, 18).padding(.bottom, 12)
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                                .background(message.pin?.author.id == viewerID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
-                    }
+                    }.padding(12)
                 }
             }
         }.background(CaperTheme.conversation)
