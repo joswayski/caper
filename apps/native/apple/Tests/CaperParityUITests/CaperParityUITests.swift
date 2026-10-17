@@ -1219,6 +1219,12 @@ final class CaperParityUITests: XCTestCase {
         let designVoice = app.buttons["join-voice-chan00000002"]
         XCTAssertTrue(general.waitForExistence(timeout: 10))
         XCTAssertTrue(design.exists)
+        let lastChannel = app.buttons["channel-chan00000003"]
+        let directHeading = staticTexts("Direct messages", in: app).firstMatch
+        XCTAssertTrue(lastChannel.exists)
+        XCTAssertTrue(directHeading.exists)
+        XCTAssertGreaterThanOrEqual(directHeading.frame.minY - lastChannel.frame.maxY, 28,
+                                    "The DM divider needs breathing room below the last channel's highlight")
         XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
         XCTAssertLessThanOrEqual(design.frame.minY - general.frame.maxY, 4, "An empty channel is a single line, with no voice action beneath it")
         #if os(iOS)

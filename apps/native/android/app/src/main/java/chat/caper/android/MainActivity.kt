@@ -811,7 +811,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             HorizontalDivider(color = Border)
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
             if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp).browseSwipeExcluded(LocalBrowseDrawer.current), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
@@ -965,6 +965,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             if (state.account != null) {
                 HorizontalDivider(color = Border)
+                Spacer(Modifier.height(12.dp))
                 // Feedback team only: the `@feedback` inbox, beside the DMs.
                 if (state.account.feedbackTeam) {
                     val feedbackSelected = state.feedbackShown || state.visit != null
