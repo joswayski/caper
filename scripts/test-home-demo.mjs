@@ -80,6 +80,10 @@ const speakers = () =>
   );
 const checkVoiceSummary = (people) => {
   const inCall = people[0] === "Maya";
+  // A card's body rises in briefly when the row turns into it; measure once it has.
+  wait(
+    "![...document.querySelectorAll('.sim-channel-list .live-card *')].some(el => el.getAnimations().some(a => a.playState === 'running'))",
+  );
   const summary = evaluate(`
     const card = document.querySelector('.sim-channel-list .live-card');
     const mark = card.querySelector('.sim-channel .channel-live');
