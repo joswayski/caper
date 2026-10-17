@@ -2341,6 +2341,7 @@
 @media (hover: hover) {
   .chat-attach:hover:not(:disabled) {
     color: var(--text);
+    background: var(--surface-hover);
   }
 }
 .chat-attach:focus-visible {
@@ -3386,6 +3387,22 @@ a.chat-draft-preview:focus-visible strong {
   width: 40px;
   height: 40px;
   margin: 1px 4px 1px 0;
+}
+/* Match the main composer's inset hover targets without shrinking touch controls. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .chat-attach {
+    width: 32px;
+    height: 32px;
+    margin: 5px 0 5px 5px;
+  }
+  .chat-attach:focus-visible {
+    outline-offset: -2px;
+  }
+  .chat-thread-send-row > .chat-composer-tool {
+    width: 32px;
+    height: 32px;
+    margin: 5px 5px 5px 0;
+  }
 }
 .chat-thread-send-row button[type="submit"] {
   grid-column: 2;

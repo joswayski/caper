@@ -408,7 +408,6 @@ enum NavIcon {
     Close,
     More,
     Plus,
-    Paperclip,
     Settings,
     Hash,
     Lock,
@@ -13390,7 +13389,7 @@ impl CaperApp {
                         // The scrolling text stays inside the padded field.
                         ui.visuals_mut().clip_rect_margin = 0.0;
                         ui.horizontal_top(|ui| {
-                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
+                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
                                 .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
                                     else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
                                     else { "Attach files".to_owned() }).clicked();
@@ -13895,7 +13894,7 @@ impl CaperApp {
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
-                        .inner_margin(egui::Margin { left: 4, ..Default::default() })
+                        .inner_margin(egui::Margin::symmetric(6, 0))
                         .show(ui, |ui| {
                             let full = self.draft_file_count(None) >= uploads::MAX_ATTACHMENTS;
                             let mut pick = false;
@@ -13905,7 +13904,7 @@ impl CaperApp {
                                     ui.add_space(7.0);
                                     let enabled = attach && !full && self.file_picker.is_none();
                                     let button = ui
-                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
                                         .inner
                                         .on_disabled_hover_text(if !attach {
                                             attach_unavailable.to_owned()
@@ -17959,7 +17958,7 @@ impl CaperApp {
                         ui.add_space(7.0);
                         let attach = ui
                             .add_enabled_ui(can_attach, |ui| {
-                                drawn_icon_button(ui, NavIcon::Paperclip, "Attach files")
+                                drawn_icon_button(ui, NavIcon::Plus, "Attach files")
                             })
                             .inner
                             .on_disabled_hover_text(
@@ -21232,7 +21231,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
-        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::Settings => egui::include_image!("../resources/icons/settings.svg"),
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
@@ -21496,9 +21494,10 @@ fn channel_button(
     }
     let mut opened = false;
     if let Some(menu) = extras.menu {
+        let size = if extras.direct { 24.0 } else { 32.0 };
         let rect = egui::Rect::from_center_size(
             egui::pos2(rect.right() - 18.0, rect.center().y),
-            egui::vec2(32.0, 32.0).min(egui::vec2(32.0, rect.height())),
+            egui::vec2(size, size.min(rect.height())),
         );
         let settings = ui.interact(rect, response.id.with("settings"), egui::Sense::click());
         let popup = egui::Popup::menu(&settings);
@@ -27199,6 +27198,11 @@ mod tests {
         assert!(direct_dots(&output) > 0, "unread before muting");
         let options = node_bounds(&output, "Conversation options for TEST FIXTURE Maya")
             .expect("DM options button");
+        let row = node_bounds(&output, "TEST FIXTURE Maya, unread activity").expect("DM row");
+        assert!(
+            row.shrink(2.0).contains_rect(options),
+            "the options hover target must leave space on every side of the row"
+        );
         let painted = |output: &egui::FullOutput| {
             output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Mesh(mesh) if options.contains_rect(mesh.calc_bounds()))
@@ -37358,9 +37362,15 @@ mod tests {
                 egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
                 egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
             );
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
-            )), "{draft:?}: Attach must be inside the message box");
+            let emoji = node_bounds(&output, "Insert emoji").expect("emoji control");
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.fill == super::COMPOSER
+                        && rect.rect.shrink(4.0).contains_rect(attach)
+                        && rect.rect.shrink(4.0).contains_rect(emoji)
+                )),
+                "{draft:?}: Attach and Emoji hover targets need space inside the message box"
+            );
         }
     }
 

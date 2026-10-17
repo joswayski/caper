@@ -1516,12 +1516,13 @@ private struct DirectMessageSidebarRow: View {
         Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
             .menuStyle(.borderlessButton).menuIndicator(.hidden)
             .foregroundStyle(CaperTheme.muted)
-            .frame(width: 28, height: 28)
+            .frame(width: 24, height: 24)
             .focused($optionsFocused)
             .opacity(hovered || optionsFocused ? 1 : 0)
             .allowsHitTesting(hovered || optionsFocused)
             // Hover feedback like the channel rows' options.
             .contentShape(Rectangle()).modifier(ControlHover(isFocused: optionsFocused))
+            .padding(.trailing, 4)
             .help("Conversation options for \(conversation.peer.displayName)")
             .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
             .accessibilityIdentifier("dm-options-\(conversation.id)")
@@ -4966,7 +4967,7 @@ private struct MentionCardView: View {
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
                 Button { draft.presentingDialog = true; showingFiles = true } label: {
-                    CaperIcon(name: "paperclip", size: 17).foregroundStyle(CaperTheme.muted)
+                    CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
