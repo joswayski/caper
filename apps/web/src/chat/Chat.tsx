@@ -35,13 +35,13 @@ import {
   type ChatReplyReference,
   type GeneralChatHistory,
 } from "./types.ts";
-import { MessageAttachments, type DraftAttachment, type LocalPreview } from "./Attachments.tsx";
+import { MessageAttachments, type DraftAttachment, type DraftEditing, type LocalPreview } from "./Attachments.tsx";
 import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
-import type { CompressionSettings } from "./prepare.ts";
+import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import DailyCaper from "../components/DailyCaper";
@@ -849,7 +849,8 @@ export default function Chat({
       latestDrafts.current = saved.drafts;
       setDrafts(saved.drafts);
       // This page now owns their previews, so leaving without them revokes them.
-      for (const draft of saved.drafts) if (draft.localUrl) objectUrls.current.add(draft.localUrl);
+      for (const draft of saved.drafts)
+        for (const url of [draft.localUrl, draft.thumbnailUrl]) if (url) objectUrls.current.add(url);
       // Renew anything that expired or failed while the conversation was closed.
       for (const upload of saved.uploads.values())
         if (upload.stale || upload.state.error) void upload.ensure().catch(() => {});
@@ -925,10 +926,12 @@ export default function Chat({
       objectUrls.current.add(localUrl);
       const upload = new AttachmentUpload(channel, file, settings, (next) => {
         stagedFileChanged(key, next);
-        if (next.attachment && localKind)
+        // An edit replaces the local copy, so look it up rather than keep this one.
+        const local = latestDrafts.current.find((item) => item.key === key);
+        if (next.attachment && local?.localUrl && local.localKind)
           setLocalPreviews((current) => ({
             ...current,
-            [next.attachment!.id]: { url: localUrl, video: localKind === "video" },
+            [next.attachment!.id]: { url: local.localUrl!, video: local.localKind === "video" },
           }));
       });
       uploads.current.set(key, upload);
@@ -945,23 +948,55 @@ export default function Chat({
         },
       ]);
       void upload.ensure().catch(() => {});
+      void editableKind(file).then((editable) => {
+        if (editable) stagedFileChanged(key, { editable });
+      });
     }
+  };
+
+  /** Revokes a draft's local copy once nothing can show it. */
+  const forgetLocalUrl = (url: string | undefined) => {
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    objectUrls.current.delete(url);
+    setLocalPreviews((current) =>
+      Object.values(current).some((preview) => preview.url === url)
+        ? Object.fromEntries(Object.entries(current).filter(([, preview]) => preview.url !== url))
+        : current,
+    );
   };
 
   const removeDraft = (key: string) => {
     abandonUpload(key);
     // A removed file is never sent, so its preview can go now rather than when the page closes.
-    const url = latestDrafts.current.find((item) => item.key === key)?.localUrl;
-    if (url) {
-      URL.revokeObjectURL(url);
-      objectUrls.current.delete(url);
-      setLocalPreviews((current) =>
-        Object.values(current).some((preview) => preview.url === url)
-          ? Object.fromEntries(Object.entries(current).filter(([, preview]) => preview.url !== url))
-          : current,
-      );
-    }
+    const removed = latestDrafts.current.find((item) => item.key === key);
+    forgetLocalUrl(removed?.localUrl);
+    forgetLocalUrl(removed?.thumbnailUrl);
     setDrafts((current) => current.filter((item) => item.key !== key));
+  };
+
+  // Saving an edit uploads the original again with it; the tile shows the result.
+  const draftEditing: DraftEditing = {
+    source: (key) => uploads.current.get(key)?.source,
+    save: (key, edit, preview) => {
+      const upload = uploads.current.get(key);
+      const draft = latestDrafts.current.find((item) => item.key === key);
+      const source = upload?.source;
+      if (!upload || !draft || !source) return;
+      const own = (blob: Blob | undefined) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        objectUrls.current.add(url);
+        return url;
+      };
+      forgetLocalUrl(draft.localUrl);
+      forgetLocalUrl(draft.thumbnailUrl);
+      // An edited image shows its render; an edited video shows its upload once it lands.
+      const localUrl = !edit ? own(source) : draft.editable === "image" ? own(preview) : undefined;
+      const thumbnailUrl = edit && draft.editable === "video" ? own(preview) : undefined;
+      updateDraft(key, { edit, localUrl, thumbnailUrl, error: undefined });
+      void upload.setEdit(edit).catch(() => {});
+    },
   };
 
   const refreshUrls = useCallback((ids: string[]) => {
@@ -2335,6 +2370,8 @@ export default function Chat({
                       onAdd: addFiles,
                       onRemove: removeDraft,
                       onRetry: retryUpload,
+                      // A pending send carries these files; editing would cancel them under it.
+                      editing: state.pendingSend ? undefined : draftEditing,
                     }
                   : undefined
               }
@@ -2367,6 +2404,7 @@ export default function Chat({
                 onAdd: (files) => addFiles(files, state.thread?.rootId),
                 onRemove: removeDraft,
                 onRetry: retryUpload,
+                editing: state.pendingSend ? undefined : draftEditing,
               }
             : undefined
         }

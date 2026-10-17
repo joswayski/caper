@@ -2,7 +2,7 @@
 // is open so switching channels or DMs and coming back restores both. Signing
 // out reloads the page, which discards every draft.
 import type { DraftAttachment } from "./Attachments.tsx";
-import type { AttachmentUpload, UploadState } from "./uploads.ts";
+import type { AttachmentUpload } from "./uploads.ts";
 
 const drafts = new Map<string, string>();
 
@@ -20,7 +20,7 @@ export interface StagedFiles {
 }
 
 const staged = new Map<string, StagedFiles>();
-let visible: ((key: string, change: Partial<UploadState>) => void) | undefined;
+let visible: ((key: string, change: Partial<DraftAttachment>) => void) | undefined;
 
 /** Keeps a conversation's files, still uploading, while another is open. */
 export function stashStagedFiles(key: string, files: StagedFiles) {
@@ -36,7 +36,11 @@ export function takeStagedFiles(key: string): StagedFiles | undefined {
 
 /** Object URLs a stashed conversation still shows when it is reopened. */
 export function stagedUrls() {
-  return new Set([...staged.values()].flatMap((files) => files.drafts.flatMap((draft) => draft.localUrl ?? [])));
+  return new Set(
+    [...staged.values()].flatMap((files) =>
+      files.drafts.flatMap((draft) => [draft.localUrl, draft.thumbnailUrl].filter((url) => url !== undefined)),
+    ),
+  );
 }
 
 /** The open conversation's chip updater, so uploads that started in an earlier
@@ -45,8 +49,9 @@ export function showStagedFiles(update: typeof visible) {
   visible = update;
 }
 
-/** Upload progress for a file in either the open conversation or a stashed one. */
-export function stagedFileChanged(key: string, change: Partial<UploadState>) {
+/** Upload progress (or what the editor can open) for a file in either the open
+ * conversation or a stashed one. */
+export function stagedFileChanged(key: string, change: Partial<DraftAttachment>) {
   for (const files of staged.values())
     files.drafts = files.drafts.map((draft) => (draft.key === key ? { ...draft, ...change } : draft));
   visible?.(key, change);

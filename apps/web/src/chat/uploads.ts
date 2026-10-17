@@ -1,4 +1,5 @@
 import type { ChatAttachment } from "./types.ts";
+import { EditFailed, type AttachmentEdit } from "./edit.ts";
 import { compressionSettings, prepareFile, type CompressionSettings, type PreparedFile } from "./prepare.ts";
 
 export const MAX_ATTACHMENTS = 10;
@@ -50,10 +51,12 @@ export interface UploadState {
 }
 
 /** Own the local bytes until removal or send confirmation. Focus, Send and Retry
- * share one upload, and renew well before the server's 24-hour unsent lifetime. */
+ * share one upload, and renew well before the server's 24-hour unsent lifetime.
+ * The original file is kept, so edits always start from it. */
 export class AttachmentUpload {
   state: UploadState;
   private file?: File;
+  private edits?: AttachmentEdit;
   private prepared?: PreparedFile;
   private completedAt?: number;
   private pending?: Promise<ChatAttachment>;
@@ -82,13 +85,46 @@ export class AttachmentUpload {
     this.completedAt = undefined;
   }
 
+  /** The original file, for the editor; unset once released. */
+  get source() {
+    return this.file;
+  }
+
+  get edit() {
+    return this.edits;
+  }
+
+  /** Replaces the edits: whatever was prepared or uploaded is cancelled, and
+   * the original is prepared and uploaded again with the new edits. */
+  setEdit(edit: AttachmentEdit | undefined): Promise<ChatAttachment> {
+    if (!this.file) return Promise.reject(new UploadError("This file is no longer available."));
+    this.controller.abort();
+    this.controller = new AbortController();
+    if (this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
+    this.edits = edit;
+    this.prepared = undefined;
+    this.completedAt = undefined;
+    this.pending = undefined;
+    this.update({
+      name: this.file.name,
+      storedSize: undefined,
+      compressing: undefined,
+      attachment: undefined,
+      error: undefined,
+      progress: 0,
+    });
+    return this.ensure();
+  }
+
   ensure(): Promise<ChatAttachment> {
     if (this.pending) return this.pending;
     if (this.state.attachment && !this.stale) return Promise.resolve(this.state.attachment);
-    this.pending = this.upload().finally(() => {
-      this.pending = undefined;
+    const pending = this.upload().finally(() => {
+      // An edit may have started a newer upload meanwhile.
+      if (this.pending === pending) this.pending = undefined;
     });
-    return this.pending;
+    this.pending = pending;
+    return pending;
   }
 
   release(cancel = false) {
@@ -109,26 +145,38 @@ export class AttachmentUpload {
     if (this.state.attachment) void cancelUpload(this.state.attachment.id, this.transport.fetch);
     this.update({ attachment: undefined, error: undefined, progress: 0 });
     try {
-      this.prepared ??= await prepareFile(
-        this.file!,
-        this.settings,
-        (compressing) => this.update({ compressing }),
-        signal,
-      );
+      const prepared =
+        this.prepared ??
+        (await prepareFile(
+          this.file!,
+          this.settings,
+          (compressing) => {
+            if (!signal.aborted) this.update({ compressing });
+          },
+          signal,
+          this.edits,
+        ));
+      // A superseded (edited or removed) preparation must not be kept for retries.
       signal.throwIfAborted();
-      this.update({ name: this.prepared.name, storedSize: this.prepared.blob.size, compressing: undefined });
+      this.prepared = prepared;
+      this.update({ name: prepared.name, storedSize: prepared.blob.size, compressing: undefined });
       const attachment = await uploadPrepared(
         this.channelId,
-        this.prepared,
+        prepared,
         this.transport,
-        (progress) => this.update({ progress }),
+        (progress) => {
+          if (!signal.aborted) this.update({ progress });
+        },
         signal,
       );
       this.completedAt = this.now();
       this.update({ attachment, progress: 1 });
       return attachment;
     } catch (error) {
-      if (!signal.aborted) this.update({ error: error instanceof UploadError ? error.message : "Failed to upload." });
+      if (!signal.aborted)
+        this.update({
+          error: error instanceof UploadError || error instanceof EditFailed ? error.message : "Failed to upload.",
+        });
       throw error;
     }
   }

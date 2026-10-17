@@ -2,7 +2,8 @@
 // are encoded as BT.709 I420. Mediabunny's Conversion resizes and rotates on a
 // 2D canvas before any `process` hook, which would hand us browser-converted
 // 8-bit frames, so this drives the sinks and sources directly. Rotation stays
-// track metadata; frames keep their coded orientation.
+// track metadata and frames keep their coded orientation, except for edited
+// videos: their tone-mapped frames are turned, cropped and painted on a canvas.
 import type * as Mediabunny from "mediabunny";
 import { HdrToneMapper, supportedHdrFrameFormat, type HdrTransfer } from "./hdr.ts";
 
@@ -18,6 +19,14 @@ export interface HdrTranscodeOptions {
   audioBitrate: number;
   progress: (fraction: number) => void;
   signal?: AbortSignal;
+  /** An edit's quarter turn and crop (display pixels) to bake into each frame,
+   * drawn onto `frame` (the output size) with the marks' `overlay` on top. */
+  edit?: {
+    rotation: Mediabunny.Rotation;
+    crop: Mediabunny.CropRectangle;
+    frame: OffscreenCanvas | HTMLCanvasElement;
+    overlay?: CanvasImageSource;
+  };
 }
 
 const BT709 = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false } as const;
@@ -34,7 +43,19 @@ export async function transcodeHdrVideo(
   const audio = options.audioCodec ? await input.getPrimaryAudioTrack() : null;
   const rotation = await track.getRotation();
   const sideways = rotation === 90 || rotation === 270;
-  const [codedWidth, codedHeight] = sideways ? [options.height, options.width] : [options.width, options.height];
+  const { edit } = options;
+  // Edited frames are tone mapped at full size, then turned, cropped and scaled.
+  const [codedWidth, codedHeight] = edit
+    ? [await track.getCodedWidth(), await track.getCodedHeight()]
+    : sideways
+      ? [options.height, options.width]
+      : [options.width, options.height];
+  const context = edit?.frame.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null
+    | undefined;
+  if (edit && !context) return;
   const duration = await input.computeDuration().catch(() => 0);
 
   const sink = new media.VideoSampleSink(track);
@@ -57,7 +78,7 @@ export async function transcodeHdrVideo(
     target: new media.BufferTarget(),
   });
   const video = new media.VideoSampleSource({ codec: options.codec, bitrate: options.bitrate });
-  output.addVideoTrack(video, { rotation });
+  output.addVideoTrack(video, { rotation: edit ? 0 : rotation });
   let audioPump: (() => Promise<void>) | undefined;
   if (audio && options.audioCodec === "copy") {
     const codec = await audio.getCodec();
@@ -107,9 +128,20 @@ export async function transcodeHdrVideo(
           duration: sample.duration,
           colorSpace: BT709,
         });
+        let edited: Mediabunny.VideoSample | undefined;
         try {
-          await video.add(mapped);
+          if (edit && context) {
+            mapped.drawWithFit(context, {
+              fit: "fill",
+              rotation: ((rotation + edit.rotation) % 360) as Mediabunny.Rotation,
+              crop: edit.crop,
+            });
+            if (edit.overlay) context.drawImage(edit.overlay, 0, 0);
+            edited = new media.VideoSample(edit.frame, { timestamp: sample.timestamp, duration: sample.duration });
+          }
+          await video.add(edited ?? mapped);
         } finally {
+          edited?.close();
           mapped.close();
         }
         if (duration > 0) options.progress(Math.min(1, (sample.timestamp + sample.duration) / duration));

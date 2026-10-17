@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { Send } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
-import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
+import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
@@ -23,6 +23,8 @@ export interface ComposerAttachments {
   onAdd: (files: File[]) => void;
   onRemove: (key: string) => void;
   onRetry: (key: string) => void;
+  /** Opens images and videos in the editor before sending. */
+  editing?: DraftEditing;
 }
 
 export interface ComposerHandle {
@@ -203,7 +205,12 @@ export default function Composer({
         </p>
       )}
       {attachments && (
-        <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} onRetry={attachments.onRetry} />
+        <DraftAttachments
+          drafts={attachments.drafts}
+          onRemove={attachments.onRemove}
+          onRetry={attachments.onRetry}
+          editing={attachments.editing}
+        />
       )}
       <form
         data-attach={!!attachments || undefined}
