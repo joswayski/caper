@@ -19,7 +19,7 @@ function frame(attachment: ChatAttachment) {
   return { width: Math.round(width * scale), height: Math.round(height * scale) };
 }
 
-/** The sender's own copy of a just-sent file, shown until the result arrives. */
+/** The sender's own copy, retained for this conversation's mounted lifetime. */
 export interface LocalPreview {
   url: string;
   video: boolean;
@@ -197,6 +197,9 @@ export function MessageAttachments({
 }) {
   // Ask for fresh URLs once per attachment if a long-open tab outlives them.
   const reported = useRef(new Set<string>());
+  // Some originals (e.g. HEIC) cannot be decoded here, even though the server
+  // can convert them. Do not keep a broken local copy over a usable result.
+  const [failedLocalPreviews, setFailedLocalPreviews] = useState(() => new Set<string>());
   if (!attachments.length) return null;
   const expired = (attachment: ChatAttachment) => {
     if (reported.current.has(attachment.id)) return;
@@ -208,14 +211,73 @@ export function MessageAttachments({
       {attachments.map((attachment) => {
         const size = frame(attachment);
         const view = attachmentView(attachment);
+        const local = failedLocalPreviews.has(attachment.id) ? undefined : localPreviews[attachment.id];
+        const processing = view === "processing";
+        // Keep the same image node and decoded local source through acceptance
+        // and processing. The viewer/link still opens the server's final file.
+        if (view === "image" || (processing && (attachment.kind === "image" || (local && !local.video)))) {
+          const gif = attachment.contentType === "image/gif";
+          const Image = gif ? GifImage : "img";
+          const src =
+            local && !local.video
+              ? local.url
+              : gif && !processing
+                ? attachment.url
+                : (attachment.previewUrl ?? attachment.url);
+          const imageSize = size ?? (processing ? DEFAULT_FRAME : undefined);
+          return (
+            <a
+              key={attachment.id}
+              className={`chat-media${processing ? " chat-processing" : ""}`}
+              href={processing ? undefined : attachment.url}
+              target={processing ? undefined : "_blank"}
+              rel={processing ? undefined : "noopener noreferrer"}
+              style={imageSize && { width: imageSize.width, aspectRatio: imageSize.width / imageSize.height }}
+              role={processing ? "status" : undefined}
+              aria-label={processing ? `${attachment.name}: ${processingLabel(progress[attachment.id])}` : undefined}
+              aria-haspopup={!processing && onView ? "dialog" : undefined}
+              onClick={(event) => {
+                // Modified clicks keep the link's new tab or window.
+                if (
+                  processing ||
+                  !onView ||
+                  event.button !== 0 ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                onView(attachment.id, event.currentTarget);
+              }}
+            >
+              {src && (
+                <Image
+                  src={src}
+                  alt={attachment.name}
+                  loading={local ? "eager" : "lazy"}
+                  decoding="async"
+                  width={imageSize?.width}
+                  height={imageSize?.height}
+                  onError={() => {
+                    if (local && !local.video) setFailedLocalPreviews((current) => new Set(current).add(attachment.id));
+                    else if (!processing) expired(attachment);
+                  }}
+                />
+              )}
+              {processing && (
+                <span className="chat-processing-status">
+                  <span className="chat-spinner" aria-hidden="true" />
+                  {processingLabel(progress[attachment.id])}
+                </span>
+              )}
+            </a>
+          );
+        }
         if (view === "processing")
           return (
-            <Processing
-              key={attachment.id}
-              attachment={attachment}
-              percent={progress[attachment.id]}
-              local={localPreviews[attachment.id]}
-            />
+            <Processing key={attachment.id} attachment={attachment} percent={progress[attachment.id]} local={local} />
           );
         if (view === "failed") {
           return (
@@ -226,38 +288,6 @@ export function MessageAttachments({
                 <small>Couldn’t process this file</small>
               </span>
             </div>
-          );
-        }
-        if (view === "image") {
-          const gif = attachment.contentType === "image/gif";
-          const Image = gif ? GifImage : "img";
-          return (
-            <a
-              key={attachment.id}
-              className="chat-media"
-              href={attachment.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={size && { width: size.width, aspectRatio: size.width / size.height }}
-              aria-haspopup={onView ? "dialog" : undefined}
-              onClick={(event) => {
-                // Modified clicks keep the link's new tab or window.
-                if (!onView || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
-                  return;
-                event.preventDefault();
-                onView(attachment.id, event.currentTarget);
-              }}
-            >
-              <Image
-                src={gif ? attachment.url : (attachment.previewUrl ?? attachment.url)}
-                alt={attachment.name}
-                loading="lazy"
-                decoding="async"
-                width={size?.width}
-                height={size?.height}
-                onError={() => expired(attachment)}
-              />
-            </a>
           );
         }
         if (view === "animated")

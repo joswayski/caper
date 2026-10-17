@@ -1394,11 +1394,12 @@
   .chat-message-tools > .chat-reply-message {
     display: none;
   }
-  /* Compact follow-ups too: their text would otherwise run under the trigger. */
-  .chat-message:not(.chat-message-pending) > :is(.chat-avatar, .chat-grouped-time) + div {
+  /* Reserve the actions slot before confirmation too, so accepting a send
+     never narrows its text or attachment previews. Include compact follow-ups. */
+  .chat-message > :is(.chat-avatar, .chat-grouped-time) + div {
     padding-right: 44px;
   }
-  .chat-thread-panel .chat-message:not(.chat-message-pending) > :is(.chat-avatar, .chat-grouped-time) + div {
+  .chat-thread-panel .chat-message > :is(.chat-avatar, .chat-grouped-time) + div {
     padding-right: 44px;
   }
   .chat-message > header,

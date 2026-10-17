@@ -598,7 +598,7 @@ export default function Chat({
   const [compression, setCompression] = useState<CompressionSettings | null>();
   const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url?: string; previewUrl?: string }>>({});
-  // The sender's local copies of sent files, shown while the server processes them.
+  // Keep sender previews through processing and confirmation without reloading images.
   const [localPreviews, setLocalPreviews] = useState<Record<string, LocalPreview>>({});
   // The thread composer suggests the same people as the channel composer.
   const mentionPeople = useMemo(
@@ -1188,7 +1188,7 @@ export default function Chat({
     } // The file chip owns the upload error and its Retry action.
     if (client !== clientRef.current || sources.some((upload) => ![...uploads.current.values()].includes(upload)))
       return;
-    // Sent files show the sender's local copies until processing finishes.
+    // Retain local previews after Send; the viewer still uses the server's final files.
     const local = Object.fromEntries(
       files.flatMap((item) =>
         item.attachment && item.localUrl && item.localKind
