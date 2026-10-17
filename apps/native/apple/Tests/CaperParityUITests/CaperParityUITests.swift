@@ -1254,6 +1254,12 @@ final class CaperParityUITests: XCTestCase {
         let designVoice = app.buttons["join-voice-chan00000002"]
         XCTAssertTrue(general.waitForExistence(timeout: 10))
         XCTAssertTrue(design.exists)
+        let lastChannel = app.buttons["channel-chan00000003"]
+        let directHeading = staticTexts("Direct messages", in: app).firstMatch
+        XCTAssertTrue(lastChannel.exists)
+        XCTAssertTrue(directHeading.exists)
+        XCTAssertGreaterThanOrEqual(directHeading.frame.minY - lastChannel.frame.maxY, 28,
+                                    "The DM divider needs breathing room below the last channel's highlight")
         XCTAssertFalse(app.descendants(matching: .any)["voice-count-chan00000001"].exists, "Empty channels show no voice count")
         // A live row ends with a green waveform and its count, on its own line, with no roster beneath it.
         let designCount = app.descendants(matching: .any)["voice-count-chan00000002"]

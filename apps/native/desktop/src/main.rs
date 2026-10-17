@@ -10417,9 +10417,9 @@ impl CaperApp {
         let Some(account) = self.account.clone() else {
             return;
         };
-        ui.add_space(8.0);
+        ui.add_space(16.0);
         full_bleed_separator(ui, ui.cursor().top());
-        ui.add_space(6.0);
+        ui.add_space(12.0);
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 28.0;
             ui.horizontal(|ui| {
@@ -37504,8 +37504,8 @@ mod tests {
             let direct_y = text_position(&output, "Direct messages").y;
             let gap = direct_y - last_channel.y1 as f32;
             assert!(
-                (0.0..40.0).contains(&gap),
-                "DM heading should directly follow the last channel, not be above it or bottom-anchored: {gap}"
+                (40.0..56.0).contains(&gap),
+                "DM heading must leave room for the divider on both sides without being bottom-anchored: {gap}"
             );
             let direct_action = if owner {
                 "Invite people"

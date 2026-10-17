@@ -1422,8 +1422,9 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
-                }.padding(.bottom, 8)
+                }.padding(.top, 12).padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                    .padding(.top, 16)
             }
                 }
                 }

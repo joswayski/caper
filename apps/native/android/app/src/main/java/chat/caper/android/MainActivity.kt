@@ -808,7 +808,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             HorizontalDivider(color = Border)
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
             // Your call and the space's live rooms lead the list, above Channels. Joining keeps the chat being read.
             LiveNowSection(
                 state, voice, pendingVoiceJoin, narrow = closeNavigation != null, joinVoice = joinVoice, prepareVoice = viewModel::prepareVoiceJoin,
@@ -937,6 +937,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             if (state.account != null) {
                 HorizontalDivider(color = Border)
+                Spacer(Modifier.height(12.dp))
                 // Feedback team only: the `@feedback` inbox, beside the DMs.
                 if (state.account.feedbackTeam) {
                     val feedbackSelected = state.feedbackShown || state.visit != null
