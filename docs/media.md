@@ -5491,6 +5491,34 @@ a follow-up PR after physical recovery and a complete native build on the
 intended main revision; toggling the repository variable alone does not remove
 it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
 
+**Live channels in the list, October 17, 2026:** after the owner tried Live now
+on an iPhone, the separate Live now section is superseded on every client by
+live channel rows that grow into cards in place (see the voice section above):
+no "Live now" heading or "N more live" fold, no "is speaking" line (it shifted
+the card), the phone strip shows the card's faces in its order, and pressing a
+card opens its chat while a right-click, long press or accessibility action on
+its faces opens per-person volume. Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 657 of 658 tests (the
+  known Node 22 `noise-assets.test.ts` failure). Every `test-voice-controls.mjs`
+  mode passes at 1280px and 390px in fine-pointer Chromium, and `CHANNEL_ROWS`
+  also passes in stock (touch-style) Chromium; desktop and phone captures were
+  inspected. The long press is exercised with synthetic touch pointer events.
+  All of this uses a mocked API and WebRTC.
+- Android: main, unit-test and androidTest Kotlin compile, the 436 JVM unit
+  tests pass and lint is clean. The 14 voice UI tests passed only under a
+  temporary, uncommitted Robolectric setup. `connectedDebugAndroidTest`,
+  `smoke.py`, `assembleDebug` and devices were not run.
+- Apple: the eight `LiveNow` unit tests pass on a Linux Swift 6.1.2 toolchain
+  and every changed Swift file parses. The SwiftUI views, `ProtocolTests`, the
+  parity UI tests and screenshots need Xcode and were not run here.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 554 tests pass; the wide and narrow `parity-voice-*` fixtures,
+  including the new `parity-voice-elsewhere`, were inspected under Xvfb.
+
+No live SFU, physical-device, touch-hardware or screen-reader validation was
+done, and there is no API, protocol, configuration or migration change.
+
 **Live now, October 17, 2026:** the October 11 header voice below is
 superseded on every client by the sidebar's Live now (see the voice section
 above). Validation:
