@@ -3,8 +3,8 @@
 // and re-encoded with its timing. Pure (no DOM), so it runs in a worker and in
 // tests. Android's GifShrink.kt is the same algorithm.
 
-/** Output edges, largest first: the first that fits the byte budget wins. */
-export const SHRINK_EDGES = [512, 384, 256, 192, 128] as const;
+/** A shrunk GIF's edge, like a re-encoded still's. */
+export const SHRINK_EDGE = 512;
 
 export class GifShrinkError extends Error {}
 
@@ -496,7 +496,6 @@ function lzwEncode(indices: Uint8Array, out: Output) {
   out.byte(0);
 }
 
-/** A frame waiting for the next one, which fixes its total delay. */
 interface Pending {
   rect: Rect;
   palette: Uint8Array;
@@ -505,20 +504,19 @@ interface Pending {
 }
 
 /**
- * Re-encodes `bytes` as an `edge` × `edge` GIF, keeping one frame in every
- * `stride` (each kept frame lasts as long as the ones it replaces). Each frame
- * gets its own palette of the colours that changed; unchanged pixels are left
+ * Re-encodes `bytes` as an `edge` × `edge` GIF, every frame with its delay.
+ * Each frame gets its own palette of the colours that changed; unchanged pixels are left
  * showing (transparent), unless the animation has transparency of its own, in
  * which case every frame is drawn whole on a cleared canvas.
  */
-export function encodeShrunk(bytes: Uint8Array, edge: number, stride = 1): Uint8Array {
+export function encodeShrunk(bytes: Uint8Array, edge: number): Uint8Array {
   const { width, height } = header(bytes);
   const side = Math.min(width, height);
   const left = Math.floor((width - side) / 2);
   const top = Math.floor((height - side) / 2);
   let transparency = false;
-  decodeGif(bytes, (rgba, _delay, index) => {
-    if (transparency || index % stride) return;
+  decodeGif(bytes, (rgba) => {
+    if (transparency) return;
     for (let y = top; y < top + side && !transparency; y++)
       for (let at = (y * width + left) * 4 + 3, x = 0; x < side; x++, at += 4)
         if (rgba[at] === 0) {
@@ -552,11 +550,7 @@ export function encodeShrunk(bytes: Uint8Array, edge: number, stride = 1): Uint8
   let previous: Uint8ClampedArray | undefined;
   const histogram = new Histogram();
   let pending: Pending | undefined;
-  decodeGif(bytes, (rgba, delay, index) => {
-    if (index % stride) {
-      if (pending) pending.delay += delay;
-      return;
-    }
+  decodeGif(bytes, (rgba, delay) => {
     if (pending) write(pending);
     squareScale(rgba, width, height, edge, scaled);
     // What this frame must draw: everything, or what differs from the last.
@@ -619,28 +613,9 @@ export function encodeShrunk(bytes: Uint8Array, edge: number, stride = 1): Uint8
   return out.result();
 }
 
-/**
- * The largest square re-encoding of `bytes` within `budget` bytes: 512 px,
- * then smaller edges, then fewer frames (each lasting longer).
- */
-export function shrinkGif(bytes: Uint8Array, budget: number): { bytes: Uint8Array; edge: number } {
+/** `bytes` as a centered square of at most 512 px, every frame and its timing kept. */
+export function shrinkGif(bytes: Uint8Array): { bytes: Uint8Array; edge: number } {
   const { width, height } = header(bytes);
-  const short = Math.min(width, height);
-  const edges = SHRINK_EDGES.filter((edge) => edge <= short);
-  if (!edges.length) edges.push(short as (typeof SHRINK_EDGES)[number]);
-  let frames = Infinity;
-  let edge = edges[0];
-  let stride = 1;
-  for (;;) {
-    const output = encodeShrunk(bytes, edge, stride);
-    if (output.length <= budget) return { bytes: output, edge };
-    if (frames === Infinity) frames = decodeGif(bytes, () => undefined);
-    // Jump straight to the edge the size suggests, else halve the frames.
-    const target = edge * Math.sqrt(budget / output.length);
-    const below = edges.filter((candidate) => candidate < edge);
-    const smaller = below.find((candidate) => candidate <= target) ?? below.at(-1);
-    if (smaller) edge = smaller;
-    else if (stride * 2 < frames) stride *= 2;
-    else throw new GifShrinkError("too large");
-  }
+  const edge = Math.min(SHRINK_EDGE, width, height);
+  return { bytes: encodeShrunk(bytes, edge), edge };
 }

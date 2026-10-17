@@ -82,10 +82,9 @@ class GifShrinkTest {
     }
 
     @Test
-    fun oversizedGifShrinksTo512WithEveryFrameAndItsTiming() {
+    fun wideGifShrinksTo512WithEveryFrameAndItsTiming() {
         val input = fixture(1000, 800, quadrants(1000, 800, 14))
-        assertTrue(input.size > PicturePolicy.GIF_MAX_BYTES)
-        val shrunk = GifShrink.shrink(input, PicturePolicy.GIF_MAX_BYTES)
+        val shrunk = GifShrink.shrink(input)
         assertEquals(512, shrunk.edge)
         assertTrue("${shrunk.bytes.size} bytes", shrunk.bytes.size < 100_000)
         assertEquals(512 to 512, gifSize(shrunk.bytes))
@@ -101,32 +100,27 @@ class GifShrinkTest {
     }
 
     @Test
-    fun tightBudgetStepsDownThenKeepsFewerFramesThatLastAsLong() {
-        val input = fixture(400, 400, quadrants(400, 400, 16, 5))
-        assertEquals(384, GifShrink.shrink(input, PicturePolicy.GIF_MAX_BYTES).edge)
-        val tight = GifShrink.shrink(input, 3_000)
-        assertTrue(tight.bytes.size <= 3_000)
-        assertEquals(128, tight.edge)
-        val decoded = frames(tight.bytes)
-        assertTrue(decoded.frames.size < 16)
-        assertEquals(16 * 5, decoded.delays.sum())
+    fun gifsUnder512KeepTheirShortEdge() {
+        val shrunk = GifShrink.shrink(fixture(400, 300, quadrants(400, 300, 3)))
+        assertEquals(300, shrunk.edge)
+        assertEquals(3, frames(shrunk.bytes).frames.size)
     }
 
     @Test
     fun transparentPixelsStayTransparentInEveryFrame() {
         val input = fixture(300, 300, listOf(Frame(4) { x, _ -> if (x < 150) 3 else 1 }, Frame(4) { x, _ -> if (x < 150) 1 else 3 }), true)
-        val shrunk = GifShrink.shrink(input, 1_000_000)
-        assertEquals(256, shrunk.edge)
+        val shrunk = GifShrink.shrink(input)
+        assertEquals(300, shrunk.edge)
         val decoded = frames(shrunk.bytes)
-        assertEquals(0, decoded.at(0, 10, 128) ushr 24)
-        assertTrue(near(decoded.at(0, 250, 128), palette[1]))
-        assertTrue(near(decoded.at(1, 10, 128), palette[1]))
-        assertEquals(0, decoded.at(1, 250, 128) ushr 24)
+        assertEquals(0, decoded.at(0, 10, 150) ushr 24)
+        assertTrue(near(decoded.at(0, 290, 150), palette[1]))
+        assertTrue(near(decoded.at(1, 10, 150), palette[1]))
+        assertEquals(0, decoded.at(1, 290, 150) ushr 24)
     }
 
     @Test(expected = GifShrink.Failure::class)
     fun nonGifBytesFail() {
-        GifShrink.shrink(byteArrayOf(1, 2, 3), 1_000)
+        GifShrink.shrink(byteArrayOf(1, 2, 3))
     }
 
     @Test

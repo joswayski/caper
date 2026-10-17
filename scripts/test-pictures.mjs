@@ -114,7 +114,7 @@ const stillAvatar = png(96, 96, (x, y) => (((x >> 4) + (y >> 4)) % 2 ? palette.e
 const stillIcon = png(64, 64, (x, y) => (Math.hypot(x - 32, y - 32) < 20 ? palette.eggshell : palette.blackout));
 // A landscape photo-like PNG: the client must crop it square and re-encode it.
 const landscape = png(800, 600, (x, y) => [Math.round((x / 800) * 255), Math.round((y / 600) * 255), 120]);
-// Over 5 MB and 1024 px wide (this writer barely compresses): shrunk, never refused.
+// 1200 px wide (and about 6 MB, as this writer barely compresses): shrunk to a 512 px square.
 const oversizedGif = gif(
   1200,
   800,
@@ -556,14 +556,12 @@ try {
     mimeType: "image/gif",
     buffer: oversizedGif,
   });
-  assert.ok(oversizedGif.length > 5 * 1024 * 1024);
   await page.waitForFunction(() => window.pictureFixture.completes === 3, undefined, { timeout: 60_000 });
   const shrunk = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
     [shrunk.contentType, shrunk.filename, shrunk.width, shrunk.height],
     ["image/gif", "avatar.gif", 512, 512],
   );
-  assert.ok(shrunk.byteSize <= 5 * 1024 * 1024);
   // Chrome's own decoder plays the shrunk upload: every frame, square.
   const shrunkBody = stored.get("upload000003").body;
   assert.equal(shrunkBody.length, shrunk.byteSize);

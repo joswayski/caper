@@ -34,13 +34,12 @@ class PicturesTest {
         assertNull(gifSize("GIF89a".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 0, 1)))
     }
 
-    @Test fun `gifs upload unchanged up to 5 MiB and 1024 on each side`() {
-        assertTrue(gifUploadsUnchanged(PicturePolicy.GIF_MAX_BYTES, 1024, 1024))
-        assertTrue(gifUploadsUnchanged(812_345, 480, 480))
-        assertFalse(gifUploadsUnchanged(PicturePolicy.GIF_MAX_BYTES + 1, 480, 480))
-        assertFalse(gifUploadsUnchanged(1_000, 1025, 480))
-        assertFalse(gifUploadsUnchanged(1_000, 480, 1025))
-        assertFalse(gifUploadsUnchanged(1_000, 0, 480))
+    @Test fun `gifs upload unchanged at any size within 1024 on each side`() {
+        assertTrue(gifUploadsUnchanged(1024, 1024))
+        assertTrue(gifUploadsUnchanged(480, 480))
+        assertFalse(gifUploadsUnchanged(1025, 480))
+        assertFalse(gifUploadsUnchanged(480, 1025))
+        assertFalse(gifUploadsUnchanged(0, 480))
     }
 
     @Test fun `stills crop to the centered square and scale to at most 512`() {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { decodeGif, shrinkGif } from "../account/gif-shrink.ts";
-import { MAX_GIF_BYTES } from "../account/pictures.ts";
 
 type Colour = [number, number, number];
 
@@ -102,13 +101,11 @@ test("the decoder composites every frame with its delay", () => {
   assert.deepEqual(at(2, 7, 0), [...palette[3], 255]);
 });
 
-test("an oversized GIF shrinks to a 512 px square with every frame and its timing", () => {
+test("a GIF over 1024 px shrinks to a 512 px square with every frame and its timing", () => {
   // 1000 × 800 × 14 frames: about 6 MB in this barely-compressed form.
   const input = fixture(1000, 800, palette, quadrants(1000, 800, 14));
-  assert.ok(input.length > MAX_GIF_BYTES);
-  const { bytes, edge } = shrinkGif(input, MAX_GIF_BYTES);
+  const { bytes, edge } = shrinkGif(input);
   assert.equal(edge, 512);
-  assert.ok(bytes.length <= MAX_GIF_BYTES);
   assert.ok(bytes.length < 100_000, `${bytes.length} bytes: flat colour and unchanged areas compress`);
   assert.deepEqual([bytes[6] | (bytes[7] << 8), bytes[8] | (bytes[9] << 8)], [512, 512]);
   const { decoded, at } = frames(bytes);
@@ -123,20 +120,10 @@ test("an oversized GIF shrinks to a 512 px square with every frame and its timin
   }
 });
 
-test("a tight budget steps down in size, then keeps fewer frames that last as long", () => {
-  const input = fixture(400, 400, palette, quadrants(400, 400, 16, 5));
-  const roomy = shrinkGif(input, MAX_GIF_BYTES);
-  assert.equal(roomy.edge, 384);
-  const tight = shrinkGif(input, 3_000);
-  assert.ok(tight.bytes.length <= 3_000);
-  assert.equal(tight.edge, 128);
-  const { decoded } = frames(tight.bytes);
-  assert.ok(decoded.length < 16);
-  assert.equal(
-    decoded.reduce((total, frame) => total + frame.delay, 0),
-    16 * 5,
-    "the animation keeps its length",
-  );
+test("a GIF smaller than 512 px keeps its short edge", () => {
+  const { bytes, edge } = shrinkGif(fixture(400, 300, palette, quadrants(400, 300, 3)));
+  assert.equal(edge, 300);
+  assert.equal(frames(bytes).decoded.length, 3);
 });
 
 test("transparent pixels stay transparent in every frame", () => {
@@ -150,26 +137,29 @@ test("transparent pixels stay transparent in every frame", () => {
     ],
     true,
   );
-  const { bytes, edge } = shrinkGif(input, 1_000_000);
-  assert.equal(edge, 256);
+  const { bytes, edge } = shrinkGif(input);
+  assert.equal(edge, 300);
   const { at } = frames(bytes);
-  assert.equal(at(0, 10, 128)[3], 0);
-  assert.ok(near(at(0, 250, 128), palette[1]));
-  assert.ok(near(at(1, 10, 128), palette[1]));
-  assert.equal(at(1, 250, 128)[3], 0, "uncovered in the next frame, not left over");
+  assert.equal(at(0, 10, 150)[3], 0);
+  assert.ok(near(at(0, 290, 150), palette[1]));
+  assert.ok(near(at(1, 10, 150), palette[1]));
+  assert.equal(at(1, 290, 150)[3], 0, "uncovered in the next frame, not left over");
 });
 
 test("truncated and non-GIF bytes fail instead of hanging", () => {
   const input = fixture(40, 40, palette, quadrants(40, 40, 2));
-  assert.throws(() => shrinkGif(new Uint8Array([1, 2, 3]), 1000));
+  assert.throws(() => shrinkGif(new Uint8Array([1, 2, 3])));
   const { decoded } = frames(input.subarray(0, input.length - 200));
   assert.ok(decoded.length >= 1);
 });
 
-test("an oversized GIF picked for a profile picture is shrunk, not refused", async () => {
+test("GIFs of any byte size upload unchanged within 1024 px; wider ones are shrunk", async () => {
   const { preparePicture } = await import("../account/picture-upload.ts");
-  const input = fixture(1000, 800, palette, quadrants(1000, 800, 14));
-  const prepared = await preparePicture(new Blob([input as BlobPart], { type: "image/gif" }));
-  assert.deepEqual([prepared.contentType, prepared.width, prepared.height], ["image/gif", 512, 512]);
-  assert.ok(prepared.blob.size <= MAX_GIF_BYTES);
+  // About 9 MB, 1000 × 1000: no byte limit, so it goes up as it is.
+  const heavy = new Blob([fixture(1000, 1000, palette, quadrants(1000, 1000, 18)) as BlobPart], { type: "image/gif" });
+  assert.ok(heavy.size > 8 * 1024 * 1024);
+  const unchanged = await preparePicture(heavy);
+  assert.equal(unchanged.blob, heavy);
+  const wide = await preparePicture(new Blob([fixture(1200, 800, palette, quadrants(1200, 800, 2)) as BlobPart]));
+  assert.deepEqual([wide.contentType, wide.width, wide.height], ["image/gif", 512, 512]);
 });

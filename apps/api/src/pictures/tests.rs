@@ -94,39 +94,21 @@ fn stored_pictures_must_fit_1024_pixels() {
 }
 
 #[test]
-fn reservations_check_type_size_and_dimensions() {
-    assert!(check_reservation("image/webp", STILL_MAX_BYTES, Some(512), Some(512)).is_ok());
-    assert!(check_reservation("image/gif", GIF_MAX_BYTES, Some(480), Some(480)).is_ok());
+fn reservations_check_type_and_dimensions_but_not_bytes() {
+    assert!(check_reservation("image/webp", Some(512), Some(512)).is_ok());
+    assert!(check_reservation("image/gif", Some(480), Some(480)).is_ok());
     let code = |result: Result<(), ApiError>| result.unwrap_err().code;
     assert_eq!(
-        code(check_reservation("image/avif", 10, Some(1), Some(1))),
+        code(check_reservation("image/avif", Some(1), Some(1))),
         Some("picture_type")
     );
     assert_eq!(
-        code(check_reservation("image/svg+xml", 10, Some(1), Some(1))),
+        code(check_reservation("image/svg+xml", Some(1), Some(1))),
         Some("picture_type")
-    );
-    assert_eq!(
-        code(check_reservation(
-            "image/png",
-            STILL_MAX_BYTES + 1,
-            Some(1),
-            Some(1)
-        )),
-        Some("picture_too_large")
-    );
-    assert_eq!(
-        code(check_reservation(
-            "image/gif",
-            GIF_MAX_BYTES + 1,
-            Some(1),
-            Some(1)
-        )),
-        Some("picture_too_large")
     );
     for (width, height) in [(None, Some(1)), (Some(1025), Some(1)), (Some(0), Some(1))] {
         assert_eq!(
-            check_reservation("image/png", 10, width, height)
+            check_reservation("image/png", width, height)
                 .unwrap_err()
                 .status,
             StatusCode::BAD_REQUEST
