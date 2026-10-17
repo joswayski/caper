@@ -1733,6 +1733,15 @@ again, leaving a one-hour margin. Desktop retains an owned copy rather than
 re-reading a picked path that may change. Concurrent triggers share the active
 upload; successful files in a partially failed batch are reused on Retry.
 
+For unsent composer drafts, Send retries failed uploads and continues once the
+entire selected batch is ready. Another failure keeps the text and files in the
+composer instead of sending the successful subset. Failed tiles have a **Retry
+upload** action and a highlighted warning explaining that Send retries; the
+normal uploading status/progress returns during each attempt. There is no new
+continuous retry loop. Native Send attempts are cancelled if their composer or
+destination changes while waiting; profile composers retain their complete
+selection on failure as well.
+
 Send enforces expiry even before cleanup and returns 409 `attachment_unavailable`.
 Clients treat this as a definitive refusal, silently re-upload and send with a
 new message UUID and attachment IDs. Recovery is bounded to one replacement
@@ -1750,6 +1759,16 @@ reserve quota normally; cancelled bytes remain charged until purge succeeds.
 History marks deleted attachments `unavailable` without URLs. No user-facing
 sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
+
+#### Upload retry feedback validation (October 17, 2026)
+
+| Platform | Local validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 657 `npm test` tests pass. `scripts/test-chat-paste.mjs` and `scripts/test-profile-composer.mjs` pass against the disposable parity fixture: held retries, repeated failure, retained text/files, complete-selection delivery exactly once after recovery, channel/thread isolation, and profile queued-file neutrality. Inspected 1280px/390px DPR-2 Chromium failed/uploading states, thread/profile composers, and a recorded two-image failure/recovery interaction. This is not live R2, Safari, touch or physical-device validation. |
+| Rust desktop | All 555 tests pass; 12 device/audio tests ignored. Formatting, Clippy and Linux binary build pass. Tests cover complete-selection retry, duplicate Send and stale destination/draft guards. Inspected the Linux `parity-attachments` fixture; no live native upload or Windows/macOS render acceptance. |
+| Android | Implementation and Compose regression updated. `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` stops during configuration because the Android SDK is absent. No Kotlin build or device rendering verified. |
+| iOS/macOS | Implementation and XCTest updated for retry success/failure, duplicate Send and stale composer protection. Swift/Xcode unavailable; no Apple compilation, tests or rendering verified. |
+| Containers | Docker daemon unavailable. Web production build validated directly; no infrastructure or API changes. |
 
 #### Cancellation validation and rollout (October 11, 2026)
 

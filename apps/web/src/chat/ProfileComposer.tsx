@@ -22,6 +22,7 @@ interface ProfileFile {
   /** Upload progress once Send starts; unset while the file is only staged. */
   progress?: number;
   attachment?: ChatAttachment;
+  error?: string;
 }
 interface ProfileDraft {
   text: string;
@@ -163,6 +164,7 @@ export default function ProfileComposer({
     notify();
     setError(undefined);
     setStatus("Sending…");
+    for (const item of draft.files) item.error = undefined;
     try {
       const account = await getAccount();
       if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
@@ -185,17 +187,22 @@ export default function ProfileComposer({
         item.progress = 0;
         save({ ...draft });
         const signal = AbortSignal.timeout(120_000);
-        const prepared = await prepareFile(item.file, settings, () => {}, signal);
-        item.attachment = await uploadPrepared(
-          conversation.id,
-          prepared,
-          browserTransport,
-          (progress) => {
-            item.progress = progress;
-            save({ ...draft });
-          },
-          signal,
-        );
+        try {
+          const prepared = await prepareFile(item.file, settings, () => {}, signal);
+          item.attachment = await uploadPrepared(
+            conversation.id,
+            prepared,
+            browserTransport,
+            (progress) => {
+              item.progress = progress;
+              save({ ...draft });
+            },
+            signal,
+          );
+        } catch (reason) {
+          item.error = "Failed to upload.";
+          throw reason;
+        }
       }
       const command = draft.command ?? {
         clientMessageId: crypto.randomUUID(),
@@ -243,11 +250,13 @@ export default function ProfileComposer({
       save({ ...draft });
       setStatus(undefined);
       setError(
-        reason instanceof TypeError
-          ? "Couldn’t confirm delivery. Check your connection."
-          : reason instanceof Error
-            ? reason.message
-            : "Couldn’t send this message.",
+        draft.files.some((item) => item.error)
+          ? undefined // The upload tray owns this failure and its retry guidance.
+          : reason instanceof TypeError
+            ? "Couldn’t confirm delivery. Check your connection."
+            : reason instanceof Error
+              ? reason.message
+              : "Couldn’t send this message.",
       );
     } finally {
       pending.delete(personId);
@@ -265,6 +274,7 @@ export default function ProfileComposer({
     progress: item.progress ?? 0,
     staged: !item.attachment && item.progress === undefined && !sending,
     attachment: item.attachment,
+    error: item.error,
   }));
   const canSend = !sending && (!!draft.text.trim() || !!draft.files.length);
 

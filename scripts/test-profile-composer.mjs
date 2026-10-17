@@ -176,6 +176,24 @@ try {
   open("Maya");
   assert.equal(value(), "Hello 😀suffix");
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
+  await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    browser("click", '.chat-profile-composer button[type="submit"]');
+    wait(
+      '!!document.querySelector(".chat-profile-composer .chat-draft-notice[data-error]") && !document.querySelector("#profile-message").disabled',
+    );
+    assert.equal(value(), "Hello 😀suffix");
+    assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
+    assert.equal(
+      evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li[data-error]").length'),
+      1,
+      "only the attempted file is marked failed, not the queued file",
+    );
+    const blockedDM = (await directs()).find((conversation) => conversation.peer.username === "maya");
+    assert.equal((await history(blockedDM.id)).messages.length, 0, "upload failure prevents message delivery");
+  }
+  capture("profile-upload-failed");
+  await control({ clearFailures: true });
   // Lose the HTTP acknowledgement after the fixture has accepted the message.
   evaluate(`const realFetch = window.fetch.bind(window); window.profileCommands = [];
     window.dropProfileAck = true;

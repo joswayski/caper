@@ -2359,6 +2359,28 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+.chat-draft-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--surface);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.chat-draft-notice > svg,
+.chat-draft-notice > .chat-spinner {
+  flex: none;
+  margin-top: 1px;
+}
+.chat-draft-notice[data-error] {
+  border-color: var(--terracotta);
+  color: var(--error-text);
+}
 .chat-drafts {
   display: grid;
   /* Desktop tiles fill the composer width, then wrap at its edge. */
@@ -2396,7 +2418,7 @@
   color: var(--text-muted);
 }
 .chat-drafts li[data-error] {
-  border-color: #8a4334;
+  border-color: var(--terracotta);
 }
 .chat-draft-preview {
   position: absolute;
@@ -2474,6 +2496,9 @@ a.chat-draft-preview {
 .chat-draft-retry {
   min-height: 32px;
   border: 0;
+  color: var(--on-action);
+  background: var(--action);
+  font-weight: 700;
   cursor: pointer;
 }
 .chat-draft-remove {
@@ -2503,9 +2528,11 @@ a.chat-draft-preview {
   outline-offset: -2px;
 }
 @media (hover: hover) {
-  .chat-draft-remove:hover > svg,
-  .chat-draft-retry:hover {
+  .chat-draft-remove:hover > svg {
     background: var(--surface-hover);
+  }
+  .chat-draft-retry:hover {
+    filter: brightness(1.08);
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
