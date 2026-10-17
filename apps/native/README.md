@@ -323,11 +323,14 @@ Check these states on every native release, not only a wide populated screenshot
   more live". Every channel row is one line; live rows end with a green
   waveform and count. Quiet rows other than your call's keep a headphones join:
   revealed on hover on Mac and Rust desktop without shifting the name or `⋯`,
-  shown dimmed with a 44-point target on touch (Android, iPhone, iPad). Phones
+  shown dimmed with a 44-point target on touch (Android, iPhone, iPad) and in
+  Rust desktop windows 760px or narrower. Phones
   add a 56-point strip under the chat header: your call with Mute (tapping it
   opens Browse), or, out of a call, who is talking there with Join. Check the
   minimum desktop sidebar width, long names, more than ten people in a call,
-  three or more live rooms, a call in another space, and the phone strip.
+  three or more live rooms, a call in another space, and the phone strip; Rust
+  desktop's `parity-voice-crowded`, `-list`, `-strip-narrow` and `-join-narrow`
+  fixtures show them.
 - Members stay on the right: a column when chat has enough room, an overlay below
   the chat header otherwise. The toggle must stay accessible. Never stack members
   underneath the composer. Check 840px desktop windows as well as 1440px and mobile.
