@@ -381,6 +381,7 @@ targets:
       - Tests/CaperCoreTests/WhatsNewTests.swift
       - Tests/CaperCoreTests/ProfilePictureTests.swift
       - Tests/CaperCoreTests/ProfileUpdatesTests.swift
+      - Tests/CaperCoreTests/LiveNowTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

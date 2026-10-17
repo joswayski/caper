@@ -186,7 +186,8 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 1025, height: 10)))
         XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 10, height: 1025)))
         XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 0, height: 10)))
-        XCTAssertTrue(ProfilePicturePolicy.gifUploadsUnchanged(square + Data(count: 8 * 1_024 * 1_024)), "any byte size")
+        XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(square + Data(count: ProfilePicturePolicy.gifMaxBytes)), "over 5 MiB")
+        XCTAssertEqual(ProfilePicturePolicy.gifMaxBytes, 5_242_880)
         XCTAssertEqual(ProfilePicturePolicy.stillMaxBytes, 1_048_576)
         // A slice that does not start at index 0 reads the same.
         let sliced = (Data([1, 2]) + square).dropFirst(2)
@@ -255,7 +256,7 @@ final class ProfilePictureTests: XCTestCase {
 
     // MARK: Preparation (real ImageIO and libwebp)
 
-    func testGIFsUploadUnchangedAtAnySizeAndShrinkWhenWide() throws {
+    func testGIFsUploadUnchangedWithinTheirLimitsAndShrinkBeyondThem() throws {
         let gif = try animatedGIF(width: 40, height: 20, frames: 2)
         let prepared = try ProfilePicturePreparer.prepare(gif)
         XCTAssertEqual(prepared.data, gif, "the animation is never re-encoded")
@@ -269,12 +270,13 @@ final class ProfilePictureTests: XCTestCase {
         let wide = try animatedGIF(width: 1100, height: 700, frames: 3)
         let shrunk = try ProfilePicturePreparer.prepare(wide)
         XCTAssertEqual([shrunk.contentType, "\(shrunk.width)x\(shrunk.height)"], ["image/gif", "512x512"])
+        XCTAssertLessThanOrEqual(shrunk.data.count, ProfilePicturePolicy.gifMaxBytes)
         let source = try XCTUnwrap(CGImageSourceCreateWithData(shrunk.data as CFData, nil))
         XCTAssertEqual(CGImageSourceGetCount(source), 3)
         XCTAssertEqual(GIFShrink.frameDelay(source, at: 1), 0.1, accuracy: 0.001)
-        // Over 5 MiB but within 1024 px: uploaded byte for byte.
-        let heavy = gif + Data(count: 6 * 1_024 * 1_024)
-        XCTAssertEqual(try ProfilePicturePreparer.prepare(heavy).data, heavy)
+        // Over 5 MiB: shrunk too (to its 20 px short edge), never refused.
+        let heavy = try ProfilePicturePreparer.prepare(gif + Data(count: ProfilePicturePolicy.gifMaxBytes))
+        XCTAssertEqual([heavy.width, heavy.height], [20, 20])
         XCTAssertThrowsError(try ProfilePicturePreparer.prepare(Data("not a picture".utf8))) { XCTAssertEqual($0 as? PictureError, .unreadable) }
     }
 

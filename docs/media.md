@@ -186,59 +186,71 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Voice joins from the conversation header (October 11, 2026, on web, Android,
-iOS/macOS and Rust desktop). After the channel name, the open channel shows up
-to three faces of who is in its voice with a count, then Join voice, Switch here
-(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
-a thin divider separates it from Pins and Members. Phones show only the
-conversation below a Slack-style header: the channel name (with "N members · M
-in voice" beneath it) opens the channel's menu of Pins and Members, and one
-bordered group holds icon-only voice buttons (headphones to join or switch;
-mute, deafen and a red disconnect while in voice, also in a DM). While others
-are in a channel's voice and you are not, its Join glows softly (static with
-reduced motion); Leave is a red icon and label, with no fill or border, in every header. Phones show no faces in the
-header: the subtitle already says how many are in voice, and Browse lists them.
-Voice errors appear above the composer, and channels, rosters, the account bar
-and the voice dock stay in Browse.
-Channel rows no longer carry a Join action: empty channels are a single line,
-and only occupied channels add the `N in voice` line with its collapsible
-roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
-headphones shortcut on each channel row, revealed on hover or keyboard focus in
-space reserved beside the `⋯` menu and absent for the connected channel; touch
-joins from the header. The roster opens automatically on connection. Mic,
-deafen and device settings stay in the account footer, including before
-joining. The channel/space status and Leave stay in a dock
-above that footer whenever you are in voice; when navigation hides the active
-channel, its roster pins there too; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice. That includes a space with no
-joined channel, whose empty state replaces only the conversation, and a pending
+Voice lives in the sidebar's Live now (design H; October 17, 2026, on web,
+Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
+opening a channel never joins or switches voice, and joining never changes the
+conversation you are reading. Live now sits above a space's Channels whenever
+you are in voice (in any space) or one of its joined channels has people in
+voice.
+
+- Your call card comes first: the call's channel (it opens that chat and names
+  the space when the call is elsewhere), "You're in · N", Connecting… or
+  Reconnecting… in amber, and the shared session timer. Faces follow, you first
+  and then in join order (speaking never reorders them), with a green speaking
+  ring and mute/deafen badges, in at most two rows: up to ten faces, or nine and
+  a "+N" tile. Then "Name is speaking", and Mute, Deafen and Leave (Cancel while
+  joining). Faces and "+N" open the full list ("In #channel · N people") with
+  per-person volume and Mute for me, beside the sidebar on wide layouts and as a
+  bottom sheet on phones. Escape, an outside press and Close dismiss it; on web,
+  focus moves into it.
+- Other live rooms follow, busiest first and then by name: up to three faces, a
+  one-line summary of names, and Join (eggshell) or Switch (neutral) when you
+  are in a call elsewhere. Two show; the rest fold into "N more live". A channel
+  opened from the feedback inbox has no row, so while it is live it appears here
+  too. Starting voice in an empty visited channel is no longer offered.
+
+Channel rows are one line, with no roster, count expander or row timer; a live
+row ends with a green waveform and count ("N in voice"). Every row except your
+call's keeps a one-click headphones join ("Join voice in #x", or "Switch voice
+to #x"). Fine pointers reveal it on hover or keyboard focus in space reserved
+beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and Rust desktop at
+760px or narrower show it dimmed with a 44px target on quiet rows and hide it on
+live rows, whose cards carry Join. The conversation header carries no voice;
+"N members · M in voice" stays beneath channel names where shown. While reading
+any conversation, phones add a 56px strip under its header: your call (channel,
+two faces, who is speaking, timer and a 44px Mute; the rest opens Browse), or,
+out of a call, the open channel's live room with Join. The bottom dock and its
+pinned roster are gone; voice errors keep their place. Mic, deafen and device
+settings stay in the account bar, including before joining, and mirror the
+card's Mute and Deafen. Speaking rings appear only for your own call, since
+other rooms carry no audio. Browsing other chats, spaces or DMs does not leave
+voice. That includes a space with no joined channel, whose empty state replaces
+only the conversation (Live now and your call card remain), and a pending
 invitation opened from the rail, which opens over the room. Voice still ends
-when its own channel is left, deleted or revoked.
-The row shortcut is neutral until hover/focus, and empty channels have no voice
-status text. Only occupied channels show a voice count. Hover and connection
-updates do not shift channel rows; expanding a roster moves later channels down. The Channels count stays beside its label
-in both owned and shared spaces. Selecting a channel
-opens text without switching voice. Other participant lists start collapsed and
-expand from the voice count. Joined-channel menus offer Leave channel to members;
+when its own channel is left, deleted or revoked. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
-At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets, and phones show one header face without
-the count.
-Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
-against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
-owner permissions, settings focus return, voice switching and pending/error/cancel
-states. This is browser UI coverage, not live SFU or physical-device validation.
-Run `VOICE_TEST_REDESIGN=1 node scripts/test-voice-controls.mjs` for pre-join
-audio settings, inline/pinned Leave, automatic rosters and chat/space call
-persistence. `VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves
-the explicitly simulated, interactive UI on port 5180 beside local Vite; it
-does not capture a real microphone or contact the SFU. No production mock route
-is added. The channel-centric redesign is web-only at the owner's request.
-Android, Apple and Rust desktop retain their independent rows and bottom
-disconnect control; no native release or shared protocol/configuration change
-is required. Web can deploy independently; merging does not deploy it.
+Web tooltips follow their control while open, because the call card arriving or
+leaving shifts the rows below it.
+
+`VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh" node
+scripts/test-voice-controls.mjs http://localhost:5174` runs the mocked web flow.
+Each `VOICE_TEST_*=1` mode adds a focus:
+
+- `REDESIGN`: Live now itself, covering cards, folding, crowded calls, list
+  placement, the phone strip's join and focus, and row join/switch.
+- `CHANNEL_ROWS`: row geometry, permissions and pending/error/cancel states; run
+  it with stock Chromium too, for the touch rows.
+- `SIDEBAR`: DMs, empty spaces and rail invitations during a call.
+- `DOCK`: the account bar while connected, and the card's links.
+- `TIMERS` and `AVATARS`.
+
+This is browser UI coverage, not live SFU or physical-device validation.
+`VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves the
+explicitly simulated, interactive UI on port 5180 beside local Vite; it does not
+capture a real microphone or contact the SFU. No production mock route is added,
+and there is no API, protocol, configuration or migration change.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -2631,6 +2643,48 @@ not change. Summary, reaction and pin revisions remain independent. Clients
 merge summaries monotonically, preserve one broadcast identity, and keep roots
 loaded through thread GET out of channel pagination until channel history loads
 them. Reconnect refetches the active thread and fences obsolete responses.
+
+### Unread thread replies (October 17, 2026)
+
+Web, Android, Apple and Rust desktop show a gold (`#E4C76A`) dot and **Unread**
+beside the terracotta reply count when another account replies in a thread the
+viewer started or replied to. Participation comes from message authorship, not
+the five displayed avatars. Own replies and blocked/deleted authors do not create
+unread state; sending a reply does not implicitly acknowledge earlier replies by
+others.
+
+`GET /api/chat/channels/{channel}/threads/unread` returns
+`{threads:[{rootId,seq}]}`, using the latest qualifying unread reply sequence.
+`PUT /api/chat/channels/{channel}/messages/{root}/thread/read` accepts `{seq}`
+and returns 204. Both use account authentication and existing conversation read
+permissions. The additive `thread_reads` table stores a per-account/root cursor,
+advanced monotonically and clamped to that thread's latest committed reply.
+Personalized state never enters the shared message payload or gateway replay.
+
+Clients acknowledge rendered replies only in an active, visible thread's latest
+window; channel visits, hover prefetch and older windows do not clear the badge.
+Failed acknowledgements retain it for retry, and delayed responses cannot erase
+newer unread replies. Live events refresh the list; the existing 15-second
+foreground refresh reconciles reads made on another device. This does not change
+push notifications or channel unread indicators. Earlier thread visits were not
+recorded, so existing participated threads can initially show **Unread** until
+opened; no migration guesses or backfills past reads.
+
+Validation: `npm run check`, 651 web/shared tests, Rust workspace tests and
+Clippy passed. A disposable Postgres HTTP test covers participation beyond five
+avatars, account-only access, private-channel/DM denial, own/blocked/deleted
+authors, prefetch/channel-read independence and monotonic/thread-clamped cursors.
+Chromium at 1280px and 390px exercised the real local API: hover left read storage
+unchanged, opening a thread persisted its visible sequence and cleared only that
+thread's badge, a background tab kept new replies unread until it regained focus,
+and unread state survived a page reload. Narrow Chromium is not a phone/device
+test. Rust desktop passed its tests and package Clippy, linked against native
+libwebrtc, and rendered the labelled `parity-thread-unread` fixture under
+Linux/Xvfb. That fixture verifies layout, not a live native conversation.
+Android SDK and Swift/Xcode are
+unavailable in this orb, so their new contract tests and native rendering remain
+unverified. Docker has no running daemon; the web production build and API
+compilation were checked, not container images or an API release build.
 
 ### Thread validation boundary
 
@@ -5352,6 +5406,31 @@ Keep the existing Mac/Linux quarantines. Remove the Windows quarantine only in
 a follow-up PR after physical recovery and a complete native build on the
 intended main revision; toggling the repository variable alone does not remove
 it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
+
+**Live now, October 17, 2026:** the October 11 header voice below is
+superseded on every client by the sidebar's Live now (see the voice section
+above). Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 655 of 656 tests. The one
+  failure is `noise-assets.test.ts`, which needs Node 24's WebAssembly; this orb
+  has Node 22, and the test fails the same way on unmodified main.
+  `test-voice-controls.mjs` passes in every mode at 1280px and 390px in
+  fine-pointer Chromium, and `CHANNEL_ROWS` also passes in stock (touch-style)
+  Chromium. All of this uses a mocked API and WebRTC.
+- Android: Kotlin and androidTest compile, the 430 JVM unit tests pass, and lint
+  is clean. The ten instrumented voice UI tests passed only under a temporary,
+  uncommitted Robolectric setup, which checks behaviour but not screenshots.
+  `connectedDebugAndroidTest`, `smoke.py` and devices were not run.
+- Apple: the Swift sources parse and the six new `LiveNow` unit tests pass on a
+  Linux Swift 6.1.2 toolchain. The views were type-checked only against a
+  SwiftUI stand-in. Run the parity UI tests (rewritten for Live now) and both
+  parity screenshot scripts with Xcode before release.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 550 tests pass, and its new `parity-voice-*` fixtures were
+  inspected under Xvfb.
+
+No live SFU, physical-device, screen-reader or touch-hardware validation was
+done.
 
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
@@ -8215,7 +8294,7 @@ user's pictures from storage on account deletion belongs with that future flow.
 
 | Call | Behavior |
 | --- | --- |
-| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); no byte limit (earlier servers answered `413 picture_too_large` over 5 MiB for GIFs or 1 MiB otherwise); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
+| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIFs ≤ 5 MiB and other pictures ≤ 1 MiB (`413 picture_too_large`); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
@@ -8233,16 +8312,16 @@ image downloads on each platform; follow-up).
 ### Clients
 
 Every client applies the same preparation: a GIF (detected by its bytes) keeps
-its animation. Within 1024 × 1024 it uploads unchanged at any byte size; a
-wider or taller one is shrunk on the device: every composited frame
-center-cropped to a square of at most 512 px, with its timing. Web
+its animation. Within 5 MB and 1024 × 1024 it uploads unchanged; any bigger GIF
+is shrunk on the device instead of refused: every composited frame is
+center-cropped square and scaled to 512 px with its timing, then, while the
+result is still over 5 MB, to 384, 256, 192 and 128 px, then to every other
+frame (each lasting as long as the ones it replaces). Web
 (`account/gif-shrink.ts`, in a worker) and Android (`GifShrink.kt`) share one
 pure decoder/encoder that gives each frame a palette of only the pixels that
 changed and leaves unchanged pixels showing; Apple uses ImageIO and the Rust
-desktop the `image` crate's GIF codec. Pictures have no byte limit anywhere:
-not on upload, not when picked, not when downloaded for display (clients before
-October 17, 2026 refuse pictures over 5 MB on upload, and Apple builds before
-then refuse to download one over 6 MB). Anything else the platform decodes is turned upright, center-cropped to a
+desktop the `image` crate's GIF codec. The server's 5 MiB GIF ceiling stays: it
+is also what older clients will download. Anything else the platform decodes is turned upright, center-cropped to a
 square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
 aspect-filled in a rounded square (corner radius 30% of the side, the
@@ -8285,12 +8364,6 @@ own frames. `GifShrink.kt` and its JUnit tests compile and pass with a
 standalone Kotlin 2.2.20 compiler on the JVM, with the same output quality; the
 Android app itself was not built (no SDK). Rust desktop `pictures::` tests and
 application Clippy pass. Apple's ImageIO path was not compiled (no Xcode).
-
-No picture byte limits (October 17, 2026): API workspace tests and Clippy pass
-(the database picture test, which loses only its 413 case, was not run here);
-web Vitest and `scripts/test-pictures.mjs` pass, including a 9 MB 1000 px GIF
-prepared byte for byte; `GifShrink.kt` JUnit passes on the JVM; Rust desktop
-`pictures::` tests and application Clippy pass. Apple not compiled here.
 
 Run the browser check against `vite dev` with Playwright installed somewhere
 (the repository has no Playwright dependency):

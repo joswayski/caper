@@ -83,6 +83,8 @@ export interface ChatViewState {
   attachmentProgress: Record<string, number>;
   error?: string;
   thread?: ThreadViewState;
+  /** Personalized state stays outside shared/cached message payloads. */
+  unreadThreads?: Record<string, string>;
 }
 
 const initialState: ChatViewState = {
@@ -383,6 +385,11 @@ export class ChatClient {
   private contextWindow?: { start: bigint; end?: bigint };
   private readonly threadPages = new Map<string, ThreadViewState>();
   private readonly threadRequests = new Map<string, { promise: Promise<void>; controller: AbortController }>();
+  private threadUnreadRequest?: Promise<void>;
+  private threadUnreadDirty = false;
+  private threadUnreadRevision = 0;
+  private threadUnreadTimer?: ReturnType<typeof setTimeout>;
+  private readonly threadReadsPending = new Set<string>();
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -431,7 +438,12 @@ export class ChatClient {
 
   identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
+    if (this.accountId !== (signedIn ? accountId : undefined)) {
+      ++this.threadUnreadRevision;
+      this.update({ unreadThreads: {} });
+    }
     this.accountId = signedIn ? accountId : undefined;
+    this.scheduleThreadUnread();
     if (signedIn && accountId && this.state.author?.id === accountId)
       this.update({ author: { ...this.state.author, name } });
     const saved = storedSession();
@@ -449,6 +461,7 @@ export class ChatClient {
     this.releaseUploads();
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
+    clearTimeout(this.threadUnreadTimer);
     this.connection?.stop();
   }
 
@@ -546,6 +559,112 @@ export class ChatClient {
 
   retrySession() {
     void this.createSession();
+  }
+
+  private scheduleThreadUnread() {
+    if (!this.accountId || this.threadUnreadTimer || this.controller.signal.aborted) return;
+    this.threadUnreadTimer = setTimeout(() => {
+      this.threadUnreadTimer = undefined;
+      void this.refreshUnreadThreads();
+    }, 300);
+  }
+
+  /** Coalesced live updates plus the foreground poll repair cross-device reads. */
+  refreshUnreadThreads(): Promise<void> {
+    if (!this.accountId || !this.state.channelId || this.controller.signal.aborted) return Promise.resolve();
+    this.threadUnreadDirty = true;
+    if (this.threadUnreadRequest) return this.threadUnreadRequest;
+    this.threadUnreadRequest = (async () => {
+      while (this.threadUnreadDirty && !this.controller.signal.aborted) {
+        this.threadUnreadDirty = false;
+        const channel = this.state.channelId,
+          account = this.accountId;
+        const generation = this.generation,
+          revision = this.threadUnreadRevision;
+        if (!channel || !account) return;
+        try {
+          const response = await fetch(`/api/chat/channels/${encodeURIComponent(channel)}/threads/unread`, {
+            cache: "no-store",
+            signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+          });
+          if (!response.ok) return;
+          const body: unknown = await response.json();
+          const rows = (body as { threads?: unknown })?.threads;
+          if (!Array.isArray(rows)) return;
+          const unreadThreads: Record<string, string> = {};
+          for (const row of rows) {
+            if (!row || typeof row.rootId !== "string" || !row.rootId || typeof row.seq !== "string") return;
+            sequence(row.seq);
+            unreadThreads[row.rootId] = row.seq;
+          }
+          if (
+            !this.controller.signal.aborted &&
+            generation === this.generation &&
+            revision === this.threadUnreadRevision &&
+            account === this.accountId &&
+            channel === this.state.channelId
+          )
+            this.update({ unreadThreads });
+        } catch {
+          // An outage is not a read. Keep the badge and retry on the next refresh.
+        }
+      }
+    })().finally(() => {
+      this.threadUnreadRequest = undefined;
+    });
+    return this.threadUnreadRequest;
+  }
+
+  /** The rendered thread supplies the last visible reply, never a channel/history cursor. */
+  async markThreadRead(rootId: string, seq: string) {
+    const channel = this.state.channelId,
+      account = this.accountId,
+      generation = this.generation;
+    const thread = this.state.thread;
+    const unread = this.state.unreadThreads?.[rootId];
+    if (
+      !channel ||
+      !account ||
+      this.controller.signal.aborted ||
+      thread?.rootId !== rootId ||
+      thread.loading ||
+      thread.error ||
+      thread.hasNewer ||
+      !unread ||
+      sequence(seq) < sequence(unread)
+    )
+      return;
+    if (!this.state.messages.some((message) => message.threadRootId === rootId && message.seq === seq)) return;
+    const key = `${account}:${rootId}`;
+    if (this.threadReadsPending.has(key)) return;
+    this.threadReadsPending.add(key);
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(rootId)}/thread/read`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ seq }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (
+        !response.ok ||
+        this.controller.signal.aborted ||
+        generation !== this.generation ||
+        account !== this.accountId
+      )
+        return;
+      ++this.threadUnreadRevision;
+      const unreadThreads = { ...this.state.unreadThreads };
+      if (unreadThreads[rootId] && sequence(unreadThreads[rootId]) <= sequence(seq)) delete unreadThreads[rootId];
+      this.update({ unreadThreads });
+      this.scheduleThreadUnread();
+    } catch {
+      // The visibility check retries; only a confirmed acknowledgement clears it.
+    } finally {
+      this.threadReadsPending.delete(key);
+    }
   }
 
   closeThread() {
@@ -1024,6 +1143,7 @@ export class ChatClient {
       if (!current()) return false;
       this.releaseUploads();
       this.timeline.mergeSent(message);
+      if (message.threadRootId) this.scheduleThreadUnread();
       this.update({
         messages: this.timeline.messages,
         pendingSend: undefined,
@@ -1292,6 +1412,7 @@ export class ChatClient {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
+      if (event.threadRootId) this.scheduleThreadUnread();
       const typer = this.typers.get(event.author.id);
       if (typer && result !== "duplicate") {
         typer.typing = false;
@@ -1425,6 +1546,7 @@ export class ChatClient {
       });
       this.connection.start();
       this.loadingHistory = false;
+      this.scheduleThreadUnread();
       if (this.state.thread) void this.retryThread();
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
@@ -1445,6 +1567,7 @@ export class ChatClient {
                 pinnedMessages: [],
                 channelId: undefined,
                 thread: undefined,
+                unreadThreads: {},
               }
             : {}),
           ...(stalled

@@ -7,13 +7,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /**
- * Custom profile pictures and space icons: GIFs keep animating (unchanged at any byte size
- * within 1024 × 1024, else shrunk by [GifShrink]); every other picture becomes a centered square of at most 512 px,
+ * Custom profile pictures and space icons: GIFs keep animating (unchanged when small enough,
+ * else shrunk by [GifShrink]); every other picture becomes a centered square of at most 512 px,
  * encoded as WebP. The server
  * re-checks size, type and real pixel dimensions before applying one.
  */
 object PicturePolicy {
-    /** Re-encoded stills step down in quality to fit this (a 512 px WebP always does). */
+    /** A GIF up to this size (and [MAX_SIDE]) uploads unchanged; a bigger one is shrunk to fit. */
+    const val GIF_MAX_BYTES = 5L * 1024 * 1024
+    /** Any other picture must end up within 1 MiB. */
     const val STILL_MAX_BYTES = 1024L * 1024
     /** Neither side of a stored picture may exceed this. */
     const val MAX_SIDE = 1024
@@ -54,9 +56,9 @@ fun gifSize(header: ByteArray): Pair<Int, Int>? {
     return width to height
 }
 
-/** Whether a GIF of header size [width] × [height] uploads byte for byte, whatever its size; a wider or taller one is shrunk. */
-fun gifUploadsUnchanged(width: Int, height: Int): Boolean =
-    width in 1..PicturePolicy.MAX_SIDE && height in 1..PicturePolicy.MAX_SIDE
+/** Whether a GIF of [byteSize] bytes and header size [width] × [height] uploads byte for byte; any other GIF is shrunk. */
+fun gifUploadsUnchanged(byteSize: Long, width: Int, height: Int): Boolean =
+    byteSize in 1..PicturePolicy.GIF_MAX_BYTES && width in 1..PicturePolicy.MAX_SIDE && height in 1..PicturePolicy.MAX_SIDE
 
 /** The centered square of a picture: its [left] and [top] offsets and its [side]. */
 data class SquareCrop(val left: Int, val top: Int, val side: Int)

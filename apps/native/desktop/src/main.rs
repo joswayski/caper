@@ -1095,6 +1095,12 @@ struct CaperApp {
     profile_send_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     profile_navigation: Option<u64>,
     thread_view: Option<ThreadView>,
+    thread_unread: BTreeMap<String, String>,
+    thread_unread_scope: Option<(u64, u64, String)>,
+    thread_unread_busy: bool,
+    thread_unread_dirty: bool,
+    thread_unread_revision: u64,
+    thread_unread_retry: Option<Instant>,
     /// Last rendered thread bounds, for routing native file drops by pointer.
     thread_drop_rect: Option<egui::Rect>,
     thread_request: u64,
@@ -1156,7 +1162,13 @@ struct CaperApp {
     media_status_roots: BTreeSet<String>,
     /// When web's `media.prepare` was last sent per channel.
     prepared_voice: BTreeMap<String, Instant>,
-    expanded_rosters: BTreeSet<String>,
+    /// Participant IDs in the order this client first saw them in the call,
+    /// so the call card's faces keep their places as people speak or leave.
+    call_order: Vec<String>,
+    /// The call's full list (design H's 1b), open beside the call card.
+    call_list: Option<CallList>,
+    /// "N more live" unfolded the rest of Live now's rooms.
+    live_rooms_expanded: bool,
     sidebar_width: f32,
     /// A dialog opened from the User Settings menu is showing.
     settings_menu_dialog: bool,
@@ -1385,6 +1397,12 @@ impl CaperApp {
             profile_send_cancel: None,
             profile_navigation: None,
             thread_view: None,
+            thread_unread: BTreeMap::new(),
+            thread_unread_scope: None,
+            thread_unread_busy: false,
+            thread_unread_dirty: true,
+            thread_unread_revision: 0,
+            thread_unread_retry: None,
             thread_drop_rect: None,
             thread_request: 0,
             thread_pages: BTreeMap::new(),
@@ -1435,7 +1453,9 @@ impl CaperApp {
             media_availability: BTreeMap::new(),
             media_status_roots: BTreeSet::new(),
             prepared_voice: BTreeMap::new(),
-            expanded_rosters: BTreeSet::new(),
+            call_order: Vec::new(),
+            call_list: None,
+            live_rooms_expanded: false,
             sidebar_width: 280.0,
             settings_menu_dialog: false,
             focus_user_settings: false,
@@ -1671,6 +1691,10 @@ impl CaperApp {
                         app.thread_pages.insert(root.clone(), thread.clone());
                     }
                     app.thread_view = Some(thread);
+                    if name.contains("unread") {
+                        app.thread_unread.insert(root.clone(), "4".into());
+                        app.thread_view = None;
+                    }
                     if name.contains("attachments") {
                         app.install_attachments_fixture();
                         for draft in &mut app.draft_files {
@@ -2378,6 +2402,27 @@ impl CaperApp {
                         Phase::Joining(call)
                     };
                 }
+                if matches!(
+                    name,
+                    "parity-voice-crowded"
+                        | "parity-voice-crowded-narrow"
+                        | "parity-voice-list"
+                        | "parity-voice-list-narrow"
+                        | "parity-voice-strip-narrow"
+                        | "parity-voice-join-narrow"
+                ) {
+                    app.install_crowded_voice_fixture(name != "parity-voice-join-narrow");
+                    app.navigation_open = matches!(
+                        name,
+                        "parity-voice-crowded-narrow" | "parity-voice-list-narrow"
+                    );
+                    // The full list, open at Maya's audio controls.
+                    if name.starts_with("parity-voice-list") {
+                        app.call_list = Some(CallList {
+                            audio: Some("fixture-voice-0".into()),
+                        });
+                    }
+                }
                 if matches!(name, "parity-narrow" | "parity-browse") {
                     app.members_visible = false;
                 }
@@ -2391,6 +2436,121 @@ impl CaperApp {
             }
         }
         app
+    }
+
+    /// TEST FIXTURE voice for Live now: you and eleven others in #general
+    /// (Alex speaking, and Rosa past the faces that fit), and four more live
+    /// rooms, two of them in channels added here. Outside a call (`in_call`
+    /// false) #general has three people in voice instead. No media starts.
+    fn install_crowded_voice_fixture(&mut self, in_call: bool) {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let names = [
+            "Maya", "Alex", "Sam", "Priya", "Jordan", "Lee", "Ana", "Noor", "Kai", "Rosa", "Theo",
+        ];
+        let occupant = |index: usize, name: &str| model::VoiceOccupant {
+            id: format!("fixture-voice-{index}"),
+            avatar_id: Some(15 + index as i32),
+            avatar_asset: None,
+            avatar_url: None,
+            name: name.into(),
+            muted: index % 4 == 3,
+            deafened: index == 6,
+        };
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let space = detail.space.id.clone();
+        for (id, name) in [("chan00000004", "random"), ("chan00000005", "standup")] {
+            detail.channels.push(model::Channel {
+                id: id.into(),
+                space_id: space.clone(),
+                name: name.into(),
+                private: false,
+                joined: true,
+            });
+        }
+        if !in_call {
+            self.channel_rosters.insert(
+                "chan00000001".into(),
+                names[..3]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| occupant(index, name))
+                    .collect(),
+            );
+            self.voice_session_starts
+                .insert("chan00000001".into(), now.saturating_sub(95_000));
+        }
+        self.voice.self_id = "fixture-owner".into();
+        self.voice.active_space = Some(space);
+        self.voice.participants = std::iter::once(media::Participant {
+            id: "fixture-owner".into(),
+            avatar_id: Some(0),
+            avatar_asset: None,
+            avatar_url: None,
+            name: "Fixture Owner".into(),
+            muted: false,
+            deafened: false,
+            tracks: Vec::new(),
+        })
+        .chain(names.iter().enumerate().map(|(index, name)| {
+            let person = occupant(index, name);
+            media::Participant {
+                id: person.id,
+                avatar_id: person.avatar_id,
+                avatar_asset: None,
+                avatar_url: None,
+                name: person.name,
+                muted: person.muted,
+                deafened: person.deafened,
+                tracks: Vec::new(),
+            }
+        }))
+        .collect();
+        if !in_call {
+            self.voice.participants.clear();
+        }
+        self.voice.session_started_at = Some(now.saturating_sub(754_000));
+        self.voice.state.phase = if !in_call {
+            Phase::Idle
+        } else {
+            Phase::Connected(CallContext {
+                channel_id: "chan00000001".into(),
+                channel_name: "general".into(),
+                space_name: "Fixture Studio".into(),
+            })
+        };
+        let lit = Instant::now() + Duration::from_secs(3_600);
+        self.voice.activity = media::VoiceActivity {
+            local: None,
+            participants: [
+                ("fixture-voice-1".to_owned(), lit),
+                ("fixture-voice-9".to_owned(), lit),
+            ]
+            .into(),
+        };
+        let rooms: [(&str, &[&str], u64); 4] = [
+            (
+                "chan00000002",
+                &["Maya", "Alex", "Sam", "Priya", "Jordan"],
+                1_701_000,
+            ),
+            ("chan00000003", &["Lee", "Ana"], 3_000),
+            ("chan00000004", &["Noor"], 61_000),
+            ("chan00000005", &["Kai", "Rosa", "Theo"], 420_000),
+        ];
+        for (offset, (channel, people, elapsed)) in rooms.into_iter().enumerate() {
+            self.channel_rosters.insert(
+                channel.into(),
+                people
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| occupant(20 + offset * 10 + index, name))
+                    .collect(),
+            );
+            self.voice_session_starts
+                .insert(channel.into(), now.saturating_sub(elapsed));
+        }
     }
 
     /// TEST FIXTURE pictures, generated here and decoded through the real
@@ -3220,6 +3380,39 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
+                Event::ThreadUnread {
+                    scope,
+                    revision,
+                    read,
+                    result,
+                } if self.thread_unread_scope.as_ref() == Some(&scope)
+                    && scope.0 == self.account_epoch
+                    && scope.1 == self.navigation
+                    && self.selected_channel.as_ref() == Some(&scope.2)
+                    && revision == self.thread_unread_revision =>
+                {
+                    self.thread_unread_busy = false;
+                    match result {
+                        Ok(threads) => {
+                            if let Some((root, seq)) = read {
+                                if self.thread_unread.get(&root).is_some_and(|unread| {
+                                    model::sequence(unread).unwrap_or(0)
+                                        <= model::sequence(&seq).unwrap_or(0)
+                                }) {
+                                    self.thread_unread.remove(&root);
+                                }
+                                self.thread_unread_dirty = true;
+                            } else {
+                                self.thread_unread = threads;
+                            }
+                        }
+                        Err(_) => {
+                            self.thread_unread_dirty = true;
+                            self.thread_unread_retry =
+                                Some(Instant::now() + Duration::from_secs(2));
+                        }
+                    }
+                }
                 Event::UnreadLoaded {
                     epoch,
                     revision,
@@ -4023,6 +4216,7 @@ impl CaperApp {
     }
 
     fn refresh_unread(&mut self) {
+        self.thread_unread_dirty = true;
         if let Some(token) = self.token.clone() {
             self.unread_revision += 1;
             self.worker.send(Command::LoadUnread {
@@ -5141,6 +5335,7 @@ impl CaperApp {
         self.session = session.ok();
         self.live = "Connecting…".into();
         self.connect_gateway();
+        self.thread_unread_dirty = true;
         self.mark_selected_direct_read();
         if self.thread_view.is_some() {
             self.load_thread(false);
@@ -5212,6 +5407,55 @@ impl CaperApp {
                 space,
                 channel,
                 seq,
+            });
+        }
+    }
+
+    // One in-flight operation serializes snapshots and acknowledgements. A
+    // dirty bit coalesces live bursts without dropping a refresh during a read.
+    fn refresh_thread_unread(&mut self) {
+        let scope = self
+            .selected_channel
+            .as_ref()
+            .filter(|_| self.token.is_some())
+            .map(|channel| (self.account_epoch, self.navigation, channel.clone()));
+        if self.thread_unread_scope != scope {
+            self.thread_unread_scope = scope;
+            self.thread_unread.clear();
+            self.thread_unread_busy = false;
+            self.thread_unread_dirty = true;
+            self.thread_unread_retry = None;
+        }
+        if self.thread_unread_dirty {
+            self.send_thread_unread(None);
+        }
+    }
+
+    fn send_thread_unread(&mut self, read: Option<(String, String)>) {
+        if self.thread_unread_busy
+            || self
+                .thread_unread_retry
+                .is_some_and(|retry| Instant::now() < retry)
+        {
+            return;
+        }
+        if let (Some(scope), Some(token)) = (self.thread_unread_scope.clone(), self.token.clone()) {
+            if scope.0 != self.account_epoch
+                || scope.1 != self.navigation
+                || self.selected_channel.as_ref() != Some(&scope.2)
+            {
+                return;
+            }
+            self.thread_unread_revision += 1;
+            self.thread_unread_busy = true;
+            if read.is_none() {
+                self.thread_unread_dirty = false;
+            }
+            self.worker.send(Command::ThreadUnread {
+                scope,
+                revision: self.thread_unread_revision,
+                token,
+                read,
             });
         }
     }
@@ -6064,6 +6308,9 @@ impl CaperApp {
             ) =>
             {
                 let root = message.thread_root_id.clone();
+                if root.is_some() {
+                    self.thread_unread_dirty = true;
+                }
                 let confirmed = self.pending.as_ref().is_some_and(|pending| {
                     self.session
                         .as_ref()
@@ -8032,6 +8279,13 @@ impl eframe::App for CaperApp {
         let was_foreground = self.foreground;
         self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
+        self.refresh_thread_unread();
+        if self
+            .thread_unread_retry
+            .is_some_and(|retry| Instant::now() < retry)
+        {
+            context.request_repaint_after(Duration::from_secs(2));
+        }
         if self.foreground && !was_foreground {
             let stale: Vec<_> = self
                 .draft_files
@@ -9944,6 +10198,9 @@ impl CaperApp {
                             ui.add_space(6.0);
                             self.notification_error(ui, scope);
                         }
+                        // Design H: your call and the space's live rooms sit
+                        // above the channels.
+                        self.live_now(ui);
                         ui.add_space(12.0);
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_width(), 32.0),
@@ -10156,19 +10413,10 @@ impl CaperApp {
                                 ui.spacing_mut().item_spacing.y = 0.0;
                                 ui.spacing_mut().interact_size.y = 28.0;
                                 let active = !self.feedback_selected() && self.selected_channel.as_deref() == Some(&id);
-                                let started = if self.voice.state.active_channel() == Some(&id) {
-                                    if matches!(self.voice.state.phase, Phase::Joining(_)) {
-                                        self.voice_session_starts.get(&id).copied().or(self.voice.session_started_at)
-                                    } else {
-                                        self.voice.session_started_at
-                                    }
-                                } else {
-                                    self.voice_session_starts.get(&id).copied()
-                                }.or_else(|| self.pending_voice_join.as_ref().filter(|(channel, _, _)| channel == &id).map(|(_, _, clicked)| *clicked));
-                                let duration = started.map(|started| {
-                                    ui.ctx().request_repaint_after(Duration::from_secs(1));
-                                    voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
-                                });
+                                // Live rows end with a quiet "N in voice"; the
+                                // card in Live now carries the rest.
+                                let in_voice = self.voice_people(&id).0.len();
+                                let touch = self.narrow_layout;
                                 let space = self
                                     .detail
                                     .as_ref()
@@ -10181,18 +10429,25 @@ impl CaperApp {
                                 let muted =
                                     scope.as_ref().and_then(|scope| self.muted_label(scope));
                                 let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
-                                // Rows add a quiet shortcut; the header carries the
-                                // labelled action. Hidden where you are in voice.
+                                // Rows keep a one-click shortcut, hidden where you
+                                // are in voice. Narrow layouts show it on quiet
+                                // rows only: a live row's card offers Join.
                                 let voice = match self.voice_action(&id) {
-                                    VoiceAction::Join { switching, enabled } => Some((
-                                        if switching {
-                                            format!("Switch voice to #{name}")
-                                        } else {
-                                            format!("Join voice in #{name}")
-                                        },
-                                        enabled,
-                                    )),
-                                    VoiceAction::Leave | VoiceAction::Joining => None,
+                                    VoiceAction::Join { switching, enabled }
+                                        if !touch || in_voice == 0 =>
+                                    {
+                                        Some((
+                                            if switching {
+                                                format!("Switch voice to #{name}")
+                                            } else {
+                                                format!("Join voice in #{name}")
+                                            },
+                                            enabled,
+                                        ))
+                                    }
+                                    VoiceAction::Join { .. }
+                                    | VoiceAction::Leave
+                                    | VoiceAction::Joining => None,
                                 };
                                 // Demo channels have no options.
                                 let mut menu = None;
@@ -10214,8 +10469,9 @@ impl CaperApp {
                                     RowExtras {
                                         muted,
                                         unread,
-                                        duration: duration.as_deref(),
+                                        live: (in_voice > 0).then_some(in_voice),
                                         voice: voice.as_ref().map(|(_, enabled)| *enabled),
+                                        touch,
                                         menu,
                                         ..RowExtras::default()
                                     },
@@ -10239,10 +10495,6 @@ impl CaperApp {
                                 if let Some(scope) = &scope {
                                     self.notification_error(ui, scope);
                                 }
-                                ui.push_id(&id, |ui| {
-                                    self.channel_voice_summary(ui, &id, &name);
-                                    self.channel_voice_roster(ui, &id);
-                                });
                             });
                             ui.add_space(3.0);
                         }
@@ -10275,16 +10527,6 @@ impl CaperApp {
                             });
                             ui.add_space(6.0);
                         }
-                        let active_visible = self.channels_expanded
-                            && self.detail.as_ref().is_some_and(|detail| {
-                                detail.channels.iter().any(|channel| {
-                                    self.voice.state.active_channel() == Some(&channel.id)
-                                })
-                            });
-                        if !active_visible && !self.voice.participants.is_empty() {
-                            ui.add_space(14.0);
-                            self.voice_roster(ui, self.roster_for_active_call(), true);
-                        }
                         self.direct_navigation(ui);
                     });
             });
@@ -10294,9 +10536,9 @@ impl CaperApp {
         let Some(account) = self.account.clone() else {
             return;
         };
-        ui.add_space(8.0);
+        ui.add_space(16.0);
         full_bleed_separator(ui, ui.cursor().top());
-        ui.add_space(6.0);
+        ui.add_space(12.0);
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 28.0;
             ui.horizontal(|ui| {
@@ -10469,8 +10711,9 @@ impl CaperApp {
                             unread,
                             direct: true,
                             suffix,
-                            duration: None,
+                            live: None,
                             voice: None,
+                            touch: false,
                             menu: Some(RowMenu {
                                 label: format!(
                                     "Conversation options for {}",
@@ -10900,7 +11143,7 @@ impl CaperApp {
         }
     }
 
-    /// Wires a Join or Switch here button: web prepares the join within
+    /// Wires a Join or Switch button: web prepares the join within
     /// 120 px of it, says why it is unavailable, and joins on click.
     fn voice_join_response(
         &mut self,
@@ -10930,110 +11173,18 @@ impl CaperApp {
         }
     }
 
-    /// The line under an occupied channel's name: faces, "N in voice" and a
-    /// chevron that shows who is there. Empty channels stay a single line.
-    fn channel_voice_summary(&mut self, ui: &mut egui::Ui, id: &str, name: &str) {
-        let (people, own) = self.voice_people(id);
-        if people.is_empty() {
-            return;
-        }
-        let open = self.expanded_rosters.contains(id);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.add_space(9.0);
-            let width = ui.available_width();
-            let (rect, stack) =
-                ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
-            let label = format!(
-                "{} in voice in {name}. {} who is in voice.",
-                people.len(),
-                if open { "Hide" } else { "Show" }
-            );
-            stack.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, &label)
-            });
-            if stack.hovered() || stack.has_focus() {
-                ui.painter().rect_filled(rect, 8.0, SURFACE_HOVER);
-            }
-            let font = egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Medium".into()));
-            let mut count = format!("{} in voice", people.len());
-            let mut text_width = ui
-                .painter()
-                .layout_no_wrap(count.clone(), font.clone(), MUTED)
-                .size()
-                .x;
-            if text_width + 22.0 > width {
-                count = people.len().to_string();
-                text_width = ui
-                    .painter()
-                    .layout_no_wrap(count.clone(), font.clone(), MUTED)
-                    .size()
-                    .x;
-            }
-            // Drop faces before sacrificing the readable count at 220px.
-            let faces = if width >= text_width + 61.0 {
-                people.len().min(2)
-            } else {
-                0
-            };
-            let now = Instant::now();
-            for (index, person) in people.iter().take(faces).enumerate() {
-                let center = egui::pos2(rect.left() + 12.0 + index as f32 * 14.0, rect.center().y);
-                let muted = if person.id == self.voice.self_id {
-                    self.voice.state.audio.muted
-                } else {
-                    person.muted
-                };
-                let speaking = own && self.voice.speaking(&person.id, muted, now);
-                let face = egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0));
-                let shown =
-                    paint_avatar(ui, face, &person.name, person.avatar_id, person.picture());
-                if speaking {
-                    // Web: caper border plus a 1px caper ring.
-                    avatar_ring(ui, face, shown, 1.0, Stroke::new(2.5, CAPER));
-                }
-            }
-            let count_x = rect.left()
-                + if faces == 0 {
-                    2.0
-                } else {
-                    faces as f32 * 14.0 + 13.0
-                };
-            ui.painter().text(
-                egui::pos2(count_x, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                count,
-                font,
-                MUTED,
-            );
-            paint_chevron(
-                ui,
-                egui::Rect::from_center_size(
-                    egui::pos2(count_x + text_width + 9.0, rect.center().y),
-                    egui::vec2(14.0, 14.0),
-                ),
-                chevron_turn(ui.ctx(), stack.id, open),
-                MUTED,
-            );
-            let stack = stack.on_hover_text(label);
-            if stack.clicked() {
-                if open {
-                    self.expanded_rosters.remove(id);
-                } else {
-                    self.expanded_rosters.insert(id.into());
-                }
-            }
-        });
-    }
-
-    /// Whether a call is under way anywhere, so phones offer its mute.
+    /// Whether a call is under way anywhere: Live now shows its card and
+    /// narrow conversations its strip.
     fn in_voice(&self) -> bool {
         !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_))
     }
 
-    /// As the dock's hang-up.
+    /// The call card's Leave, or Cancel while joining. Only a connected
+    /// call plays the disconnect sound.
     fn leave_voice_now(&mut self) {
-        self.effects.play(Effect::Disconnect);
+        if matches!(self.voice.state.phase, Phase::Connected(_)) {
+            self.effects.play(Effect::Disconnect);
+        }
         self.voice.leave();
     }
 
@@ -11051,19 +11202,9 @@ impl CaperApp {
         self.effects.toggle(deafened);
     }
 
-    /// The header's Leave, as the dock's hang-up.
-    fn header_leave(&mut self, ui: &mut egui::Ui) {
-        let button = header_voice_button(ui, NavIcon::PhoneOff, "Leave", HANGUP_TONE);
-        button.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Leave voice")
-        });
-        if button.on_hover_text("Leave this voice channel").clicked() {
-            self.leave_voice_now();
-        }
-    }
-
     /// The open channel, when it is joined (or a visited space channel) and
-    /// so has voice in its header. DMs have none.
+    /// so has voice: the narrow header counts who is in it and the narrow
+    /// strip offers to join it. DMs have none.
     fn header_voice_channel(&self) -> Option<String> {
         self.selected_channel.clone().filter(|channel| {
             self.visited_channel(channel).is_some()
@@ -11140,7 +11281,7 @@ impl CaperApp {
     }
 
     /// Phones' header, as in Slack: Browse, then the name, which opens the
-    /// channel's menu (Pins and Members), then one group of voice icons.
+    /// channel's menu (Pins and Members). Voice lives in the strip below it.
     /// `header` is the whole header, which the menu spans.
     fn narrow_heading(&mut self, ui: &mut egui::Ui, header: egui::Rect) {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -11178,14 +11319,6 @@ impl CaperApp {
         .join(" · ");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             self.header_channel_actions(ui);
-            if let Some(channel) = &voice_channel {
-                let name = self.channel_name().to_owned();
-                self.narrow_voice(ui, Some((channel, &name)));
-            } else if self.in_voice() {
-                // A DM or preview has no voice of its own; phones still keep
-                // the call's mute and Leave in reach.
-                self.narrow_voice(ui, None);
-            }
             // Web: a failed refresh keeps the conversation and offers Retry.
             if let Some(error) = self
                 .load_error
@@ -11297,472 +11430,1217 @@ impl CaperApp {
         });
     }
 
-    /// Phones' voice: one bordered group of icon buttons that keep the wide
-    /// header's names: while in voice the call's mute and deafen, then Join
-    /// voice, Switch here, Joining… or Leave. The name's subtitle says how
-    /// many are in voice. `channel` is the open channel's id and name;
-    /// without one (a DM or preview) the group is the call's controls.
-    fn narrow_voice(&mut self, ui: &mut egui::Ui, channel: Option<(&str, &str)>) {
-        let action = channel.map_or(VoiceAction::Leave, |(id, _)| self.voice_action(id));
-        let in_voice = self.in_voice();
-        let buttons = 1 + 2 * usize::from(in_voice);
-        // Web: 2px inside the border at each end and between buttons.
-        let width = 2.0 + 2.0 + buttons as f32 * 42.0 + (buttons - 1) as f32 * 2.0 + 2.0;
-        let (group, _) = ui.allocate_exact_size(egui::vec2(width, 46.0), egui::Sense::hover());
-        ui.painter().rect_stroke(
-            group,
-            8.0,
-            Stroke::new(1.0, BORDER),
-            egui::StrokeKind::Inside,
-        );
-        let mut ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(group.shrink(1.0))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
-        ui.spacing_mut().item_spacing.x = 2.0;
-        ui.add_space(2.0);
-        if in_voice {
-            let muted = self.voice.state.audio.muted;
-            let button = voice_icon_button(
-                &mut ui,
-                if muted { NavIcon::MicOff } else { NavIcon::Mic },
-                if muted {
-                    (MUTED_MIC, MUTED_MIC)
-                } else {
-                    (MUTED, TEXT)
-                },
-                None,
-                if muted {
-                    "Unmute microphone"
-                } else {
-                    "Mute microphone"
-                },
-            );
-            if button
-                .on_hover_text(if muted { "Unmute" } else { "Mute" })
-                .clicked()
-            {
-                self.toggle_mute();
+    /// When `id`'s voice session started, for its timer: your call's own
+    /// session (while joining, the room's known session), else the room's,
+    /// else the moment you clicked Join there.
+    fn voice_started(&self, id: &str) -> Option<u64> {
+        if self.in_voice() && self.voice.state.active_channel() == Some(id) {
+            if matches!(self.voice.state.phase, Phase::Joining(_)) {
+                self.voice_session_starts
+                    .get(id)
+                    .copied()
+                    .or(self.voice.session_started_at)
+            } else {
+                self.voice.session_started_at
             }
-            let deafened = self.voice.state.audio.deafened;
-            let button = voice_icon_button(
-                &mut ui,
-                if deafened {
-                    NavIcon::VolumeX
-                } else {
-                    NavIcon::Headphones
-                },
-                if deafened {
-                    (MUTED_MIC, MUTED_MIC)
-                } else {
-                    (MUTED, TEXT)
-                },
-                None,
-                if deafened {
-                    "Undeafen audio"
-                } else {
-                    "Deafen audio"
-                },
-            );
-            if button
-                .on_hover_text(if deafened { "Undeafen" } else { "Deafen" })
-                .clicked()
-            {
-                self.toggle_deafen();
+        } else {
+            self.voice_session_starts.get(id).copied()
+        }
+        .or_else(|| {
+            self.pending_voice_join
+                .as_ref()
+                .filter(|(channel, _, _)| channel == id)
+                .map(|(_, _, clicked)| *clicked)
+        })
+    }
+
+    /// Everyone in your call in the card's order: you first, then as they
+    /// joined, with your own display name. Speaking never reorders them.
+    fn call_people(&mut self) -> Vec<model::VoiceOccupant> {
+        let mut people = self.roster_for_active_call();
+        let present: Vec<&str> = people.iter().map(|person| person.id.as_str()).collect();
+        follow_join_order(&mut self.call_order, &present);
+        let own = self.voice.self_id.clone();
+        if let Some(name) = self
+            .account
+            .as_ref()
+            .and_then(|account| account.display_name.clone())
+        {
+            for person in people.iter_mut().filter(|person| person.id == own) {
+                person.name.clone_from(&name);
             }
         }
-        match (action, channel) {
-            (VoiceAction::Leave, _) | (_, None) => {
-                let button = voice_icon_button(
-                    &mut ui,
-                    NavIcon::PhoneOff,
-                    (MUTED_MIC, MUTED_MIC),
-                    None,
-                    "Leave voice",
-                );
-                if button.on_hover_text("Leave this voice channel").clicked() {
-                    self.leave_voice_now();
-                }
-            }
-            (VoiceAction::Joining, Some((_, name))) => {
-                let label = format!("Joining voice in #{name}");
-                ui.add_enabled_ui(false, |ui| {
-                    voice_icon_button(
-                        ui,
-                        NavIcon::Headphones,
-                        (VOICE_TONE.rest.2, VOICE_TONE.hover.2),
-                        None,
-                        &label,
-                    )
-                })
-                .inner
-                .on_disabled_hover_text(format!("Connecting to #{name}…"));
-            }
-            (VoiceAction::Join { switching, enabled }, Some((id, name))) => {
-                let tooltip = if switching {
-                    format!("Switch voice to #{name}")
+        in_call_order(people, &self.call_order, &own)
+    }
+
+    /// Whether each of `people` in your call is speaking now: your own
+    /// level against your local mute, theirs against the roster's.
+    fn call_speaking(&self, people: &[model::VoiceOccupant]) -> Vec<bool> {
+        let now = Instant::now();
+        people
+            .iter()
+            .map(|person| {
+                let muted = if person.id == self.voice.self_id {
+                    self.voice.state.audio.muted
                 } else {
-                    format!("Join voice in #{name}")
+                    person.muted
                 };
-                let label = if switching {
-                    tooltip.as_str()
-                } else {
-                    "Join voice"
-                };
-                // People are talking here: Join glows softly until you are in.
-                let occupied = enabled && !self.voice_people(id).0.is_empty();
-                let glow = ui.painter().add(egui::Shape::Noop);
-                // Unavailable steps back to neutral chrome, unfaded, as on web.
-                let colors = if enabled {
-                    (VOICE_TONE.rest.2, VOICE_TONE.hover.2)
-                } else {
-                    (QUIET_TONE.rest.2, QUIET_TONE.rest.2)
-                };
-                let button = ui
-                    .scope(|ui| {
-                        if !enabled {
-                            ui.visuals_mut().disabled_alpha = 1.0;
-                        }
-                        ui.add_enabled_ui(enabled, |ui| {
-                            voice_icon_button(
-                                ui,
-                                NavIcon::Headphones,
-                                colors,
-                                occupied.then_some((OCCUPIED_JOIN_TINT, VOICE_TONE.hover.0)),
-                                label,
-                            )
-                        })
-                        .inner
+                self.voice.speaking(&person.id, muted, now)
+            })
+            .collect()
+    }
+
+    /// The viewed space's live rooms other than your call's (and a live
+    /// visited channel), busiest first, then by name.
+    fn live_rooms(&self) -> Vec<LiveRoom> {
+        let call = self
+            .in_voice()
+            .then(|| self.voice.state.active_channel())
+            .flatten();
+        let people = |id: &str| {
+            self.channel_rosters
+                .get(id)
+                .filter(|people| !people.is_empty())
+                .cloned()
+        };
+        let mut rooms: Vec<LiveRoom> = self.detail.as_ref().map_or_else(Vec::new, |detail| {
+            detail
+                .channels
+                .iter()
+                .filter(|channel| channel.joined && Some(channel.id.as_str()) != call)
+                .filter_map(|channel| {
+                    Some(LiveRoom {
+                        id: channel.id.clone(),
+                        name: channel.name.clone(),
+                        private: channel.private,
+                        people: people(&channel.id)?,
                     })
-                    .inner;
-                if occupied {
-                    join_glow(&ui, glow, button.rect, 6.0);
+                })
+                .collect()
+        });
+        if let Some(visit) = self.visiting().filter(|visit| {
+            !visit.direct
+                && Some(visit.channel.as_str()) != call
+                && !rooms.iter().any(|room| room.id == visit.channel)
+        }) && let Some(people) = people(&visit.channel)
+        {
+            rooms.push(LiveRoom {
+                id: visit.channel.clone(),
+                name: visit.name.clone(),
+                private: false,
+                people,
+            });
+        }
+        sort_live_rooms(&mut rooms);
+        rooms
+    }
+
+    /// Design H's "Live now", above the channels: your call's card, then the
+    /// viewed space's other live rooms. Absent while you are in no call and
+    /// nobody is in voice here.
+    fn live_now(&mut self, ui: &mut egui::Ui) {
+        let in_call = self.in_voice();
+        if !in_call {
+            self.call_list = None;
+        }
+        let rooms = self.live_rooms();
+        if !in_call && rooms.is_empty() {
+            return;
+        }
+        let entering = motion::entrance(ui.ctx(), egui::Id::new("live-now"), motion::BASE);
+        motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
+            ui.add_space(12.0);
+            live_heading(ui, rooms.len() + usize::from(in_call));
+            ui.add_space(6.0);
+            if in_call {
+                self.call_card(ui);
+                if !rooms.is_empty() {
+                    ui.add_space(8.0);
                 }
-                self.voice_join_response(&ui, button, id, label, &tooltip);
             }
+            self.live_rooms_list(ui, &rooms);
+        });
+    }
+
+    /// Your call's card (design H §1a): where it is, who is in it, who is
+    /// speaking, then Mute, Deafen and Leave.
+    fn call_card(&mut self, ui: &mut egui::Ui) {
+        let (Phase::Joining(call) | Phase::Connected(call) | Phase::Reconnecting(call)) =
+            self.voice.state.phase.clone()
+        else {
+            return;
+        };
+        let joining = matches!(self.voice.state.phase, Phase::Joining(_));
+        let touch = self.narrow_layout;
+        let people = self.call_people();
+        let speaking = self.call_speaking(&people);
+        let entering = motion::entrance(
+            ui.ctx(),
+            egui::Id::new(("live-call", &call.channel_id)),
+            motion::BASE,
+        );
+        let (card, picked) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
+            let shown = egui::Frame::new()
+                .fill(LIVE_CARD)
+                .stroke(Stroke::new(1.0, LIVE_CARD_BORDER))
+                .corner_radius(10)
+                .inner_margin(12)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    self.call_card_title(ui, &call, people.len());
+                    let picked = if people.is_empty() {
+                        false
+                    } else {
+                        self.call_faces(ui, &people, &speaking, touch)
+                    };
+                    if let Some(index) = speaking.iter().position(|speaking| *speaking) {
+                        speaker_line(ui, &people[index].name);
+                    }
+                    self.call_card_controls(ui, joining, touch);
+                    picked
+                });
+            (shown.response.rect, shown.inner)
+        });
+        if self.call_list.is_some() {
+            self.call_list_panel(ui, card, &call.channel_name, &people, &speaking, picked);
         }
     }
 
-    /// Web's `headerVoice`, laid out right to left: Join voice, Switch
-    /// here, Joining… or Leave, then who is in voice. A narrow header drops
-    /// the count and extra faces before the button.
-    fn header_voice(&mut self, ui: &mut egui::Ui, id: &str, name: &str) {
-        match self.voice_action(id) {
-            VoiceAction::Leave => self.header_leave(ui),
-            VoiceAction::Joining => {
-                let button = ui
-                    .add_enabled_ui(false, |ui| {
-                        header_voice_button(ui, NavIcon::Headphones, "Joining…", VOICE_TONE)
-                    })
-                    .inner;
-                button.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        false,
-                        format!("Joining voice in #{name}"),
-                    )
-                });
-                button.on_disabled_hover_text(format!("Connecting to #{name}…"));
-            }
-            VoiceAction::Join { switching, enabled } => {
-                // People are talking here: Join glows softly until you are in.
-                let glow = ui.painter().add(egui::Shape::Noop);
-                // Unavailable steps back to neutral chrome, unfaded, as on web;
-                // Joining… above keeps the voice accent.
-                let button = ui
-                    .scope(|ui| {
-                        if !enabled {
-                            ui.visuals_mut().disabled_alpha = 1.0;
-                        }
-                        ui.add_enabled_ui(enabled, |ui| {
-                            header_voice_button(
-                                ui,
-                                NavIcon::Headphones,
-                                if switching {
-                                    "Switch here"
-                                } else {
-                                    "Join voice"
-                                },
-                                if enabled { VOICE_TONE } else { QUIET_TONE },
-                            )
-                        })
-                        .inner
-                    })
-                    .inner;
-                if enabled && !self.voice_people(id).0.is_empty() {
-                    join_glow(ui, glow, button.rect, 8.0);
-                }
-                let tooltip = if switching {
-                    format!("Switch voice to #{name}")
-                } else {
-                    format!("Join voice in #{name}")
-                };
-                let label = if switching {
-                    tooltip.as_str()
-                } else {
-                    "Join voice"
-                };
-                self.voice_join_response(ui, button, id, label, &tooltip);
-            }
-        }
-        let (people, _) = self.voice_people(id);
-        let Some(summary) = voice_summary(&people) else {
-            return;
-        };
+    /// The call card's first row: a waveform, the call's channel (opening
+    /// its chat; another space's name follows it), how many are in, and
+    /// the session's timer.
+    fn call_card_title(&mut self, ui: &mut egui::Ui, call: &CallContext, count: usize) {
+        let (row, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+        let icon = egui::Rect::from_center_size(
+            egui::pos2(row.left() + 8.0, row.center().y),
+            egui::vec2(16.0, 16.0),
+        );
+        paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
+        let left = icon.right() + 8.0;
         let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
-        let count = ui
-            .painter()
-            .layout_no_wrap(people.len().to_string(), font, MUTED);
-        // 24px faces overlapping by 6px, then the count, in whatever the
-        // name and the controls placed after it leave.
-        let faces = people.len().min(3);
-        let full = 24.0 + (faces - 1) as f32 * 18.0 + 6.0 + count.size().x;
-        let room = ui.available_width();
-        let (faces, width, count) = if room >= full {
-            (faces, full, Some(count))
-        } else if room >= 24.0 {
-            (1, 24.0, None)
-        } else {
-            return;
+        let (status, short, tone) = match &self.voice.state.phase {
+            Phase::Connected(_) => (
+                format!("You're in · {count}"),
+                format!("In · {count}"),
+                VOICE_SESSION_GREEN,
+            ),
+            Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
+            _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
         };
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &summary));
-        for (index, person) in people.iter().take(faces).enumerate() {
-            paint_avatar(
-                ui,
-                egui::Rect::from_min_size(
-                    egui::pos2(rect.left() + index as f32 * 18.0, rect.top()),
-                    egui::vec2(24.0, 24.0),
-                ),
-                &person.name,
-                person.avatar_id,
-                person.picture(),
-            );
+        let timer = self.voice_started(&call.channel_id).map(|started| {
+            let text = live_timer(ui.ctx(), started);
+            let width = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN).1;
+            (text, width)
+        });
+        let width = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font.clone(), tone)
+                .size()
+                .x
+        };
+        // In a narrow sidebar the status shortens, then the timer goes, so
+        // the channel's name keeps some room.
+        let timer_width = timer.as_ref().map_or(0.0, |(_, width)| width + 8.0);
+        let room = |status: &str, timer: f32| row.right() - timer - width(status) - 10.0 - left;
+        let (status, timer) = if room(&status, timer_width) >= 72.0 {
+            (status, timer)
+        } else if room(&short, timer_width) >= 48.0 || room(&short, 0.0) < 48.0 {
+            (short, timer)
+        } else {
+            (short, None)
+        };
+        let mut right = row.right();
+        if let Some((text, _)) = &timer {
+            right = paint_live_timer(ui, text, right, row.center().y, 12.0) - 8.0;
         }
-        if let Some(count) = count {
+        let status = ui.painter().layout_no_wrap(status, font, tone);
+        let status_left = right - status.size().x;
+        ui.painter().galley(
+            egui::pos2(status_left, row.center().y - status.size().y / 2.0),
+            status,
+            tone,
+        );
+        // The channel's name gives way first; another space's name goes
+        // before the name is cut short.
+        let room = (status_left - 10.0 - left).max(1.0);
+        let name = truncated_galley(
+            ui,
+            &format!("#{}", call.channel_name),
+            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TEXT,
+            room,
+        );
+        let elsewhere = self.voice.active_space.as_deref() != self.selected_space.as_deref();
+        let space = (elsewhere && room - name.size().x - 6.0 >= 32.0).then(|| {
+            truncated_galley(
+                ui,
+                &call.space_name,
+                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                MUTED,
+                room - name.size().x - 6.0,
+            )
+        });
+        let end = left + name.size().x + space.as_ref().map_or(0.0, |space| 6.0 + space.size().x);
+        let link = egui::Rect::from_min_max(
+            egui::pos2(left - 4.0, row.top()),
+            egui::pos2(end + 4.0, row.bottom()),
+        );
+        let open = ui.interact(link, ui.id().with("call-channel"), egui::Sense::click());
+        if open.hovered() || open.has_focus() {
+            ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
+        }
+        let name_size = name.size();
+        ui.painter().galley(
+            egui::pos2(left, row.center().y - name_size.y / 2.0),
+            name,
+            TEXT,
+        );
+        if let Some(space) = space {
             ui.painter().galley(
                 egui::pos2(
-                    rect.right() - count.size().x,
-                    rect.center().y - count.size().y / 2.0,
+                    left + name_size.x + 6.0,
+                    row.center().y - space.size().y / 2.0,
                 ),
-                count,
+                space,
                 MUTED,
             );
         }
-        response.on_hover_text(summary);
-    }
-
-    fn channel_voice_roster(&mut self, ui: &mut egui::Ui, id: &str) {
-        if !self.expanded_rosters.contains(id) {
-            return;
-        }
-        let (people, own) = self.voice_people(id);
-        if !people.is_empty() {
-            self.voice_roster(ui, people, own);
-        }
-    }
-
-    fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
-        let now = Instant::now();
-        for mut participant in people {
-            let is_self = own && participant.id == self.voice.self_id;
-            if is_self
-                && let Some(name) = self
-                    .account
-                    .as_ref()
-                    .and_then(|account| account.display_name.as_ref())
-            {
-                participant.name.clone_from(name);
-            }
-            let muted = if is_self {
-                self.voice.state.audio.muted
-            } else {
-                participant.muted
-            };
-            let deafened = if is_self {
-                self.voice.state.audio.deafened
-            } else {
-                participant.deafened
-            };
-            let mut playback = self.voice.playback(&participant.id);
-            let local_muted = own && !is_self && playback.muted;
-            ui.push_id(&participant.id, |ui| {
-                // Web opens the participant's audio menu on right-click too.
-                let menu_id = ui.id().with("audio-menu");
-                ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
-                    if own && !is_self && ui.response().secondary_clicked() {
-                        egui::Popup::open_id(ui.ctx(), menu_id);
-                    }
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        avatar(
-                            ui,
-                            &participant.name,
-                            participant.avatar_id,
-                            participant.picture(),
-                            28.0,
-                            own && self.voice.speaking(&participant.id, muted, now),
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(
-                                (ui.available_width()
-                                    - if own && participant.id != self.voice.self_id {
-                                        80.0
-                                    } else {
-                                        23.0
-                                    }
-                                    - if muted && deafened { 23.0 } else { 0.0 })
-                                .max(0.0),
-                                32.0,
-                            ),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.vertical(|ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    // 32px rows, the name (and any local-mute
-                                    // line) centered on the avatar.
-                                    ui.set_min_height(32.0);
-                                    let lines = ui.fonts_mut(|fonts| {
-                                        fonts.row_height(&egui::FontId::new(
-                                            12.0,
-                                            egui::FontFamily::Name("Satoshi Bold".into()),
-                                        )) + if local_muted {
-                                            fonts
-                                                .row_height(&egui::FontId::proportional(10.0))
-                                                .max(10.0)
-                                        } else {
-                                            0.0
-                                        }
-                                    });
-                                    ui.add_space(((32.0 - lines) / 2.0).max(0.0));
-                                    ui.add(
-                                        egui::Label::new(
-                                            bold(if is_self {
-                                                format!("{} (you)", participant.name)
-                                            } else {
-                                                participant.name.clone()
-                                            })
-                                            .size(12.0),
-                                        )
-                                        .truncate(),
-                                    );
-                                    if local_muted {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                egui::vec2(10.0, 10.0),
-                                                egui::Sense::hover(),
-                                            );
-                                            paint_icon(
-                                                ui.painter(),
-                                                rect,
-                                                NavIcon::VolumeX,
-                                                TERRACOTTA_BRIGHT,
-                                            );
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(format!(
-                                                        "You muted {}",
-                                                        participant.name
-                                                    ))
-                                                    .size(10.0)
-                                                    .color(TERRACOTTA_BRIGHT),
-                                                )
-                                                .truncate(),
-                                            );
-                                        });
-                                    }
-                                });
-                            },
-                        );
-                        if !muted && !deafened {
-                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                        }
-                        for (active, icon, label) in [
-                            (muted, NavIcon::MicOff, "Muted"),
-                            (deafened, NavIcon::HeadphoneOff, "Deafened"),
-                        ] {
-                            if active {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(16.0, 16.0),
-                                    egui::Sense::hover(),
-                                );
-                                paint_icon(ui.painter(), rect, icon, MUTED);
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Image,
-                                        ui.is_enabled(),
-                                        format!("{}: {label}", participant.name),
-                                    )
-                                });
-                                response.on_hover_text(label);
-                            }
-                        }
-                        if own && participant.id != self.voice.self_id {
-                            // Web's quiet participant-menu button.
-                            let options = toned(
-                                ui,
-                                Tone {
-                                    rest: (Color32::TRANSPARENT, Color32::TRANSPARENT, MUTED),
-                                    hover: (BORDER, BORDER, TEXT),
-                                    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
-                                },
-                                true,
-                                egui::Button::new(RichText::new("Audio").size(10.0))
-                                    .min_size(egui::vec2(46.0, 28.0)),
-                            );
-                            options.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    ui.is_enabled(),
-                                    format!("Audio controls for {}", participant.name),
-                                )
-                            });
-                            if options.clicked() {
-                                // The menu lives under `menu_id`, not the button's default id.
-                                self.effects
-                                    .toggle(!egui::Popup::is_id_open(ui.ctx(), menu_id));
-                            }
-                            egui::Popup::menu(&options)
-                                .id(menu_id)
-                                .width(240.0)
-                                .show(|ui| {
-                                    // The Audio test's full-width volume control.
-                                    let volume = volume_slider(
-                                        ui,
-                                        "User volume",
-                                        &mut playback.gain_percent,
-                                    );
-                                    ui.add_space(4.0);
-                                    let muted = ui.checkbox(&mut playback.muted, "Mute");
-                                    if volume {
-                                        self.effects
-                                            .slider(f32::from(playback.gain_percent) / 200.0);
-                                    }
-                                    if muted.changed() {
-                                        self.effects.toggle(!playback.muted);
-                                    }
-                                    if volume || muted.changed() {
-                                        self.voice
-                                            .set_participant_playback(&participant.id, playback);
-                                    }
-                                    ui.label(
-                                        RichText::new("Only changes what you hear.")
-                                            .size(11.0)
-                                            .color(MUTED),
-                                    );
-                                });
-                        }
-                    });
-                });
+        let label = if elsewhere {
+            format!("Open #{} in {}", call.channel_name, call.space_name)
+        } else {
+            format!("Open #{}", call.channel_name)
+        };
+        open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        if open.on_hover_text(label).clicked() {
+            let space = self.voice.active_space.clone();
+            self.navigate(NavigationTarget {
+                channel: space.as_ref().map(|_| call.channel_id.clone()),
+                space,
             });
         }
     }
 
-    /// Whether the narrow conversation, rather than the dock in Browse,
+    /// The call's faces, wrapping in at most two rows. Past them a "+N"
+    /// tile folds in the rest. A face or the tile opens the full list,
+    /// another person's with their audio controls open. True when one did.
+    fn call_faces(
+        &mut self,
+        ui: &mut egui::Ui,
+        people: &[model::VoiceOccupant],
+        speaking: &[bool],
+        touch: bool,
+    ) -> bool {
+        let size = if touch { 38.0 } else { 36.0 };
+        let gap = 8.0;
+        let width = ui.available_width();
+        let per_row = (((width + gap) / (size + gap)).floor() as usize).max(1);
+        let (faces, more) = call_face_slots(people.len(), per_row);
+        let rows = (faces + usize::from(more > 0)).div_ceil(per_row);
+        let (area, _) = ui.allocate_exact_size(
+            egui::vec2(width, rows as f32 * (size + gap) - gap),
+            egui::Sense::hover(),
+        );
+        let slot = |index: usize| {
+            egui::Rect::from_min_size(
+                area.min
+                    + egui::vec2(
+                        (index % per_row) as f32 * (size + gap),
+                        (index / per_row) as f32 * (size + gap),
+                    ),
+                egui::Vec2::splat(size),
+            )
+        };
+        let mut open = None;
+        for (index, person) in people.iter().take(faces).enumerate() {
+            let rect = slot(index);
+            let own = person.id == self.voice.self_id;
+            let (muted, deafened) = if own {
+                (
+                    self.voice.state.audio.muted,
+                    self.voice.state.audio.deafened,
+                )
+            } else {
+                (person.muted, person.deafened)
+            };
+            let face = ui.interact(
+                rect,
+                ui.id().with(("call-face", &person.id)),
+                egui::Sense::click(),
+            );
+            let picture = paint_avatar(ui, rect, &person.name, person.avatar_id, person.picture());
+            if speaking[index] {
+                speaking_ring(ui, rect, picture, LIVE_CARD);
+            } else if face.hovered() || face.has_focus() {
+                avatar_ring(ui, rect, picture, 2.0, Stroke::new(2.0, BORDER));
+            }
+            if deafened {
+                face_badge(ui, rect, NavIcon::HeadphoneOff, LIVE_CARD);
+            } else if muted {
+                face_badge(ui, rect, NavIcon::MicOff, LIVE_CARD);
+            }
+            let name = if own {
+                format!("{} (you)", person.name)
+            } else {
+                person.name.clone()
+            };
+            let label = participant_label(&name, speaking[index], muted, deafened);
+            face.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            if face.on_hover_text(name).clicked() {
+                open = Some((!own).then(|| person.id.clone()));
+            }
+        }
+        if more > 0 {
+            let rect = slot(faces);
+            let tile = ui.interact(rect, ui.id().with("call-more"), egui::Sense::click());
+            let lit = tile.hovered() || tile.has_focus();
+            ui.painter().circle_filled(
+                rect.center(),
+                size / 2.0,
+                if lit { MORE_TILE_HOVER } else { MORE_TILE },
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("+{more}"),
+                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                TEXT,
+            );
+            // Someone folded in is speaking: the tile lights for them.
+            if speaking[faces..].iter().any(|speaking| *speaking) {
+                speaking_ring(ui, rect, false, LIVE_CARD);
+            }
+            let label = format!("{more} more in the call");
+            tile.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            if tile.on_hover_text("Everyone in the call").clicked() {
+                open = Some(None);
+            }
+        }
+        let Some(audio) = open else {
+            return false;
+        };
+        self.effects.toggle(true);
+        self.call_list = Some(CallList { audio });
+        true
+    }
+
+    /// The call card's Mute and Deafen (the account bar's state), then
+    /// Leave, or Cancel while joining.
+    fn call_card_controls(&mut self, ui: &mut egui::Ui, joining: bool, touch: bool) {
+        let height = if touch { 44.0 } else { 32.0 };
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                self.mute_toggle(ui, height);
+                let deafened = self.voice.state.audio.deafened;
+                if call_toggle(
+                    ui,
+                    if deafened {
+                        NavIcon::VolumeX
+                    } else {
+                        NavIcon::Headphones
+                    },
+                    if deafened {
+                        "Undeafen audio"
+                    } else {
+                        "Deafen audio"
+                    },
+                    deafened,
+                    height,
+                )
+                .on_hover_text(if deafened { "Undeafen" } else { "Deafen" })
+                .clicked()
+                {
+                    self.toggle_deafen();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let leave = voice_text_button(
+                        ui,
+                        NavIcon::PhoneOff,
+                        if joining { "Cancel" } else { "Leave" },
+                        LEAVE_TONE,
+                        height,
+                    );
+                    leave.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            if joining {
+                                "Cancel joining voice"
+                            } else {
+                                "Leave voice"
+                            },
+                        )
+                    });
+                    if leave
+                        .on_hover_text(if joining {
+                            "Stop joining this voice channel"
+                        } else {
+                            "Leave this voice channel"
+                        })
+                        .clicked()
+                    {
+                        self.leave_voice_now();
+                    }
+                });
+            },
+        );
+    }
+
+    /// The call's microphone toggle, `size` square, as the account bar's.
+    fn mute_toggle(&mut self, ui: &mut egui::Ui, size: f32) {
+        let muted = self.voice.state.audio.muted;
+        if call_toggle(
+            ui,
+            if muted { NavIcon::MicOff } else { NavIcon::Mic },
+            if muted {
+                "Unmute microphone"
+            } else {
+                "Mute microphone"
+            },
+            muted,
+            size,
+        )
+        .on_hover_text(if muted { "Unmute" } else { "Mute" })
+        .clicked()
+        {
+            self.toggle_mute();
+        }
+    }
+
+    /// Live now's other rooms: two cards, the rest folded behind one
+    /// "N more live" row until it is opened.
+    fn live_rooms_list(&mut self, ui: &mut egui::Ui, rooms: &[LiveRoom]) {
+        let shown = if self.live_rooms_expanded {
+            rooms.len()
+        } else {
+            rooms.len().min(LIVE_ROOM_CARDS)
+        };
+        for (index, room) in rooms[..shown].iter().enumerate() {
+            if index > 0 {
+                ui.add_space(6.0);
+            }
+            self.room_card(ui, room);
+        }
+        if rooms.len() > LIVE_ROOM_CARDS {
+            ui.add_space(4.0);
+            self.rooms_fold(ui, &rooms[LIVE_ROOM_CARDS..]);
+        }
+    }
+
+    /// The row that unfolds the rest of Live now's rooms: a chevron, "N
+    /// more live" and their names, or "Show less" once open.
+    fn rooms_fold(&mut self, ui: &mut egui::Ui, folded: &[LiveRoom]) {
+        let open = self.live_rooms_expanded;
+        let height = if self.narrow_layout { 44.0 } else { 30.0 };
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::click(),
+        );
+        if response.hovered() || response.has_focus() {
+            ui.painter().rect_filled(rect, 8.0, SURFACE_HOVER);
+        }
+        paint_chevron(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::vec2(14.0, 14.0),
+            ),
+            chevron_turn(ui.ctx(), response.id.with("open"), open),
+            MUTED,
+        );
+        let text = if open {
+            "Show less".to_owned()
+        } else {
+            format!("{} more live", folded.len())
+        };
+        let galley = ui.painter().layout_no_wrap(
+            text.clone(),
+            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+            TEXT,
+        );
+        let text_left = rect.left() + 28.0;
+        let text_width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
+            galley,
+            TEXT,
+        );
+        let names = folded_room_names(folded);
+        let room = rect.right() - 8.0 - (text_left + text_width + 8.0);
+        if !open && room >= 24.0 {
+            let galley = truncated_galley(
+                ui,
+                &names,
+                egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into())),
+                MUTED,
+                room,
+            );
+            ui.painter().galley(
+                egui::pos2(
+                    text_left + text_width + 8.0,
+                    rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                MUTED,
+            );
+        }
+        let label = if open {
+            text
+        } else {
+            format!("{text}: {names}")
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, &label)
+        });
+        if response.clicked() {
+            self.live_rooms_expanded = !open;
+        }
+    }
+
+    /// Another live room's card (design H §1c): its channel and timer, then
+    /// a few faces, who is there and Join or Switch. Rooms you are not in
+    /// carry no speaking rings: there is no audio from them.
+    fn room_card(&mut self, ui: &mut egui::Ui, room: &LiveRoom) {
+        let touch = self.narrow_layout;
+        let entering = motion::entrance(
+            ui.ctx(),
+            egui::Id::new(("live-room", &room.id)),
+            motion::BASE,
+        );
+        motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
+            egui::Frame::new()
+                .fill(ROOM_CARD)
+                .stroke(Stroke::new(1.0, ROOM_CARD_BORDER))
+                .corner_radius(10)
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.push_id(&room.id, |ui| {
+                        self.room_title(ui, room);
+                        self.room_people(ui, room, if touch { 40.0 } else { 28.0 });
+                    });
+                });
+        });
+    }
+
+    /// A room card's first row: # (or a lock) and the name, which opens
+    /// its chat, then the session's timer.
+    fn room_title(&mut self, ui: &mut egui::Ui, room: &LiveRoom) {
+        let (row, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+        let mut right = row.right();
+        if let Some(started) = self.voice_started(&room.id) {
+            let text = live_timer(ui.ctx(), started);
+            right = paint_live_timer(ui, &text, right, row.center().y, 11.5) - 8.0;
+        }
+        let name = truncated_galley(
+            ui,
+            &room.name,
+            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TEXT,
+            (right - row.left() - 24.0).max(1.0),
+        );
+        let link = egui::Rect::from_min_max(
+            row.min,
+            egui::pos2(row.left() + 24.0 + name.size().x + 4.0, row.bottom()),
+        );
+        let open = ui.interact(link, ui.id().with("open"), egui::Sense::click());
+        if open.hovered() || open.has_focus() {
+            ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
+        }
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(row.left() + 10.0, row.center().y),
+                egui::vec2(14.0, 14.0),
+            ),
+            if room.private {
+                NavIcon::Lock
+            } else {
+                NavIcon::Hash
+            },
+            MUTED,
+        );
+        let name_height = name.size().y;
+        ui.painter().galley(
+            egui::pos2(row.left() + 22.0, row.center().y - name_height / 2.0),
+            name,
+            TEXT,
+        );
+        let label = format!("Open #{}", room.name);
+        open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        // A visited room is the conversation already open.
+        if open.on_hover_text(label).clicked() && self.visited_channel(&room.id).is_none() {
+            self.select_channel(room.id.clone(), false);
+        }
+    }
+
+    /// A room card's second row: up to three overlapping faces and a "+N"
+    /// chip, who is there on one line, and Join, Switch or Joining….
+    fn room_people(&mut self, ui: &mut egui::Ui, room: &LiveRoom, height: f32) {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                self.room_action(ui, room, height);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    // Names need room to read: when three faces and the
+                    // chip would leave them under 60px, show one face.
+                    let chip = if room.people.len() > 3 { 32.0 } else { 0.0 };
+                    let crowded = ui.available_width() - (24.0 + 2.0 * 18.0 + 6.0 + chip) < 60.0;
+                    let faces = room.people.len().min(if crowded { 1 } else { 3 });
+                    let (stack, _) = ui.allocate_exact_size(
+                        egui::vec2(24.0 + (faces - 1) as f32 * 18.0, 24.0),
+                        egui::Sense::hover(),
+                    );
+                    for (index, person) in room.people.iter().take(faces).enumerate() {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(stack.left() + index as f32 * 18.0, stack.top()),
+                            egui::vec2(24.0, 24.0),
+                        );
+                        let picture = paint_avatar(
+                            ui,
+                            rect,
+                            &person.name,
+                            person.avatar_id,
+                            person.picture(),
+                        );
+                        // The card's color parts overlapping faces.
+                        avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, ROOM_CARD));
+                    }
+                    if room.people.len() > 3 && !crowded {
+                        let text = ui.painter().layout_no_wrap(
+                            format!("+{}", room.people.len() - 3),
+                            egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                            MUTED,
+                        );
+                        let (chip, _) = ui.allocate_exact_size(
+                            egui::vec2(text.size().x + 10.0, 20.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(chip, 10.0, ROOM_CARD_BORDER);
+                        ui.painter()
+                            .galley(chip.center() - text.size() / 2.0, text, MUTED);
+                    }
+                    let names: Vec<&str> = room
+                        .people
+                        .iter()
+                        .map(|person| person.name.as_str())
+                        .collect();
+                    let names = room_names(&names);
+                    let galley = truncated_galley(
+                        ui,
+                        &names,
+                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                        MUTED,
+                        ui.available_width(),
+                    );
+                    let (rect, response) =
+                        ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+                    ui.painter().galley(rect.min, galley, MUTED);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &names)
+                    });
+                });
+            },
+        );
+    }
+
+    /// Join (eggshell) outside a call, Switch (neutral) in one elsewhere,
+    /// or a busy Joining…; unavailable joins say why, as the rows do.
+    fn room_action(&mut self, ui: &mut egui::Ui, room: &LiveRoom, height: f32) {
+        let name = &room.name;
+        ui.spacing_mut().button_padding.x = 12.0;
+        match self.voice_action(&room.id) {
+            VoiceAction::Join { switching, enabled } => {
+                let button = toned(
+                    ui,
+                    if switching {
+                        SECONDARY_TONE
+                    } else {
+                        PRIMARY_TONE
+                    },
+                    enabled,
+                    egui::Button::new(bold(if switching { "Switch" } else { "Join" }).size(12.0))
+                        .min_size(egui::vec2(0.0, height)),
+                );
+                let (label, tooltip) = if switching {
+                    (
+                        format!("Switch to #{name}"),
+                        format!("Switch voice to #{name}"),
+                    )
+                } else {
+                    (format!("Join #{name}"), format!("Join voice in #{name}"))
+                };
+                self.voice_join_response(ui, button, &room.id, &label, &tooltip);
+            }
+            VoiceAction::Joining | VoiceAction::Leave => {
+                let button = toned(
+                    ui,
+                    SECONDARY_TONE,
+                    false,
+                    egui::Button::new(bold("Joining…").size(12.0))
+                        .min_size(egui::vec2(0.0, height)),
+                );
+                button.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        false,
+                        format!("Joining #{name}"),
+                    )
+                });
+                button.on_disabled_hover_text(format!("Connecting to #{name}…"));
+            }
+        }
+    }
+
+    /// The call's full list (design H §1b): beside the call card, or a
+    /// bottom sheet in narrow layouts. Everyone, what they are doing and
+    /// their audio controls. Escape, an outside click or Close dismiss it;
+    /// `picked` is a face's click this pass, which isn't one outside.
+    fn call_list_panel(
+        &mut self,
+        ui: &egui::Ui,
+        card: egui::Rect,
+        channel: &str,
+        people: &[model::VoiceOccupant],
+        speaking: &[bool],
+        picked: bool,
+    ) {
+        let context = ui.ctx().clone();
+        let screen = context.viewport_rect();
+        let touch = self.narrow_layout;
+        let title = format!(
+            "In #{channel} · {} {}",
+            people.len(),
+            if people.len() == 1 {
+                "person"
+            } else {
+                "people"
+            }
+        );
+        let mut close = false;
+        if touch {
+            let backdrop = egui::Area::new(egui::Id::new("call-list-backdrop"))
+                .order(egui::Order::Middle)
+                .fixed_pos(screen.min)
+                .show(&context, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                    ui.painter()
+                        .rect_filled(rect, 0.0, Color32::from_black_alpha(96));
+                    response
+                })
+                .inner;
+            close |= backdrop.clicked();
+        }
+        let (area, width, max_height) = if touch {
+            (
+                egui::Area::new(egui::Id::new("call-list"))
+                    .pivot(egui::Align2::LEFT_BOTTOM)
+                    .fixed_pos(screen.left_bottom()),
+                screen.width(),
+                screen.height() * 0.7,
+            )
+        } else {
+            (
+                // Beside the sidebar, level with the card.
+                egui::Area::new(egui::Id::new("call-list"))
+                    .fixed_pos(egui::pos2(card.right() + 20.0, card.top()))
+                    .constrain(true),
+                300.0,
+                (screen.bottom() - card.top() - 16.0).max(200.0),
+            )
+        };
+        let shown = area
+            .order(egui::Order::Foreground)
+            .fade_in(false)
+            .show(&context, |ui| {
+                // An area's room is last pass's size: let the list grow to
+                // its limit and scroll past it.
+                ui.set_max_height(max_height);
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(if touch {
+                        CornerRadius {
+                            nw: 12,
+                            ne: 12,
+                            sw: 0,
+                            se: 0,
+                        }
+                    } else {
+                        CornerRadius::same(10)
+                    })
+                    .inner_margin(12)
+                    .shadow(ui.style().visuals.popup_shadow)
+                    .show(ui, |ui| {
+                        ui.set_width(width - 26.0);
+                        close |= floating_heading(ui, &title, "Close", true);
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("call-list-scroll")
+                            .max_height(max_height - 66.0)
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                for (person, speaking) in people.iter().zip(speaking) {
+                                    self.call_list_row(ui, person, *speaking, touch);
+                                }
+                            });
+                    });
+            });
+        motion::overlay(
+            &context,
+            shown.response.layer_id,
+            motion::BASE,
+            if touch { 24.0 } else { 8.0 },
+            true,
+        );
+        let escaped = self.dialog.is_none()
+            && context
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let outside = !touch && !picked && clicked_outside(&context, &shown.response);
+        if close || escaped || outside {
+            self.call_list = None;
+        }
+    }
+
+    /// One person in the full list: their face, name and state, and for
+    /// anyone but you an Audio button (or a right-click) that opens their
+    /// volume and "Mute for me" below the row.
+    fn call_list_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        person: &model::VoiceOccupant,
+        speaking: bool,
+        touch: bool,
+    ) {
+        let own = person.id == self.voice.self_id;
+        let (muted, deafened) = if own {
+            (
+                self.voice.state.audio.muted,
+                self.voice.state.audio.deafened,
+            )
+        } else {
+            (person.muted, person.deafened)
+        };
+        let mut playback = self.voice.playback(&person.id);
+        let open = !own
+            && self
+                .call_list
+                .as_ref()
+                .is_some_and(|list| list.audio.as_deref() == Some(person.id.as_str()));
+        let status = participant_status(
+            &person.name,
+            speaking,
+            muted,
+            deafened,
+            !own && playback.muted,
+        );
+        ui.push_id(&person.id, |ui| {
+            let row = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), if touch { 48.0 } else { 40.0 }),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let (face, _) =
+                            ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                        let picture = paint_avatar(
+                            ui,
+                            face,
+                            &person.name,
+                            person.avatar_id,
+                            person.picture(),
+                        );
+                        if speaking {
+                            speaking_ring(ui, face, picture, SURFACE);
+                        }
+                        // Audio at the end; the name and status take the rest.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let audio = (!own).then(|| {
+                                let audio = toned(
+                                    ui,
+                                    Tone {
+                                        rest: (Color32::TRANSPARENT, BORDER, MUTED),
+                                        hover: (BORDER, BORDER, TEXT),
+                                        press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+                                    },
+                                    true,
+                                    egui::Button::new(RichText::new("Audio").size(11.0)).min_size(
+                                        egui::vec2(46.0, if touch { 40.0 } else { 28.0 }),
+                                    ),
+                                );
+                                audio.widget_info(|| {
+                                    egui::WidgetInfo::selected(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        open,
+                                        format!("Audio controls for {}", person.name),
+                                    )
+                                });
+                                audio.clicked()
+                            });
+                            let text_width = ui.available_width().max(1.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(text_width, 36.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_min_size(egui::vec2(text_width, 36.0));
+                                    ui.spacing_mut().item_spacing.y = 1.0;
+                                    // The name, and any status under it,
+                                    // centered on the face.
+                                    let lines = ui.fonts_mut(|fonts| {
+                                        fonts.row_height(&egui::FontId::new(
+                                            12.5,
+                                            egui::FontFamily::Name("Satoshi Bold".into()),
+                                        )) + if status.is_some() {
+                                            1.0 + fonts
+                                                .row_height(&egui::FontId::proportional(11.0))
+                                        } else {
+                                            0.0
+                                        }
+                                    });
+                                    ui.add_space(((36.0 - lines) / 2.0).max(0.0));
+                                    ui.add(
+                                        egui::Label::new(
+                                            bold(if own {
+                                                format!("{} (you)", person.name)
+                                            } else {
+                                                person.name.clone()
+                                            })
+                                            .size(12.5),
+                                        )
+                                        .truncate()
+                                        .selectable(false),
+                                    );
+                                    if let Some((status, tone)) = &status {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(status).size(11.0).color(*tone),
+                                            )
+                                            .truncate()
+                                            .selectable(false),
+                                        );
+                                    }
+                                },
+                            );
+                            audio.unwrap_or(false)
+                        })
+                        .inner
+                    },
+                )
+                .inner
+            });
+            // Web opens a participant's audio controls on right-click too.
+            if !own && (row.inner || row.response.secondary_clicked()) {
+                self.effects.toggle(!open);
+                if let Some(list) = &mut self.call_list {
+                    list.audio = (!open).then(|| person.id.clone());
+                }
+            }
+            if !open {
+                return;
+            }
+            egui::Frame::new()
+                .fill(BLACKOUT)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    // The Audio test's full-width volume control.
+                    let volume = volume_slider(ui, "User volume", &mut playback.gain_percent);
+                    ui.add_space(4.0);
+                    let muted = ui.checkbox(&mut playback.muted, "Mute for me");
+                    if volume {
+                        self.effects
+                            .slider(f32::from(playback.gain_percent) / 200.0);
+                    }
+                    if muted.changed() {
+                        self.effects.toggle(!playback.muted);
+                    }
+                    if volume || muted.changed() {
+                        self.voice.set_participant_playback(&person.id, playback);
+                    }
+                    ui.label(
+                        RichText::new("Only changes what you hear.")
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                });
+        });
+    }
+
+    /// Phones' voice strip under the chat header (design H §4): your call
+    /// (anything but Mute opens Browse, where its card is), else the open
+    /// channel's live room with Join. Otherwise nothing.
+    fn voice_strip(&mut self, ui: &mut egui::Ui) {
+        // The full list belongs to Browse's card.
+        if !self.navigation_open {
+            self.call_list = None;
+        }
+        let in_call = self.in_voice();
+        let live_here = self
+            .header_voice_channel()
+            .map(|channel| {
+                let people = self.voice_people(&channel).0;
+                (channel, people)
+            })
+            .filter(|(_, people)| !people.is_empty());
+        if !in_call && live_here.is_none() {
+            return;
+        }
+        let strip = egui::TopBottomPanel::top("voice-strip")
+            .exact_height(56.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(VOICE_STRIP)
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show_inside(ui, |ui| {
+                let entering =
+                    motion::entrance(ui.ctx(), egui::Id::new("voice-strip"), motion::BASE);
+                motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| match live_here {
+                    _ if in_call => self.strip_call(ui),
+                    Some((channel, people)) => self.strip_join(ui, &channel, &people),
+                    None => {}
+                });
+            });
+        ui.painter().hline(
+            strip.response.rect.x_range(),
+            strip.response.rect.bottom(),
+            Stroke::new(1.0, VOICE_STRIP_BORDER),
+        );
+    }
+
+    /// The strip during a call: waveform, the call's channel, two faces,
+    /// who is speaking, the timer and a 44px Mute.
+    fn strip_call(&mut self, ui: &mut egui::Ui) {
+        let (Phase::Joining(call) | Phase::Connected(call) | Phase::Reconnecting(call)) =
+            self.voice.state.phase.clone()
+        else {
+            return;
+        };
+        let people = self.call_people();
+        let speaking = self.call_speaking(&people);
+        let inner = ui.max_rect();
+        // Registered first, so Mute (added after) takes its own clicks.
+        let strip = ui.interact(
+            inner.expand2(egui::vec2(12.0, 6.0)),
+            ui.id().with("open-call"),
+            egui::Sense::click(),
+        );
+        let label = format!("Voice in #{}: show the call", call.channel_name);
+        strip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        if strip.hovered() || strip.has_focus() {
+            ui.painter().rect_filled(strip.rect, 0.0, SURFACE_HOVER);
+        }
+        let mute = egui::Rect::from_min_size(
+            egui::pos2(inner.right() - 44.0, inner.center().y - 22.0),
+            egui::vec2(44.0, 44.0),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(mute), |ui| {
+            self.mute_toggle(ui, 44.0);
+        });
+        let mut right = mute.left() - 10.0;
+        if let Some(started) = self.voice_started(&call.channel_id) {
+            let text = live_timer(ui.ctx(), started);
+            right = paint_live_timer(ui, &text, right, inner.center().y, 12.0) - 10.0;
+        }
+        let mut left = strip_lead(
+            ui,
+            inner,
+            &format!("#{}", call.channel_name),
+            (right - inner.left()) * 0.5,
+        );
+        left = strip_faces(ui, &people, &speaking, left, inner.center().y);
+        if let Some(index) = speaking.iter().position(|speaking| *speaking)
+            && right - left >= 24.0
+        {
+            let name = truncated_galley(
+                ui,
+                &people[index].name,
+                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                MUTED,
+                right - left,
+            );
+            ui.painter().galley(
+                egui::pos2(left, inner.center().y - name.size().y / 2.0),
+                name,
+                MUTED,
+            );
+        }
+        if strip.clicked() {
+            self.navigation_open = true;
+        }
+    }
+
+    /// The strip outside a call when the open channel is live: waveform,
+    /// "N talking", two faces and Join.
+    fn strip_join(&mut self, ui: &mut egui::Ui, channel: &str, people: &[model::VoiceOccupant]) {
+        let inner = ui.max_rect();
+        let name = self.channel_name().to_owned();
+        let (button, joining) = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(inner)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().button_padding.x = 14.0;
+                    match self.voice_action(channel) {
+                        VoiceAction::Join { enabled, .. } => (
+                            toned(
+                                ui,
+                                PRIMARY_TONE,
+                                enabled,
+                                egui::Button::new(bold("Join").size(12.0))
+                                    .min_size(egui::vec2(0.0, 40.0)),
+                            ),
+                            false,
+                        ),
+                        VoiceAction::Joining | VoiceAction::Leave => (
+                            toned(
+                                ui,
+                                SECONDARY_TONE,
+                                false,
+                                egui::Button::new(bold("Joining…").size(12.0))
+                                    .min_size(egui::vec2(0.0, 40.0)),
+                            ),
+                            true,
+                        ),
+                    }
+                },
+            )
+            .inner;
+        let right = button.rect.left() - 10.0;
+        if joining {
+            button.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    false,
+                    format!("Joining voice in #{name}"),
+                )
+            });
+            button.on_disabled_hover_text(format!("Connecting to #{name}…"));
+        } else {
+            let label = format!("Join voice in #{name}");
+            self.voice_join_response(ui, button, channel, &label, &label);
+        }
+        let talking = format!("{} talking", people.len());
+        let left = strip_lead(ui, inner, &talking, right - inner.left());
+        strip_faces(ui, people, &[], left, inner.center().y);
+    }
+
+    /// Whether the narrow conversation, rather than Browse's account bar,
     /// shows the voice error, as web, Android and Apple do on phones.
     fn inline_voice_error(&self, context: &egui::Context) -> bool {
         context.viewport_rect().width() <= 760.0
@@ -11817,98 +12695,9 @@ impl CaperApp {
         }
     }
 
+    /// The account bar: profile, microphone, deafen, device menus and
+    /// settings. The call itself lives in Live now's card.
     fn account_bar(&mut self, ui: &mut egui::Ui) {
-        if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
-            &self.voice.state.phase
-        {
-            let label = format!("{} / {}", context.channel_name, context.space_name);
-            let connected = matches!(self.voice.state.phase, Phase::Connected(_));
-            let target = NavigationTarget {
-                space: self.voice.active_space.clone(),
-                channel: self
-                    .voice
-                    .active_space
-                    .as_ref()
-                    .map(|_| context.channel_id.clone()),
-            };
-            ui.add_space(8.0);
-            full_bleed_separator(ui, ui.cursor().top());
-            ui.add_space(8.0);
-            let joining = matches!(self.voice.state.phase, Phase::Joining(_));
-            let status_height = ui
-                .fonts_mut(|fonts| {
-                    fonts.row_height(&egui::FontId::new(
-                        12.0,
-                        egui::FontFamily::Name("Satoshi Bold".into()),
-                    )) + fonts.row_height(&egui::FontId::proportional(11.0))
-                        + 2.0
-                })
-                .max(28.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), status_height),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    let (icon, _) =
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    // Web: green when connected, amber while connecting or reconnecting.
-                    let tone = if connected {
-                        Color32::from_rgb(140, 178, 98)
-                    } else {
-                        Color32::from_rgb(217, 171, 92)
-                    };
-                    paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
-                    let status = ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.add(
-                            egui::Label::new(
-                                bold(if connected {
-                                    "Voice connected"
-                                } else if joining {
-                                    "Connecting…"
-                                } else {
-                                    "Reconnecting…"
-                                })
-                                .size(12.0)
-                                .color(tone),
-                            )
-                            .selectable(false),
-                        );
-                        ui.add(
-                            egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
-                                .selectable(false),
-                        );
-                    });
-                    let open = status.response.interact(egui::Sense::click());
-                    open.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
-                    });
-                    if open.clicked() {
-                        self.navigate(target);
-                    }
-                    let hangup = ui
-                        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            drawn_icon_button_with_tooltip(
-                                ui,
-                                NavIcon::PhoneOff,
-                                if connected {
-                                    "Leave voice"
-                                } else {
-                                    "Cancel joining voice"
-                                },
-                                if connected { "Disconnect" } else { "Cancel" },
-                            )
-                        })
-                        .inner;
-                    if hangup.clicked() {
-                        if connected {
-                            self.effects.play(Effect::Disconnect);
-                        }
-                        self.voice.leave();
-                    }
-                },
-            );
-            ui.add_space(8.0);
-        }
         // Phones show the conversation alone, so its voice error moves there.
         if !self.inline_voice_error(ui.ctx())
             && let Some(error) = self.voice.error.clone()
@@ -13668,31 +14457,15 @@ impl CaperApp {
                             let actions = ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    // Right to left: Members sits right of Pins, as on web,
-                                    // and the open channel's voice sits apart from both, past
-                                    // a divider.
-                                    let voice_channel = self.header_voice_channel();
+                                    // Right to left: Members sits right of Pins, as on web.
+                                    // Voice lives in the sidebar's Live now (design H).
                                     if self.header_members() && users_button(ui, self.members_visible).clicked() {
                                         self.members_visible = !self.members_visible;
-                                    }
-                                    if voice_channel.is_some() {
-                                        // Web's 6px between the voice divider and Pins.
-                                        ui.spacing_mut().item_spacing.x = 6.0;
                                     }
                                     if drawn_icon_button(ui, NavIcon::Pin, "Pins").clicked() {
                                         self.showing_pins = true;
                                     }
-                                    ui.spacing_mut().item_spacing.x = 12.0;
                                     self.header_channel_actions(ui);
-                                    if let Some(channel) = voice_channel {
-                                        // Web's 1px border, 14px past the voice action.
-                                        ui.spacing_mut().item_spacing.x = 14.0;
-                                        let (divider, _) = ui.allocate_exact_size(egui::vec2(1.0, 34.0), egui::Sense::hover());
-                                        ui.painter().vline(divider.center().x, divider.y_range(), Stroke::new(1.0, BORDER));
-                                        ui.spacing_mut().item_spacing.x = 12.0;
-                                        let name = self.channel_name().to_owned();
-                                        self.header_voice(ui, &channel, &name);
-                                    }
                                 },
                             );
                             let width = actions.response.rect.width();
@@ -13708,6 +14481,9 @@ impl CaperApp {
                 heading.response.rect.bottom(),
                 Stroke::new(1.0, BORDER),
             );
+            if narrow {
+                self.voice_strip(ui);
+            }
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
             let attach = self.can_attach();
@@ -15512,7 +16288,13 @@ impl CaperApp {
                                 false,
                             );
                         }
-                        if thread_summary_link(ui, summary.reply_count).clicked() {
+                        if thread_summary_link(
+                            ui,
+                            summary.reply_count,
+                            self.thread_unread.contains_key(&message.id),
+                        )
+                        .clicked()
+                        {
                             self.open_thread(message.id.clone());
                         }
                     });
@@ -15604,6 +16386,32 @@ impl CaperApp {
         {
             ui.scroll_to_rect(message_rect, Some(egui::Align::Center));
             self.scroll_to_target = false;
+        }
+        // Only a rendered reply in the foreground thread pane counts. The
+        // reply's end must be inside the clip (also works for a reply taller
+        // than the viewport); off-screen newer replies never advance reads.
+        if in_thread
+            && !in_pins
+            && self.foreground
+            && ui.is_enabled()
+            && self.dialog.is_none()
+            && self.viewer.is_none()
+            && !self.showing_pins
+            && !self.browse_covers_conversation()
+            && self
+                .thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading && !thread.has_newer)
+            && ui
+                .clip_rect()
+                .contains(message_rect.center_bottom() - egui::vec2(0.0, 1.0))
+            && let Some(root) = &message.thread_root_id
+            && self.thread_unread.get(root).is_some_and(|unread| {
+                model::sequence(&message.seq).unwrap_or(0)
+                    >= model::sequence(unread).unwrap_or(u64::MAX)
+            })
+        {
+            self.send_thread_unread(Some((root.clone(), message.seq.clone())));
         }
     }
 
@@ -15989,7 +16797,7 @@ impl CaperApp {
         response.clicked()
     }
 
-    /// File chips above the composer: name, size saving, progress, remove.
+    /// Compact square previews wrap at the composer's available edge.
     fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
@@ -15997,6 +16805,7 @@ impl CaperApp {
         let channel = self.selected_channel.clone();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            let width = draft_tile_width(ui.available_width());
             for draft in self.draft_files.iter_mut().filter(|file| {
                 Some(&file.channel) == channel.as_ref() && file.thread_root_id.as_deref() == root
             }) {
@@ -16007,13 +16816,10 @@ impl CaperApp {
                 );
                 let from = motion::mark(ui);
                 let (rect, chip) =
-                    ui.allocate_exact_size(egui::vec2(236.0, 48.0), egui::Sense::hover());
+                    ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 8.0, SURFACE);
-                let thumb = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(8.0, 8.0),
-                    egui::vec2(32.0, 32.0),
-                );
+                let thumb = egui::Rect::from_min_size(rect.min, rect.size());
                 if draft.thumbnail.is_none()
                     && let Some(image) = draft.thumbnail_image.clone()
                 {
@@ -16036,55 +16842,64 @@ impl CaperApp {
                         .corner_radius(6)
                         .paint_at(ui, thumb);
                 } else {
-                    paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+                    paint_file_fallback(&painter, thumb, &draft.name);
                 }
                 let uploading = draft.attachment.is_none() && draft.error.is_none();
                 let status = if let Some(error) = &draft.error {
                     error.clone()
                 } else if draft.attachment.is_some() {
-                    uploads::size_label(draft.source_size, draft.stored_size)
+                    String::new()
                 } else if let Some(fraction) =
                     draft.compressing.filter(|_| draft.stored_size.is_none())
                 {
-                    format!("Compressing… {}%", (fraction * 100.0).round() as u32)
+                    format!("Packing {}%", (fraction * 100.0).round() as u32)
                 } else if draft.stored_size.is_none() {
                     "Preparing…".into()
                 } else if draft.progress >= 1.0 {
                     "Confirming…".into()
                 } else {
-                    format!("Uploading… {}%", (draft.progress * 100.0).round() as u32)
+                    format!("Sending {}%", (draft.progress * 100.0).round() as u32)
                 };
-                // Names and errors truncate in the chip; the tooltip has them in full.
-                chip.on_hover_text(format!(
-                    "{}
-{status}",
-                    draft.name
-                ));
-                let text_left = thumb.right() + 8.0;
-                let text_width = rect.right() - 34.0 - text_left;
+                // Keep filenames and full failures available without visual clutter.
+                let accessible = format!(
+                    "{}\n{}\n{status}",
+                    draft.name,
+                    uploads::size_label(draft.source_size, draft.stored_size)
+                );
+                chip.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
+                });
+                chip.on_hover_text(accessible.clone());
+                let text_left = rect.left() + 5.0;
+                let text_width = rect.width() - 10.0;
                 let line = |text: String, font: egui::FontId, color: Color32| {
                     let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
                     ui.fonts_mut(|fonts| fonts.layout_job(job))
                 };
-                painter.galley(
-                    egui::pos2(text_left, rect.top() + 8.0),
-                    line(
-                        draft.name.clone(),
-                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-                        TEXT,
-                    ),
-                    TEXT,
-                );
-                painter.galley(
-                    egui::pos2(text_left, rect.top() + 26.0),
-                    line(
-                        status,
-                        egui::FontId::proportional(11.0),
-                        if draft.error.is_some() { ERROR } else { MUTED },
-                    ),
-                    MUTED,
-                );
+                if !status.is_empty() {
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), rect.bottom() - 25.0),
+                            rect.max,
+                        ),
+                        0.0,
+                        SURFACE,
+                    );
+                    painter.galley(
+                        egui::pos2(text_left, rect.bottom() - 21.0),
+                        line(
+                            if draft.error.is_some() {
+                                "Failed".into()
+                            } else {
+                                status
+                            },
+                            egui::FontId::proportional(11.0),
+                            if draft.error.is_some() { ERROR } else { MUTED },
+                        ),
+                        MUTED,
+                    );
+                }
                 if uploading {
                     // Progress glides between updates instead of jumping.
                     let shown = motion::glide(
@@ -16095,7 +16910,7 @@ impl CaperApp {
                     );
                     let track = egui::Rect::from_min_max(
                         egui::pos2(text_left, rect.bottom() - 5.0),
-                        egui::pos2(rect.right() - 34.0, rect.bottom() - 3.0),
+                        egui::pos2(rect.right() - 5.0, rect.bottom() - 3.0),
                     );
                     painter.rect_filled(track, 1.0, BORDER);
                     painter.rect_filled(
@@ -16114,7 +16929,7 @@ impl CaperApp {
                     egui::StrokeKind::Inside,
                 );
                 let close = egui::Rect::from_center_size(
-                    egui::pos2(rect.right() - 17.0, rect.center().y),
+                    egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
                     egui::vec2(22.0, 22.0),
                 );
                 let url = draft
@@ -16130,14 +16945,11 @@ impl CaperApp {
                     });
                 if let Some(url) = url {
                     let response = ui.interact(
-                        egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(close.left() - 4.0, rect.bottom()),
-                        ),
+                        rect,
                         egui::Id::new(("draft-preview", draft.key)),
                         egui::Sense::click(),
                     );
-                    let label = format!("Preview {}", draft.name);
+                    let label = format!("Preview {accessible}");
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
                     });
@@ -16154,9 +16966,7 @@ impl CaperApp {
                     egui::Id::new(("draft-remove", draft.key)),
                     egui::Sense::click(),
                 );
-                if response.hovered() {
-                    painter.rect_filled(close, 6.0, SURFACE_HOVER);
-                }
+                painter.rect_filled(close, 6.0, SURFACE);
                 paint_icon(
                     &painter,
                     close.shrink(4.0),
@@ -16170,13 +16980,22 @@ impl CaperApp {
                 if response.on_hover_text(label).clicked() {
                     remove = Some(draft.key);
                 }
-                if draft.error.is_some()
-                    && ui
-                        .button("Retry")
-                        .on_hover_text(format!("Retry uploading {}", draft.name))
-                        .clicked()
-                {
-                    retry = Some(draft.key);
+                if let Some(error) = &draft.error {
+                    let retry_rect = egui::Rect::from_min_max(
+                        egui::pos2(rect.left(), rect.bottom() - 25.0),
+                        rect.max,
+                    );
+                    let response = ui.place(
+                        retry_rect,
+                        egui::Button::new("Failed · Retry").small().truncate(),
+                    );
+                    let label = format!("Retry uploading {}: {error}", draft.name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                    });
+                    if response.on_hover_text(label).clicked() {
+                        retry = Some(draft.key);
+                    }
                 }
                 // Each file pops into the composer, as on web.
                 motion::settle(
@@ -17888,24 +18707,26 @@ impl CaperApp {
         if !draft.files.is_empty() {
             let mut remove = None;
             let mut preview = None;
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                let width = draft_tile_width(ui.available_width());
                 let context = ui.ctx().clone();
                 for (index, file) in draft.files.iter_mut().enumerate() {
                     let name = file.name();
                     let url = url::Url::from_file_path(&file.path).ok().map(String::from);
                     let status = if file.attachment.is_some() || !draft.sending {
-                        uploads::size_label(file.size, None)
+                        String::new()
                     } else {
-                        "Waiting to send…".into()
+                        "Sending…".into()
                     };
                     let (open, removed) = file_chip(
                         ui,
-                        286.0,
+                        width,
                         FileChip {
                             id: egui::Id::new(("profile-file", person, index)),
                             name: &name,
                             status,
+                            detail: uploads::size_label(file.size, None),
                             error: false,
                             thumbnail: file.thumbnail(&context),
                             progress: None,
@@ -20467,12 +21288,38 @@ fn login_error_frame(ui: &mut egui::Ui, error: &str) {
         });
 }
 
-/// A staged file in a composer: thumbnail or file icon, name, status, an
-/// optional upload bar and Remove, as on web's draft chips.
+/// Keep tiles compact even when there is only one file. Narrow composers
+/// reduce their column count rather than introducing horizontal scrolling.
+fn draft_tile_width(available: f32) -> f32 {
+    available.clamp(1.0, 104.0)
+}
+
+fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
+    let icon =
+        egui::Rect::from_center_size(rect.center() - egui::vec2(0.0, 8.0), egui::vec2(24.0, 24.0));
+    paint_icon(painter, icon, NavIcon::FileText, MUTED);
+    let kind = std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
+        })
+        .map_or_else(|| "File".to_owned(), str::to_ascii_uppercase);
+    painter.text(
+        rect.center() + egui::vec2(0.0, 12.0),
+        egui::Align2::CENTER_CENTER,
+        kind,
+        egui::FontId::proportional(11.0),
+        MUTED,
+    );
+}
+
+/// A staged square preview with an optional short status and Remove.
 struct FileChip<'a> {
     id: egui::Id,
     name: &'a str,
     status: String,
+    detail: String,
     error: bool,
     thumbnail: Option<&'a egui::TextureHandle>,
     /// Upload progress while a file is being sent.
@@ -20484,10 +21331,10 @@ struct FileChip<'a> {
 
 /// Returns the preview URL to open, if clicked, and whether Remove was clicked.
 fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, bool) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, SURFACE);
-    let thumb = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(32.0, 32.0));
+    let thumb = rect;
     if let Some(texture) = chip.thumbnail {
         // Centre-crop the local preview into the square.
         let [width, height] = texture.size().map(|value| value.max(1) as f32);
@@ -20501,40 +21348,38 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
             .corner_radius(6)
             .paint_at(ui, thumb);
     } else {
-        paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+        paint_file_fallback(&painter, thumb, chip.name);
     }
-    // Names and errors truncate in the chip; the tooltip has them in full.
-    response.on_hover_text(format!("{}\n{}", chip.name, chip.status));
-    let text_left = thumb.right() + 8.0;
-    let end = if chip.removable {
-        rect.right() - 34.0
-    } else {
-        rect.right() - 8.0
-    };
+    // The name remains available to assistive technology and on hover.
+    let accessible = format!("{}\n{}\n{}", chip.name, chip.detail, chip.status);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
+    });
+    response.on_hover_text(accessible.clone());
+    let text_left = rect.left() + 5.0;
+    let end = rect.right() - 5.0;
     let text_width = end - text_left;
     let line = |text: String, font: egui::FontId, color: Color32| {
         let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
-    painter.galley(
-        egui::pos2(text_left, rect.top() + 8.0),
-        line(
-            chip.name.to_owned(),
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            TEXT,
-        ),
-        TEXT,
-    );
-    painter.galley(
-        egui::pos2(text_left, rect.top() + 26.0),
-        line(
-            chip.status,
-            egui::FontId::proportional(11.0),
-            if chip.error { ERROR } else { MUTED },
-        ),
-        MUTED,
-    );
+    if !chip.status.is_empty() {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 25.0), rect.max),
+            0.0,
+            SURFACE,
+        );
+        painter.galley(
+            egui::pos2(text_left, rect.bottom() - 21.0),
+            line(
+                chip.status,
+                egui::FontId::proportional(11.0),
+                if chip.error { ERROR } else { MUTED },
+            ),
+            MUTED,
+        );
+    }
     if let Some(progress) = chip.progress {
         let track = egui::Rect::from_min_max(
             egui::pos2(text_left, rect.bottom() - 5.0),
@@ -20557,17 +21402,13 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         egui::StrokeKind::Inside,
     );
     let close = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 17.0, rect.center().y),
+        egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
         egui::vec2(22.0, 22.0),
     );
     let mut preview = None;
     if let Some(url) = chip.url {
-        let response = ui.interact(
-            egui::Rect::from_min_max(rect.min, egui::pos2(close.left() - 4.0, rect.bottom())),
-            chip.id.with("preview"),
-            egui::Sense::click(),
-        );
-        let label = format!("Preview {}", chip.name);
+        let response = ui.interact(rect, chip.id.with("preview"), egui::Sense::click());
+        let label = format!("Preview {accessible}");
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
         });
@@ -20582,9 +21423,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
     let mut removed = false;
     if chip.removable {
         let response = ui.interact(close, chip.id.with("remove"), egui::Sense::click());
-        if response.hovered() {
-            painter.rect_filled(close, 6.0, SURFACE_HOVER);
-        }
+        painter.rect_filled(close, 6.0, SURFACE);
         paint_icon(
             &painter,
             close.shrink(4.0),
@@ -21024,17 +21863,23 @@ fn channel_name_error(name: &str) -> Option<&'static str> {
 /// Web's `voiceAction` for one channel.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum VoiceAction {
-    /// Connected there: the header offers Leave; rows offer nothing.
+    /// Connected there: the call card offers Leave; rows offer nothing.
     Leave,
     /// Authorizing or connecting there: a busy "Joining…".
     Joining,
-    /// "Join voice", or "Switch here" while in voice elsewhere.
+    /// Join, or Switch while in voice elsewhere.
     Join { switching: bool, enabled: bool },
 }
 
-/// Web's `.header-voice-join` and `.header-voice .voice-leave`: an icon and
-/// a bold label in a 34px button. A disabled `ui` dims it.
-fn header_voice_button(ui: &mut egui::Ui, icon: NavIcon, text: &str, tone: Tone) -> egui::Response {
+/// An icon and a bold label in a `height` button, like the call card's
+/// Leave. A disabled `ui` dims it.
+fn voice_text_button(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    text: &str,
+    tone: Tone,
+    height: f32,
+) -> egui::Response {
     // Placeholder-colored, so the label takes the tone's color when painted.
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
@@ -21042,7 +21887,7 @@ fn header_voice_button(ui: &mut egui::Ui, icon: NavIcon, text: &str, tone: Tone)
         Color32::PLACEHOLDER,
     );
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(12.0 + 16.0 + 6.0 + galley.size().x + 12.0, 34.0),
+        egui::vec2(12.0 + 16.0 + 6.0 + galley.size().x + 12.0, height),
         egui::Sense::click(),
     );
     let (fill, border, color) = if response.is_pointer_button_down_on() || response.has_focus() {
@@ -21120,59 +21965,8 @@ fn header_menu_item(
     response
 }
 
-/// Web's muted microphone in the phone header.
+/// The call card's red Leave.
 const MUTED_MIC: Color32 = Color32::from_rgb(0xFF, 0x71, 0x82);
-
-/// Phones' 42px icon-only voice button; `label` stays its accessible name.
-/// `color` is the icon's rest and hover colors; `fill` the optional tinted
-/// background's. A disabled `ui` dims it.
-fn voice_icon_button(
-    ui: &mut egui::Ui,
-    icon: NavIcon,
-    color: (Color32, Color32),
-    fill: Option<(Color32, Color32)>,
-    label: &str,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(42.0, 44.0), egui::Sense::click());
-    let lit = ui.is_enabled() && (response.hovered() || response.has_focus());
-    let background = match fill {
-        Some((rest, hover)) => Some(if lit { hover } else { rest }),
-        None => lit.then_some(SURFACE_HOVER),
-    };
-    if let Some(background) = background {
-        ui.painter().rect_filled(rect, 6.0, background);
-    }
-    let color = if lit { color.1 } else { color.0 };
-    paint_icon(
-        ui.painter(),
-        egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
-        icon,
-        // A scope that keeps disabled controls unfaded (an unavailable Join's
-        // neutral chrome) already passes the muted color it wants.
-        if ui.is_enabled() || ui.visuals().disabled_alpha >= 1.0 {
-            color
-        } else {
-            color.gamma_multiply(0.5)
-        },
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
-    response
-}
-
-/// Phones' occupied Join: a faint terracotta tint.
-const OCCUPIED_JOIN_TINT: Color32 = Color32::from_rgba_unmultiplied_const(182, 77, 50, 41);
-/// Web's `voice-join-glow`: one 2.4s ease-in-out breath.
-const JOIN_GLOW_PERIOD: f64 = 2.4;
-
-/// The glow's color `time` seconds in: transparent at the ends of each
-/// breath, rgb(219 104 73 / 0.45) at its middle.
-fn join_glow_color(time: f64) -> Color32 {
-    let phase = (time % JOIN_GLOW_PERIOD) / JOIN_GLOW_PERIOD;
-    let strength = (1.0 - (std::f64::consts::TAU * phase).cos()) / 2.0;
-    Color32::from_rgba_unmultiplied(219, 104, 73, (0.45 * 255.0 * strength).round() as u8)
-}
 
 /// Whether a worker event may bring people (authors, members, peers, the
 /// account) whose copy of your own profile needs refreshing. Frequent
@@ -21185,6 +21979,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::NotificationActivity { .. }
             | Event::NotificationError { .. }
             | Event::UnreadLoaded { .. }
+            | Event::ThreadUnread { .. }
             | Event::ChannelRead { .. }
             | Event::CodeRequested { .. }
             | Event::MediaStatus { .. }
@@ -21205,7 +22000,7 @@ fn carries_identities(event: &Event) -> bool {
     )
 }
 
-/// Whether looping decorations (the Join glow, typing dots) may animate:
+/// Whether looping decorations (typing dots) may animate:
 /// motion is allowed and the window is in front, or unknown as in tests.
 /// Otherwise they hold a still pose and schedule no repaints, so an idle
 /// background window stays idle.
@@ -21215,55 +22010,6 @@ fn looping(ui: &egui::Ui) -> bool {
             let viewport = input.viewport();
             viewport.focused != Some(false) && viewport.minimized != Some(true)
         })
-}
-
-/// Web's pulsing `box-shadow: 0 0 14px 2px` behind an occupied Join, into
-/// `slot` (reserved before the button so the glow sits behind it). It only
-/// repaints while drawn and the window is in front. With reduced motion, or
-/// in the background, it holds web's still glow,
-/// `0 0 10px 1px rgb(219 104 73 / 0.35)`.
-fn join_glow(ui: &egui::Ui, slot: egui::layers::ShapeIdx, rect: egui::Rect, corner: f32) {
-    if !looping(ui) {
-        let shadow = egui::Shadow {
-            offset: [0, 0],
-            blur: 10,
-            spread: 1,
-            color: Color32::from_rgba_unmultiplied(219, 104, 73, 89),
-        };
-        ui.painter()
-            .set(slot, shadow.as_shape(rect, CornerRadius::from(corner)));
-        return;
-    }
-    let shadow = egui::Shadow {
-        offset: [0, 0],
-        blur: 14,
-        spread: 2,
-        color: join_glow_color(ui.input(|input| input.time)),
-    };
-    ui.painter()
-        .set(slot, shadow.as_shape(rect, CornerRadius::from(corner)));
-    ui.ctx().request_repaint_after(Duration::from_millis(33));
-}
-
-/// Who is in voice, as one sentence: "Maya, Alex, Sam and 2 more are in voice".
-fn voice_summary(people: &[model::VoiceOccupant]) -> Option<String> {
-    let last = people.last()?;
-    let names = |people: &[model::VoiceOccupant]| {
-        people
-            .iter()
-            .map(|person| person.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    Some(match people.len() {
-        1 => format!("{} is in voice", last.name),
-        2 | 3 => format!(
-            "{} and {} are in voice",
-            names(&people[..people.len() - 1]),
-            last.name
-        ),
-        more => format!("{} and {} more are in voice", names(&people[..3]), more - 3),
-    })
 }
 
 fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
@@ -21336,6 +22082,354 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
     }
 }
 
+/// Design H's voice colors: your call's green-tinted card, other live
+/// rooms' quieter cards, and phones' strip under the chat header.
+const LIVE_CARD: Color32 = Color32::from_rgb(0x1a, 0x2a, 0x22);
+const LIVE_CARD_BORDER: Color32 = Color32::from_rgb(0x3a, 0x6b, 0x4b);
+const ROOM_CARD: Color32 = Color32::from_rgb(0x18, 0x23, 0x1f);
+const ROOM_CARD_BORDER: Color32 = Color32::from_rgb(0x28, 0x36, 0x2f);
+const VOICE_STRIP: Color32 = Color32::from_rgb(0x1a, 0x26, 0x22);
+const VOICE_STRIP_BORDER: Color32 = Color32::from_rgb(0x26, 0x35, 0x2f);
+/// Connecting and reconnecting.
+const VOICE_AMBER: Color32 = Color32::from_rgb(0xd9, 0xab, 0x5c);
+/// The call card's "+N" tile.
+const MORE_TILE: Color32 = Color32::from_rgb(0x24, 0x3a, 0x2e);
+const MORE_TILE_HOVER: Color32 = Color32::from_rgb(0x2e, 0x4a, 0x3a);
+/// Phones' always-visible row shortcut on quiet rows.
+const QUIET_SHORTCUT: Color32 = Color32::from_rgb(0x68, 0x71, 0x74);
+/// Live now shows this many other rooms before folding the rest.
+const LIVE_ROOM_CARDS: usize = 2;
+/// The call card shows everyone up to this many faces.
+const CALL_FACES: usize = 10;
+
+/// The call's full list: whose audio controls are open, if anyone's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CallList {
+    audio: Option<String>,
+}
+
+/// A channel with people in voice that isn't your call.
+#[derive(Clone, Debug)]
+struct LiveRoom {
+    id: String,
+    name: String,
+    private: bool,
+    people: Vec<model::VoiceOccupant>,
+}
+
+/// How many of `total` people the call card draws as faces in two rows of
+/// `per_row`, and how many fold into the "+N" tile: everyone while they fit
+/// (at most ten), else every slot but the last, which becomes the tile.
+fn call_face_slots(total: usize, per_row: usize) -> (usize, usize) {
+    let capacity = (2 * per_row.max(1)).min(CALL_FACES);
+    if total <= capacity {
+        (total, 0)
+    } else {
+        (capacity - 1, total - (capacity - 1))
+    }
+}
+
+/// A room card's one line of names: "Maya", "Maya and Alex", "Maya, Alex
+/// and Sam", or "Maya, Alex and 3 more".
+fn room_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [first, second, third] => format!("{first}, {second} and {third}"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
+    }
+}
+
+/// The rooms behind "N more live": "#planning, #random".
+fn folded_room_names(rooms: &[LiveRoom]) -> String {
+    rooms
+        .iter()
+        .map(|room| format!("#{}", room.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Busiest first, then by name.
+fn sort_live_rooms(rooms: &mut [LiveRoom]) {
+    rooms.sort_by(|a, b| {
+        b.people
+            .len()
+            .cmp(&a.people.len())
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
+/// Keeps `order` (participant IDs, first seen first) in step with who is in
+/// the call now: people who left drop out, newcomers go to the end.
+fn follow_join_order(order: &mut Vec<String>, present: &[&str]) {
+    order.retain(|id| present.contains(&id.as_str()));
+    for id in present {
+        if !order.iter().any(|known| known == id) {
+            order.push((*id).to_owned());
+        }
+    }
+}
+
+/// `people` in the call card's order: `own` first, then by `order`.
+fn in_call_order(
+    mut people: Vec<model::VoiceOccupant>,
+    order: &[String],
+    own: &str,
+) -> Vec<model::VoiceOccupant> {
+    people.sort_by_key(|person| {
+        (
+            person.id != own,
+            order
+                .iter()
+                .position(|id| *id == person.id)
+                .unwrap_or(usize::MAX),
+        )
+    });
+    people
+}
+
+/// A full-list row's status and its color: what you did to their audio,
+/// else speaking, else their own deafen or mute.
+fn participant_status(
+    name: &str,
+    speaking: bool,
+    muted: bool,
+    deafened: bool,
+    muted_for_you: bool,
+) -> Option<(String, Color32)> {
+    if muted_for_you {
+        Some((format!("You muted {name}"), TERRACOTTA_BRIGHT))
+    } else if speaking {
+        Some(("Speaking".into(), VOICE_SESSION_GREEN))
+    } else if deafened {
+        Some(("Deafened".into(), MUTED))
+    } else if muted {
+        Some(("Muted".into(), MUTED))
+    } else {
+        None
+    }
+}
+
+/// A call face's accessible name: "Maya, speaking", "Alex, muted".
+fn participant_label(name: &str, speaking: bool, muted: bool, deafened: bool) -> String {
+    if speaking {
+        format!("{name}, speaking")
+    } else if deafened {
+        format!("{name}, deafened")
+    } else if muted {
+        format!("{name}, muted")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// A live session's running time from `started`, repainting each second.
+fn live_timer(context: &egui::Context, started: u64) -> String {
+    context.request_repaint_after(Duration::from_secs(1));
+    voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
+}
+
+/// Paints a green session timer in tabular digits ending at `right`,
+/// centered on `y`. Returns where it starts.
+fn paint_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32) -> f32 {
+    let font = egui::FontId::new(size, egui::FontFamily::Name("Satoshi Medium".into()));
+    let (galley, width) = tabular_galley(ui, text, &font, VOICE_SESSION_GREEN);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(right - width, y - galley.size().y / 2.0),
+        egui::vec2(width, galley.size().y),
+    );
+    let timer = ui.interact(
+        rect,
+        ui.id().with(("live-timer", text)),
+        egui::Sense::hover(),
+    );
+    timer.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            true,
+            format!("Voice session duration: {text}"),
+        )
+    });
+    ui.painter().galley(rect.min, galley, VOICE_SESSION_GREEN);
+    timer.on_hover_text("Voice session duration");
+    rect.left()
+}
+
+/// Live now's heading: a green waveform and the title, then a muted "N
+/// rooms" once two or more are live.
+fn live_heading(ui: &mut egui::Ui, rooms: usize) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 28.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            // The title lines up with the Channels heading's below.
+            ui.add_space(7.0);
+            let (icon, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
+            ui.add_space(7.0);
+            ui.add(egui::Label::new(bold("Live now").size(12.0).color(MUTED)).selectable(false));
+            if rooms >= 2 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("{rooms} rooms"))
+                                .size(11.0)
+                                .color(MUTED),
+                        )
+                        .selectable(false),
+                    );
+                });
+            }
+        },
+    );
+}
+
+/// The speaking ring of design H: a 2px gap in the `background`'s color,
+/// then 2px of voice green.
+fn speaking_ring(ui: &egui::Ui, rect: egui::Rect, picture: bool, background: Color32) {
+    avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, background));
+    avatar_ring(
+        ui,
+        rect,
+        picture,
+        3.0,
+        Stroke::new(2.0, VOICE_SESSION_GREEN),
+    );
+}
+
+/// A muted or deafened badge on a face's bottom-right corner.
+fn face_badge(ui: &egui::Ui, face: egui::Rect, icon: NavIcon, background: Color32) {
+    let center = face.right_bottom() - egui::vec2(5.0, 5.0);
+    ui.painter().circle_filled(center, 8.0, background);
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(center, egui::vec2(10.0, 10.0)),
+        icon,
+        ERROR,
+    );
+}
+
+/// "<Name> is speaking", 12px and muted with the name bold.
+fn speaker_line(ui: &mut egui::Ui, name: &str) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        name,
+        0.0,
+        egui::TextFormat::simple(
+            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            MUTED,
+        ),
+    );
+    job.append(
+        " is speaking",
+        0.0,
+        egui::TextFormat::simple(egui::FontId::proportional(12.0), MUTED),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(1.0));
+    ui.add(egui::Label::new(job).selectable(false));
+}
+
+/// The call card's and strip's square Mute and Deafen: a quiet outline at
+/// rest, the account bar's red wash while pressed.
+fn call_toggle(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    pressed: bool,
+    size: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let lit = response.hovered() || response.has_focus();
+    let fill = if pressed {
+        Color32::from_rgba_unmultiplied(212, 67, 85, if lit { 75 } else { 36 })
+    } else if lit {
+        SURFACE_HOVER
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect(
+        rect,
+        8.0,
+        fill,
+        Stroke::new(
+            1.0,
+            if pressed {
+                Color32::TRANSPARENT
+            } else {
+                LIVE_CARD_BORDER
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let color = if pressed {
+        Color32::from_rgb(237, 82, 101)
+    } else if lit {
+        TEXT
+    } else {
+        MUTED
+    };
+    let icon_size = if size > 36.0 { 20.0 } else { 18.0 };
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size)),
+        icon,
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), pressed, label)
+    });
+    response
+}
+
+/// The strip's lead: a green waveform and `text` in bold, cut to `width`.
+/// Returns where what follows starts.
+fn strip_lead(ui: &egui::Ui, inner: egui::Rect, text: &str, width: f32) -> f32 {
+    let icon = egui::Rect::from_center_size(
+        egui::pos2(inner.left() + 8.0, inner.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
+    let left = icon.right() + 8.0;
+    let galley = truncated_galley(
+        ui,
+        text,
+        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        TEXT,
+        (width - (left - inner.left())).max(1.0),
+    );
+    let end = left + galley.size().x;
+    ui.painter().galley(
+        egui::pos2(left, inner.center().y - galley.size().y / 2.0),
+        galley,
+        TEXT,
+    );
+    end + 10.0
+}
+
+/// Up to two 24px faces from `left`, ringed while `speaking` says so.
+/// Returns where what follows starts.
+fn strip_faces(
+    ui: &egui::Ui,
+    people: &[model::VoiceOccupant],
+    speaking: &[bool],
+    left: f32,
+    y: f32,
+) -> f32 {
+    let mut x = left;
+    for (index, person) in people.iter().take(2).enumerate() {
+        let rect = egui::Rect::from_min_size(egui::pos2(x, y - 12.0), egui::vec2(24.0, 24.0));
+        let picture = paint_avatar(ui, rect, &person.name, person.avatar_id, person.picture());
+        if speaking.get(index).copied().unwrap_or(false) {
+            speaking_ring(ui, rect, picture, VOICE_STRIP);
+        }
+        x = rect.right() + 8.0;
+    }
+    x + 2.0
+}
+
 /// A sidebar row's options (⋯) menu.
 struct RowMenu<'a> {
     /// Accessible name and tooltip, like "Channel options for general".
@@ -21357,10 +22451,14 @@ struct RowExtras<'a> {
     direct: bool,
     /// A quieter note after the name, such as a DM's "Blocked".
     suffix: Option<&'a str>,
-    duration: Option<&'a str>,
+    /// How many are in voice in a live channel: a green waveform and count.
+    live: Option<usize>,
     /// Web's hover-revealed voice shortcut before the menu, and whether it
     /// can join now. The caller names it and handles its click.
     voice: Option<bool>,
+    /// Narrow (touch) layouts: the voice shortcut always shows, dim, with a
+    /// 44px-wide target.
+    touch: bool,
     menu: Option<RowMenu<'a>>,
 }
 
@@ -21443,63 +22541,96 @@ fn channel_button(
             },
         );
     }
-    // Web: Satoshi Medium with tabular digits, so the row doesn't twitch
-    // every second.
-    let timer_font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
     let row_hovered = ui.rect_contains_pointer(rect);
-    let mut timer_right = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
-    // Web's `.channel-quick-join`: always laid out so nothing shifts, but
-    // only shown while the row is hovered or focused.
-    let voice = extras.voice.map(|enabled| {
-        let quick = egui::Rect::from_min_size(
-            egui::pos2(timer_right - 30.0, rect.center().y - 14.0),
-            egui::vec2(28.0, 28.0),
+    // A live row ends with a small green waveform and how many are there.
+    // It steps aside while the row's own shortcut and menu show.
+    let mut live_left = rect.right();
+    if let Some(count) = extras.live {
+        let text = count.to_string();
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
+        let (galley, width) = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN);
+        let right = rect.right() - 8.0;
+        let live = egui::Rect::from_min_max(
+            egui::pos2(
+                right - width - 18.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            egui::pos2(right, rect.center().y + galley.size().y / 2.0),
         );
-        timer_right = quick.left() - 4.0;
+        let indicator = ui.interact(live, response.id.with("live"), egui::Sense::hover());
+        indicator.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("{count} in voice"))
+        });
+        let revealed = (row_hovered || response.has_focus())
+            && (extras.voice.is_some() || extras.menu.is_some());
+        if !revealed {
+            paint_icon(
+                ui.painter(),
+                egui::Rect::from_center_size(
+                    egui::pos2(live.left() + 7.0, rect.center().y),
+                    egui::vec2(14.0, 14.0),
+                ),
+                NavIcon::AudioLines,
+                VOICE_SESSION_GREEN,
+            );
+            ui.painter().galley(
+                egui::pos2(right - width, live.top()),
+                galley,
+                VOICE_SESSION_GREEN,
+            );
+        }
+        indicator.on_hover_text(format!("{count} in voice"));
+        live_left = live.left() - 9.0;
+    }
+    let mut trailing = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
+    // Web's `.channel-quick-join`: always laid out so nothing shifts, but
+    // only shown while the row is hovered or focused. Touch layouts show it
+    // dim on every row that has one, with a wider target.
+    let voice = extras.voice.map(|enabled| {
+        let quick = if extras.touch {
+            egui::Rect::from_min_size(
+                egui::pos2(trailing - 44.0, rect.top()),
+                egui::vec2(44.0, rect.height()),
+            )
+        } else {
+            egui::Rect::from_min_size(
+                egui::pos2(trailing - 30.0, rect.center().y - 14.0),
+                egui::vec2(28.0, 28.0),
+            )
+        };
+        trailing = quick.left() - 4.0;
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(quick));
         if !enabled {
             child.disable();
         }
         let join = child.interact(quick, response.id.with("voice"), egui::Sense::click());
-        if row_hovered || response.has_focus() || join.has_focus() {
+        if extras.touch || row_hovered || response.has_focus() || join.has_focus() {
             let lit = join.enabled() && (join.hovered() || join.has_focus());
             if lit {
-                child.painter().rect_filled(quick, 8.0, BORDER);
+                child.painter().rect_filled(
+                    egui::Rect::from_center_size(quick.center(), egui::vec2(28.0, 28.0)),
+                    8.0,
+                    BORDER,
+                );
             }
             paint_icon(
                 child.painter(),
                 egui::Rect::from_center_size(quick.center(), egui::vec2(16.0, 16.0)),
                 NavIcon::Headphones,
-                if lit { TEXT } else { MUTED },
+                if lit {
+                    TEXT
+                } else if extras.touch {
+                    QUIET_SHORTCUT
+                } else {
+                    MUTED
+                },
             );
         }
         join
     });
-    let timer_width = extras.duration.map_or(0.0, |text| {
-        let (galley, width) = tabular_galley(ui, text, &timer_font, VOICE_SESSION_GREEN);
-        let timer_rect = egui::Rect::from_min_size(
-            egui::pos2(timer_right - width, rect.center().y - galley.size().y / 2.0),
-            egui::vec2(width, galley.size().y),
-        );
-        let timer = ui.interact(
-            timer_rect,
-            response.id.with("duration"),
-            egui::Sense::hover(),
-        );
-        timer.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Label,
-                true,
-                format!("Voice session duration: {text}"),
-            )
-        });
-        timer.on_hover_text("Voice session duration");
-        ui.painter()
-            .galley(timer_rect.min, galley, VOICE_SESSION_GREEN);
-        width + 9.0
-    });
-    // Laid out from the right: name, unread dot, bell, timer, as on web and Android.
-    let mut name_right = timer_right - timer_width;
+    // Laid out from the right: name, unread dot, bell, then the shortcut,
+    // menu and live count, as on web and Android.
+    let mut name_right = trailing.min(live_left);
     if let Some(label) = &extras.muted {
         let bell = egui::Rect::from_center_size(
             egui::pos2(name_right - 9.0, rect.center().y),
@@ -22814,7 +23945,7 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
 
 /// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
 /// quiet "View thread", without a button frame.
-fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
+fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::Response {
     let mut job = egui::text::LayoutJob::default();
     let count = format!(
         "{replies} {}",
@@ -22828,6 +23959,13 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
             TERRACOTTA_BRIGHT,
         ),
     );
+    if unread {
+        job.append(
+            "● Unread",
+            8.0,
+            egui::TextFormat::simple(egui::FontId::proportional(12.0), PIN_GOLD),
+        );
+    }
     job.append(
         "View thread",
         8.0,
@@ -22843,7 +23981,10 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("{count} · View thread"),
+            format!(
+                "{count}{} · View thread",
+                if unread { " · Unread" } else { "" }
+            ),
         )
     });
     response
@@ -23866,12 +25007,24 @@ const VOICE_TONE: Tone = Tone {
     ),
 };
 
-/// Web's `.header-voice .voice-leave`: red text and icon only; hover and
-/// press add the neutral wash other header controls use.
-const HANGUP_TONE: Tone = Tone {
-    rest: (Color32::TRANSPARENT, Color32::TRANSPARENT, MUTED_MIC),
-    hover: (RAISED, Color32::TRANSPARENT, MUTED_MIC),
-    press: (COMPOSER, Color32::TRANSPARENT, MUTED_MIC),
+/// The call card's Leave: red text and icon on a faint red wash that
+/// deepens on hover and press.
+const LEAVE_TONE: Tone = Tone {
+    rest: (
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 31),
+        Color32::TRANSPARENT,
+        MUTED_MIC,
+    ),
+    hover: (
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 56),
+        Color32::TRANSPARENT,
+        MUTED_MIC,
+    ),
+    press: (
+        Color32::from_rgba_unmultiplied_const(212, 67, 85, 77),
+        MUTED_MIC,
+        MUTED_MIC,
+    ),
 };
 
 /// Adds `button` with `tone`'s hover and pressed states. An explicit
@@ -24187,7 +25340,7 @@ fn typing_dots(ui: &mut egui::Ui) {
             .circle_filled(center, 2.0, MUTED.gamma_multiply(0.45 + 0.55 * lift));
     }
     if !still {
-        // A 3px bounce needs no more than the join glow's frame rate.
+        // A 3px bounce needs no more than 30 frames a second.
         ui.ctx().request_repaint_after(Duration::from_millis(33));
     }
 }
@@ -24339,6 +25492,10 @@ fn main() -> eframe::Result {
                 | "parity-channel-preview-narrow"
                 | "parity-channel-directory-narrow"
                 | "parity-voice-rosters-narrow"
+                | "parity-voice-crowded-narrow"
+                | "parity-voice-list-narrow"
+                | "parity-voice-strip-narrow"
+                | "parity-voice-join-narrow"
                 | "parity-invitation-narrow"
                 | "parity-update-narrow"
                 | "parity-update-download"
@@ -27764,7 +28921,7 @@ mod tests {
     }
 
     #[test]
-    fn spectator_rosters_collapse_without_navigating_or_exposing_playback_controls() {
+    fn live_rooms_say_who_is_there_and_join_without_navigating_or_playback_controls() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -27780,8 +28937,6 @@ mod tests {
         assert_eq!(app.selected_channel, selected);
         assert!(app.voice_target("not-in-space").is_none());
         render(&mut app, &context, vec![]);
-        // SVG decoding is asynchronous on native; wait for the real avatar rather
-        // than inspecting its loading spinner in the first two frames.
         let started = std::time::Instant::now();
         while context.has_pending_images() {
             assert!(started.elapsed() < std::time::Duration::from_secs(30));
@@ -27797,37 +28952,61 @@ mod tests {
                 _ => None,
             })
         };
+        // Live now sits above the channels, with one room card.
+        let heading = sidebar_text(&output, "Live now").expect("Live now heading");
+        let channels = sidebar_text(&output, "Channels").expect("Channels heading");
+        assert!(heading.y < channels.y);
+        let names = sidebar_text(&output, "Maya and Alex").expect("the room's names");
+        assert!(names.y < channels.y);
         assert!(
-            sidebar_text(&output, "Maya").is_none(),
-            "rosters start collapsed"
+            sidebar_text(&output, "2 rooms").is_none(),
+            "one live room has no count"
         );
-        let count = sidebar_text(&output, "2 in voice").expect("voice count is visible");
-        // The saved avatar is an image now, not the old clickable "M" initial.
-        let stack = output
-            .shapes
+        // No roster under the row: the row only counts who is there.
+        assert!(sidebar_text(&output, "Maya").is_none());
+        let row = node_bounds(&output, "design").unwrap();
+        let live = node_bounds(&output, "2 in voice").expect("the row's live count");
+        assert!(row.contains_rect(live), "{live:?} in {row:?}");
+        let timer = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
             .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if rect.brush.as_ref().is_some_and(|brush| {
-                        brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
-                    }) && rect.rect.width() == 20.0
-                        && rect.rect.center().x < 340.0
-                        && (rect.rect.center().y - count.y).abs() < 14.0 =>
-                {
-                    Some(rect.rect.center())
-                }
-                _ => None,
-            })
-            .expect("Maya's saved avatar is rendered in the voice stack");
-        click(&mut app, &context, stack);
-        assert!(app.expanded_rosters.contains("chan00000002"));
-        assert!(sidebar_text(&render(&mut app, &context, vec![]), "Maya").is_some());
+            .filter_map(|(_, node)| node.value())
+            .find(|value| value.starts_with("Voice session duration: "))
+            .expect("the room's timer");
+        assert!(
+            timer.ends_with("28:21") || timer.ends_with("28:22"),
+            "{timer}"
+        );
+        // Spectators never get playback controls.
+        for hidden in ["Audio", "User volume", "Mute for me"] {
+            assert!(!texts(&output).contains(&hidden), "{hidden}");
+        }
+        // Join keeps the open conversation; the name opens the room's chat.
+        click(&mut app, &context, node_center(&output, "Join #design"));
+        assert_eq!(
+            app.pending_voice_join
+                .as_ref()
+                .map(|(channel, _, _)| channel.as_str()),
+            Some("chan00000002")
+        );
         assert_eq!(app.selected_channel, selected);
-        click(&mut app, &context, stack);
-        let reopened = render(&mut app, &context, vec![]);
-        assert!(sidebar_text(&reopened, "Maya").is_none());
-        assert_eq!(app.selected_channel, selected);
+        assert!(app.navigation_target.is_none());
+        let joining = render(&mut app, &context, vec![]);
+        assert!(texts(&joining).contains(&"Joining…"));
+        assert!(node_bounds(&joining, "Joining #design").is_some());
+        assert!(node_bounds(&joining, "Join #design").is_none());
         assert!(matches!(app.voice.state.phase, Phase::Idle));
+        click(&mut app, &context, node_center(&joining, "Open #design"));
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref()),
+            Some("chan00000002")
+        );
     }
 
     #[test]
@@ -27933,43 +29112,27 @@ mod tests {
     }
 
     #[test]
-    fn voice_roster_names_align_and_participant_menu_changes_only_that_listener() {
+    fn call_faces_open_the_full_list_whose_audio_changes_only_that_listener() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-voice-connected"),
         );
-        app.expanded_rosters.insert("chan00000001".into());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        let position = |output: &egui::FullOutput, label: &str, sidebar: bool| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text)
-                        if text.galley.job.text == label && (!sidebar || text.pos.x < 340.0) =>
-                    {
-                        Some(text.pos)
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("missing {label}"))
-        };
-        for label in ["Fixture Owner (you)", "Maya", "Alex"] {
-            assert_eq!(position(&output, label, true).x, 106.0);
+        // You first, then the others, in one row of faces in the card.
+        let faces: Vec<_> = ["Fixture Owner (you)", "Maya", "Alex"]
+            .into_iter()
+            .map(|label| node_bounds(&output, label).unwrap_or_else(|| panic!("missing {label}")))
+            .collect();
+        for pair in faces.windows(2) {
+            assert!(pair[0].right() < pair[1].left() && pair[0].top() == pair[1].top());
         }
-        assert_eq!(
-            output.shapes.iter().filter(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Audio")
-            }).count(),
-            2,
-            "Only remote participants have Audio buttons"
-        );
-        assert!(!output.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "User volume")
-        }));
+        assert_eq!(faces[0].size(), egui::vec2(36.0, 36.0));
+        assert!(faces[2].right() <= 327.0, "faces stay inside the card");
+        assert!(texts(&output).contains(&"You're in · 3"));
+        assert!(!texts(&output).contains(&"User volume"));
         app.voice.set_participant_playback(
             "fixture-maya",
             crate::media::TrackPlayback {
@@ -27977,16 +29140,32 @@ mod tests {
                 muted: false,
             },
         );
-        click(
-            &mut app,
-            &context,
-            position(&output, "Audio", true) + egui::vec2(4.0, 4.0),
+        // Another person's face opens the list at their audio controls.
+        click(&mut app, &context, faces[1].center());
+        assert_eq!(
+            app.call_list,
+            Some(super::CallList {
+                audio: Some("fixture-maya".into())
+            })
         );
-        let menu = render(&mut app, &context, vec![]);
-        position(&menu, "User volume", false);
-        position(&menu, "170%", false);
-        let mute = position(&menu, "Mute", false) + egui::vec2(4.0, 4.0);
-        click(&mut app, &context, mute);
+        let list = render(&mut app, &context, vec![]);
+        let shown = texts(&list);
+        for label in [
+            "In #general · 3 people",
+            "User volume",
+            "170%",
+            "Mute for me",
+        ] {
+            assert!(shown.contains(&label), "{label}: {shown:?}");
+        }
+        assert_eq!(
+            shown.iter().filter(|text| **text == "Audio").count(),
+            2,
+            "only remote participants have Audio buttons"
+        );
+        let heading = text_position(&list, "In #general · 3 people");
+        assert!(heading.x > 340.0, "the list opens beside the sidebar");
+        click(&mut app, &context, text_position(&list, "Mute for me"));
         assert!(app.voice.playback("fixture-maya").muted);
         assert!(!app.voice.playback("fixture-alex").muted);
         assert!(
@@ -27994,7 +29173,44 @@ mod tests {
             "local listener control must not mute our microphone"
         );
         let muted = render(&mut app, &context, vec![]);
-        position(&muted, "You muted Maya", true);
+        assert!(texts(&muted).contains(&"You muted Maya"));
+        // Escape closes it; your own face opens it with nothing expanded.
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.call_list.is_none());
+        click(&mut app, &context, faces[0].center());
+        assert_eq!(app.call_list, Some(super::CallList { audio: None }));
+        let list = render(&mut app, &context, vec![]);
+        assert!(!texts(&list).contains(&"User volume"));
+        // Audio opens a row's controls; an outside click closes the list.
+        click(
+            &mut app,
+            &context,
+            node_center(&list, "Audio controls for Alex"),
+        );
+        assert_eq!(
+            app.call_list
+                .as_ref()
+                .and_then(|list| list.audio.as_deref()),
+            Some("fixture-alex")
+        );
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(1000.0, 500.0));
+        assert!(app.call_list.is_none());
+        // And Close does too.
+        click(&mut app, &context, faces[2].center());
+        let list = render(&mut app, &context, vec![]);
+        click(&mut app, &context, node_center(&list, "Close"));
+        assert!(app.call_list.is_none());
         app.voice.set_participant_playback(
             "fixture-maya",
             crate::media::TrackPlayback {
@@ -28002,14 +29218,17 @@ mod tests {
                 muted: false,
             },
         );
+        click(&mut app, &context, faces[1].center());
         let restored = render(&mut app, &context, vec![]);
-        assert!(!restored.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("You muted "))
-        }));
+        assert!(
+            !texts(&restored)
+                .iter()
+                .any(|text| text.starts_with("You muted "))
+        );
     }
 
     #[test]
-    fn own_roster_icons_use_local_intent_instead_of_stale_snapshot() {
+    fn own_face_and_status_use_local_intent_instead_of_stale_snapshot() {
         for (snapshot, muted, deafened) in [
             (true, false, false),
             (false, true, false),
@@ -28022,31 +29241,54 @@ mod tests {
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-voice-connected"),
             );
-            app.expanded_rosters.insert("chan00000001".into());
+            app.call_list = Some(super::CallList::default());
             for participant in &mut app.voice.participants {
                 participant.muted = snapshot;
                 participant.deafened = snapshot;
             }
             app.voice.state.audio.set_muted(muted);
             app.voice.state.audio.set_deafened(deafened);
-            // Inspect the initial full tree, not subsequent AccessKit deltas.
-            let labels = render(&mut app, &context, vec![])
+            // The list is an area: its first pass only measures it.
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let labels = output
                 .platform_output
                 .accesskit_update
+                .as_ref()
                 .unwrap()
                 .nodes
-                .into_iter()
+                .iter()
                 .filter_map(|(_, node)| node.label().map(str::to_owned))
                 .collect::<Vec<_>>();
-            assert_eq!(labels.contains(&"Fixture Owner: Muted".into()), muted);
-            assert_eq!(labels.contains(&"Fixture Owner: Deafened".into()), deafened);
-            assert_eq!(labels.contains(&"Maya: Muted".into()), snapshot);
-            assert_eq!(labels.contains(&"Maya: Deafened".into()), snapshot);
+            let own = match (muted, deafened) {
+                (_, true) => "Fixture Owner (you), deafened",
+                (true, false) => "Fixture Owner (you), muted",
+                _ => "Fixture Owner (you)",
+            };
+            assert!(labels.contains(&own.to_owned()), "{own}: {labels:?}");
+            let maya = if snapshot { "Maya, deafened" } else { "Maya" };
+            assert!(labels.contains(&maya.to_owned()), "{maya}: {labels:?}");
+            // The account bar and the card show the same intent.
+            let mic = if muted {
+                "Unmute microphone"
+            } else {
+                "Mute microphone"
+            };
+            assert_eq!(labels.iter().filter(|label| *label == mic).count(), 2);
+            let shown = texts(&output);
+            let status = |text: &str| shown.contains(&text);
+            // The list's statuses: yours from your intent, Maya's from hers.
+            assert_eq!(
+                status("Deafened"),
+                deafened || snapshot,
+                "{snapshot} {muted} {deafened}: {shown:?}"
+            );
+            assert_eq!(status("Muted"), muted && !deafened);
         }
     }
 
     #[test]
-    fn call_dock_opens_exact_voice_target_without_replacing_call_or_denied_chat() {
+    fn call_card_opens_exact_voice_target_without_replacing_call_or_denied_chat() {
         for space in [Some("space0000001"), Some("other-space"), None] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -28071,21 +29313,23 @@ mod tests {
             app.draft = "Unsent text".into();
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
-            let dock = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == "design / Voice Space" => {
-                        Some(text.pos + egui::vec2(4.0, 4.0))
-                    }
-                    _ => None,
-                })
-                .unwrap();
-            click(&mut app, &context, dock);
+            // Another space's call names its space after the channel.
+            let label = if space == Some("space0000001") {
+                "Open #design"
+            } else {
+                "Open #design in Voice Space"
+            };
+            let open = node_center(&output, label);
+            assert!(open.x < 340.0 && open.y < 160.0, "{label} heads the card");
+            assert_eq!(
+                texts(&output).contains(&"Voice Space"),
+                space != Some("space0000001")
+            );
+            click(&mut app, &context, open);
             let target = app
                 .navigation_target
                 .as_ref()
-                .expect("dock must request navigation, not connection details");
+                .expect("the card must request navigation, not connection details");
             assert_eq!(target.space.as_deref(), space);
             assert_eq!(target.channel.as_deref(), space.map(|_| "chan00000002"));
             assert!(app.dialog.is_none());
@@ -28102,7 +29346,7 @@ mod tests {
             assert_eq!(app.selected_channel, original_chat);
             assert_eq!(app.draft, "Unsent text");
             assert_eq!(app.voice.state.phase, call);
-            click(&mut app, &context, dock);
+            click(&mut app, &context, open);
             let detail = app.detail.as_ref().unwrap().clone();
             let prepared = || {
                 let mut detail = detail.clone();
@@ -29515,7 +30759,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_header_name_opens_pins_and_members_beside_one_voice_group() {
+    fn narrow_header_opens_pins_and_members_and_the_strip_below_carries_voice() {
         let context = egui::Context::default();
         context.enable_accesskit();
         let mut app = CaperApp::new(
@@ -29574,67 +30818,49 @@ mod tests {
             assert!(bounds.bottom() <= 54.0, "{label} sits in the header");
             bounds
         };
-        // Browse | the name | one group: the call's mute and deafen, then Leave.
+        // Browse, then the name. Voice has left the header.
         let browse = header(&closed, "Browse");
         let title = header(&closed, "#general options");
-        let mute = header(&closed, "Mute microphone");
-        let deafen = header(&closed, "Deafen audio");
-        let leave = header(&closed, "Leave voice");
-        assert!(browse.right() < title.left() && title.right() < mute.left());
-        assert!(mute.right() < deafen.left() && deafen.right() < leave.left());
-        assert!(leave.right() <= 390.0 - 12.0);
-        for button in [mute, deafen, leave] {
-            assert_eq!(button.size(), egui::vec2(42.0, 44.0));
-        }
-        // Leave is a red icon only: nothing fills or outlines it at rest.
-        assert!(
-            !closed.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.rect == leave
-                    && (rect.fill != super::Color32::TRANSPARENT || rect.stroke.width > 0.0))),
-            "Leave has no fill or border"
-        );
-        let people = app.voice_people("chan00000001").0;
-        if let Some(summary) = super::voice_summary(&people) {
+        assert!(browse.right() < title.left());
+        assert!(title.right() <= 390.0 - 12.0);
+        for label in [
+            "Mute microphone",
+            "Deafen audio",
+            "Leave voice",
+            "Join voice",
+            "Joining voice in #general",
+        ] {
             assert!(
-                node_bounds(&closed, &summary).is_none(),
-                "phones show no faces"
+                node_bounds(&closed, label).is_none_or(|bounds| bounds.top() > 54.0),
+                "the header has no {label}"
             );
         }
-        let group = closed
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if rect.stroke.color == super::BORDER
-                        && rect.rect.contains_rect(mute)
-                        && rect.rect.contains_rect(leave) =>
-                {
-                    Some(rect.rect)
-                }
-                _ => None,
-            })
-            .expect("one bordered voice group");
-        // Just the three icon buttons inside the border.
-        assert_eq!(group.width(), 2.0 + 2.0 + 3.0 * 42.0 + 2.0 * 2.0 + 2.0);
-        assert!(!group.contains_rect(title));
+        // The strip under the header: the call, a 44px Mute, and the rest
+        // of it opens Browse.
+        let strip = node_bounds(&closed, "Voice in #general: show the call").expect("the strip");
+        assert_eq!(strip.top(), 54.0);
+        assert_eq!(strip.height(), 56.0);
+        assert_eq!(strip.width(), 390.0);
+        let mute = node_bounds(&closed, "Mute microphone").unwrap();
+        assert_eq!(mute.size(), egui::vec2(44.0, 44.0));
+        assert!(strip.contains_rect(mute) && mute.right() <= 390.0 - 12.0);
         let shown = texts(&closed);
-        assert!(!shown.contains(&"Leave"), "no labels on phones");
-        assert!(shown.contains(&"# general"));
+        assert!(shown.contains(&"#general") && shown.contains(&"# general"));
         let members = app.detail.as_ref().unwrap().members.len();
-        let subtitle = [
-            Some(format!(
-                "{members} {}",
-                if members == 1 { "member" } else { "members" }
-            )),
-            (!people.is_empty()).then(|| format!("{} in voice", people.len())),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+        let people = app.voice_people("chan00000001").0;
+        let subtitle = format!(
+            "{members} {} · {} in voice",
+            if members == 1 { "member" } else { "members" },
+            people.len()
+        );
         assert!(
             shown.contains(&subtitle.as_str()),
             "{subtitle:?} in {shown:?}"
+        );
+        assert!(
+            closed.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == super::VOICE_STRIP && rect.rect.top() == 54.0)),
+            "the strip's background"
         );
 
         // The name opens a full-width menu under the header.
@@ -29682,23 +30908,22 @@ mod tests {
         assert!(app.showing_pins);
         app.showing_pins = false;
 
-        // Muting from the header.
+        // Muting from the strip, without opening Browse.
         let output = narrow(&mut app, 2.5, vec![]);
         tap(&mut app, 2.6, node_center(&output, "Mute microphone"));
         assert!(app.voice.state.audio.muted);
+        assert!(!app.navigation_open);
         let output = narrow(&mut app, 2.7, vec![]);
-        let mic = header(&output, "Unmute microphone");
-        assert_eq!(mic.size(), egui::vec2(42.0, 44.0));
-        // And deafening, as the account bar does.
-        tap(&mut app, 2.8, node_center(&output, "Deafen audio"));
-        assert!(app.voice.state.audio.deafened);
-        let output = narrow(&mut app, 2.9, vec![]);
         assert_eq!(
-            header(&output, "Undeafen audio").size(),
-            egui::vec2(42.0, 44.0)
+            node_bounds(&output, "Unmute microphone").unwrap().size(),
+            egui::vec2(44.0, 44.0)
         );
+        // Anything else on the strip opens Browse, where the call's card is.
+        tap(&mut app, 2.8, strip.left_center() + egui::vec2(20.0, 0.0));
+        assert!(app.navigation_open);
+        app.navigation_open = false;
 
-        // A DM has no voice of its own, but keeps the call's mute and Leave.
+        // A DM has no voice of its own, but the strip keeps the call.
         let id = "dm0000000001".to_owned();
         app.directs = vec![crate::model::DirectConversation {
             id: id.clone(),
@@ -29718,38 +30943,105 @@ mod tests {
         }];
         app.selected_channel = Some(id.clone());
         app.selected_direct = Some(id);
-        narrow(&mut app, 3.0, vec![]);
-        let output = narrow(&mut app, 3.1, vec![]);
-        let (title, mic, deafen, leave) = (
-            header(&output, "TEST FIXTURE Maya options"),
-            header(&output, "Unmute microphone"),
-            header(&output, "Undeafen audio"),
-            header(&output, "Leave voice"),
+        narrow(&mut app, 4.0, vec![]);
+        let output = narrow(&mut app, 4.1, vec![]);
+        let title = header(&output, "TEST FIXTURE Maya options");
+        let strip = node_bounds(&output, "Voice in #general: show the call")
+            .expect("the DM keeps the call's strip");
+        assert!(title.bottom() <= strip.top());
+        assert!(
+            node_bounds(&output, "Unmute microphone").is_some_and(|mic| strip.contains_rect(mic))
         );
-        assert!(title.right() < mic.left() && mic.right() < deafen.left());
-        assert!(deafen.right() < leave.left());
+        assert!(!texts(&output).contains(&"Join"));
+        app.voice.leave();
+        let output = narrow(&mut app, 4.2, vec![]);
+        assert!(
+            node_bounds(&output, "Voice in #general: show the call").is_none(),
+            "out of a call, the DM has no strip"
+        );
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == super::VOICE_STRIP)),
+            "nor its background"
+        );
+    }
+
+    #[test]
+    fn narrow_strip_offers_join_where_people_talk_and_nothing_where_nobody_does() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-join-narrow"),
+        );
+        app.token = Some("fixture-only".into());
+        let narrow = |app: &mut CaperApp| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            )
+        };
+        narrow(&mut app);
+        let output = narrow(&mut app);
+        let shown = texts(&output);
+        assert!(shown.contains(&"3 talking"), "{shown:?}");
+        let join = node_bounds(&output, "Join voice in #general").expect("the strip's Join");
+        assert!(join.top() > 54.0 && join.bottom() < 54.0 + 56.0);
+        assert_eq!(join.height(), 40.0);
+        assert!(shown.contains(&"Join"));
+        // Eggshell, as a primary action.
         assert!(
             output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.stroke.color == super::BORDER
-                    && rect.rect.contains_rect(mic) && rect.rect.contains_rect(leave))),
-            "the DM's mute, deafen and Leave share one group"
+                egui::Shape::Rect(rect) if rect.rect == join && rect.fill == super::ACTION)),
+            "Join is the eggshell primary action"
         );
-        assert!(!texts(&output).contains(&"Join voice"));
-        tap(&mut app, 3.2, leave.center());
-        assert!(matches!(app.voice.state.phase, Phase::Idle));
-        let output = narrow(&mut app, 3.3, vec![]);
-        for label in [
-            "Leave voice",
-            "Unmute microphone",
-            "Mute microphone",
-            "Undeafen audio",
-            "Deafen audio",
-        ] {
-            assert!(
-                node_bounds(&output, label).is_none_or(|bounds| bounds.bottom() > 54.0),
-                "out of a call, the DM header has no {label}"
+        let selected = app.selected_channel.clone();
+        let pos = join.center();
+        for pressed in [true, false] {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    events: vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |context| app.shell(context),
             );
         }
+        assert_eq!(
+            app.pending_voice_join
+                .as_ref()
+                .map(|(channel, _, _)| channel.as_str()),
+            Some("chan00000001"),
+            "Join joins the open channel"
+        );
+        assert_eq!(app.selected_channel, selected);
+        assert!(!app.navigation_open);
+        let output = narrow(&mut app);
+        assert!(texts(&output).contains(&"Joining…"));
+        // Nobody in voice here: no strip.
+        app.pending_voice_join = None;
+        app.channel_rosters.remove("chan00000001");
+        let output = narrow(&mut app);
+        assert!(node_bounds(&output, "Join voice in #general").is_none());
+        assert!(!texts(&output).iter().any(|text| text.ends_with(" talking")));
     }
 
     #[test]
@@ -30177,53 +31469,40 @@ mod tests {
                         }],
                     );
                 }
-                // Each row's shortcut (None where you are in voice) and the
-                // open channel's header action.
-                let (rows, header) = match state {
+                // Each row's shortcut (None where you are in voice).
+                let rows = match state {
                     "authorizing" => {
                         app.pending_voice_join = Some(("chan00000001".into(), 0, 12_345));
-                        (
-                            [
-                                None,
-                                Some("Join voice in #design"),
-                                Some("Join voice in #planning"),
-                            ],
-                            "Joining voice in #general",
-                        )
+                        [
+                            None,
+                            Some("Join voice in #design"),
+                            Some("Join voice in #planning"),
+                        ]
                     }
                     "joining" => {
                         app.voice.state.phase = Phase::Joining(target);
-                        (
-                            [
-                                None,
-                                Some("Switch voice to #design"),
-                                Some("Switch voice to #planning"),
-                            ],
-                            "Joining voice in #general",
-                        )
+                        [
+                            None,
+                            Some("Switch voice to #design"),
+                            Some("Switch voice to #planning"),
+                        ]
                     }
                     "connected" | "switching" => {
                         app.voice.state.phase = Phase::Connected(target);
                         if state == "switching" {
                             app.pending_voice_join = Some(("chan00000002".into(), 0, 12_345));
                         }
-                        (
-                            [
-                                None,
-                                (state == "connected").then_some("Switch voice to #design"),
-                                Some("Switch voice to #planning"),
-                            ],
-                            "Leave voice",
-                        )
-                    }
-                    _ => (
                         [
-                            Some("Join voice in #general"),
-                            Some("Join voice in #design"),
-                            Some("Join voice in #planning"),
-                        ],
-                        "Join voice",
-                    ),
+                            None,
+                            (state == "connected").then_some("Switch voice to #design"),
+                            Some("Switch voice to #planning"),
+                        ]
+                    }
+                    _ => [
+                        Some("Join voice in #general"),
+                        Some("Join voice in #design"),
+                        Some("Join voice in #planning"),
+                    ],
                 };
                 let output = render(&mut app, &context, vec![]);
                 let nodes = &output
@@ -30266,7 +31545,8 @@ mod tests {
                     );
                     assert!(bounds.x1 <= 60.0 + f64::from(sidebar));
                     assert_eq!(node.is_disabled(), busy, "{state}: {label}");
-                    // Occupied rows grow below; the name row itself stays put.
+                    // Live now above the channels moves rows down, never
+                    // the shortcut within its row.
                     let placed = (bounds.x0, bounds.x1, bounds.y0 - row.y0, bounds.y1 - row.y0);
                     match reference.get(name) {
                         Some(first) => assert_eq!(
@@ -30278,32 +31558,28 @@ mod tests {
                         }
                     }
                 }
-                // The dock has the other Leave voice.
-                let action = nodes
-                    .iter()
-                    .map(|(_, node)| node)
-                    .filter(|node| node.label() == Some(header))
-                    .find(|node| node.bounds().is_some_and(|bounds| bounds.y1 <= 54.0))
-                    .unwrap_or_else(|| panic!("{state}: the header offers {header}"))
-                    .clone();
-                let bounds = action.bounds().unwrap();
-                assert!(bounds.x0 > 60.0 + f64::from(sidebar));
-                assert_eq!(bounds.y1 - bounds.y0, 34.0);
-                assert_eq!(
-                    action.is_disabled(),
-                    matches!(state, "authorizing" | "joining"),
-                    "{state}: {header}"
+                // Voice is gone from the conversation header.
+                assert!(
+                    !nodes.iter().any(|(_, node)| {
+                        node.bounds().is_some_and(|bounds| {
+                            bounds.y1 <= 54.0 && bounds.x0 > 60.0 + f64::from(sidebar)
+                        }) && node.label().is_some_and(|label| {
+                            label.starts_with("Join")
+                                || label.starts_with("Switch")
+                                || label.starts_with("Leave")
+                                || label.contains("microphone")
+                        })
+                    }),
+                    "{state}: the header offers no voice"
                 );
-                if header == "Leave voice" {
-                    assert_eq!(
-                        nodes
-                            .iter()
-                            .filter(|(_, node)| node.label() == Some("Leave voice"))
-                            .count(),
-                        2,
-                        "the header and the dock both leave"
-                    );
-                }
+                // Occupied rows count who is there on their one line.
+                assert_eq!(
+                    nodes
+                        .iter()
+                        .any(|(_, node)| node.label() == Some("1 in voice")),
+                    state == "occupied",
+                    "{state}: only occupied channels count who is in voice"
+                );
                 let texts: Vec<_> = output
                     .shapes
                     .iter()
@@ -30315,23 +31591,23 @@ mod tests {
                 assert!(
                     !texts
                         .iter()
-                        .any(|text| text.contains("No one in voice") || *text == "0 in voice")
+                        .any(|text| text.contains("No one in voice") || text.contains("in voice"))
                 );
                 assert_eq!(
-                    texts.contains(&"1 in voice"),
-                    state == "occupied",
-                    "{state}: only occupied channels get a second line"
+                    texts.contains(&"Live now"),
+                    state != "empty" && state != "authorizing",
+                    "{state}: Live now shows a call or a live room"
                 );
-                // Empty channels are a single line.
+                // Every channel is a single line.
                 let gap =
                     find("planning").bounds().unwrap().y0 - find("design").bounds().unwrap().y1;
-                assert_eq!(gap > 20.0, state == "occupied", "{state}: {gap}");
+                assert!(gap < 20.0, "{state}: {gap}");
             }
         }
     }
 
     #[test]
-    fn header_voice_names_who_is_there_and_joins_switches_or_leaves() {
+    fn header_has_no_voice_while_live_now_joins_switches_waits_or_leaves() {
         let person = |id: &str, name: &str| crate::model::VoiceOccupant {
             id: id.into(),
             avatar_id: Some(15),
@@ -30341,26 +31617,26 @@ mod tests {
             muted: false,
             deafened: false,
         };
-        let everyone = [
+        let everyone = vec![
             person("maya", "Maya"),
             person("alex", "Alex"),
             person("sam", "Sam"),
             person("ana", "Ana"),
             person("lee", "Lee"),
         ];
-        let header = |count: usize, width: f32, name: &str| {
+        // At every width the header names the conversation, Pins and
+        // Members, never voice. Phones still count who is in voice.
+        for width in [1440.0, 1100.0, 840.0, 760.0, 390.0] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some("parity-desktop"),
             );
-            // These responsive header widths assume the member column is hidden.
             app.members_visible = false;
             app.token = Some("fixture-only".into());
-            app.detail.as_mut().unwrap().channels[0].name = name.into();
             app.channel_rosters
-                .insert("chan00000001".into(), everyone[..count].to_vec());
+                .insert("chan00000001".into(), everyone.clone());
             let mut frame = || {
                 context.run(
                     egui::RawInput {
@@ -30376,311 +31652,53 @@ mod tests {
             frame();
             context.enable_accesskit();
             let output = frame();
-            let join = node_bounds(&output, "Join voice").unwrap();
-            assert!(
-                join.right() <= width && join.bottom() <= 54.0,
-                "{width}: Join is clipped"
-            );
-            let count_shown = output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text)
-                    if text.galley.job.text == count.to_string()
-                        && text.pos.y < 54.0
-                        && text.pos.x > width - 400.0)
-            });
-            (output, join, count_shown)
-        };
-        for (count, summary) in [
-            (1, "Maya is in voice"),
-            (2, "Maya and Alex are in voice"),
-            (3, "Maya, Alex and Sam are in voice"),
-            (5, "Maya, Alex, Sam and 2 more are in voice"),
-        ] {
-            let (output, join, count_shown) = header(count, 1440.0, "general");
-            let people =
-                node_bounds(&output, summary).unwrap_or_else(|| panic!("missing {summary}"));
-            assert!(people.right() < join.left() && people.bottom() <= 54.0);
-            assert_eq!(people.height(), 24.0);
-            assert!(count_shown, "count for {count}");
-            // Voice, a divider, then Pins and Members.
-            let pins = node_bounds(&output, "Pins").unwrap();
-            let members = node_bounds(&output, "Hide member list")
-                .or_else(|| node_bounds(&output, "Show member list"))
-                .unwrap();
-            assert!(join.right() < pins.left() && pins.right() < members.left());
-            let dividers: Vec<_> = output
-                .shapes
-                .iter()
-                .filter_map(|shape| match &shape.shape {
-                    egui::Shape::LineSegment { points, stroke }
-                        if points[0].x == points[1].x
-                            && points[1].y <= 54.0
-                            && stroke.color == super::BORDER =>
-                    {
-                        Some((points[0].x, stroke.width))
-                    }
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(dividers.len(), 1, "{dividers:?}");
-            let (x, stroke) = dividers[0];
-            assert_eq!(stroke, 1.0);
-            assert!((x - join.right() - 14.5).abs() <= 1.0, "{x} after {join:?}");
-            assert!((pins.left() - x - 6.5).abs() <= 1.0, "{x} before {pins:?}");
-            assert!(node_bounds(&output, "More channel options").is_none());
-            assert!(node_bounds(&output, "Mute microphone").is_none_or(|mic| mic.top() > 54.0));
-        }
-        // Narrowing a wide header drops the count and extra faces, then the
-        // faces, never the button.
-        let summary = "Maya, Alex, Sam and 2 more are in voice";
-        let long = "planning-notes-for-the-quarterly-roadmap-review";
-        let title_end = |output: &egui::FullOutput, text: &str| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(shape) if shape.galley.job.text == text => {
-                        Some(shape.pos.x + shape.galley.size().x)
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("missing {text}"))
-        };
-        let mut modes = std::collections::BTreeSet::new();
-        for width in (770..=1100).step_by(10) {
-            let (output, join, count_shown) = header(5, width as f32, long);
-            let mode = match node_bounds(&output, summary) {
-                None => "button",
-                Some(people) if people.width() == 24.0 => "one face",
-                Some(people) => {
-                    assert!(people.right() < join.left());
-                    "all"
-                }
-            };
-            assert_eq!(count_shown, mode == "all", "{width}: {mode}");
-            // The name ends in "…" before the actions instead of under them.
-            let actions = node_bounds(&output, summary).map_or(join.left(), |people| people.left());
-            assert!(
-                title_end(&output, &format!("# {long}")) <= actions,
-                "{width}: the name runs under the header's actions"
-            );
-            modes.insert(mode);
-        }
-        assert_eq!(modes.len(), 3, "{modes:?}");
-        // Phones: no faces or count, just an icon-only Join after the name,
-        // whose subtitle says how many are in voice.
-        for width in (380..=760).step_by(20) {
-            let (output, join, count_shown) = header(5, width as f32, "planning-notes");
-            assert_eq!(join.size(), egui::vec2(42.0, 44.0), "{width}");
-            assert!(
-                output.shapes.iter().any(|shape| matches!(&shape.shape,
-                    egui::Shape::Rect(rect) if rect.rect == join && rect.fill == super::OCCUPIED_JOIN_TINT)),
-                "{width}: an occupied Join is tinted"
-            );
-            assert!(!count_shown, "{width}: phones show no count beside voice");
-            assert!(
-                node_bounds(&output, summary).is_none(),
-                "{width}: phones show no faces"
-            );
-            assert!(
-                texts(&output)
-                    .iter()
-                    .any(|text| text.ends_with("5 in voice"))
-            );
-            let title =
-                node_bounds(&output, "#planning-notes options").expect("the name opens a menu");
-            assert!(title.right() < join.left(), "{width}");
-            assert!(title_end(&output, "# planning-notes") <= title.right());
-            assert!(
-                !texts(&output).contains(&"Join voice"),
-                "{width}: no labels on phones"
-            );
-            for label in ["Pins", "Show member list", "More channel options"] {
-                assert!(node_bounds(&output, label).is_none(), "{width}: {label}");
-            }
-        }
-
-        let context = egui::Context::default();
-        let mut app = CaperApp::new(
-            &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-desktop"),
-        );
-        app.token = Some("fixture-only".into());
-        render(&mut app, &context, vec![]);
-        context.enable_accesskit();
-        let output = render(&mut app, &context, vec![]);
-        assert!(node_bounds(&output, "Leave voice").is_none());
-        click(&mut app, &context, node_center(&output, "Join voice"));
-        assert_eq!(
-            app.pending_voice_join
-                .as_ref()
-                .map(|(channel, _, _)| channel.as_str()),
-            Some("chan00000001"),
-            "the header joins the open channel"
-        );
-        let output = render(&mut app, &context, vec![]);
-        assert!(texts(&output).contains(&"Joining…"));
-        let joining = node_bounds(&output, "Joining voice in #general").unwrap();
-        click(&mut app, &context, joining.center());
-        assert!(app.pending_voice_join.is_some() && matches!(app.voice.state.phase, Phase::Idle));
-
-        // In voice elsewhere: Switch here.
-        app.pending_voice_join = None;
-        app.voice.state.phase = Phase::Connected(app.voice_target("chan00000002").unwrap().0);
-        let output = render(&mut app, &context, vec![]);
-        assert!(texts(&output).contains(&"Switch here"));
-        assert!(node_bounds(&output, "Switch voice to #general").is_some());
-
-        // In voice here: Leave, as the dock does.
-        app.voice.state.phase = Phase::Connected(app.voice_target("chan00000001").unwrap().0);
-        let output = render(&mut app, &context, vec![]);
-        assert!(texts(&output).contains(&"Leave"));
-        // The dock has the other Leave voice.
-        let leave = output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.label() == Some("Leave voice"))
-            .filter_map(|(_, node)| node.bounds())
-            .find(|bounds| bounds.y1 <= 54.0)
-            .map(|bounds| {
-                egui::pos2(
-                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
-                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
-                )
-            })
-            .expect("the header offers Leave");
-        assert!(leave.x > 340.0);
-        // Red text and icon only: no fill or border while at rest.
-        assert!(
-            !output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.rect.contains(leave)
-                    && rect.rect.height() == 34.0
-                    && (rect.fill != super::Color32::TRANSPARENT
-                        || (rect.stroke.width > 0.0
-                            && rect.stroke.color != super::Color32::TRANSPARENT)))),
-            "the header's Leave has no fill or border"
-        );
-        assert_eq!(super::HANGUP_TONE.rest.2, super::MUTED_MIC);
-        click(&mut app, &context, leave);
-        assert!(matches!(app.voice.state.phase, Phase::Idle));
-    }
-
-    #[test]
-    fn occupied_join_glows_softly_until_you_are_in() {
-        assert_eq!(super::join_glow_color(0.0).a(), 0);
-        assert_eq!(super::join_glow_color(2.4).a(), 0);
-        assert_eq!(
-            super::join_glow_color(1.2),
-            egui::Color32::from_rgba_unmultiplied(219, 104, 73, 115)
-        );
-        assert!(super::join_glow_color(0.6).a() > 0 && super::join_glow_color(0.6).a() < 115);
-        let glows = |occupied: bool, width: f32, connected: bool| {
-            let context = egui::Context::default();
-            let mut app = CaperApp::new(
-                &context,
-                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-                Some("parity-desktop"),
-            );
-            app.token = Some("fixture-only".into());
-            if occupied {
-                app.channel_rosters.insert(
-                    "chan00000001".into(),
-                    vec![crate::model::VoiceOccupant {
-                        id: "maya".into(),
-                        avatar_id: Some(15),
-                        avatar_asset: None,
-                        avatar_url: None,
-                        name: "Maya".into(),
-                        muted: false,
-                        deafened: false,
-                    }],
-                );
-            }
-            if connected {
-                app.voice.state.phase =
-                    Phase::Connected(app.voice_target("chan00000001").unwrap().0);
-            }
-            let frame = |app: &mut CaperApp, time: f64| {
-                context.run(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(width, 900.0),
-                        )),
-                        time: Some(time),
-                        ..Default::default()
-                    },
-                    |context| app.page(context),
-                )
-            };
-            frame(&mut app, 0.0);
-            context.enable_accesskit();
-            let output = frame(&mut app, 1.2);
-            // The header's action; wide layouts also offer Leave in the dock.
-            let label = if connected {
-                "Leave voice"
-            } else {
-                "Join voice"
-            };
-            let action = output
+            let nodes = &output
                 .platform_output
                 .accesskit_update
                 .as_ref()
                 .unwrap()
-                .nodes
-                .iter()
-                .filter(|(_, node)| node.label() == Some(label))
-                .filter_map(|(_, node)| node.bounds())
-                .find(|bounds| bounds.y1 <= 54.0)
-                .map(|bounds| {
-                    egui::Rect::from_min_max(
-                        egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
-                        egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-                    )
-                })
-                .expect("the header's voice action");
-            let glow = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if rect.blur_width > 0.0 && rect.rect.contains_rect(action) =>
-                {
-                    Some(rect.fill)
+                .nodes;
+            let header_start = if width > 760.0 { 340.0 } else { 0.0 };
+            for (_, node) in nodes {
+                let (Some(label), Some(bounds)) = (node.label(), node.bounds()) else {
+                    continue;
+                };
+                if bounds.y1 <= 54.0 && bounds.x0 >= header_start {
+                    assert!(
+                        !["Join", "Switch", "Leave", "Mute", "Deafen"]
+                            .iter()
+                            .any(|word| label.starts_with(word))
+                            && !label.contains(" are in voice")
+                            && !label.contains(" is in voice"),
+                        "{width}: {label} in the header"
+                    );
                 }
-                _ => None,
-            });
-            if glow.is_some() {
-                let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            }
+            let shown = texts(&output);
+            for text in ["Join voice", "Switch here", "Leave"] {
+                assert!(!shown.contains(&text), "{width}: {text}");
+            }
+            if width > 760.0 {
+                let pins = node_bounds(&output, "Pins").unwrap();
+                let members = node_bounds(&output, "Show member list").unwrap();
+                assert!(pins.right() < members.left() && members.bottom() <= 54.0);
                 assert!(
-                    repaint <= Duration::from_millis(50),
-                    "the glow animates: {repaint:?}"
+                    !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::LineSegment { points, stroke }
+                            if points[0].x == points[1].x
+                                && points[0].x > 340.0
+                                && points[1].y <= 54.0
+                                && stroke.color == super::BORDER)),
+                    "{width}: no voice divider"
+                );
+            } else {
+                assert!(
+                    shown.iter().any(|text| text.ends_with("5 in voice")),
+                    "{width}: {shown:?}"
                 );
             }
-            glow
-        };
-        for width in [1440.0, 390.0] {
-            assert_eq!(
-                glows(true, width, false),
-                Some(super::join_glow_color(1.2)),
-                "{width}: people in voice here make Join glow"
-            );
-            assert_eq!(
-                glows(false, width, false),
-                None,
-                "{width}: an empty channel's Join is still"
-            );
-            assert_eq!(
-                glows(true, width, true),
-                None,
-                "{width}: no glow once you are in"
-            );
         }
-    }
 
-    #[test]
-    fn join_glow_rests_without_repainting_while_the_window_is_in_the_background() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -30688,54 +31706,58 @@ mod tests {
             Some("parity-desktop"),
         );
         app.token = Some("fixture-only".into());
-        app.channel_rosters.insert(
-            "chan00000001".into(),
-            vec![crate::model::VoiceOccupant {
-                id: "maya".into(),
-                avatar_id: Some(15),
-                avatar_asset: None,
-                avatar_url: None,
-                name: "Maya".into(),
-                muted: false,
-                deafened: false,
-            }],
+        app.channel_rosters
+            .insert("chan00000002".into(), everyone[..2].to_vec());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Leave voice").is_none());
+        // Outside a call, a live room offers Join.
+        let join = node_bounds(&output, "Join #design").unwrap();
+        assert!(join.right() <= 339.0 && texts(&output).contains(&"Join"));
+        // In a call elsewhere: Switch, and the call's card leads.
+        app.voice.state.phase = Phase::Connected(app.voice_target("chan00000001").unwrap().0);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Switch"));
+        let switch = node_bounds(&output, "Switch to #design").unwrap();
+        let leave = node_bounds(&output, "Leave voice").expect("the card's Leave");
+        assert!(leave.bottom() < switch.top(), "your call comes first");
+        assert!(texts(&output).contains(&"Leave"));
+        click(&mut app, &context, switch.center());
+        assert_eq!(
+            app.pending_voice_join
+                .as_ref()
+                .map(|(channel, _, _)| channel.as_str()),
+            Some("chan00000002")
         );
-        let frame = |app: &mut CaperApp, time: f64| {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1440.0, 900.0),
-                )),
-                time: Some(time),
-                ..Default::default()
-            };
-            input
-                .viewports
-                .entry(egui::ViewportId::ROOT)
-                .or_default()
-                .focused = Some(false);
-            context.run(input, |context| app.page(context))
-        };
-        frame(&mut app, 0.0);
-        let started = Instant::now();
-        while context.has_pending_images() {
-            assert!(started.elapsed() < Duration::from_secs(30));
-            std::thread::sleep(Duration::from_millis(10));
-            frame(&mut app, 0.0);
-        }
-        frame(&mut app, 0.6);
-        let output = frame(&mut app, 1.2);
-        let still = egui::Color32::from_rgba_unmultiplied(219, 104, 73, 89);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Joining #design").is_some());
+        app.pending_voice_join = None;
+        // Leave ends the call.
+        let output = render(&mut app, &context, vec![]);
+        // Red text and icon on a faint red wash.
+        let leave = node_bounds(&output, "Leave voice").unwrap();
         assert!(
             output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.blur_width > 0.0 && rect.fill == still)),
-            "web's still glow stands in for the breath"
+                egui::Shape::Rect(rect) if rect.rect == leave
+                    && rect.fill == super::LEAVE_TONE.rest.0)),
+            "the card's Leave has a destructive tint"
         );
-        let repaint = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
-        assert!(
-            repaint > Duration::from_millis(50),
-            "a background window doesn't animate: {repaint:?}"
+        assert_eq!(super::LEAVE_TONE.rest.2, super::MUTED_MIC);
+        click(&mut app, &context, leave.center());
+        assert!(matches!(app.voice.state.phase, Phase::Idle));
+        // While joining, the card's button cancels.
+        app.voice.state.phase = Phase::Joining(app.voice_target("chan00000001").unwrap().0);
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        assert!(shown.contains(&"Connecting…") && shown.contains(&"Cancel"));
+        click(
+            &mut app,
+            &context,
+            node_center(&output, "Cancel joining voice"),
         );
+        assert!(matches!(app.voice.state.phase, Phase::Idle));
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Cancel joining voice").is_none());
     }
 
     #[test]
@@ -31226,25 +32248,32 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            let joins: Vec<_> = texts
-                .iter()
-                .filter(|text| text.galley.job.text == "Join voice")
-                .collect();
-            assert_eq!(joins.len(), 1, "only the header names the action");
-            assert!(joins[0].pos.x > 60.0 + sidebar && joins[0].pos.y < 54.0);
+            assert!(
+                !texts
+                    .iter()
+                    .any(|text| text.galley.job.text == "Join voice"),
+                "the header names no voice action"
+            );
+            let edge = 60.0 + sidebar;
             for name in ["general", "design", "planning"] {
                 let shortcut = node_bounds(&output, &format!("Join voice in #{name}"))
                     .unwrap_or_else(|| panic!("missing #{name}'s shortcut"));
                 assert!(
-                    shortcut.right() <= 60.0 + sidebar,
+                    shortcut.right() <= edge,
                     "#{name}'s shortcut must fit inside the sidebar"
                 );
             }
-            let occupied = texts
+            // The live room's card and the row's count fit the sidebar.
+            for label in ["2 in voice", "Open #design", "Join #design"] {
+                let bounds =
+                    node_bounds(&output, label).unwrap_or_else(|| panic!("missing {label}"));
+                assert!(bounds.right() <= edge, "{label} at {sidebar}px: {bounds:?}");
+            }
+            let names = texts
                 .iter()
-                .find(|text| text.galley.job.text == "2 in voice")
-                .expect("the occupied channel lists who is in voice");
-            assert!(occupied.pos.x + occupied.galley.size().x < 60.0 + sidebar);
+                .find(|text| text.galley.job.text == "Maya and Alex")
+                .expect("the room's names");
+            assert!(names.pos.x + names.galley.size().x <= edge);
             let members = texts
                 .iter()
                 .find(|text| text.galley.job.text == "Members")
@@ -31281,36 +32310,21 @@ mod tests {
                 .find(|text| text.galley.job.text == label)
                 .unwrap_or_else(|| panic!("missing {label}"))
         };
-        let join = text("Join voice");
+        // Design H: voice lives in the sidebar, not the chat header.
+        for label in ["Join voice", "Switch here", "Leave"] {
+            assert!(
+                !texts.iter().any(|text| text.galley.job.text == label),
+                "the header has no {label}"
+            );
+        }
         assert!(
-            join.pos.x > 340.0 && join.pos.y < 54.0,
-            "web joins voice from the chat header"
-        );
-        assert!(
-            join.pos.x + join.galley.size().x < text("Members").pos.x,
-            "voice sits left of Members"
-        );
-        let divider = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::LineSegment { points, stroke }
                     if points[0].x == points[1].x
+                        && points[0].x > 340.0
                         && points[1].y <= 54.0
-                        && *stroke == egui::Stroke::new(1.0, super::BORDER) =>
-                {
-                    Some(points[0].x)
-                }
-                _ => None,
-            })
-            .expect("a divider sets voice apart from Pins and Members");
-        assert!(
-            divider > join.pos.x + join.galley.size().x + 24.0,
-            "the divider follows the voice action"
-        );
-        assert!(
-            !texts.iter().any(|text| text.galley.job.text == "Leave"),
-            "Leave appears only while connected here"
+                        && *stroke == egui::Stroke::new(1.0, super::BORDER))),
+            "no divider sets voice apart from Pins and Members"
         );
         // Independent values from the current web CSS: 54px header, 44px history.
         for (label, center) in [
@@ -31332,13 +32346,9 @@ mod tests {
                 "public/private labels must share one offset"
             );
         }
-        assert_eq!(
-            texts
-                .iter()
-                .filter(|text| text.galley.job.text == "Join voice")
-                .count(),
-            1,
-            "empty channels have no second line"
+        assert!(
+            !texts.iter().any(|text| text.galley.job.text == "Live now"),
+            "nobody in voice: no Live now"
         );
         let pitch = text("design").pos.y - text("general").pos.y;
         assert!(pitch < 40.0, "empty channels are a single line: {pitch}");
@@ -31500,12 +32510,15 @@ mod tests {
         app.token = Some("account-token".into());
         let root = app.media_root("chan00000001").0;
         app.media_availability.insert(root, true);
-        // Isolate General's header Join from the rows' shortcuts.
+        // Isolate General's row shortcut from the other rows'.
         app.media_availability.insert("chan00000002".into(), false);
         app.media_availability.insert("chan00000003".into(), false);
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
-        let join = text_position(&render(&mut app, &context, vec![]), "Join voice");
+        let join = node_center(
+            &render(&mut app, &context, vec![]),
+            "Join voice in #general",
+        );
         // Outside the 120 px radius nothing is prepared.
         render(
             &mut app,
@@ -33301,6 +34314,140 @@ mod tests {
     }
 
     #[test]
+    fn thread_unread_ack_requires_latest_visible_foreground_reply() {
+        for case in [
+            "visible",
+            "background",
+            "channel",
+            "clipped",
+            "older",
+            "unseen-newer",
+            "switched",
+            "account-switched",
+            "loading",
+            "pins",
+        ] {
+            let (context, mut app) = fixture("parity-thread");
+            let reply = app
+                .timeline
+                .messages()
+                .find(|message| message.thread_root_id.is_some())
+                .unwrap()
+                .clone();
+            let root = reply.thread_root_id.clone().unwrap();
+            app.token = Some("test-token".into());
+            app.foreground = case != "background";
+            app.navigation_open = false;
+            app.thread_unread_scope = Some((
+                app.account_epoch,
+                app.navigation,
+                app.selected_channel.clone().unwrap(),
+            ));
+            app.thread_unread.insert(
+                root,
+                if case == "unseen-newer" {
+                    "999".into()
+                } else {
+                    reply.seq.clone()
+                },
+            );
+            app.thread_view.as_mut().unwrap().has_newer = case == "older";
+            app.thread_view.as_mut().unwrap().loading = case == "loading";
+            app.showing_pins = case == "pins";
+            if case == "switched" {
+                app.navigation += 1;
+            }
+            if case == "account-switched" {
+                app.account_epoch += 1;
+            }
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        if case == "clipped" {
+                            ui.set_clip_rect(egui::Rect::NOTHING);
+                        }
+                        app.message_in(ui, &reply, case != "channel", false, false);
+                    });
+                },
+            );
+            assert_eq!(app.thread_unread_busy, case == "visible", "{case}");
+            assert_eq!(
+                app.thread_unread.len(),
+                1,
+                "only successful server acknowledgements clear badges"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_unread_worker_retries_failed_ack_and_refreshes_authoritative_list() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = attempts.clone();
+        let (base, seen) = account_server_with(move |line, body| {
+            if line == "GET /api/chat/channels/test-channel/threads/unread" {
+                return (
+                    200,
+                    r#"{"threads":[{"rootId":"root","seq":"9007199254740995"}]}"#.into(),
+                );
+            }
+            if line == "PUT /api/chat/channels/test-channel/messages/root/thread/read" {
+                let value = serde_json::from_slice::<serde_json::Value>(body).unwrap();
+                assert!(matches!(
+                    value["seq"].as_str(),
+                    Some("9007199254740995" | "9007199254740996")
+                ));
+                return if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    (503, r#"{"error":"retry"}"#.into())
+                } else {
+                    (204, String::new())
+                };
+            }
+            (404, "{}".into())
+        });
+        let (context, mut app) = fixture("parity-thread");
+        app.worker = crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context);
+        app.token = Some("test-token".into());
+        app.selected_channel = Some("test-channel".into());
+        app.refresh_thread_unread();
+        app.refresh_thread_unread();
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert_eq!(app.thread_unread["root"], "9007199254740995");
+        let read = Some(("root".into(), "9007199254740995".into()));
+        app.send_thread_unread(read.clone());
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert!(app.thread_unread.contains_key("root"));
+        assert!(app.thread_unread_retry.is_some());
+        app.thread_unread_retry = None;
+        app.send_thread_unread(read);
+        // A later unread entry must survive an older successful ack.
+        app.thread_unread
+            .insert("root".into(), "9007199254740996".into());
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert_eq!(app.thread_unread["root"], "9007199254740996");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        app.send_thread_unread(Some(("root".into(), "9007199254740996".into())));
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert!(app.thread_unread.is_empty());
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(
+                    |line| line.starts_with("GET /api/chat/channels/test-channel/threads/unread")
+                )
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn feedback_sidebar_selection_replaces_the_underlying_conversation() {
         for kind in ["self", "direct", "request", "channel"] {
             let (context, mut app) = fixture("parity-feedback");
@@ -33551,13 +34698,9 @@ mod tests {
             "no banner: {labels:?}"
         );
         assert!(!labels.contains(&"Join channel"), "{labels:?}");
-        assert_eq!(
-            labels
-                .iter()
-                .filter(|label| **label == "Join voice")
-                .count(),
-            1,
-            "the visited channel's voice, in its header like any channel"
+        assert!(
+            !labels.contains(&"Join voice"),
+            "the header offers no voice, as for any channel"
         );
         assert_eq!(app.channel_name(), "general");
         assert!(
@@ -33569,7 +34712,7 @@ mod tests {
         assert_eq!(
             app.header_voice_channel().as_ref(),
             Some(&channel),
-            "voice from the header, as for a joined channel"
+            "the narrow strip and Live now offer its voice, as for a joined channel"
         );
         app.media_availability.remove(&channel);
         assert!(
@@ -34804,7 +35947,11 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
-        assert!(shows(&output, "receipt.txt"));
+        assert!(shows(&output, "TXT"));
+        assert!(
+            !shows(&output, "receipt.txt"),
+            "staged files show their type, not filename"
+        );
         assert!(
             !shows(&output, "Block"),
             "Block is not a primary profile action"
@@ -36416,7 +37563,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_controls_and_voice_dock_act_on_current_intent() {
+    fn audio_controls_and_call_card_act_on_current_intent() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -36491,8 +37638,8 @@ mod tests {
             // the full tree, so enable it for that frame.
             render(&mut app, &context, vec![]);
             context.enable_accesskit();
-            // The dock's hang-up, the lowest of the header's and the dock's.
-            let bounds = render(&mut app, &context, vec![])
+            // The call card's, the only one.
+            let all: Vec<_> = render(&mut app, &context, vec![])
                 .platform_output
                 .accesskit_update
                 .unwrap()
@@ -36503,9 +37650,13 @@ mod tests {
                         .then(|| node.bounds())
                         .flatten()
                 })
-                .max_by(|a, b| a.y0.total_cmp(&b.y0))
-                .unwrap_or_else(|| panic!("missing {label}"));
-            assert!(bounds.y0 > 800.0, "{label} must be the dock's");
+                .collect();
+            assert_eq!(all.len(), 1, "{label}");
+            let bounds = all[0];
+            assert!(
+                bounds.x1 <= 339.0 && bounds.y1 < 400.0,
+                "{label} must be the call card's"
+            );
             let center = egui::pos2(
                 ((bounds.x0 + bounds.x1) / 2.0) as f32,
                 ((bounds.y0 + bounds.y1) / 2.0) as f32,
@@ -36721,8 +37872,8 @@ mod tests {
             let direct_y = text_position(&output, "Direct messages").y;
             let gap = direct_y - last_channel.y1 as f32;
             assert!(
-                (0.0..40.0).contains(&gap),
-                "DM heading should directly follow the last channel, not be above it or bottom-anchored: {gap}"
+                (40.0..56.0).contains(&gap),
+                "DM heading must leave room for the divider on both sides without being bottom-anchored: {gap}"
             );
             let direct_action = if owner {
                 "Invite people"
@@ -37123,8 +38274,8 @@ mod tests {
                     if stroke.color == super::BORDER && points[0].x == 59.0 && points[1].x == 59.0 + width
             )).collect();
             assert!(
-                dividers.len() >= 3,
-                "header, DM, and voice separators must span {width}px; found {dividers:?}"
+                dividers.len() >= 2,
+                "header and DM separators must span {width}px; found {dividers:?}"
             );
             assert!(
                 dividers.iter().all(|shape| shape.clip_rect.left() <= 59.0
@@ -37135,84 +38286,349 @@ mod tests {
     }
 
     #[test]
-    fn voice_dock_has_balanced_padding_and_centered_icons() {
-        let context = egui::Context::default();
-        let mut app = CaperApp::new(
-            &context,
-            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-            Some("parity-voice-connected"),
-        );
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
-        let text_rect = |label: &str| {
-            output
+    fn call_card_faces_fold_into_plus_n_and_rooms_fold_behind_more_live() {
+        // A wide sidebar fits the ten slots in one row.
+        for (sidebar, faces, more, lines) in [(280.0, 9, 3, 2), (220.0, 7, 5, 2), (440.0, 9, 3, 1)]
+        {
+            let (context, mut app) = fixture("parity-voice-crowded");
+            app.sidebar_width = sidebar;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let shown = texts(&output);
+            let card = output
                 .shapes
                 .iter()
                 .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == label => {
-                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    egui::Shape::Rect(rect)
+                        if rect.fill == super::LIVE_CARD
+                            && rect.stroke.color == super::LIVE_CARD_BORDER =>
+                    {
+                        Some(rect.rect)
                     }
                     _ => None,
                 })
-                .unwrap()
-        };
-        let status = text_rect("Voice connected").union(text_rect("general / Fixture Studio"));
-        let icons: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Mesh(mesh) => {
-                    let rect = mesh.calc_bounds();
-                    (rect.left() >= 71.0
-                        && rect.right() <= 327.0
-                        && rect.center().y >= status.top()
-                        && rect.center().y <= status.bottom())
-                    .then_some(rect)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(icons.len(), 2, "audio and disconnect icons: {icons:?}");
-        for icon in &icons {
+                .expect("the call's green card");
+            assert!(card.right() <= 59.0 + sidebar - 12.0 + 0.5, "{card:?}");
+            // The narrowest sidebar shortens the status for the name.
+            let status = if sidebar < 280.0 {
+                "In · 12"
+            } else {
+                "You're in · 12"
+            };
+            for text in [
+                "Live now",
+                "5 rooms",
+                "#general",
+                status,
+                "Alex is speaking",
+            ] {
+                assert!(shown.contains(&text), "{sidebar}: {text}: {shown:?}");
+            }
+            // You, then the others as they joined; faces in two rows at most.
+            let names = [
+                "Fixture Owner (you)",
+                "Maya",
+                "Alex, speaking",
+                "Sam",
+                "Priya, muted",
+                "Jordan",
+                "Lee",
+                "Ana, deafened",
+                "Noor, muted",
+            ];
+            let bounds: Vec<_> = names[..faces]
+                .iter()
+                .map(|label| {
+                    node_bounds(&output, label)
+                        .unwrap_or_else(|| panic!("{sidebar}: missing {label}"))
+                })
+                .collect();
+            for face in &bounds {
+                assert!(card.contains_rect(*face));
+                assert_eq!(face.size(), egui::vec2(36.0, 36.0));
+            }
+            let rows: std::collections::BTreeSet<_> =
+                bounds.iter().map(|face| face.top() as i32).collect();
+            assert_eq!(rows.len(), lines, "{sidebar}: {rows:?}");
+            for label in names[faces..]
+                .iter()
+                .chain(&["Kai", "Rosa, speaking", "Theo"])
+            {
+                assert!(
+                    node_bounds(&output, label).is_none(),
+                    "{sidebar}: {label} folds into the tile"
+                );
+            }
+            let tile = node_bounds(&output, &format!("{more} more in the call"))
+                .unwrap_or_else(|| panic!("{sidebar}: the +{more} tile"));
+            assert!(shown.contains(&format!("+{more}").as_str()));
+            assert!(card.contains_rect(tile));
+            // Rosa, folded in, is speaking: the tile lights for her.
             assert!(
-                (icon.center().y - status.center().y).abs() <= 1.0,
-                "icon {icon:?} not centered with {status:?}"
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Circle(circle) if circle.center == tile.center()
+                        && circle.stroke.color == super::VOICE_SESSION_GREEN)),
+                "{sidebar}: the tile's speaking ring"
+            );
+            // Mute, Deafen and Leave close the card.
+            let mute = node_bounds(&output, "Mute microphone").unwrap();
+            let deafen = node_bounds(&output, "Deafen audio").unwrap();
+            let leave = node_bounds(&output, "Leave voice").unwrap();
+            assert!(card.contains_rect(mute) && card.contains_rect(leave));
+            assert_eq!(mute.size(), egui::vec2(32.0, 32.0));
+            assert!(mute.right() < deafen.left() && deafen.right() < leave.left());
+            assert!(
+                (card.right() - 13.0 - leave.right()).abs() <= 1.0,
+                "Leave ends the row"
+            );
+            // Two rooms, busiest first, then "2 more live".
+            let design = node_bounds(&output, "Open #design").unwrap();
+            let standup = node_bounds(&output, "Open #standup").unwrap();
+            assert!(card.bottom() < design.top() && design.bottom() < standup.top());
+            assert!(node_bounds(&output, "Open #planning").is_none());
+            assert!(node_bounds(&output, "Open #random").is_none());
+            for text in ["Maya, Alex and 3 more", "Kai, Rosa and Theo"] {
+                assert!(shown.contains(&text), "{sidebar}: {text}");
+            }
+            let fold = node_center(&output, "2 more live: #planning, #random");
+            click(&mut app, &context, fold);
+            let open = render(&mut app, &context, vec![]);
+            let planning = node_bounds(&open, "Open #planning").unwrap();
+            let random = node_bounds(&open, "Open #random").unwrap();
+            assert!(standup.bottom() < planning.top() && planning.bottom() < random.top());
+            assert!(texts(&open).contains(&"Show less"));
+            click(&mut app, &context, node_center(&open, "Show less"));
+            let folded = render(&mut app, &context, vec![]);
+            assert!(node_bounds(&folded, "Open #planning").is_none());
+            // The tile opens the full list.
+            click(&mut app, &context, tile.center());
+            let list = render(&mut app, &context, vec![]);
+            assert!(texts(&list).contains(&"In #general · 12 people"));
+            assert!(texts(&list).contains(&"Rosa"));
+        }
+    }
+
+    #[test]
+    fn narrow_browse_uses_touch_sizes_and_shows_quiet_rows_shortcuts() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-rosters-narrow"),
+        );
+        app.token = Some("fixture-only".into());
+        let narrow = |app: &mut CaperApp| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    time: Some(10.0),
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            )
+        };
+        narrow(&mut app);
+        let output = narrow(&mut app);
+        // Quiet rows keep a dim, always-visible shortcut with a 44px target;
+        // the live row's card has Join instead.
+        for name in ["general", "planning"] {
+            let shortcut = node_bounds(&output, &format!("Join voice in #{name}"))
+                .unwrap_or_else(|| panic!("#{name}'s shortcut"));
+            assert_eq!(shortcut.width(), 44.0, "#{name}");
+            let row = node_bounds(&output, name).unwrap();
+            assert!(row.contains_rect(shortcut));
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Mesh(mesh) if shortcut.contains_rect(mesh.calc_bounds())
+                        && mesh.vertices.iter().any(|vertex| vertex.color == super::QUIET_SHORTCUT))),
+                "#{name}'s shortcut shows, dim, without hover"
             );
         }
-        let divider = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::LineSegment { points, stroke }
-                    if stroke.color == super::BORDER
-                        && points[0].x == 59.0
-                        && points[0].y < status.top() =>
-                {
-                    Some(points[0].y)
-                }
-                _ => None,
-            })
-            .max_by(f32::total_cmp)
-            .unwrap();
-        let account_top = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect)
-                    if rect.rect.left() == 71.0
-                        && rect.rect.top() > status.bottom()
-                        && rect.rect.height() == 42.0 =>
-                {
-                    Some(rect.rect.top())
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            (status.top() - divider - (account_top - status.bottom())).abs() <= 1.0,
-            "unequal voice padding: top {}, bottom {}",
-            status.top() - divider,
-            account_top - status.bottom()
+        assert!(node_bounds(&output, "Join voice in #design").is_none());
+        assert!(node_bounds(&output, "2 in voice").is_some());
+        let join = node_bounds(&output, "Join #design").expect("the card's Join");
+        assert_eq!(join.height(), 40.0);
+        // In a call, the card's controls are 44px.
+        app.voice.state.phase = Phase::Connected(app.voice_target("chan00000001").unwrap().0);
+        let output = narrow(&mut app);
+        for label in ["Mute microphone", "Deafen audio"] {
+            let control = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(label))
+                .filter_map(|(_, node)| node.bounds())
+                .find(|bounds| bounds.y0 < 400.0)
+                .unwrap_or_else(|| panic!("the card's {label}"));
+            assert_eq!(
+                (control.x1 - control.x0, control.y1 - control.y0),
+                (44.0, 44.0),
+                "{label}"
+            );
+        }
+        assert_eq!(node_bounds(&output, "Leave voice").unwrap().height(), 44.0);
+        assert!(node_bounds(&output, "Switch to #design").is_some());
+    }
+
+    #[test]
+    fn call_faces_fill_two_rows_then_fold_into_plus_n() {
+        // Everyone while they fit, at most ten.
+        for (total, per_row, expected) in [
+            (0, 5, (0, 0)),
+            (1, 5, (1, 0)),
+            (10, 5, (10, 0)),
+            (11, 5, (9, 2)),
+            (12, 5, (9, 3)),
+            (12, 6, (9, 3)),
+            (40, 8, (9, 31)),
+            (8, 4, (8, 0)),
+            (9, 4, (7, 2)),
+            (3, 1, (1, 2)),
+            (2, 0, (2, 0)),
+        ] {
+            assert_eq!(
+                super::call_face_slots(total, per_row),
+                expected,
+                "{total} in rows of {per_row}"
+            );
+        }
+    }
+
+    #[test]
+    fn room_names_read_as_one_line() {
+        for (names, expected) in [
+            (&[][..], ""),
+            (&["Maya"][..], "Maya"),
+            (&["Maya", "Alex"][..], "Maya and Alex"),
+            (&["Maya", "Alex", "Sam"][..], "Maya, Alex and Sam"),
+            (&["Maya", "Alex", "Sam", "Ana"][..], "Maya, Alex and 2 more"),
+            (
+                &["Maya", "Alex", "Sam", "Ana", "Lee"][..],
+                "Maya, Alex and 3 more",
+            ),
+        ] {
+            assert_eq!(super::room_names(names), expected);
+        }
+    }
+
+    #[test]
+    fn call_order_keeps_you_first_then_join_order_whatever_the_roster_order() {
+        let person = |id: &str| crate::model::VoiceOccupant {
+            id: id.into(),
+            avatar_id: None,
+            avatar_asset: None,
+            avatar_url: None,
+            name: id.into(),
+            muted: false,
+            deafened: false,
+        };
+        let ids = |people: &[crate::model::VoiceOccupant]| {
+            people
+                .iter()
+                .map(|person| person.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut order = Vec::new();
+        // The server sorts by participant ID, not by when people joined.
+        super::follow_join_order(&mut order, &["d", "me", "z"]);
+        let people = vec![person("d"), person("me"), person("z")];
+        assert_eq!(
+            ids(&super::in_call_order(people, &order, "me")),
+            ["me", "d", "z"]
+        );
+        // A newcomer sorts first on the server but joins the end here.
+        super::follow_join_order(&mut order, &["a", "d", "me", "z"]);
+        let people = vec![person("a"), person("d"), person("me"), person("z")];
+        assert_eq!(
+            ids(&super::in_call_order(people, &order, "me")),
+            ["me", "d", "z", "a"]
+        );
+        // Someone leaving closes the gap without reordering the rest.
+        super::follow_join_order(&mut order, &["a", "me", "z"]);
+        assert_eq!(order, ["me", "z", "a"]);
+        let people = vec![person("a"), person("me"), person("z")];
+        assert_eq!(
+            ids(&super::in_call_order(people, &order, "me")),
+            ["me", "z", "a"]
+        );
+    }
+
+    #[test]
+    fn live_rooms_sort_busiest_first_then_by_name_and_fold_by_name() {
+        let room = |name: &str, count: usize| super::LiveRoom {
+            id: name.into(),
+            name: name.into(),
+            private: false,
+            people: (0..count)
+                .map(|index| crate::model::VoiceOccupant {
+                    id: format!("{name}-{index}"),
+                    avatar_id: None,
+                    avatar_asset: None,
+                    avatar_url: None,
+                    name: format!("Person {index}"),
+                    muted: false,
+                    deafened: false,
+                })
+                .collect(),
+        };
+        let mut rooms = vec![
+            room("random", 1),
+            room("design", 5),
+            room("planning", 2),
+            room("standup", 5),
+            room("art", 2),
+        ];
+        super::sort_live_rooms(&mut rooms);
+        let names: Vec<_> = rooms.iter().map(|room| room.name.as_str()).collect();
+        assert_eq!(names, ["design", "standup", "art", "planning", "random"]);
+        assert_eq!(
+            super::folded_room_names(&rooms[2..]),
+            "#art, #planning, #random"
+        );
+    }
+
+    #[test]
+    fn full_list_status_puts_your_mute_then_speaking_then_their_own_state() {
+        use super::{MUTED, TERRACOTTA_BRIGHT, VOICE_SESSION_GREEN, participant_status};
+        assert_eq!(participant_status("Maya", false, false, false, false), None);
+        assert_eq!(
+            participant_status("Maya", true, false, false, false),
+            Some(("Speaking".into(), VOICE_SESSION_GREEN))
+        );
+        assert_eq!(
+            participant_status("Maya", false, true, false, false),
+            Some(("Muted".into(), MUTED))
+        );
+        assert_eq!(
+            participant_status("Maya", false, true, true, false),
+            Some(("Deafened".into(), MUTED))
+        );
+        assert_eq!(
+            participant_status("Maya", true, false, false, true),
+            Some(("You muted Maya".into(), TERRACOTTA_BRIGHT))
+        );
+        assert_eq!(
+            super::participant_label("Maya", true, false, false),
+            "Maya, speaking"
+        );
+        assert_eq!(
+            super::participant_label("Maya", false, true, true),
+            "Maya, deafened"
+        );
+        assert_eq!(
+            super::participant_label("Maya", false, true, false),
+            "Maya, muted"
+        );
+        assert_eq!(
+            super::participant_label("Maya", false, false, false),
+            "Maya"
         );
     }
 
@@ -37353,6 +38769,7 @@ mod tests {
     #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
+        context.enable_accesskit();
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -37371,11 +38788,8 @@ mod tests {
             "Processing… 45%",
             "Processing…",
             "GIF",
-            "TEST FIXTURE photo.jpg",
-            "1.6 MB → 143 KB",
-            "Uploading… 45%",
-            "Failed to upload.",
-            "Retry",
+            "Sending 45%",
+            "Failed · Retry",
         ] {
             text_position(&output, label);
         }
@@ -37407,7 +38821,59 @@ mod tests {
             assert_eq!(click_opening(&mut app, &context, position), None, "{label}");
         }
         // An unfinished draft previews its local original without removing it.
-        let draft = text_position(&output, "TEST FIXTURE diagram.png");
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "TEST FIXTURE diagram.png"
+                        || text.galley.job.text == "1.6 MB → 143 KB"
+                        || text.galley.job.text == "Failed to upload."
+            )),
+            "draft names, bytes and full errors belong in accessible hover text only"
+        );
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let tiles: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::SURFACE
+                        && (rect.rect.width() - rect.rect.height()).abs() < 0.1
+                        && (80.0..=104.0).contains(&rect.rect.width()) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(tiles.len() >= 3, "each draft has a compact square surface");
+        let retry = node_bounds(
+            &output,
+            "Retry uploading TEST FIXTURE large.mov: Failed to upload.",
+        )
+        .expect("accessible retry control");
+        assert!(
+            tiles.iter().any(|tile| tile.contains_rect(retry)),
+            "Retry must fit inside its square tile, even with the app's larger default button height"
+        );
+        let preview = nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Preview TEST FIXTURE diagram.png\n"))
+            })
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let draft = egui::pos2(
+            (preview.x1 - 5.0) as f32,
+            ((preview.y0 + preview.y1) / 2.0) as f32,
+        );
         let url = click_opening(&mut app, &context, draft).expect("draft preview opens");
         assert!(url.starts_with("file:///"));
         assert!(url.ends_with("/selected%20diagram%20%231.png"));
@@ -37445,6 +38911,96 @@ mod tests {
                 "{draft:?}: Attach and Emoji hover targets need space inside the message box"
             );
         }
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Remove TEST FIXTURE diagram.png"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let remove = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        assert_eq!(
+            click_opening(&mut app, &context, remove),
+            None,
+            "Remove must not open the preview below it"
+        );
+        assert_eq!(app.draft_files.len(), 2);
+
+        // More than four uploads use the full desktop composer, not a fixed tray.
+        while app.draft_files.len() < 10 {
+            let (_, more) = fixture("parity-attachments");
+            app.draft_files.extend(more.draft_files);
+        }
+        app.draft_files.truncate(10);
+        for (index, draft) in app.draft_files.iter_mut().enumerate() {
+            draft.key = index as u64;
+            draft.name = format!("TEST FIXTURE wrap {index}.png");
+            draft.local_path = Some(std::env::temp_dir().join(&draft.name));
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let previews: Vec<_> = (0..10)
+            .map(|index| {
+                nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label().is_some_and(|label| {
+                            label.starts_with(&format!("Preview TEST FIXTURE wrap {index}.png\n"))
+                        })
+                    })
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap()
+            })
+            .collect();
+        let columns = previews
+            .iter()
+            .take_while(|tile| (tile.y0 - previews[0].y0).abs() < 1.0)
+            .count();
+        assert!(
+            columns > 4 && columns < 10,
+            "desktop fills the row, then wraps: {previews:?}"
+        );
+        assert!(previews[columns].y0 > previews[0].y0);
+        let attach = node_bounds(&output, "Attach files").unwrap();
+        let composer = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            previews
+                .iter()
+                .all(|tile| (tile.x1 - tile.x0 - 104.0).abs() < 1.0
+                    && (tile.y1 - tile.y0 - 104.0).abs() < 1.0
+                    && tile.x0 >= composer.left() as f64
+                    && tile.x1 <= composer.right() as f64),
+            "every square stays within the composer's horizontal edges"
+        );
     }
 
     #[test]

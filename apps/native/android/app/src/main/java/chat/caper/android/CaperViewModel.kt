@@ -142,6 +142,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var unreadRefreshScheduled: Job? = null
     private val channelReads = mutableMapOf<String, String>()
     private var conversationVisible = true
+    private var threadUnreadJob: Job? = null
+    private var threadUnreadRevision = 0L
+    private var threadUnreadDirty = false
+    private val threadReadPending = mutableSetOf<String>()
     private var inviteLinkSequence = 0L
     /** An opened invite link that has not been shown yet; in memory only, so it never outlives the app. */
     private val pendingInviteLink = MutableStateFlow<InviteLinkRequest?>(null)
@@ -159,7 +163,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { uploadRoot.listFiles()?.filter { it != uploadSession }?.forEach { it.deleteRecursively() } }
         // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
         viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
-        viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation() } }
+        viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation(); refreshThreadUnread() } }
         viewModelScope.launch { PushActivity.received.collect { scheduleUnreadRefresh() } }
     }
 
@@ -1146,6 +1150,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun refreshUnreadSpaces() {
+        refreshThreadUnread()
         val token = accountToken ?: return
         val account = accountGeneration; val revision = ++unreadRevision
         viewModelScope.launch {
@@ -1155,6 +1160,54 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }
             }
+        }
+    }
+
+    private fun refreshThreadUnread() {
+        threadUnreadDirty = true
+        if (threadUnreadJob?.isActive == true) return
+        threadUnreadJob = viewModelScope.launch {
+            delay(300)
+            while (threadUnreadDirty) {
+                threadUnreadDirty = false
+                val token = accountToken ?: break
+                val channel = mutable.value.selectedChannel?.id ?: break
+                val account = accountGeneration
+                val revision = threadUnreadRevision
+                runCatching { api.unreadThreads(token, channel) }.onSuccess { result ->
+                    if (account == accountGeneration && channel == mutable.value.selectedChannel?.id && revision == threadUnreadRevision)
+                        mutable.value = mutable.value.copy(unreadThreads = result.threads.associate { it.rootId to it.seq })
+                }
+            }
+        }
+    }
+
+    /** Called only when a reply's bottom is visible, never for loaded/prefetched history. */
+    fun threadReplyVisible(channel: String, root: String, seq: String) {
+        val current = mutable.value
+        val thread = current.thread ?: return
+        if (!foreground || !conversationVisible || current.screen != SessionScreen.Home || current.visit != null ||
+            current.selectedChannel?.id != channel || thread.rootId != root || thread.loading || thread.hasNewer) return
+        val unread = current.unreadThreads[root] ?: return
+        if (seq.toBigInteger() < unread.toBigInteger()) return
+        val token = accountToken ?: return
+        val account = accountGeneration
+        val revision = threadUnreadRevision
+        val key = "$account:$channel:$root"
+        if (!threadReadPending.add(key)) return
+        viewModelScope.launch {
+            try {
+                api.markThreadRead(token, channel, root, seq)
+                if (account == accountGeneration && channel == mutable.value.selectedChannel?.id && revision == threadUnreadRevision) {
+                    ++threadUnreadRevision
+                    mutable.value = mutable.value.copy(unreadThreads = mutable.value.unreadThreads.filter { (id, latest) ->
+                        id != root || latest.toBigInteger() > seq.toBigInteger()
+                    })
+                    refreshThreadUnread()
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (_: Throwable) { /* The visible-row callback retries; never clear on failure. */ }
+            finally { threadReadPending.remove(key) }
         }
     }
 
@@ -2332,6 +2385,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun addMessage(message: ChatMessage) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
+        if (message.threadRootId != null) refreshThreadUnread()
         val messages = authoritativeMessages()
         val isNew = messages.none { it.id == message.id }
         mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions, unloadedAttachments))))
@@ -3089,6 +3143,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         gateway?.close(); gateway = null
         ++threadRequest
         threadPages.clear()
+        ++threadUnreadRevision
+        threadUnreadJob?.cancel(); threadUnreadJob = null
+        mutable.value = mutable.value.copy(unreadThreads = emptyMap())
         durableReplayCursor = null
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null

@@ -15,6 +15,7 @@ import { GifShrinkError, shrinkGif } from "./gif-shrink.ts";
 import {
   gifSize,
   gifUploadsUnchanged,
+  MAX_GIF_BYTES,
   MAX_PICTURE_BYTES,
   pictureEdge,
   pictureErrorMessage,
@@ -96,7 +97,7 @@ async function fallback(canvas: Surface) {
 function shrinkGifOffPage(bytes: Uint8Array): Promise<{ bytes: Uint8Array; edge: number } | undefined> {
   const inline = () => {
     try {
-      return shrinkGif(bytes);
+      return shrinkGif(bytes, MAX_GIF_BYTES);
     } catch (error) {
       if (error instanceof GifShrinkError) return undefined;
       throw error;
@@ -118,21 +119,21 @@ function shrinkGifOffPage(bytes: Uint8Array): Promise<{ bytes: Uint8Array; edge:
     worker.onmessage = (event: MessageEvent<{ bytes?: Uint8Array; edge?: number }>) =>
       done(event.data.bytes && event.data.edge ? { bytes: event.data.bytes, edge: event.data.edge } : undefined);
     worker.onerror = () => done();
-    worker.postMessage({ bytes }, [bytes.buffer]);
+    worker.postMessage({ bytes, budget: MAX_GIF_BYTES }, [bytes.buffer]);
   });
 }
 
 /**
- * GIFs (by their magic bytes) keep animating: within 1024 × 1024 they upload
- * unchanged at any byte size, and a wider or taller one is shrunk to a 512 px
- * square, every frame kept. Anything else the browser decodes is center-cropped square,
+ * GIFs (by their magic bytes) keep animating: within 5 MB and 1024 × 1024 they
+ * upload unchanged, and any bigger one is shrunk to a square that fits, every
+ * frame kept. Anything else the browser decodes is center-cropped square,
  * scaled to at most 512 px and re-encoded as WebP, which also drops metadata
  * such as location.
  */
 export async function preparePicture(file: Blob): Promise<PreparedPicture> {
   const gif = gifSize(new Uint8Array(await file.slice(0, 10).arrayBuffer()));
   if (gif) {
-    if (gifUploadsUnchanged(gif)) return { blob: file, contentType: "image/gif", ...gif };
+    if (gifUploadsUnchanged(file.size, gif)) return { blob: file, contentType: "image/gif", ...gif };
     const shrunk = await shrinkGifOffPage(new Uint8Array(await file.arrayBuffer()));
     if (!shrunk) throw new PictureError(pictureMessages.gifUnreadable);
     const blob = new Blob([shrunk.bytes as BlobPart], { type: "image/gif" });
@@ -149,6 +150,7 @@ export async function preparePicture(file: Blob): Promise<PreparedPicture> {
     context.drawImage(image.source, crop.x, crop.y, crop.side, crop.side, 0, 0, edge, edge);
     const blob = (await encode(canvas, "image/webp", PICTURE_QUALITY)) ?? (await fallback(canvas));
     if (!blob) throw new PictureError(pictureMessages.undecodable);
+    if (blob.size > MAX_PICTURE_BYTES) throw new PictureError(pictureMessages.tooLarge);
     return { blob, contentType: blob.type, width: edge, height: edge };
   } finally {
     image.close();

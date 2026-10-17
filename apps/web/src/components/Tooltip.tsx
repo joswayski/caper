@@ -51,6 +51,7 @@ export default function Tooltip({
   const touchPointerRef = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const showTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const followFrame = useRef(0);
   // Stable identity for the module-level "currently open" slot.
   const hideRef = useRef<() => void>(() => {});
   const close = useRef(() => hideRef.current()).current;
@@ -58,6 +59,7 @@ export default function Tooltip({
   const hide = () => {
     clearTimeout(hideTimer.current);
     clearTimeout(showTimer.current);
+    cancelAnimationFrame(followFrame.current);
     if (closeOpenTooltip === close) closeOpenTooltip = undefined;
     const tooltip = tooltipRef.current;
     if (tooltip?.matches(":popover-open")) {
@@ -107,6 +109,20 @@ export default function Tooltip({
     closeOpenTooltip = close;
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();
     position();
+    // Stay with the control when the layout moves it (a call card arriving above a
+    // channel row, say), rather than covering whatever slides underneath.
+    cancelAnimationFrame(followFrame.current);
+    let last = "";
+    const follow = () => {
+      if (!tooltip.matches(":popover-open")) return;
+      if (!anchor.isConnected) return hide();
+      const bounds = anchor.getBoundingClientRect();
+      const key = `${bounds.left},${bounds.top},${bounds.width},${bounds.height}`;
+      if (last && key !== last) position();
+      last = key;
+      followFrame.current = requestAnimationFrame(follow);
+    };
+    followFrame.current = requestAnimationFrame(follow);
   };
   const showAfterDelay = (anchor: HTMLElement) => {
     clearTimeout(hideTimer.current);
@@ -144,6 +160,7 @@ export default function Tooltip({
     return () => {
       clearTimeout(hideTimer.current);
       clearTimeout(showTimer.current);
+      cancelAnimationFrame(followFrame.current);
       if (closeOpenTooltip === close) closeOpenTooltip = undefined;
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);

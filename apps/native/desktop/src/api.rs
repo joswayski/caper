@@ -379,6 +379,52 @@ impl Api {
         self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
     }
 
+    pub fn unread_threads(
+        &self,
+        token: &str,
+        channel: &str,
+    ) -> Result<BTreeMap<String, String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Thread {
+            root_id: String,
+            seq: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Threads {
+            threads: Vec<Thread>,
+        }
+        let response: Threads = self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/threads/unread"),
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(response
+            .threads
+            .into_iter()
+            .map(|thread| (thread.root_id, thread.seq))
+            .collect())
+    }
+
+    pub fn read_thread(
+        &self,
+        token: &str,
+        channel: &str,
+        root: &str,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{root}/thread/read"),
+            Some(token),
+            None,
+            Some(json!({"seq":seq})),
+        )?)
+        .map(|_| ())
+    }
+
     pub fn read_channel(
         &self,
         token: &str,
@@ -987,15 +1033,7 @@ impl Api {
     }
 
     pub fn fetch_media(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
-        self.fetch_media_within(url, Some(40 * 1024 * 1024))
-    }
-
-    /// A profile picture or space icon, whatever its size.
-    pub fn fetch_picture(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
-        self.fetch_media_within(url, None)
-    }
-
-    fn fetch_media_within(&self, url: &str, limit: Option<u64>) -> Result<Vec<u8>, Option<u16>> {
+        const MAX_MEDIA_BYTES: u64 = 40 * 1024 * 1024;
         let url = media_url(url).ok_or(None)?;
         let response = self
             .media
@@ -1007,17 +1045,19 @@ impl Api {
         if !status.is_success() {
             return Err(Some(status.as_u16()));
         }
-        let limit = limit.unwrap_or(u64::MAX - 1);
         if response
             .content_length()
-            .is_some_and(|length| length > limit)
+            .is_some_and(|length| length > MAX_MEDIA_BYTES)
         {
             return Err(None);
         }
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::Read::take(response, limit + 1), &mut bytes)
-            .map_err(|_| None)?;
-        if bytes.len() as u64 > limit {
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(response, MAX_MEDIA_BYTES + 1),
+            &mut bytes,
+        )
+        .map_err(|_| None)?;
+        if bytes.len() as u64 > MAX_MEDIA_BYTES {
             return Err(None);
         }
         Ok(bytes)

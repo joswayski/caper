@@ -166,6 +166,17 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func unreadThreads(channelID: String) async throws -> [UnreadThread] {
+        let response: UnreadThreadsResponse = try await request("api/chat/channels/\(try pathID(channelID))/threads/unread")
+        guard response.threads.allSatisfy({ !$0.rootId.isEmpty && (try? Sequence.compare($0.seq, "0")) != nil }) else {
+            throw APIError(status: 502, message: "Caper returned invalid unread threads.")
+        }
+        return response.threads
+    }
+    public func markThreadRead(channelID: String, rootID: String, seq: String) async throws {
+        _ = try Sequence.compare(seq, "0")
+        let _: Empty = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread/read", method: "PUT", body: ReadInput(seq: seq))
+    }
     public func unreadSpaces() async throws -> [UnreadSpace] {
         let response: UnreadSpacesResponse = try await request("api/spaces/unread")
         return response.spaces

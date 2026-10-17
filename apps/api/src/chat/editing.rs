@@ -35,7 +35,7 @@ pub(super) async fn edit(
 
 /// Membership changes lock space before channel. Check access in a fresh
 /// statement after waiting, just like sends/history, so revocation wins.
-async fn locked_channel(
+pub(super) async fn locked_channel(
     tx: &mut Transaction<'_, Postgres>,
     channel: &str,
     user: Option<i64>,

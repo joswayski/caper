@@ -36,11 +36,15 @@ async function fixture() {
   const mount = (window.mount = document.createElement("div"));
   document.body.append(mount);
   window.control = (name) => mount.querySelector(`[aria-label="${name}"]`);
-  window.roster = () =>
-    [...mount.querySelectorAll('[aria-label^="People in voice"] .participant-name strong')].map((node) =>
-      node.firstChild.textContent.trim(),
-    );
-  window.row = (name) => [...mount.querySelectorAll(".participant")].find((node) => node.textContent.includes(name));
+  // Your call card's faces, labelled like "Grok (you)", "Phone, muted" or "Phone, deafened".
+  window.faces = () =>
+    [...mount.querySelectorAll(".live-call .live-face")].map((face) => face.getAttribute("aria-label"));
+  window.roster = () => faces().map((label) => label.split(", ")[0].replace(/ \(you\)$/, ""));
+  window.row = (name) => faces().find((label) => label.split(", ")[0].replace(/ \(you\)$/, "") === name);
+  // Everyone in voice in #general, in a call or not: its row's "N in voice" mark. This
+  // single-channel Call has no Live now room cards, which only list a space's channels.
+  window.inVoice = () =>
+    Number(/^(\d+) in voice$/.exec(mount.querySelector(".channel-live")?.getAttribute("aria-label") ?? "")?.[1] ?? 0);
   const f = (window.fixture = {
     people: [],
     revision: 0,
@@ -271,22 +275,23 @@ try {
   // Wait for Start's document-level hydration before adding a second root.
   browser("wait", "1500");
   evaluate(`await (${fixture.toString()})(); ${helpers}
-    await until(() => control('Join voice')?.getAttribute('aria-disabled') === 'false', 'Join voice never became available');
+    await until(() => control('Join voice in #general')?.getAttribute('aria-disabled') === 'false', 'Join voice never became available');
     return 'Fixture mounted';`);
   console.log(
     evaluate(`
     for (let cycle = 0; cycle < 3; cycle++) {
-      press('Join voice'); await until(connected, 'Join did not connect');
+      press('Join voice in #general'); await until(connected, 'Join did not connect');
       assert(roster().includes('Grok'), 'joined roster missing self');
       press('Leave voice'); await until(() => fixture.leavePending, 'Leave was not sent');
       // Force the exact bug: idle roster reads before the leave transaction commits.
-      await until(() => roster().includes('Grok'));
+      // Leaving ends your call card at once; the room still counts you until it commits.
+      await until(() => !mount.querySelector('.live-call') && inVoice() === 1);
       const started = performance.now(); fixture.commitLeave();
-      await until(() => roster().length === 0);
+      await until(() => inVoice() === 0);
       assert(performance.now() - started < 1000, 'leave waited for polling');
     }
     assert(fixture.mediaFetches === 0, 'media control or rosters bypassed the gateway');
-    press('Join voice'); await until(connected, 'Rejoin did not connect');
+    press('Join voice in #general'); await until(connected, 'Rejoin did not connect');
     const peer = fixture.peers.at(-1), peerCount = fixture.peers.length;
     const self = fixture.people.find(p => p.id === 'self');
     // Watch the real page throughout remote churn, not only its final state.
@@ -298,7 +303,7 @@ try {
       const before = fixture.subscribes;
       pushRoster([self, { id: 'phone', name: 'Phone', muted: true, deafened: cycle % 2 === 0, tracks: [{ id: 'phone-' + cycle, kind: 'microphone' }] }]);
       await until(() => roster().includes('Phone') && fixture.subscribes > before, 'remote track was not subscribed');
-      assert(row('Phone').textContent.includes(cycle % 2 === 0 ? 'Deafened' : 'Muted'), 'first phone roster has incorrect control state');
+      assert(row('Phone') === (cycle % 2 === 0 ? 'Phone, deafened' : 'Phone, muted'), 'first phone roster has incorrect control state');
       const closes = fixture.closes;
       pushRoster([self]); await until(() => !roster().includes('Phone') && fixture.closes > closes, 'remote track was not closed');
       await wait(30);
@@ -308,15 +313,15 @@ try {
     assert(peer.senders[0].track.enabled, 'local microphone stopped');
     press('Deafen audio'); await until(() => control('Undeafen audio'));
     press('Leave voice'); await until(() => fixture.leavePending); fixture.commitLeave();
-    await until(() => control('Join voice')?.getAttribute('aria-disabled') === 'false');
-    press('Join voice'); await until(connected);
+    await until(() => control('Join voice in #general')?.getAttribute('aria-disabled') === 'false');
+    press('Join voice in #general'); await until(connected);
     assert(fixture.joinIntent.muted === true && fixture.joinIntent.deafened === true, 'rejoin did not carry remembered intent');
     press('Leave voice'); await until(() => fixture.leavePending); fixture.commitLeave();
-    await until(() => roster().length === 0);
+    await until(() => !roster().length && inVoice() === 0);
+    // A room you are not in shows how many are in voice, not who is muted.
     pushRoster([{ id: 'other', name: 'Other guest', muted: true, deafened: false, tracks: [] }]);
-    await until(() => roster().includes('Other guest'));
-    assert(row('Other guest').textContent.includes('Muted'), 'spectator mute update missing');
-    pushRoster([]); await until(() => roster().length === 0);
+    await until(() => inVoice() === 1, 'spectator join missing');
+    pushRoster([]); await until(() => inVoice() === 0, 'spectator leave missing');
     return 'PASS local leave races, remote departure with failed cleanup keeps the call and peer, rejoin mute/deafen, spectator changes';
   `),
   );
@@ -328,20 +333,23 @@ try {
     evaluate(`
     // Hold the reconnection after a gateway loss, then verify a fresh snapshot replaces stale data.
     pushRoster([{ id: 'other', name: 'Other guest', muted: false, deafened: false, tracks: [] }]);
-    await until(() => roster().includes('Other guest'));
+    await until(() => inVoice() === 1);
     fixture.holdSockets = true; dropSockets();
     await until(() => fixture.held.length > 0, 'gateway did not reconnect');
-    // The room changed while this page was offline.
-    fixture.people = [{ id: 'third', name: 'New guest', muted: false, deafened: false, tracks: [] }];
+    // The room changed while this page was offline (to two people, so the count tells the snapshots apart).
+    fixture.people = [
+      { id: 'third', name: 'New guest', muted: false, deafened: false, tracks: [] },
+      { id: 'fourth', name: 'Another guest', muted: false, deafened: false, tracks: [] },
+    ];
     fixture.revision++;
     releaseSockets();
-    await until(() => roster().join() === 'New guest', 'reconnection kept the stale roster');
+    await until(() => inVoice() === 2, 'reconnection kept the stale roster');
     return 'PASS reconnection replaces stale roster with the current snapshot';
   `),
   );
   console.log(
     evaluate(`
-    press('Join voice'); await until(connected);
+    press('Join voice in #general'); await until(connected);
     const peer = fixture.peers.at(-1), count = fixture.peers.length;
     const bounds = () => ['.chat-heading', '.chat-composer', '.voice-panel'].map(selector => mount.querySelector(selector).getBoundingClientRect().top);
     const before = bounds();
@@ -354,10 +362,7 @@ try {
     const self = fixture.people.find(p => p.id === 'self');
     for (const [muted, deafened] of [[true, false], [true, true], [false, false]]) {
       pushRoster([self, { id: 'phone', name: 'Phone', muted, deafened, tracks: [] }]);
-      await until(() => {
-        const text = row('Phone')?.textContent ?? '';
-        return roster().includes('Phone') && (deafened ? text.includes('Deafened') : muted ? text.includes('Muted') : !text.includes('Deafened') && !text.includes('Muted'));
-      }, 'mute/deafen push did not arrive after recovery');
+      await until(() => row('Phone') === (deafened ? 'Phone, deafened' : muted ? 'Phone, muted' : 'Phone'), 'mute/deafen push did not arrive after recovery');
     }
     assert(peer.connectionState === 'connected' && fixture.peers.length === count && connected(), 'live-update recovery replaced the voice peer');
     assert(fixture.mediaFetches === 0, 'media control or rosters bypassed the gateway');

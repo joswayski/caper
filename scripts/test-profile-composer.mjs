@@ -111,7 +111,9 @@ try {
     };`);
   wait("!document.querySelector('.chat-composer [aria-label=\"Attach files\"]').disabled");
   uploadFile(".chat-composer");
-  wait('document.querySelector(".chat-drafts li small")?.textContent === "36 B"');
+  wait(
+    '!!document.querySelector(\'.chat-drafts [aria-label="Open review-notes.txt"]\') && !document.querySelector(".chat-drafts progress")',
+  );
   const avatar = '.chat-avatar.chat-author-profile[aria-label="Open profile for Maya"]';
   browser("hover", avatar);
   evaluate("return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
@@ -120,7 +122,10 @@ try {
   assert.equal(evaluate(`return getComputedStyle(document.querySelector('${avatar}')).outlineStyle`), "none");
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   assert.equal(evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Block")'), false);
-  assert.equal(evaluate('return !!document.querySelector(".chat-profile-composer .lucide-plus")'), true);
+  assert.equal(
+    evaluate("return !!document.querySelector('.chat-profile-composer [aria-label=\"Attach files\"]')"),
+    true,
+  );
   capture("profile-desktop-empty");
   browser("click", '.chat-mention-card [aria-label="More profile actions"]');
   wait('!!document.querySelector(".chat-profile-menu")');
@@ -221,7 +226,7 @@ try {
   assert.equal(evaluate('return document.querySelector("#chat-message").value'), "Existing channel draft");
   // Like any conversation switch, the channel keeps its text and files, and
   // returning reuses the uploaded file instead of uploading it again.
-  wait('document.querySelector(".chat-composer .chat-drafts li strong")?.textContent === "review-notes.txt"');
+  wait("!!document.querySelector('.chat-composer .chat-drafts [aria-label=\"Open review-notes.txt\"]')");
   assert.equal(evaluate('return window.assetReservations.filter(item => item.channelId === "chan00000001").length'), 1);
   open("Maya");
   assert.equal(value(), "", "Confirmed send clears only the profile draft");

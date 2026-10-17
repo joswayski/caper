@@ -102,6 +102,23 @@ try {
     assert.equal(sent.content.attachments[0].name, "notes-0.txt");
     assert.equal(files(11), true);
     assert.equal(count(), 10);
+    const grid = evaluate(`const tray = document.querySelector('.chat-composer .chat-drafts');
+      return { width: tray.clientWidth, scrollWidth: tray.scrollWidth, text: tray.innerText,
+        tiles: [...tray.children].map(tile => {
+          const { x, y, width, height } = tile.getBoundingClientRect();
+          return { x, y, width, height };
+        }) };`);
+    const firstRow = grid.tiles.filter((tile) => Math.abs(tile.y - grid.tiles[0].y) < 1);
+    assert.equal(
+      firstRow.length,
+      width === 1280 ? Math.floor((grid.width + 8) / 112) : 3,
+      "desktop fills the composer width; mobile keeps compact capped rows",
+    );
+    if (width === 1280) assert.ok(firstRow.length > 4, "desktop is not capped at four columns");
+    assert.ok(grid.tiles[firstRow.length].y > grid.tiles[0].y, "extra files wrap vertically");
+    assert.ok(grid.tiles.every((tile) => Math.abs(tile.width - tile.height) < 1 && tile.width <= 104));
+    assert.equal(grid.scrollWidth, grid.width, "the tray never scrolls sideways");
+    assert.ok(!grid.text.includes("notes-"), "filenames are not visible in the upload grid");
     assert.ok(
       evaluate(
         'return document.querySelector(".chat-composer").textContent.includes("Only 10 more files can be attached.")',
@@ -181,6 +198,18 @@ try {
     wait("!document.querySelector('.chat-panel [aria-label=\"Attach files\"]').disabled");
     files(1, "#chat-message", "channel-only");
     openThread(roots[0]);
+    if (width === 1280) {
+      files(9, "#chat-message", "split-pane");
+      const split = evaluate(`const tray = document.querySelector('.chat-panel .chat-drafts');
+        return { height: tray.clientHeight, scrollHeight: tray.scrollHeight,
+          width: tray.clientWidth, scrollWidth: tray.scrollWidth,
+          editorBottom: document.querySelector('#chat-message').getBoundingClientRect().bottom,
+          viewportHeight: innerHeight };`);
+      assert.ok(split.editorBottom <= split.viewportHeight, "a full narrow tray never pushes the editor offscreen");
+      assert.ok(split.scrollHeight > split.height, "tall desktop trays scroll vertically within the composer");
+      assert.equal(split.scrollWidth, split.width, "split panes never scroll sideways");
+      while (channelFiles() > 1) browser("click", '.chat-panel .chat-drafts li:last-child [aria-label^="Remove "]');
+    }
     pasteImage("#chat-thread-reply", ".chat-thread-composer");
     files(1, "#chat-thread-reply", "thread-only");
     assert.equal(threadFiles(), 2);

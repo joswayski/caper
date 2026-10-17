@@ -199,7 +199,7 @@ export default function Chat({
   initialHistoryError,
   showTitle = false,
   headerLeading,
-  headerVoice,
+  headerBelow,
   headerActions,
   headerMenu,
   headerSubtitle,
@@ -239,8 +239,8 @@ export default function Chat({
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
-  /** The open channel's voice, right after its name. */
-  headerVoice?: ReactNode;
+  /** Phones: a strip under the header carrying voice (your call, or this channel's live room). */
+  headerBelow?: ReactNode;
   headerActions?: ReactNode;
   /** Phones fold Pins and these items into the menu their channel name opens. */
   headerMenu?: ReactNode;
@@ -641,6 +641,19 @@ export default function Chat({
       document.removeEventListener("visibilitychange", read);
     };
   }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (readActive && document.visibilityState === "visible") void clientRef.current?.refreshUnreadThreads();
+    };
+    refresh();
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 15_000);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      clearInterval(timer);
+    };
+  }, [channelId, readActive, signedIn]);
 
   // The composer resizes itself; keep the conversation pinned to the newest
   // message when it already was. Read the position before resizing, not a
@@ -1619,7 +1632,7 @@ export default function Chat({
                       onMouseEnter={() => prefetchThread(message.id)}
                       onFocus={() => prefetchThread(message.id)}
                       onClick={() => openThread(message.id)}
-                      aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}`}
+                      aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}${state.unreadThreads?.[message.id] ? ", unread" : ""}`}
                     >
                       <span className="chat-thread-avatars">
                         {message.thread.participants.map((person) => (
@@ -1631,6 +1644,7 @@ export default function Chat({
                       <strong>
                         {message.thread.replyCount} {message.thread.replyCount === 1 ? "reply" : "replies"}
                       </strong>
+                      {state.unreadThreads?.[message.id] && <span className="chat-thread-unread">Unread</span>}
                       <span>View thread</span>
                     </button>
                   )}
@@ -1854,7 +1868,6 @@ export default function Chat({
               </div>
             </details>
           )}
-          {headerVoice}
           {pinsToggle}
           {headerActions}
 
@@ -1889,6 +1902,7 @@ export default function Chat({
             </div>
           )}
         </header>
+        {headerBelow}
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {pinsOpen && (
@@ -2334,6 +2348,7 @@ export default function Chat({
         channelName={channelName}
         direct={direct}
         readOnly={readOnly}
+        readActive={readActive}
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}

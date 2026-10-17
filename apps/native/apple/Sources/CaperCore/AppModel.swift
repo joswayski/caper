@@ -250,7 +250,10 @@ public final class AppModel {
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
         visitVoicePresence = VoicePresenceModel(api: api)
-        chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
+        chatModel.onReadCursor = { [weak self] in
+            self?.markSelectedDirectRead()
+            self?.scheduleUnreadRefresh()
+        }
         // A reply from the team can answer a report: refresh the inbox's status.
         chatModel.onMessageSent = { [weak self] in
             guard let self, self.isFeedbackTeam, self.visit != nil || self.feedbackLoaded else { return }
@@ -1052,11 +1055,25 @@ public final class AppModel {
 
     public func refreshUnreadSpaces() async {
         guard account != nil else { return }
+        let accountGeneration = generation
+        await chat.refreshUnreadThreads()
+        guard generation == accountGeneration, account != nil else { return }
+        acknowledgeVisibleThread()
         unreadRevision += 1
         let attempt = generation, revision = unreadRevision
         guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
         unreadSpaces = snapshot
         markSelectedChannelRead()
+    }
+
+    public func threadVisibilityChanged(rootID: String?, seq: String?) {
+        chat.visibleThreadReply = rootID.flatMap { root in seq.map { (root, $0) } }
+        acknowledgeVisibleThread()
+    }
+
+    private func acknowledgeVisibleThread() {
+        guard foreground, !browseCoversConversation, account != nil else { return }
+        chat.acknowledgeVisibleThread()
     }
 
     private func markSelectedChannelRead() {
@@ -2525,7 +2542,54 @@ public final class ChatModel {
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
-    public var threadRootID: String?
+    public var threadRootID: String? {
+        didSet { if oldValue != threadRootID { visibleThreadReply = nil } }
+    }
+    public private(set) var unreadThreads: [String: String] = [:]
+    private var unreadThreadChannel: String?
+    private var unreadThreadRevision = 0
+    private var threadReadInFlight: Set<String> = []
+    public var visibleThreadReply: (rootID: String, seq: String)?
+
+    public func threadUnread(_ rootID: String) -> Bool {
+        unreadThreadChannel == channelID && unreadThreads[rootID] != nil
+    }
+
+    public func refreshUnreadThreads() async {
+        guard let channelID else { return }
+        let attempt = generation
+        unreadThreadRevision += 1
+        let revision = unreadThreadRevision
+        guard let rows = try? await api.unreadThreads(channelID: channelID),
+              generation == attempt, self.channelID == channelID, unreadThreadRevision == revision else { return }
+        unreadThreadChannel = channelID
+        unreadThreads = rows.reduce(into: [:]) { $0[$1.rootId] = $1.seq }
+    }
+
+    /// Only the rendered latest window supplies this cursor; never a fetched history cursor.
+    public func acknowledgeVisibleThread() {
+        guard let channelID, unreadThreadChannel == channelID,
+              let visible = visibleThreadReply, threadRootID == visible.rootID,
+              threadMessages.contains(where: { $0.seq == visible.seq }),
+              !threadHasNewer, !threadLoading, let unread = unreadThreads[visible.rootID],
+              (try? Sequence.compare(visible.seq, unread)) != .orderedAscending else { return }
+        let attempt = generation
+        let key = "\(attempt):\(channelID):\(visible.rootID)"
+        guard threadReadInFlight.insert(key).inserted else { return }
+        Task {
+            defer { threadReadInFlight.remove(key) }
+            do {
+                try await api.markThreadRead(channelID: channelID, rootID: visible.rootID, seq: visible.seq)
+                guard generation == attempt, self.channelID == channelID else { return }
+                unreadThreadRevision += 1 // Discard GETs started before the durable acknowledgement.
+                if let current = unreadThreads[visible.rootID],
+                   (try? Sequence.compare(current, visible.seq)) != .orderedDescending {
+                    unreadThreads[visible.rootID] = nil
+                }
+            } catch { /* Keep the badge; the next visibility change or unread poll retries. */ }
+        }
+    }
+
     public var replyTargets: [String: MessageReply] = [:]
     public var threadLoading = false
     public var threadHasMore = false
@@ -2809,6 +2873,7 @@ public final class ChatModel {
             return
         }
         subscriptionID = subscription
+        await refreshUnreadThreads()
     }
 
     private var lastOpen: (channelID: String?, displayName: String)?
@@ -2824,6 +2889,7 @@ public final class ChatModel {
         isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
+        unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
         threadPages = [:]
         mutations = MessageMutations(); pendingPins = []
         let requestGeneration = generation
@@ -3696,6 +3762,7 @@ public final class ChatModel {
     }
 
     private func clearLocal(preservingPending: Bool = false) {
+        unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
         stashDraft()
         typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil

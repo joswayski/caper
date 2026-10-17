@@ -108,6 +108,12 @@ pub enum Command {
         revision: u64,
         token: String,
     },
+    ThreadUnread {
+        scope: (u64, u64, String),
+        revision: u64,
+        token: String,
+        read: Option<(String, String)>,
+    },
     ReadChannel {
         epoch: u64,
         token: String,
@@ -612,6 +618,12 @@ pub enum Event {
         epoch: u64,
         revision: u64,
         result: Result<Vec<crate::model::UnreadSpace>, String>,
+    },
+    ThreadUnread {
+        scope: (u64, u64, String),
+        revision: u64,
+        read: Option<(String, String)>,
+        result: Result<std::collections::BTreeMap<String, String>, String>,
     },
     ChannelRead {
         epoch: u64,
@@ -1581,6 +1593,25 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map(|value| value.spaces)
                 .map_err(|error| error.to_string()),
         },
+        Command::ThreadUnread {
+            scope,
+            revision,
+            token,
+            read,
+        } => {
+            let result = if let Some((root, seq)) = &read {
+                api.read_thread(&token, &scope.2, root, seq)
+                    .map(|()| std::collections::BTreeMap::new())
+            } else {
+                api.unread_threads(&token, &scope.2)
+            };
+            Event::ThreadUnread {
+                scope,
+                revision,
+                read,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
         Command::ReadChannel {
             epoch,
             token,
