@@ -7686,7 +7686,7 @@ Layout, the same on every client: the header has the avatar, name and
 conversation (speech bubble) and Close icons at the end. Block/Unblock is
 inside that secondary menu and blocking still requires confirmation;
 Invite to space stays below the header. A full-width divider separates the
-composer. The composer reuses the channel composer's shell (Attach/paperclip at the
+composer. The composer reuses the channel composer's shell (Attach/plus at the
 start, then the field, Emoji and an eggshell primary Send) with staged files above it
 as the channel's draft chips, including image thumbnails and sizes. Delivery
 uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit

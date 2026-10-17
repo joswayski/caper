@@ -3379,7 +3379,7 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
             contentDescription = "Attach files"
             if (disabledReason != null) stateDescription = disabledReason
         }, enabled = enabled) {
-            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
