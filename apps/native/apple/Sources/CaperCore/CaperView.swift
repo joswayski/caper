@@ -1995,10 +1995,8 @@ private struct LiveNowSection: View {
                 }
             }
             .padding(.top, 10).padding(.bottom, 2)
-            // Nothing visible names it; assistive technology keeps the landmark.
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Live now")
-            .accessibilityIdentifier("live-now")
+            // No container of its own: around a single card, macOS folded the card's
+            // own group ("Your call in #lobby") into it.
         }
     }
 
@@ -2254,6 +2252,8 @@ private struct VoiceCallCard<Heading: View>: View {
                 .help(person.isSelf ? "\(person.name) (you): right-click for everyone" : "\(person.name): right-click for volume")
                 #endif
                 .accessibilityElement(children: .ignore)
+                // A tap opens the call's chat. As a button, macOS also reports its state.
+                .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
                 .accessibilityValue(VoiceFace.state(person))
                 .accessibilityIdentifier("voice-face-\(person.id)")
@@ -2273,6 +2273,7 @@ private struct VoiceCallCard<Heading: View>: View {
                 .help("Right-click for everyone in the call")
                 #endif
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("\(folded.count) more in the call")
                 .accessibilityIdentifier("voice-faces-more")
                 .modifier(CallFaceActions(action: "Show everyone", openChat: openChat) { openList(expanding: nil) })

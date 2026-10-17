@@ -195,12 +195,22 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
     }
 
+    /// Whether a voice card sits above the Channels heading, where only voice without a row goes.
+    private func voiceAboveChannels(in app: XCUIApplication) -> Bool {
+        let channels = app.buttons["channels-toggle"].frame
+        let cards = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == 'voice-call-card' OR identifier BEGINSWITH 'live-room-chan'"))
+        return cards.allElementsBoundByIndex.contains { $0.frame.maxY <= channels.minY }
+    }
+
     private func assertElement(_ identifier: String, label: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         let element = app.descendants(matching: .any)[identifier]
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing accessibility identifier \(identifier)")
         #if os(macOS)
-        if element.elementType == .staticText { XCTAssertEqual(element.value as? String, label) }
-        else { XCTAssertEqual(element.label, label) }
+        // Static text usually reports its text as its value; some (a popover's header) as its label.
+        if element.elementType == .staticText {
+            XCTAssertEqual((element.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? element.label, label)
+        } else { XCTAssertEqual(element.label, label) }
         #else
         XCTAssertEqual(element.label, label)
         #endif
@@ -1312,7 +1322,7 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
         // The occupied room is in its own row's card: nothing sits above the channels.
-        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Every live room here has a row: no cards above the channels")
+        XCTAssertFalse(voiceAboveChannels(in: app), "Every live room here has a row: no cards above the channels")
         XCTAssertGreaterThan(designCard.frame.minY, general.frame.maxY, "The room's card follows #general, in list order")
         #if os(macOS)
         design.hover()
@@ -1477,7 +1487,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(room.frame.contains(app.buttons["channel-chan00000002"].frame), "#design's row is its card's first line")
         XCTAssertGreaterThan(room.frame.minY, app.buttons["channel-chan00000001"].frame.maxY, "The card keeps list order, after #general")
         // No heading, room count or fold: nothing above the channels says Live now.
-        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "A live room with a row has no card above the channels")
+        XCTAssertFalse(voiceAboveChannels(in: app), "A live room with a row has no card above the channels")
         XCTAssertFalse(app.descendants(matching: .any)["live-now-heading"].exists, "No Live now heading")
         XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertFalse(app.descendants(matching: .any)["voice-call-card"].exists, "Not in a call: no call card")
@@ -1525,7 +1535,7 @@ final class CaperParityUITests: XCTestCase {
                        "Revoked private-channel occupancy must disappear without altering selected chat")
         XCTAssertFalse(count.exists, "The row's count leaves with the occupancy")
         XCTAssertTrue(app.buttons["channel-chan00000002"].exists, "The quiet row stays, without its card")
-        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Nobody live and no call: nothing above the channels")
+        XCTAssertFalse(voiceAboveChannels(in: app), "Nobody live and no call: nothing above the channels")
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
         let deniedAction = app.buttons["join-voice-chan00000002"]
@@ -1617,7 +1627,7 @@ final class CaperParityUITests: XCTestCase {
         let room = app.descendants(matching: .any)["live-room-chan00000002"]
         XCTAssertLessThan(card.frame.maxY, room.frame.minY, "Live channels keep list order: #general, then #design")
         XCTAssertGreaterThan(card.frame.minY, app.buttons["channels-toggle"].frame.maxY, "Your call sits among the channels")
-        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Both live channels have rows: nothing above the channels")
+        XCTAssertFalse(voiceAboveChannels(in: app), "Both live channels have rows: nothing above the channels")
         XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertFalse(app.descendants(matching: .any)["voice-call-channel"].exists, "The row, not a second heading, names the call")
         // The row ends with "You’re in · N", counting you, instead of a count.
@@ -1761,7 +1771,7 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let card = try require(app.descendants(matching: .any)["voice-call-card"], timeout: 10, "The call keeps a card")
         let channels = app.buttons["channels-toggle"]
-        XCTAssertTrue(app.descendants(matching: .any)["live-now"].exists, "Voice without a row sits above the channels")
+        XCTAssertTrue(voiceAboveChannels(in: app), "Voice without a row sits above the channels")
         XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertLessThan(card.frame.maxY, channels.frame.minY, "Above the Channels heading")
         assertElement("voice-call-channel", label: "#lobby in TEST FIXTURE Elsewhere", in: app)
