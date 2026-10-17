@@ -2663,10 +2663,15 @@ avatars, account-only access, private-channel/DM denial, own/blocked/deleted
 authors, prefetch/channel-read independence and monotonic/thread-clamped cursors.
 Chromium at 1280px and 390px exercised the real local API: hover left read storage
 unchanged, opening a thread persisted its visible sequence and cleared only that
-thread's badge. Narrow Chromium is not a phone/device test. Android SDK and
-Swift/Xcode are unavailable in this orb, so their new contract tests and native
-rendering remain unverified. Docker has no running daemon; image build stages
-are checked directly rather than claiming a container build.
+thread's badge, a background tab kept new replies unread until it regained focus,
+and unread state survived a page reload. Narrow Chromium is not a phone/device
+test. Rust desktop passed its tests and package Clippy, linked against native
+libwebrtc, and rendered the labelled `parity-thread-unread` fixture under
+Linux/Xvfb. That fixture verifies layout, not a live native conversation.
+Android SDK and Swift/Xcode are
+unavailable in this orb, so their new contract tests and native rendering remain
+unverified. Docker has no running daemon; the web production build and API
+compilation were checked, not container images or an API release build.
 
 ### Thread validation boundary
 
