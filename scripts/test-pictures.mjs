@@ -421,20 +421,35 @@ async function checkSquares(target, label) {
   }
 }
 
-/** Speaking rings (green border and halo) keep the rounded square around pictures. */
-async function checkRings(target) {
-  const rings = await target.evaluate(() => {
-    const avatars = [...document.querySelectorAll(".voice-occupants .avatar, .voice-stack-avatar")].filter((element) =>
+/**
+ * People in voice in a room you are not in show as overlapping faces (a Live now card,
+ * or the phone strip). Picture faces are clipped rounded squares, and the ring that
+ * separates them from their neighbours (their surface's own colour) follows that square.
+ * These rooms carry no speaking rings: there is no audio for a call you are not in.
+ */
+async function checkFaces(target, scope) {
+  const faces = await target.evaluate((scope) => {
+    const avatars = [...document.querySelectorAll(`${scope} .live-stack .live-avatar`)].filter((element) =>
       element.querySelector("[data-avatar-asset] > .caper-picture"),
     );
-    avatars.forEach((element) => element.classList.add("speaking"));
     return avatars.map((element) => {
       const style = getComputedStyle(element);
-      return [style.borderTopColor, style.borderTopLeftRadius, style.boxShadow !== "none"];
+      const surface = getComputedStyle(element.closest(".live-card, .voice-strip")).backgroundColor;
+      return [
+        element.querySelector("[data-avatar-asset]").dataset.avatarAsset,
+        style.borderTopLeftRadius,
+        style.overflow,
+        style.boxShadow === `${surface} 0px 0px 0px 2px`,
+        element.hasAttribute("data-speaking"),
+      ];
     });
-  });
-  assert.ok(rings.length > 0, "speaking pictures to check");
-  for (const ring of rings) assert.deepEqual(ring, ["rgb(99, 122, 67)", "30%", true]);
+  }, scope);
+  assert.deepEqual(
+    faces.map(([asset]) => asset).sort(),
+    ["gifpicture01", "stillpictur1"],
+    `${scope}: animated and still picture faces`,
+  );
+  for (const [asset, ...face] of faces) assert.deepEqual(face, ["30%", "hidden", true, false], `${scope}: ${asset}`);
 }
 
 const browser = await chromium.launch();
@@ -476,7 +491,7 @@ try {
   await page.waitForFunction(loaded('.member-presence-avatar [data-avatar-asset="gifpicture01"]'));
   await page.waitForFunction(
     loaded(
-      '.participant-avatar [data-avatar-asset="stillpictur1"], .voice-stack-avatar [data-avatar-asset="gifpicture01"]',
+      '.live-room .live-avatar [data-avatar-asset="stillpictur1"], .live-room .live-avatar [data-avatar-asset="gifpicture01"]',
     ),
   );
   await shot(page, "pictures-desktop.png");
@@ -490,16 +505,9 @@ try {
   await shot(page.locator(".space-rail"), "pictures-rail-desktop.png");
   await checkSquares(page, "desktop");
 
-  // Speaking rings around pictures follow the same rounded square (explicit style-state mock).
-  await page.locator(".channel-navigation .voice-stack").first().click();
-  await page.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
-  await checkRings(page);
-  await shot(page.locator(".channel-navigation"), "pictures-speaking-desktop.png");
-  await page.evaluate(() =>
-    document
-      .querySelectorAll(".avatar, .voice-stack-avatar")
-      .forEach((element) => element.classList.remove("speaking")),
-  );
+  // The room's faces on its Live now card keep the pictures' rounded squares.
+  await checkFaces(page, ".live-room");
+  await shot(page.locator(".live-now"), "pictures-live-room-desktop.png");
 
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
@@ -711,6 +719,13 @@ try {
   const phone = await narrow.newPage();
   await phone.goto(new URL("/spaces?space=space1234567&channel=channel12345", origin).href);
   await phone.waitForFunction(loaded('.chat-avatar [data-avatar-asset="gifpicture01"]'));
+  // Phones show the open channel's room in a strip under the conversation header.
+  await phone.waitForFunction(
+    loaded(
+      '.voice-strip .live-avatar [data-avatar-asset="stillpictur1"], .voice-strip .live-avatar [data-avatar-asset="gifpicture01"]',
+    ),
+  );
+  await checkFaces(phone, ".voice-strip");
   await shot(phone, "pictures-narrow-conversation.png");
   await phone.getByRole("button", { name: "Back to Browse" }).first().click();
   await phone.waitForFunction('!!document.querySelector(".spaces-room.navigation-open")');
@@ -718,11 +733,9 @@ try {
   await phone.waitForTimeout(400);
   await shot(phone, "pictures-narrow-browse.png");
   await checkSquares(phone, "narrow");
-  await phone.locator(".channel-navigation .voice-stack").first().click();
-  await phone.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
-  await checkRings(phone);
-  await phone.waitForTimeout(300);
-  await shot(phone, "pictures-speaking-narrow.png");
+  // Browse shows the same room as a Live now card.
+  await phone.waitForFunction(loaded('.live-room .live-avatar [data-avatar-asset="gifpicture01"]'));
+  await checkFaces(phone, ".live-room");
   await narrow.close();
 
   // ---- Phone-width profile page and invite page ----
@@ -759,7 +772,7 @@ try {
   await shot(quiet, "pictures-reduced-motion.png");
   await calm.close();
   console.log(
-    "PASS: animated, still, broken and absent pictures; rounded squares and speaking rings; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
+    "PASS: animated, still, broken and absent pictures; rounded squares, including Live now room and phone voice strip faces; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
   );
 } finally {
   await browser.close();
