@@ -19,7 +19,7 @@
     "@pierre/diffs": "^1.5.1",
     "@radix-ui/react-slider": "^1.4.7",
     "@tanstack/react-router": "^1.170.29",
-    "@tanstack/react-start": "^1.168.46",
+    "@tanstack/react-start": "^1.169.3",
     "@twemoji/svg": "^15.0.0",
     "emoji-picker-react": "^4.22.3",
     "lucide-react": "^0.468.0",
