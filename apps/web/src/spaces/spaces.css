@@ -902,8 +902,8 @@
    Touch always shows the action because there is no hover. */
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
   .direct-menu .channel-manage {
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
   }
   :is(.channel-line, .direct-line):not(:hover, :has(:focus-visible)) .channel-menu:not([open]) .channel-manage {
     opacity: 0;

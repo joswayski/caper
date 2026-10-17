@@ -2553,7 +2553,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
     LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null; pinnerTarget = null }
     // Each pin is its own card: a gap keeps their washes from running together.
-    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         state.messageContextError?.let { error -> item { Text(error, Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText) } }
         if (state.displayedPins.isEmpty()) item {
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -2565,7 +2565,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     viewModel.goToMessage(message, onLoaded = close)
                 }
             }
-            Column(Modifier.background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
+            Column(Modifier.clip(MaterialTheme.shapes.small).background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     inPins = true, openMessage = goToMessage,
@@ -2574,16 +2574,15 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), onLoaded = close) },
                     retryPin = viewModel::retryPin, dismissPinError = viewModel::dismissPinError,
                     onAttachmentFailed = viewModel::reportAttachmentFailure)
-                // The button's own inset keeps its label in line with the message text.
-                Row(Modifier.fillMaxWidth().padding(start = 54.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(goToMessage, enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
-                        colors = ButtonDefaults.textButtonColors(contentColor = TextMuted), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 18.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ actionTarget = message }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Message actions for ${message.author.name}", tint = TextMuted) }
+                    Spacer(Modifier.weight(1f))
+                    OutlinedButton(goToMessage, Modifier.heightIn(min = 44.dp), enabled = !state.loadingMessageContext, shape = MaterialTheme.shapes.small,
+                        border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) {
                         Text(if (state.loadingMessageContext) "Loading message…" else "Go to message")
                         Spacer(Modifier.width(6.dp))
                         Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(14.dp))
                     }
-                    Spacer(Modifier.weight(1f))
-                    IconButton({ actionTarget = message }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Message actions for ${message.author.name}", tint = TextMuted) }
                 }
             }
         }
@@ -3009,7 +3008,7 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
             contentDescription = "Attach files"
             if (disabledReason != null) stateDescription = disabledReason
         }, enabled = enabled) {
-            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
         DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {

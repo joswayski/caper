@@ -1,6 +1,6 @@
 //! The update notice and decorative SVG layers used in its review.
 
-use eframe::egui;
+use eframe::egui::{self, AtomExt as _};
 
 /// Match UpdateButtonShine on macOS: a still prismatic edge and one short
 /// light sweep every eight seconds. Never animate the label or hit target.
@@ -133,7 +133,7 @@ pub fn dock(ui: &mut egui::Ui, version: &str) -> egui::Response {
         ui,
         crate::SECONDARY_TONE,
         true,
-        egui::Button::new(crate::bold("Update available").size(12.0))
+        egui::Button::new(crate::bold("Update available").size(12.0).atom_grow(true))
             .min_size(egui::vec2(ui.available_width(), 36.0)),
     );
     shine(ui, &response);

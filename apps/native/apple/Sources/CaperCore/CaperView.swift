@@ -1506,12 +1506,13 @@ private struct DirectMessageSidebarRow: View {
         Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
             .menuStyle(.borderlessButton).menuIndicator(.hidden)
             .foregroundStyle(CaperTheme.muted)
-            .frame(width: 28, height: 28)
+            .frame(width: 24, height: 24)
             .focused($optionsFocused)
             .opacity(hovered || optionsFocused ? 1 : 0)
             .allowsHitTesting(hovered || optionsFocused)
             // Hover feedback like the channel rows' options.
             .contentShape(Rectangle()).modifier(ControlHover(isFocused: optionsFocused))
+            .padding(.trailing, 4)
             .help("Conversation options for \(conversation.peer.displayName)")
             .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
             .accessibilityIdentifier("dm-options-\(conversation.id)")
@@ -4917,6 +4918,8 @@ private struct MessageRow: View {
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
     private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && mentionsMe) }
     private func rowBackground(mentionsMe: Bool) -> Color {
+        // Pins paints the whole card, including its navigation footer.
+        if inPins { return .clear }
         if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
         if let pin = message.pin {
             return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
@@ -5446,7 +5449,7 @@ private struct MentionCardView: View {
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
                 Button { draft.presentingDialog = true; showingFiles = true } label: {
-                    CaperIcon(name: "paperclip", size: 17).foregroundStyle(CaperTheme.muted)
+                    CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -6041,6 +6044,7 @@ private struct MessageActionsSheet: View {
             ForEach(quickReactions, id: \.self) { emoji in
                 Button { quickReaction(emoji) } label: {
                     EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canReact)
@@ -6050,6 +6054,7 @@ private struct MessageActionsSheet: View {
             Button { showingEmojiPicker = true } label: {
                 CaperIcon(name: "smile-plus", size: 24)
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!canReact)
@@ -6063,14 +6068,26 @@ private struct MessageActionsSheet: View {
             Button {
                 chat.reply(to: message, inThread: inThread)
                 dismiss()
-            } label: { CaperLabel("Reply", icon: "reply") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).disabled(!chat.canInteract || chat.pendingMessage != nil)
+            } label: {
+                CaperLabel("Reply", icon: "reply")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }.disabled(!chat.canInteract || chat.pendingMessage != nil)
             Divider()
             if chat.canEdit(message) {
-                Button { editing = true } label: { CaperLabel("Edit message", icon: "pencil") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { editing = true } label: {
+                    CaperLabel("Edit message", icon: "pencil")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if message.forward == nil && (message.revision ?? 1) > 1 {
-                Button { history = true } label: { CaperLabel("Message history", icon: "history") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { history = true } label: {
+                    CaperLabel("Message history", icon: "history")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if viewReactions != nil, let reaction = message.reactions?.first {
@@ -6079,18 +6096,21 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("View reactions", icon: "users").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-view-reactions")
                 Divider()
             }
             Button(action: togglePin) {
                 CaperLabel(message.pin == nil ? "Pin message" : "Unpin message", icon: message.pin == nil ? "pin" : "pin-off")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }.disabled(!canPin)
             if let reply {
                 Divider()
                 Button(action: reply) {
                     Label { Text("Reply in thread") } icon: { CaperIcon(name: "thread") }
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             if canForward {
@@ -6100,6 +6120,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Forward message", icon: "forward").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             // Attachment-only messages have no text to copy.
@@ -6110,6 +6131,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Copy text", icon: "copy").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             Divider()
@@ -6118,6 +6140,7 @@ private struct MessageActionsSheet: View {
                 dismiss()
             } label: {
                 CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             if block != nil {
                 Divider()
@@ -6127,6 +6150,7 @@ private struct MessageActionsSheet: View {
                 } label: {
                     CaperLabel("Block \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .foregroundStyle(CaperTheme.terracottaBright)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-block")
             } else if let unblock {
                 Divider()
@@ -6135,6 +6159,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Unblock \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-unblock")
             }
         }
@@ -6219,28 +6244,29 @@ private struct PinnedMessagesView: View {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 12) {
                         ForEach(chat.displayedPins) { message in
-                            // The row's own bottom padding already separates it from Go to message.
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
                                     mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
                                     openMessage: { goToMessage(message) }) { actionTarget = message }
-                                Button { goToMessage(message) } label: {
-                                    HStack(spacing: 6) {
-                                        Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
-                                        CaperIcon(name: "arrow-right", size: 14)
-                                    }
-                                }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
-                                    .foregroundStyle(CaperTheme.muted).disabled(chat.jumpingToMessage)
-                                    .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
-                                    .accessibilityIdentifier("go-to-message-\(message.id)")
+                                HStack {
+                                    Spacer()
+                                    Button { goToMessage(message) } label: {
+                                        HStack(spacing: 6) {
+                                            Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
+                                            CaperIcon(name: "arrow-right", size: 14)
+                                        }
+                                    }.buttonStyle(CaperSecondaryButton(minHeight: 44))
+                                        .disabled(chat.jumpingToMessage)
+                                        .accessibilityIdentifier("go-to-message-\(message.id)")
+                                }.padding(.horizontal, 18).padding(.bottom, 12)
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                                .background(message.pin?.author.id == viewerID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
-                    }
+                    }.padding(12)
                 }
             }
         }.background(CaperTheme.conversation)

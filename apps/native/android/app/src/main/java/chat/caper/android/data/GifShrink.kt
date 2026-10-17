@@ -3,47 +3,26 @@ package chat.caper.android.data
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
- * Shrinking an animated GIF too large to upload unchanged: every frame is composited,
+ * Shrinking an animated GIF wider or taller than 1024 px: every frame is composited,
  * center-cropped square, scaled down, given its own palette of the colours that changed and
  * re-encoded with its timing. Pure Kotlin (no Android APIs), the same algorithm as the web's
  * `gif-shrink.ts`. Pixels are packed ARGB ints.
  */
 object GifShrink {
-    /** Output edges, largest first: the first that fits the byte budget wins. */
-    val EDGES = intArrayOf(512, 384, 256, 192, 128)
+    /** A shrunk GIF's edge, like a re-encoded still's. */
+    const val EDGE = 512
 
     class Failure(message: String) : Exception(message)
 
     class Shrunk(val bytes: ByteArray, val edge: Int)
 
-    /**
-     * The largest square re-encoding of [bytes] within [budget] bytes: 512 px, then smaller
-     * edges, then fewer frames (each lasting as long as the ones it replaces).
-     */
-    fun shrink(bytes: ByteArray, budget: Long, cancelled: () -> Boolean = { false }): Shrunk {
+    /** [bytes] as a centered square of at most 512 px, every frame and its timing kept. */
+    fun shrink(bytes: ByteArray, cancelled: () -> Boolean = { false }): Shrunk {
         val header = header(bytes)
-        val short = min(header.width, header.height)
-        val edges = EDGES.filter { it <= short }.ifEmpty { listOf(short) }
-        var edge = edges.first()
-        var stride = 1
-        var frames = -1
-        while (true) {
-            val output = encode(bytes, edge, stride, cancelled)
-            if (output.size <= budget) return Shrunk(output, edge)
-            if (frames < 0) frames = decode(bytes, cancelled) { _, _, _ -> }
-            // Jump straight to the edge the size suggests, else halve the frames.
-            val target = edge * sqrt(budget.toDouble() / output.size)
-            val below = edges.filter { it < edge }
-            val smaller = below.firstOrNull { it <= target } ?: below.lastOrNull()
-            when {
-                smaller != null -> edge = smaller
-                stride * 2 < frames -> stride *= 2
-                else -> throw Failure("too large")
-            }
-        }
+        val edge = minOf(EDGE, header.width, header.height)
+        return Shrunk(encode(bytes, edge, cancelled), edge)
     }
 
     private class Header(val width: Int, val height: Int, val palette: IntArray?, val start: Int)
@@ -486,16 +465,14 @@ object GifShrink {
         out.byte(0)
     }
 
-    /** A frame waiting for the next one, which fixes its total delay. */
-    private class Pending(val rect: IntArray, val palette: IntArray, val indices: IntArray, var delay: Int)
+    private class Pending(val rect: IntArray, val palette: IntArray, val indices: IntArray, val delay: Int)
 
     /**
-     * Re-encodes [bytes] as an [edge] × [edge] GIF, keeping one frame in every [stride]. Each
-     * frame gets its own palette of the colours that changed; unchanged pixels are left showing
+     * Re-encodes [bytes] as an [edge] × [edge] GIF, every frame with its delay. Each frame gets its own palette of the colours that changed; unchanged pixels are left showing
      * (transparent), unless the animation has transparency of its own, in which case every frame
      * is drawn whole on a cleared canvas.
      */
-    fun encode(bytes: ByteArray, edge: Int, stride: Int = 1, cancelled: () -> Boolean = { false }): ByteArray {
+    fun encode(bytes: ByteArray, edge: Int, cancelled: () -> Boolean = { false }): ByteArray {
         val header = header(bytes)
         val width = header.width
         val height = header.height
@@ -503,8 +480,8 @@ object GifShrink {
         val left = (width - side) / 2
         val top = (height - side) / 2
         var transparency = false
-        decode(bytes, cancelled) { canvas, _, index ->
-            if (transparency || index % stride != 0) return@decode
+        decode(bytes, cancelled) { canvas, _, _ ->
+            if (transparency) return@decode
             for (y in top until top + side) {
                 for (x in left until left + side) if (canvas[y * width + x] ushr 24 == 0) { transparency = true; break }
                 if (transparency) break
@@ -536,11 +513,7 @@ object GifShrink {
         var previous: IntArray? = null
         val histogram = Histogram()
         var pending: Pending? = null
-        decode(bytes, cancelled) { canvas, delay, index ->
-            if (index % stride != 0) {
-                pending?.let { it.delay += delay }
-                return@decode
-            }
+        decode(bytes, cancelled) { canvas, delay, _ ->
             pending?.let(::write)
             squareScale(canvas, width, height, edge, scaled)
             val last = previous

@@ -987,7 +987,15 @@ impl Api {
     }
 
     pub fn fetch_media(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
-        const MAX_MEDIA_BYTES: u64 = 40 * 1024 * 1024;
+        self.fetch_media_within(url, Some(40 * 1024 * 1024))
+    }
+
+    /// A profile picture or space icon, whatever its size.
+    pub fn fetch_picture(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
+        self.fetch_media_within(url, None)
+    }
+
+    fn fetch_media_within(&self, url: &str, limit: Option<u64>) -> Result<Vec<u8>, Option<u16>> {
         let url = media_url(url).ok_or(None)?;
         let response = self
             .media
@@ -999,19 +1007,17 @@ impl Api {
         if !status.is_success() {
             return Err(Some(status.as_u16()));
         }
+        let limit = limit.unwrap_or(u64::MAX - 1);
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_MEDIA_BYTES)
+            .is_some_and(|length| length > limit)
         {
             return Err(None);
         }
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(
-            &mut std::io::Read::take(response, MAX_MEDIA_BYTES + 1),
-            &mut bytes,
-        )
-        .map_err(|_| None)?;
-        if bytes.len() as u64 > MAX_MEDIA_BYTES {
+        std::io::Read::read_to_end(&mut std::io::Read::take(response, limit + 1), &mut bytes)
+            .map_err(|_| None)?;
+        if bytes.len() as u64 > limit {
             return Err(None);
         }
         Ok(bytes)

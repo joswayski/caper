@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Paperclip, Send, X } from "lucide-react";
+import { ArrowLeft, Plus, Send, X } from "lucide-react";
 import Avatar from "../components/Avatar";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
@@ -649,7 +649,7 @@ export default function ThreadPanel({
                       fileInput.current?.click();
                     }}
                   >
-                    <Paperclip size={17} aria-hidden="true" />
+                    <Plus size={18} aria-hidden="true" />
                   </button>
                   <input
                     ref={fileInput}

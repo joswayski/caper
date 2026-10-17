@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { Paperclip, Send } from "lucide-react";
+import { Plus, Send } from "lucide-react";
 import { getAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
@@ -324,7 +324,7 @@ export default function ProfileComposer({
             fileInput.current?.click();
           }}
         >
-          <Paperclip size={17} aria-hidden="true" />
+          <Plus size={18} aria-hidden="true" />
         </button>
         <input
           type="file"

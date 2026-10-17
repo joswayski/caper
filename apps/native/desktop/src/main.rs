@@ -408,7 +408,6 @@ enum NavIcon {
     Close,
     More,
     Plus,
-    Paperclip,
     Settings,
     Hash,
     Lock,
@@ -14069,7 +14068,7 @@ impl CaperApp {
                         // The scrolling text stays inside the padded field.
                         ui.visuals_mut().clip_rect_margin = 0.0;
                         ui.horizontal_top(|ui| {
-                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Paperclip, "Attach files", 28.0))
+                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
                                 .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
                                     else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
                                     else { "Attach files".to_owned() }).clicked();
@@ -14561,7 +14560,7 @@ impl CaperApp {
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
-                        .inner_margin(egui::Margin { left: 4, ..Default::default() })
+                        .inner_margin(egui::Margin::symmetric(6, 0))
                         .show(ui, |ui| {
                             let full = self.draft_file_count(None) >= uploads::MAX_ATTACHMENTS;
                             let mut pick = false;
@@ -14571,7 +14570,7 @@ impl CaperApp {
                                     ui.add_space(7.0);
                                     let enabled = attach && !full && self.file_picker.is_none();
                                     let button = ui
-                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                        .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
                                         .inner
                                         .on_disabled_hover_text(if !attach {
                                             attach_unavailable.to_owned()
@@ -15304,6 +15303,21 @@ impl CaperApp {
             .map_or(1.0, |start| motion::progress(context, start, motion::SLOW))
     }
 
+    fn pinned_by_viewer(&self, message: &model::Message) -> bool {
+        message.pin.as_ref().is_some_and(|pin| {
+            Some(pin.author.id.as_str())
+                == self
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.as_str())
+                    .or_else(|| {
+                        self.session
+                            .as_ref()
+                            .map(|session| session.author.id.as_str())
+                    })
+        })
+    }
+
     fn message_in(
         &mut self,
         ui: &mut egui::Ui,
@@ -15353,18 +15367,7 @@ impl CaperApp {
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
         let pinned = message.pin.as_ref();
-        let pinned_by_viewer = pinned.is_some_and(|pin| {
-            Some(pin.author.id.as_str())
-                == self
-                    .account
-                    .as_ref()
-                    .map(|account| account.id.as_str())
-                    .or_else(|| {
-                        self.session
-                            .as_ref()
-                            .map(|session| session.author.id.as_str())
-                    })
-        });
+        let pinned_by_viewer = self.pinned_by_viewer(message);
         let mut view_thread = None;
         let mut actions_y = None;
         // The row's background; its files below are drawn on the same fill.
@@ -16207,8 +16210,8 @@ impl CaperApp {
                 0.0,
                 TERRACOTTA,
             );
-        } else {
-            // Pins and reply context stay marked. Thread and jump tints win.
+        } else if !in_pins {
+            // Pins owns the whole card's wash. Thread and jump tints win here.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
                 message_rect.top()..=controls.response.rect.bottom(),
@@ -16331,8 +16334,11 @@ impl CaperApp {
                                     // in this preview. Explicit child controls stay interactive.
                                     ui.style_mut().interaction.selectable_labels = false;
                                     egui::Frame::new()
-                                        .fill(BLACKOUT)
-                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .fill(if self.pinned_by_viewer(message) {
+                                            Color32::from_rgba_unmultiplied(182, 77, 50, 31)
+                                        } else {
+                                            Color32::from_rgba_unmultiplied(228, 199, 106, 15)
+                                        })
                                         .corner_radius(8)
                                         .inner_margin(egui::Margin::symmetric(0, 8))
                                         .show(ui, |ui| {
@@ -16346,11 +16352,12 @@ impl CaperApp {
                                                     bottom: 12,
                                                 })
                                                 .show(ui, |ui| {
+                                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 32.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.add_enabled(!self.context_loading,
                                                         egui::Button::image_and_text(
-                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(MUTED).fit_to_exact_size(egui::vec2(14.0, 14.0)),
-                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0).color(MUTED),
-                                                        ).frame(false).min_size(egui::vec2(0.0, 28.0)),
+                                                            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg")).tint(TEXT).fit_to_exact_size(egui::vec2(14.0, 14.0)),
+                                                            RichText::new(if self.context_loading { "Loading message…" } else { "Go to message" }).size(11.0),
+                                                        ).min_size(egui::vec2(0.0, 32.0)),
                                                     )
                                                     .clicked()
                                                     {
@@ -16360,6 +16367,7 @@ impl CaperApp {
                                                             false,
                                                         );
                                                     }
+                                                    });
                                                 });
                                         });
                                         },
@@ -18625,7 +18633,7 @@ impl CaperApp {
                         ui.add_space(7.0);
                         let attach = ui
                             .add_enabled_ui(can_attach, |ui| {
-                                drawn_icon_button(ui, NavIcon::Paperclip, "Attach files")
+                                drawn_icon_button(ui, NavIcon::Plus, "Attach files")
                             })
                             .inner
                             .on_disabled_hover_text(
@@ -21804,7 +21812,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
-        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
         NavIcon::Settings => egui::include_image!("../resources/icons/settings.svg"),
         NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
         NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
@@ -22453,9 +22460,10 @@ fn channel_button(
     }
     let mut opened = false;
     if let Some(menu) = extras.menu {
+        let size = if extras.direct { 24.0 } else { 32.0 };
         let rect = egui::Rect::from_center_size(
             egui::pos2(rect.right() - 18.0, rect.center().y),
-            egui::vec2(32.0, 32.0).min(egui::vec2(32.0, rect.height())),
+            egui::vec2(size, size.min(rect.height())),
         );
         let settings = ui.interact(rect, response.id.with("settings"), egui::Sense::click());
         let popup = egui::Popup::menu(&settings);
@@ -23011,9 +23019,6 @@ fn message_row<R>(
                 let shown =
                     paint_avatar(ui, rect, &author.name, author.avatar_id, author.picture());
                 if profile {
-                    if response.hovered() {
-                        avatar_ring(ui, rect, shown, 2.0, Stroke::new(2.0, BORDER));
-                    }
                     // Focus follows a picture's rounded square.
                     let corner = if shown {
                         picture_corner(rect.width() + 4.0)
@@ -26521,6 +26526,7 @@ mod tests {
     fn pins_cards_align_navigation_and_keep_close_visible_in_small_windows() {
         for size in [egui::vec2(840.0, 620.0), egui::vec2(390.0, 520.0)] {
             let context = egui::Context::default();
+            context.all_styles_mut(|style| style.animation_time = 0.0);
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -26574,10 +26580,6 @@ mod tests {
                 .unwrap();
             let go = bounds("Go to message");
             assert!(
-                (go.x0 - f64::from(author.left())).abs() < 1.0,
-                "navigation aligns with message text"
-            );
-            assert!(
                 go.y0 > f64::from(author.bottom()),
                 "navigation follows the message"
             );
@@ -26618,15 +26620,39 @@ mod tests {
                 ((go.x0 + go.x1) / 2.0) as f32,
                 ((go.y0 + go.y1) / 2.0) as f32,
             );
+            let card = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == egui::Color32::from_rgba_unmultiplied(182, 77, 50, 31)
+                            && f64::from(rect.rect.top()) > close.y1
+                            && rect.rect.contains(author.center())
+                            && rect.rect.contains(navigation_center)
+                            && shape.clip_rect.contains_rect(rect.rect) =>
+                    {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .expect("one continuous pin wash covers the message and navigation");
+            assert_eq!(card.stroke.width, 0.0, "the card has no extra border");
+            assert!(
+                (go.x1 - f64::from(card.rect.right() - 18.0)).abs() < 1.0,
+                "navigation aligns with the card's trailing inset"
+            );
+            assert!(
+                (go.y1 - f64::from(card.rect.bottom() - 20.0)).abs() < 1.0,
+                "navigation sits at the card bottom without expanding the footer"
+            );
+            assert!(go.height() >= 32.0, "navigation is a full button target");
             assert!(
                 output.shapes.iter().any(|shape| matches!(&shape.shape,
                     egui::Shape::Rect(rect) if rect.stroke.width == 1.0
-                        && f64::from(rect.rect.top()) > close.y1
-                        && rect.rect.contains(author.center())
                         && rect.rect.contains(navigation_center)
-                        && shape.clip_rect.contains_rect(rect.rect)
+                        && !rect.rect.contains(author.center())
                 )),
-                "each pin has a fully visible bordered card"
+                "navigation has its own button frame"
             );
             for pressed in [true, false] {
                 frame(
@@ -26805,6 +26831,11 @@ mod tests {
                     egui::Shape::Text(text) if text.galley.job.text == "Update available"
                         && shape.clip_rect.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size()))
                 )), "update label clipped at {time}s");
+                let button_center = ((current.x0 + current.x1) / 2.0) as f32;
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Update available"
+                        && (text.pos.x + text.galley.size().x / 2.0 - button_center).abs() <= 1.0
+                )), "update label is not centered at sidebar width {sidebar_width}, {time}s");
                 for label in [
                     "Edit profile for Fixture Owner",
                     "Mute microphone",
@@ -28167,6 +28198,11 @@ mod tests {
         assert!(direct_dots(&output) > 0, "unread before muting");
         let options = node_bounds(&output, "Conversation options for TEST FIXTURE Maya")
             .expect("DM options button");
+        let row = node_bounds(&output, "TEST FIXTURE Maya, unread activity").expect("DM row");
+        assert!(
+            row.shrink(2.0).contains_rect(options),
+            "the options hover target must leave space on every side of the row"
+        );
         let painted = |output: &egui::FullOutput| {
             output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Mesh(mesh) if options.contains_rect(mesh.calc_bounds()))
@@ -38447,9 +38483,15 @@ mod tests {
                 egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
                 egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
             );
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Rect(rect) if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach)
-            )), "{draft:?}: Attach must be inside the message box");
+            let emoji = node_bounds(&output, "Insert emoji").expect("emoji control");
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.fill == super::COMPOSER
+                        && rect.rect.shrink(4.0).contains_rect(attach)
+                        && rect.rect.shrink(4.0).contains_rect(emoji)
+                )),
+                "{draft:?}: Attach and Emoji hover targets need space inside the message box"
+            );
         }
     }
 

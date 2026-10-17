@@ -7,7 +7,6 @@ import { PictureError, preparePicture, uploadAvatar, uploadPicture } from "../ac
 import {
   gifSize,
   gifUploadsUnchanged,
-  MAX_GIF_BYTES,
   pictureEdge,
   pictureErrorMessage,
   pictureFailed,
@@ -41,15 +40,14 @@ test("GIFs are recognised by their magic bytes and logical screen size, not thei
   assert.equal(gifSize(gif(10, 10).subarray(0, 9)), undefined);
 });
 
-test("GIFs upload unchanged up to 5 MiB and 1024 × 1024; bigger ones are shrunk", () => {
-  assert.equal(gifUploadsUnchanged(MAX_GIF_BYTES, { width: 1024, height: 1024 }), true);
-  for (const [size, width, height] of [
-    [MAX_GIF_BYTES + 1, 10, 10],
-    [100, 1025, 10],
-    [100, 10, 1025],
-    [100, 0, 10],
+test("GIFs upload unchanged at any byte size within 1024 × 1024; wider or taller ones are shrunk", () => {
+  assert.equal(gifUploadsUnchanged({ width: 1024, height: 1024 }), true);
+  for (const [width, height] of [
+    [1025, 10],
+    [10, 1025],
+    [0, 10],
   ])
-    assert.equal(gifUploadsUnchanged(size, { width, height }), false);
+    assert.equal(gifUploadsUnchanged({ width, height }), false);
 });
 
 test("stills are center-cropped square and scaled to their short edge, at most 512", () => {
