@@ -2357,13 +2357,27 @@
 }
 .chat-drafts {
   display: grid;
-  /* Cap at four columns; leave room for separate 44px remove/retry targets. */
-  grid-template-columns: repeat(auto-fill, minmax(max(min(90px, 100%), calc((100% - 24px) / 4)), 1fr));
+  /* Desktop tiles fill the composer width, then wrap at its edge. */
+  grid-template-columns: repeat(auto-fill, min(104px, 100%));
   gap: 8px;
-  width: min(440px, 100%);
+  width: 100%;
   margin: 0 0 8px;
   padding: 0;
   list-style: none;
+}
+@media (min-width: 761px) {
+  .chat-drafts {
+    /* A narrow split pane must leave the editor visible below a tall tray. */
+    max-height: min(328px, 40dvh);
+    overflow-y: auto;
+  }
+}
+@media (max-width: 760px) {
+  .chat-drafts {
+    /* Mobile keeps at most four columns and room for 44px action targets. */
+    grid-template-columns: repeat(auto-fill, minmax(max(min(90px, 100%), calc((100% - 24px) / 4)), 1fr));
+    width: min(440px, 100%);
+  }
 }
 .chat-drafts li {
   position: relative;

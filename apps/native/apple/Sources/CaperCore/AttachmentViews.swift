@@ -1579,13 +1579,18 @@ private struct AttachmentDraftChip: View {
     }
 }
 
-/// At most four compact squares per row, even in a wide composer. A single
-/// attachment keeps the same tile size rather than filling the available width.
+/// Compact squares wrap at the composer's edge on macOS; iOS caps at four
+/// columns. A single attachment never stretches to fill the available width.
 struct StagedFileLayout: Layout {
     private func metrics(width: CGFloat?) -> (columns: Int, side: CGFloat) {
         let width = max(0, width ?? 440)
+        #if os(macOS)
+        let columns = max(1, Int((width + 8) / 112))
+        return (columns, min(104, width))
+        #else
         let columns = min(4, max(1, Int(min(width, 440) + 8) / 98))
         return (columns, min(104, max(0, (width - CGFloat(columns - 1) * 8) / CGFloat(columns))))
+        #endif
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

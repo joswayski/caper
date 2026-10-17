@@ -15980,7 +15980,7 @@ impl CaperApp {
         response.clicked()
     }
 
-    /// Square local previews above the composer, at most four per row.
+    /// Compact square previews wrap at the composer's available edge.
     fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
@@ -15989,7 +15989,6 @@ impl CaperApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             let width = draft_tile_width(ui.available_width());
-            ui.set_max_width(ui.available_width().min(width * 4.0 + 24.0));
             for draft in self.draft_files.iter_mut().filter(|file| {
                 Some(&file.channel) == channel.as_ref() && file.thread_root_id.as_deref() == root
             }) {
@@ -16169,7 +16168,7 @@ impl CaperApp {
                         egui::pos2(rect.left(), rect.bottom() - 25.0),
                         rect.max,
                     );
-                    let response = ui.put(
+                    let response = ui.place(
                         retry_rect,
                         egui::Button::new("Failed · Retry").small().truncate(),
                     );
@@ -17894,7 +17893,6 @@ impl CaperApp {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                 let width = draft_tile_width(ui.available_width());
-                ui.set_max_width(ui.available_width().min(width * 4.0 + 24.0));
                 let context = ui.ctx().clone();
                 for (index, file) in draft.files.iter_mut().enumerate() {
                     let name = file.name();
@@ -20439,8 +20437,7 @@ fn login_error_frame(ui: &mut egui::Ui, error: &str) {
 /// Keep tiles compact even when there is only one file. Narrow composers
 /// reduce their column count rather than introducing horizontal scrolling.
 fn draft_tile_width(available: f32) -> f32 {
-    let columns = ((available + 8.0) / 98.0).floor().clamp(1.0, 4.0);
-    ((available - (columns - 1.0) * 8.0) / columns).clamp(1.0, 104.0)
+    available.clamp(1.0, 104.0)
 }
 
 fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
@@ -37511,6 +37508,72 @@ mod tests {
             "Remove must not open the preview below it"
         );
         assert_eq!(app.draft_files.len(), 2);
+
+        // More than four uploads use the full desktop composer, not a fixed tray.
+        while app.draft_files.len() < 10 {
+            let (_, more) = fixture("parity-attachments");
+            app.draft_files.extend(more.draft_files);
+        }
+        app.draft_files.truncate(10);
+        for (index, draft) in app.draft_files.iter_mut().enumerate() {
+            draft.key = index as u64;
+            draft.name = format!("TEST FIXTURE wrap {index}.png");
+            draft.local_path = Some(std::env::temp_dir().join(&draft.name));
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let previews: Vec<_> = (0..10)
+            .map(|index| {
+                nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label().is_some_and(|label| {
+                            label.starts_with(&format!("Preview TEST FIXTURE wrap {index}.png\n"))
+                        })
+                    })
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap()
+            })
+            .collect();
+        let columns = previews
+            .iter()
+            .take_while(|tile| (tile.y0 - previews[0].y0).abs() < 1.0)
+            .count();
+        assert!(
+            columns > 4 && columns < 10,
+            "desktop fills the row, then wraps: {previews:?}"
+        );
+        assert!(previews[columns].y0 > previews[0].y0);
+        let attach = node_bounds(&output, "Attach files").unwrap();
+        let composer = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            previews
+                .iter()
+                .all(|tile| (tile.x1 - tile.x0 - 104.0).abs() < 1.0
+                    && (tile.y1 - tile.y0 - 104.0).abs() < 1.0
+                    && tile.x0 >= composer.left() as f64
+                    && tile.x1 <= composer.right() as f64),
+            "every square stays within the composer's horizontal edges"
+        );
     }
 
     #[test]
