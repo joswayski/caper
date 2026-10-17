@@ -38,7 +38,9 @@ Cloudflare, Inc.). Their full licence texts ship beside the app as
 `libwebp-LICENSE.txt`, `rav1e-LICENSE.txt` and `avif-serialize-LICENSE.txt`. The
 exact-palette indexed PNG writer and JPEG settings are adapted from Caper's
 sibling project Captures (`joswayski/captures`, Apache-2.0). The file dialog
-uses `rfd` (MIT).
+uses `rfd` (MIT). Edits drawn before sending are rasterised with `tiny-skia`
+(BSD-3-Clause, through `resvg`) and text outlines read with `ab_glyph`
+(Apache-2.0).
 
 ## FFmpeg (video compression, playback and AVIF/HEIC decoding)
 

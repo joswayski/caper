@@ -803,6 +803,7 @@ dependencies = [
 name = "caper-desktop"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "arboard",
  "avif-serialize",
  "chrono",

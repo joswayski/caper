@@ -16,6 +16,10 @@ pub struct File {
     pub preview: Arc<OnceLock<Option<egui::ColorImage>>>,
     pub texture: Option<egui::TextureHandle>,
     preview_requested: bool,
+    /// Whether the file can be cropped, drawn on and so on before sending.
+    pub editable: Option<crate::attachment_edit::Kind>,
+    /// Applied to the original when it is prepared at Send.
+    pub edit: Option<crate::attachment_edit::Edit>,
 }
 
 impl File {
@@ -26,13 +30,29 @@ impl File {
     fn staged(path: PathBuf, scratch: Option<Arc<uploads::Scratch>>) -> Self {
         Self {
             size: std::fs::metadata(&path).map_or(0, |metadata| metadata.len()),
+            editable: crate::attachment_edit::editable(&path),
             path,
             scratch,
             attachment: None,
             preview: Arc::default(),
             texture: None,
             preview_requested: false,
+            edit: None,
         }
+    }
+
+    /// A new edit (`None` returns to the original), shown in a fresh
+    /// preview: the editor's render when it has one, else decoded again.
+    pub fn set_edit(
+        &mut self,
+        edit: Option<crate::attachment_edit::Edit>,
+        preview: Option<egui::ColorImage>,
+    ) {
+        self.edit = edit;
+        self.texture = None;
+        self.preview_requested = preview.is_some();
+        self.preview =
+            Arc::new(preview.map_or_else(OnceLock::new, |preview| OnceLock::from(Some(preview))));
     }
 
     /// The preview texture once decoded. The first call decodes an image
@@ -60,10 +80,22 @@ impl File {
             return;
         }
         let (path, preview, context) = (self.path.clone(), self.preview.clone(), context.clone());
+        let edit = self.edit.clone();
         std::thread::spawn(move || {
-            let image = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| crate::attachments::decode_thumbnail(&bytes));
+            let image = std::fs::read(&path).ok().and_then(|bytes| match &edit {
+                // The edited picture, as it will be sent.
+                Some(edit) => crate::compress::decode_upright(&bytes)
+                    .and_then(|(image, _)| crate::attachment_edit::render(&image, edit))
+                    .map(|image| {
+                        let edge = crate::attachments::THUMBNAIL_EDGE;
+                        let image = image.thumbnail(edge, edge).to_rgba8();
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [image.width() as usize, image.height() as usize],
+                            image.as_raw(),
+                        )
+                    }),
+                None => crate::attachments::decode_thumbnail(&bytes),
+            });
             let _ = preview.set(image);
             context.request_repaint();
         });
@@ -234,13 +266,21 @@ impl Send {
                 file.name(),
                 index + 1
             ));
-            let mut prepared =
-                uploads::prepare_path_with(&file.path, settings, &|_| {}, &self.cancel).map_err(
-                    |message| Failure {
-                        message,
-                        uncertain: retrying,
-                    },
-                )?;
+            let prepared = match &file.edit {
+                Some(edit) => uploads::prepare_edited_path(
+                    &file.path,
+                    &file.name(),
+                    edit,
+                    settings,
+                    &|_| {},
+                    &self.cancel,
+                ),
+                None => uploads::prepare_path_with(&file.path, settings, &|_| {}, &self.cancel),
+            };
+            let mut prepared = prepared.map_err(|message| Failure {
+                message,
+                uncertain: retrying,
+            })?;
             if file.scratch.is_some() {
                 prepared.name =
                     crate::compress::renamed("Pasted image.png", &prepared.content_type);
@@ -557,6 +597,85 @@ mod tests {
                 .filter(|request| request.line == "POST /api/assets HTTP/1.1")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn edited_files_upload_the_edit_and_unappliable_edits_send_nothing() {
+        use crate::attachment_edit::{Crop, Edit};
+        let picture = uploads::Scratch::new("png");
+        image::RgbaImage::from_fn(64, 32, |x, _| {
+            image::Rgba(if x < 32 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            })
+        })
+        .save(picture.path())
+        .unwrap();
+        let left = Edit {
+            crop: Crop {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            ..Edit::default()
+        };
+        let mut file = File::picked(picture.path().to_owned());
+        assert_eq!(file.editable, Some(crate::attachment_edit::Kind::Image));
+        file.set_edit(Some(left.clone()), None);
+        let mut edited = operation(vec![file]);
+        let client_id = edited.client_id.clone();
+        let (api, requests) = server(move |base| {
+            vec![
+                (200, format!("{{\"conversations\":[{DIRECT}]}}")),
+                (200, json!({"token":"chat","author":{"id":"owner","name":"Owner","isGuest":false}}).to_string()),
+                (201, json!({"id":"asset1","upload":{"method":"PUT","url":format!("{base}/storage/asset1"),"headers":{}}}).to_string()),
+                (200, String::new()),
+                (200, json!({"id":"asset1","kind":"image","contentType":"image/png","name":"left.png","size":1}).to_string()),
+                (200, json!({"id":"m1","channelId":"dm0000000002","seq":"1","createdAt":"2026-10-11T00:00:00Z","clientMessageId":client_id,"author":{"id":"owner","name":"Owner","isGuest":false},"content":{"version":1,"type":"text","text":"Receipt 🎉"}}).to_string()),
+            ]
+        });
+        edited.run(&api, "account", &|_| {}).unwrap();
+        let seen = requests.join().unwrap();
+        let reservation: Value = serde_json::from_slice(&seen[2].body).unwrap();
+        assert_eq!(
+            (
+                reservation["width"].as_u64(),
+                reservation["height"].as_u64()
+            ),
+            (Some(32), Some(32))
+        );
+        let stored = image::load_from_memory(&seen[3].body).unwrap().to_rgba8();
+        assert_eq!(stored.dimensions(), (32, 32));
+        assert!(
+            stored.pixels().all(|pixel| pixel.0 == [255, 0, 0, 255]),
+            "only the kept half"
+        );
+        // An edit on something that cannot take it fails before any reservation.
+        let notes = uploads::Scratch::new("txt");
+        std::fs::write(notes.path(), b"notes").unwrap();
+        let mut file = File::picked(notes.path().to_owned());
+        assert_eq!(file.editable, None);
+        file.set_edit(Some(left), None);
+        let mut refused = operation(vec![file]);
+        let (api, requests) = server(|_| {
+            vec![
+                (200, format!("{{\"conversations\":[{DIRECT}]}}")),
+                (
+                    200,
+                    json!({"token":"chat","author":{"id":"owner","name":"Owner","isGuest":false}})
+                        .to_string(),
+                ),
+            ]
+        });
+        let error = refused.run(&api, "account", &|_| {}).unwrap_err();
+        assert_eq!(error.message, crate::attachment_edit::FAILED);
+        assert_eq!(
+            requests.join().unwrap().len(),
+            2,
+            "nothing is reserved or sent"
         );
     }
 

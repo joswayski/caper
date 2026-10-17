@@ -222,6 +222,157 @@ pub fn prepare_path_with(
     Ok(prepared)
 }
 
+/// The picked original with the sender's edit applied, named `name` with the
+/// output's extension (docs/media.md, "Editing attachments before sending").
+/// Stills render at their native resolution and are always re-encoded
+/// (`compress::prepare_edited_image`); videos are always transcoded, turned
+/// and cropped by the bundled FFmpeg, with any marks laid over every frame.
+/// Anything that cannot be applied fails with [`attachment_edit::FAILED`]:
+/// the unedited original is never uploaded instead.
+///
+/// [`attachment_edit::FAILED`]: crate::attachment_edit::FAILED
+pub fn prepare_edited_path(
+    path: &Path,
+    name: &str,
+    edit: &crate::attachment_edit::Edit,
+    settings: &Compression,
+    compressing: &dyn Fn(f32),
+    cancel: &AtomicBool,
+) -> Result<Prepared, String> {
+    let failed = || crate::attachment_edit::FAILED.to_owned();
+    let size = std::fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file() && metadata.len() > 0)
+        .ok_or_else(failed)?
+        .len();
+    let mut head = [0; 64];
+    let read = std::fs::File::open(path)
+        .and_then(|mut file| file.read(&mut head))
+        .map_err(|_| failed())?;
+    let content_type = compress::content_type_for(&file_name(path), &head[..read]);
+    let prepared = if content_type.starts_with("image/") && size <= MAX_IMAGE_READ_BYTES {
+        let bytes = std::fs::read(path).map_err(|_| failed())?;
+        let image = compress::prepare_edited_image(name, &bytes, &content_type, settings, edit)?;
+        Prepared {
+            kind: compress::attachment_kind(&image.content_type),
+            name: image.name,
+            content_type: image.content_type,
+            source_size: size,
+            size: image.bytes.len() as u64,
+            body: Body::Memory(image.bytes.into()),
+            width: image.width,
+            height: image.height,
+            duration_ms: None,
+            preview: image.preview,
+            thumbnail: image.thumbnail,
+        }
+    } else if content_type.starts_with("video/")
+        && let Some(binary) = crate::ffmpeg::binary()
+    {
+        prepare_edited_video(
+            binary,
+            path,
+            name,
+            size,
+            edit,
+            settings,
+            compressing,
+            cancel,
+        )?
+    } else {
+        return Err(failed());
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
+    Ok(prepared)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_edited_video(
+    binary: &Path,
+    path: &Path,
+    name: &str,
+    size: u64,
+    edit: &crate::attachment_edit::Edit,
+    settings: &Compression,
+    compressing: &dyn Fn(f32),
+    cancel: &AtomicBool,
+) -> Result<Prepared, String> {
+    let failed = || crate::attachment_edit::FAILED.to_owned();
+    let probe = crate::ffmpeg::probe(binary, path).map_err(|_| failed())?;
+    let video = probe.video.as_ref().ok_or_else(failed)?;
+    let mut plan = crate::ffmpeg::edited_plan(&probe, edit, settings).ok_or_else(failed)?;
+    // Marks are painted once at the output size and laid over every frame.
+    let marks = if edit.marks.is_empty() {
+        None
+    } else {
+        if !crate::ffmpeg::overlays(binary) {
+            return Err(failed());
+        }
+        let (rotated_width, rotated_height) =
+            crate::attachment_edit::rotated_size(video.width, video.height, edit.rotation);
+        let region = plan.edit.as_ref().ok_or_else(failed)?.crop;
+        let overlay = crate::attachment_edit::overlay(
+            edit,
+            rotated_width,
+            rotated_height,
+            region,
+            (plan.width, plan.height),
+        )
+        .ok_or_else(failed)?;
+        let scratch = Scratch::new("png");
+        overlay.save_png(scratch.path()).map_err(|_| failed())?;
+        Some(scratch)
+    };
+    if let (Some(edit), Some(marks)) = (plan.edit.as_mut(), &marks) {
+        edit.overlay = Some(marks.path().to_owned());
+    }
+    compressing(0.0);
+    let output = Scratch::new("mp4");
+    crate::ffmpeg::transcode(
+        binary,
+        path,
+        output.path(),
+        &probe,
+        &plan,
+        settings,
+        compressing,
+        cancel,
+    )
+    .map_err(|error| {
+        if cancel.load(Ordering::Relaxed) {
+            error
+        } else {
+            failed()
+        }
+    })?;
+    drop(marks);
+    let stored = std::fs::metadata(output.path())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if stored == 0 {
+        return Err(failed());
+    }
+    let result = crate::ffmpeg::probe(binary, output.path()).map_err(|_| failed())?;
+    let encoded = result.video.as_ref().ok_or_else(failed)?;
+    // The poster comes from the edited output.
+    let poster = crate::ffmpeg::poster(binary, output.path(), &result, settings.preview_edge);
+    Ok(Prepared {
+        kind: AttachmentKind::Video,
+        name: compress::renamed(name, "video/mp4"),
+        content_type: "video/mp4".into(),
+        source_size: size,
+        size: stored,
+        width: Some(encoded.width),
+        height: Some(encoded.height),
+        duration_ms: result.duration_ms.or(probe.duration_ms),
+        body: Body::Scratch(Arc::new(output)),
+        preview: poster.as_ref().and_then(compress::encode_preview_jpeg),
+        thumbnail: poster.map(|poster| image::DynamicImage::ImageRgb8(poster).to_rgba8()),
+    })
+}
+
 /// A video through FFmpeg: compressed when the rules call for it (and the
 /// result is worth keeping), otherwise the original with its metadata blanked;
 /// either way with a poster preview. `None` when FFmpeg cannot read it.
@@ -1392,6 +1543,153 @@ mod tests {
         assert_eq!(size_label(1_677_722, Some(146_432)), "1.6 MB → 143 KB");
         assert_eq!(size_label(2048, Some(2048)), "2.0 KB");
         assert_eq!(size_label(2048, None), "2.0 KB");
+    }
+
+    /// An edited clip through the real pipeline (`CAPER_FFMPEG`): turned,
+    /// cropped and always re-encoded, even though it would otherwise upload
+    /// unchanged. With an FFmpeg that can overlay (a distribution build), a
+    /// drawn dot is in every frame; Caper's trimmed build refuses the marks
+    /// rather than uploading without them.
+    #[test]
+    #[ignore = "needs CAPER_FFMPEG (and CAPER_FFMPEG_FIXTURES with lavfi and libx264 if it lacks them)"]
+    fn edited_videos_are_turned_cropped_and_marked_or_refused() {
+        use crate::attachment_edit::{Crop, Edit, Mark};
+        let binary = crate::ffmpeg::binary().expect("set CAPER_FFMPEG");
+        let scratch = Scratch::new("edited-video");
+        let picked = scratch.0.join("clip.mp4");
+        let status = crate::ffmpeg::command(&crate::ffmpeg::fixture_binary())
+            .args(["-loglevel", "error", "-f", "lavfi", "-i"])
+            .args(["color=c=0x404040:size=640x360:rate=30", "-t", "1"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "500k"])
+            .arg(&picked)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let turned = Edit {
+            rotation: 90,
+            crop: Crop {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            marks: Vec::new(),
+        };
+        let prepared = prepare_edited_path(
+            &picked,
+            "clip.mp4",
+            &turned,
+            &Compression::default(),
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            (prepared.name.as_str(), prepared.content_type.as_str()),
+            ("clip.mp4", "video/mp4")
+        );
+        assert_eq!((prepared.width, prepared.height), (Some(180), Some(640)));
+        assert!(prepared.thumbnail.is_some() && prepared.preview.is_some());
+        let Body::Scratch(output) = &prepared.body else {
+            panic!("the edited copy uploads");
+        };
+        let probe = crate::ffmpeg::probe(binary, output.path()).unwrap();
+        assert_eq!(probe.video.unwrap().codec, "h264");
+        // HDR is tone mapped after the crop, as unedited videos are.
+        let hdr = scratch.0.join("hdr.mov");
+        let status = crate::ffmpeg::command(&crate::ffmpeg::fixture_binary())
+            .args(["-loglevel", "error", "-f", "lavfi", "-i"])
+            .args(["testsrc2=size=640x360:rate=30", "-t", "1"])
+            .args(["-c:v", "libx265", "-x265-params", "log-level=error"])
+            .args(["-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020"])
+            .args([
+                "-color_trc",
+                "arib-std-b67",
+                "-colorspace",
+                "bt2020nc",
+                "-tag:v",
+                "hvc1",
+            ])
+            .arg(&hdr)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let prepared = prepare_edited_path(
+            &hdr,
+            "hdr.mov",
+            &turned,
+            &Compression::default(),
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(prepared.name, "hdr.mp4");
+        let Body::Scratch(output) = &prepared.body else {
+            panic!("the edited copy uploads");
+        };
+        let video = crate::ffmpeg::probe(binary, output.path())
+            .unwrap()
+            .video
+            .unwrap();
+        assert_eq!(
+            (video.codec.as_str(), video.width, video.height, video.hdr),
+            ("h264", 180, 640, false)
+        );
+        let marked = Edit {
+            marks: vec![Mark::Stroke {
+                color: [255, 0, 0],
+                width: 0.1,
+                points: vec![0.25, 0.5],
+            }],
+            ..turned
+        };
+        let result = prepare_edited_path(
+            &picked,
+            "clip.mp4",
+            &marked,
+            &Compression::default(),
+            &|_| {},
+            &AtomicBool::new(false),
+        );
+        if !crate::ffmpeg::overlays(binary) {
+            assert_eq!(
+                result.err().as_deref(),
+                Some(crate::attachment_edit::FAILED)
+            );
+            return;
+        }
+        let prepared = result.unwrap();
+        let Body::Scratch(output) = &prepared.body else {
+            panic!("the edited copy uploads");
+        };
+        // The dot sits in the middle of the cropped, turned frame.
+        let frame = crate::ffmpeg::command(binary)
+            .args(["-loglevel", "error", "-ss", "0.5", "-i"])
+            .arg(output.path())
+            .args([
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ])
+            .output()
+            .unwrap()
+            .stdout;
+        assert_eq!(frame.len(), 180 * 640 * 3);
+        let at = |x: usize, y: usize| &frame[(y * 180 + x) * 3..(y * 180 + x) * 3 + 3];
+        let centre = at(90, 320);
+        assert!(
+            centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
+            "{centre:?}"
+        );
+        let corner = at(10, 10);
+        assert!(
+            corner.iter().all(|value| (40..=90).contains(value)),
+            "{corner:?}"
+        );
     }
 
     /// A phone-style clip through the real pipeline (`CAPER_FFMPEG`, the

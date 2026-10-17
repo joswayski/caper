@@ -2,6 +2,8 @@
 
 mod api;
 mod app_link;
+mod attachment_edit;
+mod attachment_editor;
 mod attachments;
 mod avatar_images;
 mod avif;
@@ -446,6 +448,12 @@ enum NavIcon {
     Send,
     MessageCircle,
     Thread,
+    Brush,
+    Crop,
+    Type,
+    Undo,
+    Redo,
+    RotateLeft,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -812,14 +820,23 @@ struct UploadSendIntent {
 
 /// A file in the composer: preparing, uploading, uploaded or failed.
 struct DraftUpload {
+    /// Matches upload events; saving an edit restarts the upload with a new one.
     key: u64,
+    /// Stays the same for the chip while uploads restart.
+    slot: u64,
     channel: String,
     /// None belongs to the conversation composer, Some to this thread only.
     thread_root_id: Option<String>,
     name: String,
+    /// The picked file's name: an edited upload keeps it with its new extension.
+    source_name: String,
     kind: model::AttachmentKind,
     /// The selected original, available for preview before upload completes.
     local_path: Option<std::path::PathBuf>,
+    /// Whether the original can be cropped, drawn on and so on before sending.
+    editable: Option<attachment_edit::Kind>,
+    /// Applied to the original whenever it is prepared, including retries.
+    edit: Option<attachment_edit::Edit>,
     /// Keep a pasted image alive through preparation, failed uploads and retries.
     source_scratch: Option<std::sync::Arc<uploads::Scratch>>,
     /// The picked file's size; 0 until the file was read.
@@ -1257,6 +1274,11 @@ struct CaperApp {
     media: attachments::Media,
     /// The full-screen image and video viewer, while open.
     viewer: Option<viewer::Viewer>,
+    /// Editing a draft's file before it is sent, while open.
+    attachment_editor: Option<attachment_editor::Editor>,
+    /// The editor was open as this pass began: its clicks, including the
+    /// one that closes it, must not dismiss the card it was opened from.
+    attachment_editor_shown: bool,
     /// Loopback streaming for the viewer's player, started on first use.
     media_proxy: Option<media_proxy::MediaProxy>,
     file_picker: Option<FilePicker>,
@@ -1521,6 +1543,8 @@ impl CaperApp {
             draft_keys: 0,
             media,
             viewer: None,
+            attachment_editor: None,
+            attachment_editor_shown: false,
             media_proxy: None,
             file_picker: None,
             local_media: Vec::new(),
@@ -1664,6 +1688,9 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reply fixture");
+                } else if name.starts_with("parity-attachment-editor") {
+                    app.install_attachments_fixture();
+                    app.install_attachment_editor_fixture(context, name);
                 } else if name == "parity-attachments" {
                     app.install_attachments_fixture();
                 } else if name.starts_with("parity-file-drop") {
@@ -3064,11 +3091,15 @@ impl CaperApp {
         let channel = self.selected_channel.clone().unwrap_or_default();
         let draft = |key, name: &str, size, progress, error: Option<&str>| DraftUpload {
             key,
+            slot: key,
             channel: channel.clone(),
             thread_root_id: None,
             name: name.into(),
+            source_name: name.into(),
             kind: model::AttachmentKind::Image,
             local_path: None,
+            editable: None,
+            edit: None,
             source_scratch: None,
             source_size: size,
             stored_size: Some(size),
@@ -3106,6 +3137,84 @@ impl CaperApp {
         uploading.stored_size = Some(52_000);
         self.draft_files = vec![done, uploading, failed];
         self.draft_keys = 3;
+    }
+
+    /// The attachment editor over a synthetic picture with a labelled line
+    /// and text: Draw, or Crop/Text by name; `-chip` shows only the
+    /// composer file's Edit button with the edit saved.
+    fn install_attachment_editor_fixture(&mut self, context: &egui::Context, name: &str) {
+        let scratch = std::sync::Arc::new(uploads::Scratch::new("png"));
+        let picture = image::RgbaImage::from_fn(1600, 1000, |x, y| {
+            let (fx, fy) = (x as f32 / 1600.0, y as f32 / 1000.0);
+            let square = (220..620).contains(&x) && (260..660).contains(&y);
+            let circle = (x as f32 - 1150.0).hypot(y as f32 - 520.0) < 220.0;
+            if square {
+                image::Rgba([182, 77, 50, 255])
+            } else if circle {
+                image::Rgba([241, 237, 228, 255])
+            } else {
+                image::Rgba([
+                    (25.0 + 60.0 * fx) as u8,
+                    (33.0 + 70.0 * fy) as u8,
+                    (35.0 + 30.0 * (1.0 - fx)) as u8,
+                    255,
+                ])
+            }
+        });
+        if picture
+            .save_with_format(scratch.path(), image::ImageFormat::Png)
+            .is_err()
+        {
+            return;
+        }
+        let edit = attachment_edit::Edit {
+            rotation: 0,
+            crop: attachment_edit::Crop {
+                x: 0.06,
+                y: 0.08,
+                width: 0.86,
+                height: 0.84,
+            },
+            marks: vec![
+                attachment_edit::Mark::Stroke {
+                    color: attachment_edit::COLORS[1],
+                    width: 0.008,
+                    points: vec![0.2, 0.78, 0.32, 0.7, 0.45, 0.76, 0.58, 0.68, 0.7, 0.74],
+                },
+                attachment_edit::Mark::Text {
+                    color: attachment_edit::COLORS[4],
+                    size: 0.045,
+                    x: 0.5,
+                    y: 0.18,
+                    text: "TEST FIXTURE".into(),
+                },
+            ],
+        };
+        let Some(draft) = self.draft_files.get_mut(1) else {
+            return;
+        };
+        draft.local_path = Some(scratch.path().to_owned());
+        draft.source_scratch = Some(scratch.clone());
+        draft.editable = Some(attachment_edit::Kind::Image);
+        if name.ends_with("-chip") {
+            draft.edit = Some(edit);
+            return;
+        }
+        let mut editor = attachment_editor::Editor::open(
+            context,
+            attachment_editor::Target::Draft(draft.key),
+            attachment_edit::Kind::Image,
+            draft.source_name.clone(),
+            scratch.path(),
+            Some(edit),
+        );
+        if name.contains("-crop") {
+            editor.choose(attachment_editor::Tool::Crop);
+        } else if name.contains("-text") {
+            editor.choose(attachment_editor::Tool::Text);
+            editor.place_text(0.5, 0.42, "Caption");
+        }
+        self.attachment_editor = Some(editor);
     }
 
     /// Voice actions use their own channel's media root, independently of text.
@@ -6831,6 +6940,7 @@ impl CaperApp {
         self.pictures.clear();
         self.local_pictures.clear();
         self.viewer = None;
+        self.attachment_editor = None;
         self.attachment_progress.clear();
         self.local_media.clear();
         self.open_after_refresh = None;
@@ -7169,6 +7279,7 @@ impl CaperApp {
             || self.message_editor.is_some()
             || self.edit_history.is_some()
             || self.viewer.is_some()
+            || self.attachment_editor.is_some()
             || self.forwarding.is_open()
     }
 
@@ -7302,11 +7413,15 @@ impl CaperApp {
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let draft = DraftUpload {
                 key: self.draft_keys,
+                slot: self.draft_keys,
                 channel: channel.clone(),
                 thread_root_id: root.clone(),
                 name: file.name(),
+                source_name: file.name(),
                 kind: model::AttachmentKind::File,
                 local_path: Some(file.path.clone()),
+                editable: file.editable,
+                edit: file.edit.clone(),
                 source_scratch: file.scratch.clone(),
                 source_size: 0,
                 stored_size: None,
@@ -7334,7 +7449,9 @@ impl CaperApp {
                 key: self.draft_keys,
                 token: token.clone(),
                 channel: channel.clone(),
+                name: file.name(),
                 path: file.path,
+                edit: file.edit,
                 source_scratch: file.scratch,
                 prepared: None,
                 settings: settings.clone(),
@@ -7368,11 +7485,15 @@ impl CaperApp {
             self.draft_keys += 1;
             self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
+                slot: self.draft_keys,
                 channel: channel.clone(),
                 thread_root_id: root.clone(),
                 name: attachment.name.clone(),
+                source_name: attachment.name.clone(),
                 kind: attachment.kind,
                 local_path: None,
+                editable: None,
+                edit: None,
                 source_scratch: None,
                 source_size: attachment.size,
                 stored_size: Some(attachment.size),
@@ -7490,9 +7611,14 @@ impl CaperApp {
                 }
                 draft.attachment = Some(attachment);
             }
-            worker::UploadUpdate::Finished(Err(_)) => {
+            worker::UploadUpdate::Finished(Err(error)) => {
                 draft.uploading = false;
-                draft.error = Some("Failed to upload.".into());
+                // An edit that could not be applied says so; nothing was sent.
+                draft.error = Some(if error.message == attachment_edit::FAILED {
+                    error.message
+                } else {
+                    "Failed to upload.".into()
+                });
             }
         }
         self.finish_pending_uploads();
@@ -7524,6 +7650,9 @@ impl CaperApp {
             token,
             channel: file.channel.clone(),
             path: file.local_path.clone().unwrap_or_default(),
+            name: file.source_name.clone(),
+            // Prepared bytes already carry the edit; without them it is applied again.
+            edit: file.edit.clone(),
             source_scratch: file.source_scratch.clone(),
             prepared: file.prepared.clone(),
             settings,
@@ -8594,8 +8723,15 @@ impl CaperApp {
         } else if self.needs_first_space() {
             self.first_space_page(context);
         } else {
+            // Before the page, like the media viewer: the editor is modal
+            // and takes the keys it uses.
+            self.attachment_editor_shown = self.attachment_editor.is_some();
+            if self.updates.available().is_none() {
+                self.attachment_editor_dialog(context);
+            }
             // Ctrl+, (⌘, on macOS) opens Settings, as in the Apple client.
             if self.dialog.is_none()
+                && self.attachment_editor.is_none()
                 && self.updates.available().is_none()
                 && context.input_mut(|input| {
                     input.consume_shortcut(&egui::KeyboardShortcut::new(
@@ -16904,6 +17040,7 @@ impl CaperApp {
         let mut remove = None;
         let mut preview = None;
         let mut retry = None;
+        let mut edit = None;
         let channel = self.selected_channel.clone();
         let files: Vec<_> = self
             .draft_files
@@ -16942,7 +17079,7 @@ impl CaperApp {
             }) {
                 let entering = motion::entrance(
                     ui.ctx(),
-                    egui::Id::new(("draft-chip", draft.key)),
+                    egui::Id::new(("draft-chip", draft.slot)),
                     motion::BASE,
                 );
                 let from = motion::mark(ui);
@@ -17111,6 +17248,25 @@ impl CaperApp {
                 if response.on_hover_text(label).clicked() {
                     remove = Some(draft.key);
                 }
+                // Editing starts from the local original, so it needs no upload.
+                if draft.editable.is_some() && draft.local_path.is_some() {
+                    let pencil = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 15.0, rect.top() + 15.0),
+                        egui::vec2(22.0, 22.0),
+                    );
+                    if chip_corner_button(
+                        ui,
+                        &painter,
+                        pencil,
+                        egui::Id::new(("draft-edit", draft.slot)),
+                        NavIcon::Pencil,
+                        &format!("Edit {}", draft.name),
+                    )
+                    .clicked()
+                    {
+                        edit = Some(draft.key);
+                    }
+                }
                 if let Some(error) = &draft.error {
                     let retry_rect = egui::Rect::from_min_max(
                         egui::pos2(rect.left(), rect.bottom() - 25.0),
@@ -17147,8 +17303,123 @@ impl CaperApp {
         if let Some(key) = retry {
             self.retry_upload(key);
         }
+        if let Some(key) = edit {
+            self.edit_draft(ui.ctx(), key);
+        }
         if let Some(url) = preview {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+
+    /// Opens the editor on a composer file's local original.
+    fn edit_draft(&mut self, context: &egui::Context, key: u64) {
+        let Some(draft) = self.draft_files.iter().find(|draft| draft.key == key) else {
+            return;
+        };
+        let (Some(kind), Some(path)) = (draft.editable, &draft.local_path) else {
+            return;
+        };
+        self.attachment_editor = Some(attachment_editor::Editor::open(
+            context,
+            attachment_editor::Target::Draft(key),
+            kind,
+            draft.source_name.clone(),
+            path,
+            draft.edit.clone(),
+        ));
+    }
+
+    /// Prepares and uploads a composer file again with its new edit (`None`
+    /// returns it to the original). The upload in flight stops and its
+    /// reservation is given up, as Remove does; the file keeps its place.
+    fn save_draft_edit(
+        &mut self,
+        key: u64,
+        edit: Option<attachment_edit::Edit>,
+        preview: Option<egui::ColorImage>,
+    ) {
+        let (Some(token), Some(settings)) = (self.token.clone(), self.uploads.clone()) else {
+            return;
+        };
+        let Some(draft) = self
+            .draft_files
+            .iter_mut()
+            .chain(self.staged_files.values_mut().flatten())
+            .find(|draft| draft.key == key)
+        else {
+            return;
+        };
+        let Some(path) = draft.local_path.clone().filter(|_| draft.edit != edit) else {
+            return;
+        };
+        draft
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let old = draft.attachment.take();
+        self.draft_keys += 1;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        draft.key = self.draft_keys;
+        draft.cancel = cancel.clone();
+        draft.edit = edit;
+        draft.name = draft.source_name.clone();
+        draft.prepared = None;
+        // The editor's own render shows until the prepared thumbnail arrives.
+        draft.thumbnail_image = preview;
+        draft.thumbnail = None;
+        draft.stored_size = None;
+        draft.compressing = None;
+        draft.progress = 0.0;
+        draft.error = None;
+        draft.uploaded_at = None;
+        draft.upload_expired = false;
+        draft.uploading = true;
+        self.worker.send(Command::Upload {
+            key: draft.key,
+            token,
+            channel: draft.channel.clone(),
+            path,
+            name: draft.source_name.clone(),
+            edit: draft.edit.clone(),
+            source_scratch: draft.source_scratch.clone(),
+            prepared: None,
+            settings,
+            cancel,
+        });
+        if let Some(old) = old {
+            self.cancel_assets(vec![old.id]);
+        }
+    }
+
+    /// The attachment editor over everything, and what its Done or Cancel does.
+    fn attachment_editor_dialog(&mut self, context: &egui::Context) {
+        let Some(mut editor) = self.attachment_editor.take() else {
+            return;
+        };
+        let edit = match editor.show(context) {
+            attachment_editor::Outcome::Open => {
+                self.attachment_editor = Some(editor);
+                return;
+            }
+            attachment_editor::Outcome::Cancel => return,
+            attachment_editor::Outcome::Save(edit) => edit,
+        };
+        let preview = editor.preview(edit.as_ref());
+        match editor.target {
+            attachment_editor::Target::Draft(key) => self.save_draft_edit(key, edit, preview),
+            attachment_editor::Target::Profile {
+                person,
+                index,
+                path,
+            } => {
+                if let Some(draft) = self
+                    .profile_drafts
+                    .get_mut(&person)
+                    .filter(|draft| draft.editable())
+                    && let Some(file) = draft.files.get_mut(index).filter(|file| file.path == path)
+                {
+                    file.set_edit(edit, preview);
+                }
+            }
         }
     }
 
@@ -18724,6 +18995,7 @@ impl CaperApp {
             && !menu_open
             && !message
             && !open_conversation
+            && !self.attachment_editor_shown
             && (close
                 || escape
                 || (!suggestions_open && !card.fresh && shown.response.clicked_elsewhere()))
@@ -18842,6 +19114,7 @@ impl CaperApp {
         if !draft.files.is_empty() {
             let mut remove = None;
             let mut preview = None;
+            let mut edit = None;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                 let width = draft_tile_width(ui.available_width());
@@ -18854,7 +19127,8 @@ impl CaperApp {
                     } else {
                         "Sending…".into()
                     };
-                    let (open, removed) = file_chip(
+                    let can_edit = file.editable.is_some();
+                    let clicks = file_chip(
                         ui,
                         width,
                         FileChip {
@@ -18867,13 +19141,25 @@ impl CaperApp {
                             progress: None,
                             url,
                             removable: editable,
+                            editable: can_edit,
                         },
                     );
-                    if open.is_some() {
-                        preview = open;
+                    if clicks.preview.is_some() {
+                        preview = clicks.preview;
                     }
-                    if removed {
+                    if clicks.removed {
                         remove = Some(index);
+                    }
+                    if clicks.edit
+                        && let Some(kind) = file.editable
+                    {
+                        edit = Some((
+                            index,
+                            kind,
+                            name.clone(),
+                            file.path.clone(),
+                            file.edit.clone(),
+                        ));
                     }
                 }
             });
@@ -18883,6 +19169,20 @@ impl CaperApp {
             }
             if let Some(url) = preview {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            }
+            if let Some((index, kind, name, path, edit)) = edit {
+                self.attachment_editor = Some(attachment_editor::Editor::open(
+                    ui.ctx(),
+                    attachment_editor::Target::Profile {
+                        person: person.to_owned(),
+                        index,
+                        path: path.clone(),
+                    },
+                    kind,
+                    name,
+                    &path,
+                    edit,
+                ));
             }
         }
         let suggestions = self.suggestion_keys(ui, id, &draft.text);
@@ -21459,6 +21759,28 @@ fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
     );
 }
 
+/// A small button in a file chip's corner (Remove at the end, Edit at the
+/// start) on a surface backdrop, so it reads over any thumbnail.
+fn chip_corner_button(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    id: egui::Id,
+    icon: NavIcon,
+    label: &str,
+) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    painter.rect_filled(rect, 6.0, SURFACE);
+    paint_icon(
+        painter,
+        rect.shrink(4.0),
+        icon,
+        if response.hovered() { TEXT } else { MUTED },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.on_hover_text(label)
+}
+
 /// A staged square preview with an optional short status and Remove.
 struct FileChip<'a> {
     id: egui::Id,
@@ -21472,10 +21794,20 @@ struct FileChip<'a> {
     /// Opens the local or uploaded original.
     url: Option<String>,
     removable: bool,
+    /// Offers Edit in the corner opposite Remove.
+    editable: bool,
 }
 
-/// Returns the preview URL to open, if clicked, and whether Remove was clicked.
-fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, bool) {
+/// What was clicked on a [`FileChip`].
+#[derive(Default)]
+struct ChipClicks {
+    /// The preview URL to open.
+    preview: Option<String>,
+    removed: bool,
+    edit: bool,
+}
+
+fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, SURFACE);
@@ -21581,7 +21913,25 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         });
         removed = response.on_hover_text(label).clicked();
     }
-    (preview, removed)
+    let edit = chip.removable
+        && chip.editable
+        && chip_corner_button(
+            ui,
+            &painter,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 15.0, rect.top() + 15.0),
+                egui::vec2(22.0, 22.0),
+            ),
+            chip.id.with("edit"),
+            NavIcon::Pencil,
+            &format!("Edit {}", chip.name),
+        )
+        .clicked();
+    ChipClicks {
+        preview,
+        removed,
+        edit,
+    }
 }
 
 /// Web's composer Send: the eggshell primary action with the Send icon,
@@ -22203,6 +22553,12 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
         NavIcon::Archive => egui::include_image!("../resources/icons/archive.svg"),
         NavIcon::Restore => egui::include_image!("../resources/icons/archive-restore.svg"),
+        NavIcon::Brush => egui::include_image!("../resources/icons/brush.svg"),
+        NavIcon::Crop => egui::include_image!("../resources/icons/crop.svg"),
+        NavIcon::Type => egui::include_image!("../resources/icons/type.svg"),
+        NavIcon::Undo => egui::include_image!("../resources/icons/undo-2.svg"),
+        NavIcon::Redo => egui::include_image!("../resources/icons/redo-2.svg"),
+        NavIcon::RotateLeft => egui::include_image!("../resources/icons/rotate-ccw.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -24777,10 +25133,7 @@ fn configure(context: &egui::Context) {
             "Satoshi Medium",
             include_bytes!("../../../../shared/fonts/cache/Satoshi-Medium.otf").as_slice(),
         ),
-        (
-            "Satoshi Bold",
-            include_bytes!("../../../../shared/fonts/cache/Satoshi-Bold.otf").as_slice(),
-        ),
+        ("Satoshi Bold", attachment_edit::SATOSHI_BOLD),
         (
             "Satoshi Black",
             include_bytes!("../../../../shared/fonts/cache/Satoshi-Black.otf").as_slice(),
@@ -25673,6 +26026,7 @@ fn main() -> eframe::Result {
                 | "parity-thread-attachments-ready-narrow"
                 | "parity-thread-attachments-rejected-narrow"
                 | "parity-whats-new-narrow"
+                | "parity-attachment-editor-narrow"
         )
     }) {
         [390.0, 844.0]
@@ -39614,6 +39968,487 @@ mod tests {
             "files of another conversation are kept, not cancelled"
         );
         assert_eq!(app.staged_files[&channel].len(), cancels.len());
+    }
+
+    /// A small picture on disk: red on the left, blue on the right.
+    fn edit_fixture(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("caper-edit-{}-{name}", uuid::Uuid::new_v4()));
+        image::RgbaImage::from_fn(64, 48, |x, _| {
+            if x < 32 {
+                image::Rgba([220, 40, 40, 255])
+            } else {
+                image::Rgba([40, 40, 220, 255])
+            }
+        })
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+        path
+    }
+
+    /// Renders until the editor has decoded its picture.
+    fn editor_ready(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
+        for _ in 0..500 {
+            render(app, context, vec![]);
+            if app
+                .attachment_editor
+                .as_ref()
+                .is_some_and(|editor| !editor.loading())
+            {
+                render(app, context, vec![]);
+                return render(app, context, vec![]);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the editor never loaded its picture");
+    }
+
+    fn click_label(app: &mut CaperApp, context: &egui::Context, label: &str) -> egui::FullOutput {
+        // Layout settles over a pass or two after a change.
+        render(app, context, vec![]);
+        let output = render(app, context, vec![]);
+        let bounds = node_bounds(&output, label).unwrap_or_else(|| panic!("no {label}"));
+        click_at(app, context, bounds.center())
+    }
+
+    fn shortcut(key: egui::Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
+        [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn editing_a_draft_restarts_its_upload_with_the_edit_and_keeps_its_place() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        let original = edit_fixture("diagram.png");
+        app.draft_files[1].local_path = Some(original.clone());
+        app.draft_files[1].editable = crate::attachment_edit::editable(&original);
+        assert_eq!(
+            app.draft_files[1].editable,
+            Some(crate::attachment_edit::Kind::Image)
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        // Only files with a local original that can be edited offer it.
+        let pencil = node_bounds(&output, "Edit TEST FIXTURE diagram.png").expect("a pencil");
+        let remove = node_bounds(&output, "Remove TEST FIXTURE diagram.png").unwrap();
+        assert!(
+            pencil.center().x < remove.center().x
+                && (pencil.center().y - remove.center().y).abs() < 1.0
+        );
+        assert!(node_bounds(&output, "Edit TEST FIXTURE photo.jpg").is_none());
+        assert!(node_bounds(&output, "Edit TEST FIXTURE large.mov").is_none());
+
+        // Escape and an unchanged Done leave the upload alone.
+        click_at(&mut app, &context, pencil.center());
+        assert!(
+            app.attachment_editor.is_some(),
+            "the pencil opens the editor"
+        );
+        assert!(app.conversation_covered());
+        let output = editor_ready(&mut app, &context);
+        for label in [
+            "Cancel editing",
+            "Undo",
+            "Redo",
+            "Reset",
+            "Done",
+            "Crop",
+            "Draw",
+            "Text",
+        ] {
+            assert!(node_bounds(&output, label).is_some(), "{label}");
+        }
+        text_position(&output, "Edit image");
+        text_position(&output, "TEST FIXTURE diagram.png");
+        assert_eq!(
+            app.attachment_editor.as_ref().unwrap().tool(),
+            crate::attachment_editor::Tool::Draw,
+            "Draw is the default tool"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.attachment_editor.is_none());
+        assert_eq!(app.draft_files[1].key, 2);
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        editor_ready(&mut app, &context);
+        click_label(&mut app, &context, "Done");
+        assert!(app.attachment_editor.is_none());
+        assert_eq!(
+            app.draft_files[1].key, 2,
+            "Done without a change just closes"
+        );
+
+        // Turn it, undo and redo by keyboard, then save.
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        editor_ready(&mut app, &context);
+        click_label(&mut app, &context, "Crop");
+        click_label(&mut app, &context, "Rotate left");
+        let rotation = |app: &CaperApp| app.attachment_editor.as_ref().unwrap().current().rotation;
+        assert_eq!(rotation(&app), 270);
+        render(
+            &mut app,
+            &context,
+            shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+        );
+        assert_eq!(rotation(&app), 0);
+        render(
+            &mut app,
+            &context,
+            shortcut(
+                egui::Key::Z,
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            ),
+        );
+        assert_eq!(rotation(&app), 270);
+        render(
+            &mut app,
+            &context,
+            shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+        );
+        render(
+            &mut app,
+            &context,
+            shortcut(egui::Key::Y, egui::Modifiers::COMMAND),
+        );
+        assert_eq!(rotation(&app), 270);
+        let old_cancel = app.draft_files[1].cancel.clone();
+        let slot = app.draft_files[1].slot;
+        click_label(&mut app, &context, "Done");
+        assert!(app.attachment_editor.is_none());
+        let draft = &app.draft_files[1];
+        assert_eq!(
+            (draft.slot, draft.name.as_str()),
+            (slot, "TEST FIXTURE diagram.png")
+        );
+        assert_ne!(draft.key, 2, "a fresh upload");
+        assert_eq!(draft.edit.as_ref().map(|edit| edit.rotation), Some(270));
+        assert!(draft.uploading && draft.attachment.is_none() && draft.stored_size.is_none());
+        assert_eq!(draft.progress, 0.0);
+        assert!(
+            old_cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "the old upload stops"
+        );
+        assert!(!draft.cancel.load(std::sync::atomic::Ordering::Relaxed));
+        // The chip shows the turned picture straight away: now portrait.
+        let [width, height] = draft.thumbnail_image.as_ref().unwrap().size;
+        assert!(height > width);
+        let key = draft.key;
+        // The old upload's late events no longer reach the file.
+        app.upload_update(2, crate::worker::UploadUpdate::Progress(0.9));
+        assert_eq!(app.draft_files[1].progress, 0.0);
+
+        // An edit that cannot be applied fails visibly and retries with the edit.
+        app.upload_update(
+            key,
+            crate::worker::UploadUpdate::Finished(Err(crate::uploads::UploadError::new(
+                crate::attachment_edit::FAILED,
+            ))),
+        );
+        assert_eq!(
+            app.draft_files[1].error.as_deref(),
+            Some(crate::attachment_edit::FAILED)
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let retry = node_bounds(
+            &output,
+            "Retry uploading TEST FIXTURE diagram.png: Couldn’t apply your edits.",
+        )
+        .expect("retry says why");
+        click_at(&mut app, &context, retry.center());
+        let draft = &app.draft_files[1];
+        assert!(draft.uploading && draft.error.is_none());
+        assert_eq!(
+            (draft.key, draft.edit.as_ref().map(|edit| edit.rotation)),
+            (key, Some(270))
+        );
+
+        // Reopening shows the previous edit; Reset returns to the original.
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        editor_ready(&mut app, &context);
+        assert_eq!(rotation(&app), 270);
+        click_label(&mut app, &context, "Reset");
+        assert_eq!(rotation(&app), 0);
+        click_label(&mut app, &context, "Done");
+        assert_eq!(app.draft_files[1].edit, None);
+        assert_ne!(app.draft_files[1].key, key);
+        // Remove still works.
+        click_label(&mut app, &context, "Remove TEST FIXTURE diagram.png");
+        assert_eq!(app.draft_files.len(), 2);
+        let _ = std::fs::remove_file(original);
+    }
+
+    #[test]
+    fn the_editor_draws_and_places_text_where_the_pointer_is() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        let original = edit_fixture("sketch.png");
+        app.draft_files[1].local_path = Some(original.clone());
+        app.draft_files[1].editable = Some(crate::attachment_edit::Kind::Image);
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        let output = editor_ready(&mut app, &context);
+        let stage = node_bounds(&output, "Image being edited").expect("the picture");
+        // A drag draws one stroke through the points it passed.
+        let from = stage.center() - egui::vec2(stage.width() / 4.0, 0.0);
+        let to = stage.center() + egui::vec2(stage.width() / 4.0, 0.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(from), button(from, true)],
+        );
+        for step in 1..=4 {
+            let pos = from + (to - from) * (step as f32 / 4.0);
+            render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+        }
+        render(&mut app, &context, vec![button(to, false)]);
+        let marks = app
+            .attachment_editor
+            .as_ref()
+            .unwrap()
+            .current()
+            .marks
+            .clone();
+        let [
+            crate::attachment_edit::Mark::Stroke {
+                color,
+                width,
+                points,
+            },
+        ] = marks.as_slice()
+        else {
+            panic!("one stroke: {marks:?}");
+        };
+        assert_eq!(*color, crate::attachment_edit::COLORS[0]);
+        // 6 points of the picture's longer edge on screen.
+        assert!(
+            (width * f64::from(stage.width()) - 6.0).abs() < 0.01,
+            "{width}"
+        );
+        assert!(points.len() >= 6);
+        assert!((points[0] - 0.25).abs() < 0.01 && (points[1] - 0.5).abs() < 0.01);
+        assert!((points[points.len() - 2] - 0.75).abs() < 0.01);
+        // A tap with Text opens a field there; Enter commits what was typed.
+        click_label(&mut app, &context, "Text");
+        let spot = stage.center() + egui::vec2(0.0, stage.height() / 4.0);
+        click_at(&mut app, &context, spot);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![egui::Event::Text("Look".into())]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        render(&mut app, &context, vec![]);
+        let marks = &app.attachment_editor.as_ref().unwrap().current().marks;
+        assert_eq!(marks.len(), 2);
+        let crate::attachment_edit::Mark::Text { text, x, y, .. } = &marks[1] else {
+            panic!("text second: {marks:?}");
+        };
+        assert_eq!(text, "Look");
+        assert!((x - 0.5).abs() < 0.01 && (y - 0.75).abs() < 0.01);
+        let drag = |app: &mut CaperApp, from: egui::Pos2, by: egui::Vec2| {
+            render(
+                app,
+                &context,
+                vec![egui::Event::PointerMoved(from), button(from, true)],
+            );
+            for step in 1..=4 {
+                let pos = from + by * (step as f32 / 4.0);
+                render(app, &context, vec![egui::Event::PointerMoved(pos)]);
+            }
+            render(app, &context, vec![button(from + by, false)]);
+            render(app, &context, vec![]);
+        };
+        // Dragging the text moves it, as one more undo step.
+        drag(&mut app, spot, egui::vec2(stage.width() / 10.0, 0.0));
+        let text_x =
+            |app: &CaperApp| match &app.attachment_editor.as_ref().unwrap().current().marks[1] {
+                crate::attachment_edit::Mark::Text { x, .. } => *x,
+                mark => panic!("{mark:?}"),
+            };
+        assert!((text_x(&app) - 0.6).abs() < 0.01, "{}", text_x(&app));
+        render(
+            &mut app,
+            &context,
+            shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+        );
+        assert!((text_x(&app) - 0.5).abs() < 0.01);
+        // Undo removes the text, leaving the stroke.
+        render(
+            &mut app,
+            &context,
+            shortcut(egui::Key::Z, egui::Modifiers::COMMAND),
+        );
+        assert_eq!(
+            app.attachment_editor
+                .as_ref()
+                .unwrap()
+                .current()
+                .marks
+                .len(),
+            1
+        );
+        // The crop frame's corner resizes it over the whole picture.
+        let output = click_label(&mut app, &context, "Crop");
+        let output = if node_bounds(&output, "Crop frame").is_some() {
+            output
+        } else {
+            render(&mut app, &context, vec![])
+        };
+        let frame = node_bounds(&output, "Crop frame").expect("the crop frame");
+        drag(&mut app, frame.min, frame.size() / 4.0);
+        let crop = app.attachment_editor.as_ref().unwrap().current().crop;
+        assert!(
+            (crop.x - 0.25).abs() < 0.01 && (crop.y - 0.25).abs() < 0.01,
+            "{crop:?}"
+        );
+        assert!((crop.width - 0.75).abs() < 0.01 && (crop.height - 0.75).abs() < 0.01);
+        click_label(&mut app, &context, "Done");
+        let edit = app.draft_files[1].edit.clone().expect("saved");
+        assert_eq!(edit.marks.len(), 1);
+        assert!((edit.crop.x - 0.25).abs() < 0.01);
+        let _ = std::fs::remove_file(original);
+    }
+
+    /// Videos open on a still with the whole-video hint (`CAPER_FFMPEG`).
+    /// Drawing needs an FFmpeg that can overlay; Caper's trimmed build
+    /// cannot, so its videos open on Crop with Draw and Text unavailable.
+    #[test]
+    #[ignore = "needs CAPER_FFMPEG (and CAPER_FFMPEG_FIXTURES with lavfi and libx264 if it lacks them)"]
+    fn video_editing_offers_marks_only_when_ffmpeg_can_overlay_them() {
+        let binary = crate::ffmpeg::binary().expect("set CAPER_FFMPEG");
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        let clip = std::env::temp_dir().join(format!("caper-edit-{}.mp4", uuid::Uuid::new_v4()));
+        let status = crate::ffmpeg::command(&crate::ffmpeg::fixture_binary())
+            .args(["-loglevel", "error", "-f", "lavfi", "-i"])
+            .args([
+                "testsrc2=size=640x360:rate=30",
+                "-t",
+                "1",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        app.draft_files[1].local_path = Some(clip.clone());
+        app.draft_files[1].editable = crate::attachment_edit::editable(&clip);
+        assert_eq!(
+            app.draft_files[1].editable,
+            Some(crate::attachment_edit::Kind::Video)
+        );
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        let output = editor_ready(&mut app, &context);
+        text_position(&output, "Edit video");
+        node_bounds(&output, "Video frame being edited").expect("the still");
+        let overlays = crate::ffmpeg::overlays(binary);
+        let draw = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Draw"))
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(draw.is_disabled(), !overlays);
+        let tool = app.attachment_editor.as_ref().unwrap().tool();
+        if overlays {
+            text_position(
+                &output,
+                "Drawings and text stay on screen for the whole video.",
+            );
+            assert_eq!(tool, crate::attachment_editor::Tool::Draw);
+            click_label(&mut app, &context, "Crop");
+        } else {
+            text_position(&output, "Crop and rotation apply to the whole video.");
+            assert_eq!(tool, crate::attachment_editor::Tool::Crop);
+        }
+        click_label(&mut app, &context, "Rotate left");
+        click_label(&mut app, &context, "Done");
+        assert_eq!(
+            app.draft_files[1].edit.as_ref().map(|edit| edit.rotation),
+            Some(270)
+        );
+        let _ = std::fs::remove_file(clip);
+    }
+
+    #[test]
+    fn profile_card_files_keep_their_edit_until_send() {
+        let context = egui::Context::default();
+        let (base, _) = account_server(Vec::new());
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new(&base).unwrap(),
+            Some("parity-mentions"),
+        );
+        app.token = Some("account-token".into());
+        app.uploads = Some(crate::compress::Compression::default());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let picture = edit_fixture("card.png");
+        let name = picture.file_name().unwrap().to_string_lossy().into_owned();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.profile_picker = Some(("fixture-alex".into(), receiver));
+        sender.send(vec![picture.clone()]).unwrap();
+        app.attachment_housekeeping(&context);
+        assert_eq!(
+            app.profile_drafts["fixture-alex"].files[0].editable,
+            Some(crate::attachment_edit::Kind::Image)
+        );
+        click_label(&mut app, &context, &format!("Edit {name}"));
+        editor_ready(&mut app, &context);
+        // Escape closes only the editor, not the card under it.
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.attachment_editor.is_none());
+        assert!(app.mention_card.is_some());
+        click_label(&mut app, &context, &format!("Edit {name}"));
+        editor_ready(&mut app, &context);
+        click_label(&mut app, &context, "Crop");
+        click_label(&mut app, &context, "Rotate left");
+        click_label(&mut app, &context, "Done");
+        assert!(app.attachment_editor.is_none() && app.mention_card.is_some());
+        let file = &app.profile_drafts["fixture-alex"].files[0];
+        assert_eq!(file.edit.as_ref().map(|edit| edit.rotation), Some(270));
+        // The chip shows the turned picture: portrait now.
+        let preview = file
+            .preview
+            .get()
+            .cloned()
+            .flatten()
+            .expect("an edited preview");
+        assert!(preview.size[1] > preview.size[0]);
+        assert!(file.attachment.is_none(), "uploads wait for Send");
+        let _ = std::fs::remove_file(picture);
     }
 
     #[test]
