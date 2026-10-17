@@ -88,6 +88,44 @@ test("without a viewer (the sender's pending row) files keep their links and inl
   expect(markup).not.toContain("in viewer");
 });
 
+test.each(["processing", "ready"] as const)("own photos keep their local preview when %s", (status) => {
+  const photo = { ...files[0], status };
+  const markup = renderToStaticMarkup(
+    <MessageAttachments
+      attachments={[photo]}
+      localPreviews={{ photo: { url: "blob:local-photo", video: false } }}
+      progress={{ photo: 37 }}
+      onView={() => {}}
+    />,
+  );
+  expect(markup).toContain('src="blob:local-photo"');
+  expect(markup).not.toContain('src="https://cdn.test/preview/photo"');
+  if (status === "processing") {
+    expect(markup).toContain("Processing… 37%");
+    expect(markup).not.toMatch(/<a\b[^>]*\bhref=/);
+    expect(markup).not.toContain("aria-haspopup");
+  } else {
+    expect(markup).toContain('href="https://cdn.test/original/photo"');
+    expect(markup).toContain('aria-haspopup="dialog"');
+    expect(markup).not.toContain("Processing…");
+  }
+});
+
+test.each([{ status: "failed" as const }, { unavailable: true }])(
+  "a local preview never hides a removed or failed file: %j",
+  (state) => {
+    const markup = renderToStaticMarkup(
+      <MessageAttachments
+        attachments={[{ ...files[0], ...state }]}
+        localPreviews={{ photo: { url: "blob:local-photo", video: false } }}
+      />,
+    );
+    expect(markup).not.toContain("blob:local-photo");
+    expect(markup).not.toContain("<img");
+    expect(markup).toContain(state.status === "failed" ? "Couldn’t process this file" : "File removed");
+  },
+);
+
 test("a video with a stored size reserves its shape without fixing the responsive height", () => {
   const sized = file("sized", "sized.mp4", { kind: "video", contentType: "video/mp4", width: 1080, height: 1920 });
   const markup = renderToStaticMarkup(<MessageAttachments attachments={[sized]} />);
